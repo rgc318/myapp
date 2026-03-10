@@ -1,15 +1,15 @@
 ### myapp
 
-new app
+这是一个基于 Frappe / ERPNext 的自定义应用。
 
-Language:
+语言版本：
 
 - English: `README.md`
 - 简体中文: `README.zh-CN.md`
 
-### Installation
+### 安装
 
-You can install this app using the [bench](https://github.com/frappe/bench) CLI:
+可以使用 [bench](https://github.com/frappe/bench) CLI 安装此应用：
 
 ```bash
 cd $PATH_TO_YOUR_BENCH
@@ -17,27 +17,27 @@ bench get-app $URL_OF_THIS_REPO --branch main
 bench install-app myapp
 ```
 
-### Contributing
+### 开发
 
-This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:
+本应用使用 `pre-commit` 做格式化和静态检查。请先安装并启用：
 
 ```bash
 cd apps/myapp
 pre-commit install
 ```
 
-Pre-commit is configured to use the following tools for checking and formatting your code:
+当前 `pre-commit` 配置包含：
 
 - ruff
 - eslint
 - prettier
 - pyupgrade
 
-### Service Validation
+### 服务验收
 
-The service layer under `myapp/api/` was validated in a VS Code devcontainer / ERPNext v16 environment through `bench console`.
+`myapp/api/` 下的服务层已经在 VS Code devcontainer / ERPNext v16 环境中通过 `bench console` 做过真实验证。
 
-Recommended public API entry points:
+推荐的对外接口入口：
 
 - `myapp.api.gateway.create_order`
 - `myapp.api.gateway.submit_delivery`
@@ -47,24 +47,24 @@ Recommended public API entry points:
 - `myapp.api.gateway.update_payment_status`
 - `myapp.api.gateway.process_sales_return`
 
-Backward-compatible aggregate path:
+兼容保留的聚合路径：
 
 - `myapp.api.api.*`
 
-Service implementation modules:
+服务实现模块：
 
 - `myapp.services.order_service`
 - `myapp.services.settlement_service`
 - `myapp.services.wholesale_service`
 
-Validated modules:
+已验证模块：
 
 - `myapp.api.gateway`
 - `myapp.services.order_service`
 - `myapp.services.settlement_service`
 - `myapp.services.wholesale_service`
 
-Validated methods:
+已验证方法：
 
 - `create_order`
 - `submit_delivery`
@@ -73,14 +73,14 @@ Validated methods:
 - `update_payment_status`
 - `process_sales_return`
 
-Validated happy-path sample:
+已验证成功的样例参数：
 
 - `customer="Palmer Productions Ltd."`
 - `item_code="SKU010"`
 - `warehouse="Stores - RD"`
 - `company="rgc (Demo)"`
 
-Example validation flow:
+验收调用示例：
 
 ```python
 from myapp.api.gateway import create_order, process_sales_return, update_payment_status
@@ -110,20 +110,19 @@ return_result = process_sales_return(
 )
 ```
 
-Observed business constraints during validation:
+本次验收过程中确认的业务约束：
 
-- Warehouse must belong to the same company as the order.
-- `immediate=True` requires available stock in the selected warehouse.
-- If no `Bin` exists for an `item_code + warehouse` pair, the service treats available stock as `0` and blocks immediate delivery.
+- 仓库必须属于与订单相同的公司。
+- `immediate=True` 需要所选仓库具备可用库存。
+- 如果某个 `item_code + warehouse` 组合不存在 `Bin` 记录，服务层会按可用库存 `0` 处理，并阻止即时发货。
 
 ### CI
 
-This app can use GitHub Actions for CI. The following workflows are configured:
+本应用可使用 GitHub Actions 做持续集成，当前已配置：
 
-- CI: Installs this app and runs unit tests on every push to `develop` branch.
-- Linters: Runs [Frappe Semgrep Rules](https://github.com/frappe/semgrep-rules) and [pip-audit](https://pypi.org/project/pip-audit/) on every pull request.
+- CI：在推送到 `develop` 分支时安装应用并运行单元测试
+- Linters：在 Pull Request 上运行 [Frappe Semgrep Rules](https://github.com/frappe/semgrep-rules) 和 [pip-audit](https://pypi.org/project/pip-audit/)
 
-
-### License
+### 许可证
 
 mit
