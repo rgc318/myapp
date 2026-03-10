@@ -224,6 +224,11 @@ Behavior:
 - Validates warehouse-company consistency before document insert.
 - Validates stock availability before immediate delivery.
 
+Testing note:
+
+- Use `immediate=0` when you plan to call `submit_delivery` and `create_sales_invoice` separately.
+- If `immediate=1`, do not call those two APIs again for the same `Sales Order` unless there are remaining deliverable or billable quantities.
+
 Example:
 
 ```python
@@ -312,6 +317,7 @@ Behavior:
 
 - Creates and submits a `Delivery Note` from a `Sales Order`.
 - Supports partial delivery through `delivery_items`.
+- Returns a clear validation error when the source `Sales Order` has no deliverable items left.
 
 ### create_sales_invoice
 
@@ -329,6 +335,7 @@ Behavior:
 
 - Creates and submits a `Sales Invoice` from a `Sales Order`.
 - Supports partial invoicing through `invoice_items`.
+- Returns a clear validation error when the source `Sales Order` has no billable items left.
 
 ### confirm_pending_document
 

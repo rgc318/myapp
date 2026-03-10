@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import frappe
 
-from myapp.services.order_service import create_order
+from myapp.services.order_service import create_order, create_sales_invoice, submit_delivery
 
 
 class TestOrderService(TestCase):
@@ -71,3 +71,19 @@ class TestOrderService(TestCase):
 	def test_create_order_rejects_empty_items(self):
 		with self.assertRaises(frappe.ValidationError):
 			create_order(customer="Test Customer", items=[], company="Test Company")
+
+	@patch("erpnext.selling.doctype.sales_order.sales_order.make_delivery_note")
+	def test_submit_delivery_rejects_sales_order_without_deliverable_items(self, mock_make_delivery_note):
+		dn = frappe._dict({"items": []})
+		mock_make_delivery_note.return_value = dn
+
+		with self.assertRaisesRegex(frappe.ValidationError, "没有可发货的商品明细"):
+			submit_delivery("SO-0001")
+
+	@patch("erpnext.selling.doctype.sales_order.sales_order.make_sales_invoice")
+	def test_create_sales_invoice_rejects_sales_order_without_billable_items(self, mock_make_sales_invoice):
+		si = frappe._dict({"items": []})
+		mock_make_sales_invoice.return_value = si
+
+		with self.assertRaisesRegex(frappe.ValidationError, "没有可开票的商品明细"):
+			create_sales_invoice("SO-0001")

@@ -72,6 +72,11 @@ def _insert_and_submit(doc):
 	return doc
 
 
+def _ensure_target_has_items(doc, message: str):
+	if not doc.get("items"):
+		frappe.throw(message)
+
+
 def _validate_stock_for_immediate_delivery(items: list[dict]):
 	for item in items:
 		bin_rows = frappe.get_all(
@@ -177,6 +182,7 @@ def submit_delivery(order_name: str, delivery_items: list[dict] | None = None, k
 
 	try:
 		dn = make_delivery_note(order_name, kwargs={"skip_item_mapping": 0})
+		_ensure_target_has_items(dn, _("销售订单 {0} 当前没有可发货的商品明细。").format(order_name))
 
 		if delivery_items:
 			delivery_qty_map = {d["item_code"]: flt(d["qty"]) for d in delivery_items if d.get("item_code")}
@@ -187,8 +193,7 @@ def submit_delivery(order_name: str, delivery_items: list[dict] | None = None, k
 				item.qty = delivery_qty_map[item.item_code]
 				filtered_items.append(item)
 			dn.items = filtered_items
-			if not dn.items:
-				frappe.throw(_("未找到可发货的商品明细。"))
+			_ensure_target_has_items(dn, _("未找到可发货的商品明细。"))
 
 		if kwargs.get("set_posting_time") is not None:
 			dn.set_posting_time = cint(kwargs["set_posting_time"])
@@ -224,6 +229,7 @@ def create_sales_invoice(source_name: str, invoice_items: list[dict] | None = No
 
 	try:
 		si = make_sales_invoice(source_name)
+		_ensure_target_has_items(si, _("销售订单 {0} 当前没有可开票的商品明细。").format(source_name))
 
 		if invoice_items:
 			invoice_qty_map = {d["item_code"]: flt(d["qty"]) for d in invoice_items if d.get("item_code")}
@@ -234,8 +240,7 @@ def create_sales_invoice(source_name: str, invoice_items: list[dict] | None = No
 				item.qty = invoice_qty_map[item.item_code]
 				filtered_items.append(item)
 			si.items = filtered_items
-			if not si.items:
-				frappe.throw(_("未找到可开票的商品明细。"))
+			_ensure_target_has_items(si, _("未找到可开票的商品明细。"))
 
 		if kwargs.get("due_date"):
 			si.due_date = kwargs["due_date"]

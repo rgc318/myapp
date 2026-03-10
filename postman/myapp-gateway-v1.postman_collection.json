@@ -3,7 +3,7 @@
     "_postman_id": "6b6c22a4-8d11-4dbe-9a72-0b0b7ed7c301",
     "name": "myapp Gateway API v1",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Postman collection for myapp custom gateway APIs on Frappe/ERPNext. Version: v1."
+    "description": "Postman collection for myapp custom gateway APIs on Frappe/ERPNext. Version: v1. The create_order request defaults to immediate end-to-end processing."
   },
   "item": [
     {
@@ -113,7 +113,7 @@
           "response": []
         },
         {
-          "name": "create_order",
+          "name": "create_order_immediate",
           "request": {
             "method": "POST",
             "header": [
@@ -144,7 +144,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"create_order succeeded\", function () {",
+                  "pm.test(\"create_order_immediate succeeded\", function () {",
                   "  pm.response.to.have.status(200);",
                   "  const body = pm.response.json();",
                   "  pm.expect(body.message.ok).to.eql(true);",
@@ -160,7 +160,7 @@
           "response": []
         },
         {
-          "name": "create_order_invalid_warehouse",
+          "name": "create_order_missing_stock_record",
           "request": {
             "method": "POST",
             "header": [
@@ -171,7 +171,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"customer\": \"{{customer}}\",\n  \"items\": [\n    {\n      \"item_code\": \"{{item_code}}\",\n      \"qty\": 1,\n      \"warehouse\": \"{{invalid_warehouse}}\"\n    }\n  ],\n  \"company\": \"{{invalid_company}}\",\n  \"immediate\": 1\n}"
+              "raw": "{\n  \"customer\": \"{{customer}}\",\n  \"items\": [\n    {\n      \"item_code\": \"{{item_code}}\",\n      \"qty\": 1,\n      \"warehouse\": \"{{warehouse_without_stock_record}}\"\n    }\n  ],\n  \"company\": \"{{company}}\",\n  \"immediate\": 1\n}"
             },
             "url": {
               "raw": "{{base_url}}/api/method/myapp.api.gateway.create_order",
@@ -192,7 +192,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"create_order_invalid_warehouse returns unified error\", function () {",
+                  "pm.test(\"create_order_missing_stock_record returns unified error\", function () {",
                   "  const body = pm.response.json();",
                   "  pm.expect(body.message.ok).to.eql(false);",
                   "  pm.expect(body.message.status).to.eql(\"error\");",

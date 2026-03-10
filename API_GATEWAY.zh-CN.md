@@ -193,6 +193,11 @@ frappe.call({
 - 在服务层提前校验仓库与公司归属
 - 在即时发货前提前校验库存
 
+测试建议：
+
+- 如果后续要单独调用 `submit_delivery` 和 `create_sales_invoice`，请把 `immediate` 设为 `0`
+- 如果 `immediate=1`，同一个 `Sales Order` 除非仍有剩余可发货或可开票数量，否则不要再次调用这两个接口
+
 示例：
 
 ```python
@@ -264,6 +269,7 @@ frappe.call({
 
 - 基于 `Sales Order` 创建并提交 `Delivery Note`
 - 支持通过 `delivery_items` 做部分发货
+- 当源 `Sales Order` 已无可发货明细时，返回明确的校验错误
 
 ### create_sales_invoice
 
@@ -281,6 +287,7 @@ frappe.call({
 
 - 基于 `Sales Order` 创建并提交 `Sales Invoice`
 - 支持通过 `invoice_items` 做部分开票
+- 当源 `Sales Order` 已无可开票明细时，返回明确的校验错误
 
 ### confirm_pending_document
 
