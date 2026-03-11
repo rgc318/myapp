@@ -86,9 +86,9 @@ class TestSettlementService(TestCase):
 		pe.submit.assert_called_once()
 		self.assertEqual(result["payment_entry"], "ACC-PAY-0001")
 
-	@patch("myapp.services.settlement_service.get_idempotent_result")
-	def test_update_payment_status_returns_cached_result_for_same_request_id(self, mock_get_idempotent_result):
-		mock_get_idempotent_result.return_value = {
+	@patch("myapp.services.settlement_service.run_idempotent")
+	def test_update_payment_status_returns_cached_result_for_same_request_id(self, mock_run_idempotent):
+		mock_run_idempotent.return_value = {
 			"status": "success",
 			"payment_entry": "ACC-PAY-0099",
 			"message": "cached",
@@ -97,4 +97,17 @@ class TestSettlementService(TestCase):
 		result = update_payment_status("Sales Invoice", "SINV-0001", 120, request_id="pay-001")
 
 		self.assertEqual(result["payment_entry"], "ACC-PAY-0099")
-		mock_get_idempotent_result.assert_called_once_with("update_payment_status", "pay-001")
+		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.settlement_service.run_idempotent")
+	def test_process_sales_return_uses_idempotent_runner(self, mock_run_idempotent):
+		mock_run_idempotent.return_value = {
+			"status": "success",
+			"return_document": "SINV-RET-0099",
+			"return_doctype": "Sales Invoice",
+		}
+
+		result = process_sales_return("Sales Invoice", "SINV-0001", request_id="ret-001")
+
+		self.assertEqual(result["return_document"], "SINV-RET-0099")
+		mock_run_idempotent.assert_called_once()

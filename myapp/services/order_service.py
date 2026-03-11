@@ -169,10 +169,7 @@ def create_order(customer: str, items: list[dict], immediate: bool = False, **kw
 
 			return result
 
-		if cint(immediate):
-			return run_idempotent("create_order_immediate", request_id, _create_order)
-
-		return _create_order()
+		return run_idempotent("create_order", request_id, _create_order)
 	except frappe.ValidationError:
 		raise
 	except Exception:
@@ -188,38 +185,42 @@ def submit_delivery(order_name: str, delivery_items: list[dict] | None = None, k
 
 	delivery_items = _coerce_json_value(delivery_items, [])
 	kwargs = _coerce_json_value(kwargs, {}) or {}
+	request_id = kwargs.get("request_id")
 
 	try:
-		dn = make_delivery_note(order_name, kwargs={"skip_item_mapping": 0})
-		_ensure_target_has_items(dn, _("销售订单 {0} 当前没有可发货的商品明细。").format(order_name))
+		def _submit_delivery():
+			dn = make_delivery_note(order_name, kwargs={"skip_item_mapping": 0})
+			_ensure_target_has_items(dn, _("销售订单 {0} 当前没有可发货的商品明细。").format(order_name))
 
-		if delivery_items:
-			delivery_qty_map = {d["item_code"]: flt(d["qty"]) for d in delivery_items if d.get("item_code")}
-			filtered_items = []
-			for item in dn.items:
-				if item.item_code not in delivery_qty_map:
-					continue
-				item.qty = delivery_qty_map[item.item_code]
-				filtered_items.append(item)
-			dn.items = filtered_items
-			_ensure_target_has_items(dn, _("未找到可发货的商品明细。"))
+			if delivery_items:
+				delivery_qty_map = {d["item_code"]: flt(d["qty"]) for d in delivery_items if d.get("item_code")}
+				filtered_items = []
+				for item in dn.items:
+					if item.item_code not in delivery_qty_map:
+						continue
+					item.qty = delivery_qty_map[item.item_code]
+					filtered_items.append(item)
+				dn.items = filtered_items
+				_ensure_target_has_items(dn, _("未找到可发货的商品明细。"))
 
-		if kwargs.get("set_posting_time") is not None:
-			dn.set_posting_time = cint(kwargs["set_posting_time"])
-		if kwargs.get("posting_date"):
-			dn.posting_date = kwargs["posting_date"]
-		if kwargs.get("posting_time"):
-			dn.posting_time = kwargs["posting_time"]
-		if kwargs.get("remarks"):
-			dn.remarks = kwargs["remarks"]
+			if kwargs.get("set_posting_time") is not None:
+				dn.set_posting_time = cint(kwargs["set_posting_time"])
+			if kwargs.get("posting_date"):
+				dn.posting_date = kwargs["posting_date"]
+			if kwargs.get("posting_time"):
+				dn.posting_time = kwargs["posting_time"]
+			if kwargs.get("remarks"):
+				dn.remarks = kwargs["remarks"]
 
-		_insert_and_submit(dn)
+			_insert_and_submit(dn)
 
-		return {
-			"status": "success",
-			"delivery_note": dn.name,
-			"message": _("发货单 {0} 已创建并提交。").format(dn.name),
-		}
+			return {
+				"status": "success",
+				"delivery_note": dn.name,
+				"message": _("发货单 {0} 已创建并提交。").format(dn.name),
+			}
+
+		return run_idempotent("submit_delivery", request_id, _submit_delivery)
 	except frappe.ValidationError:
 		raise
 	except Exception:
@@ -235,36 +236,40 @@ def create_sales_invoice(source_name: str, invoice_items: list[dict] | None = No
 
 	invoice_items = _coerce_json_value(invoice_items, [])
 	kwargs = _coerce_json_value(kwargs, {}) or {}
+	request_id = kwargs.get("request_id")
 
 	try:
-		si = make_sales_invoice(source_name)
-		_ensure_target_has_items(si, _("销售订单 {0} 当前没有可开票的商品明细。").format(source_name))
+		def _create_sales_invoice():
+			si = make_sales_invoice(source_name)
+			_ensure_target_has_items(si, _("销售订单 {0} 当前没有可开票的商品明细。").format(source_name))
 
-		if invoice_items:
-			invoice_qty_map = {d["item_code"]: flt(d["qty"]) for d in invoice_items if d.get("item_code")}
-			filtered_items = []
-			for item in si.items:
-				if item.item_code not in invoice_qty_map:
-					continue
-				item.qty = invoice_qty_map[item.item_code]
-				filtered_items.append(item)
-			si.items = filtered_items
-			_ensure_target_has_items(si, _("未找到可开票的商品明细。"))
+			if invoice_items:
+				invoice_qty_map = {d["item_code"]: flt(d["qty"]) for d in invoice_items if d.get("item_code")}
+				filtered_items = []
+				for item in si.items:
+					if item.item_code not in invoice_qty_map:
+						continue
+					item.qty = invoice_qty_map[item.item_code]
+					filtered_items.append(item)
+				si.items = filtered_items
+				_ensure_target_has_items(si, _("未找到可开票的商品明细。"))
 
-		if kwargs.get("due_date"):
-			si.due_date = kwargs["due_date"]
-		if kwargs.get("remarks"):
-			si.remarks = kwargs["remarks"]
-		if kwargs.get("update_stock") is not None:
-			si.update_stock = cint(kwargs["update_stock"])
+			if kwargs.get("due_date"):
+				si.due_date = kwargs["due_date"]
+			if kwargs.get("remarks"):
+				si.remarks = kwargs["remarks"]
+			if kwargs.get("update_stock") is not None:
+				si.update_stock = cint(kwargs["update_stock"])
 
-		_insert_and_submit(si)
+			_insert_and_submit(si)
 
-		return {
-			"status": "success",
-			"sales_invoice": si.name,
-			"message": _("销售发票 {0} 已创建并提交。").format(si.name),
-		}
+			return {
+				"status": "success",
+				"sales_invoice": si.name,
+				"message": _("销售发票 {0} 已创建并提交。").format(si.name),
+			}
+
+		return run_idempotent("create_sales_invoice", request_id, _create_sales_invoice)
 	except frappe.ValidationError:
 		raise
 	except Exception:

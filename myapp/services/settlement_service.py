@@ -102,6 +102,7 @@ def process_sales_return(source_doctype: str, source_name: str, return_items: li
 		frappe.throw(_("source_doctype 和 source_name 不能为空。"))
 
 	return_items = _coerce_json_value(return_items, [])
+	request_id = kwargs.get("request_id")
 
 	make_return_map = {
 		"Sales Invoice": "erpnext.accounts.doctype.sales_invoice.sales_invoice.make_sales_return",
@@ -112,38 +113,41 @@ def process_sales_return(source_doctype: str, source_name: str, return_items: li
 		frappe.throw(_("暂不支持对 {0} 执行退货。").format(source_doctype))
 
 	try:
-		return_doc = frappe.get_attr(make_return_path)(source_name)
+		def _process_sales_return():
+			return_doc = frappe.get_attr(make_return_path)(source_name)
 
-		if return_items:
-			item_qty_map = {d["item_code"]: flt(d["qty"]) for d in return_items if d.get("item_code")}
-			filtered_items = []
-			for item in return_doc.items:
-				if item.item_code not in item_qty_map:
-					continue
-				item.qty = -abs(item_qty_map[item.item_code])
-				filtered_items.append(item)
-			return_doc.items = filtered_items
-			if not return_doc.items:
-				frappe.throw(_("未找到可退货的商品明细。"))
+			if return_items:
+				item_qty_map = {d["item_code"]: flt(d["qty"]) for d in return_items if d.get("item_code")}
+				filtered_items = []
+				for item in return_doc.items:
+					if item.item_code not in item_qty_map:
+						continue
+					item.qty = -abs(item_qty_map[item.item_code])
+					filtered_items.append(item)
+				return_doc.items = filtered_items
+				if not return_doc.items:
+					frappe.throw(_("未找到可退货的商品明细。"))
 
-		if kwargs.get("posting_date"):
-			return_doc.posting_date = kwargs["posting_date"]
-		if kwargs.get("posting_time"):
-			return_doc.posting_time = kwargs["posting_time"]
-		if kwargs.get("set_posting_time") is not None:
-			return_doc.set_posting_time = kwargs["set_posting_time"]
-		if kwargs.get("remarks"):
-			return_doc.remarks = kwargs["remarks"]
+			if kwargs.get("posting_date"):
+				return_doc.posting_date = kwargs["posting_date"]
+			if kwargs.get("posting_time"):
+				return_doc.posting_time = kwargs["posting_time"]
+			if kwargs.get("set_posting_time") is not None:
+				return_doc.set_posting_time = kwargs["set_posting_time"]
+			if kwargs.get("remarks"):
+				return_doc.remarks = kwargs["remarks"]
 
-		return_doc.insert()
-		return_doc.submit()
+			return_doc.insert()
+			return_doc.submit()
 
-		return {
-			"status": "success",
-			"return_document": return_doc.name,
-			"return_doctype": return_doc.doctype,
-			"message": _("退货单 {0} 已创建并提交。").format(return_doc.name),
-		}
+			return {
+				"status": "success",
+				"return_document": return_doc.name,
+				"return_doctype": return_doc.doctype,
+				"message": _("退货单 {0} 已创建并提交。").format(return_doc.name),
+			}
+
+		return run_idempotent("process_sales_return", request_id, _process_sales_return)
 	except frappe.ValidationError:
 		raise
 	except Exception:
