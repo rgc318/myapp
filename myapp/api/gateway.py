@@ -24,6 +24,12 @@ def _handle_gateway_call(callback, *, success_code: str):
 		return error_response(message=str(exc), code=code)
 
 
+def _merge_kwargs(kwargs, extra_kwargs):
+	merged = dict(kwargs or {})
+	merged.update(extra_kwargs)
+	return merged
+
+
 @frappe.whitelist(allow_guest=True)
 def test_remote_debug():
 	welcome_message = "太棒了！你的 VS Code 原生调试彻底打通了！"
@@ -50,17 +56,25 @@ def create_order(customer: str, items, immediate: bool = False, **kwargs):
 
 
 @frappe.whitelist(allow_guest=True)
-def submit_delivery(order_name: str, delivery_items=None, kwargs=None):
+def submit_delivery(order_name: str, delivery_items=None, kwargs=None, **extra_kwargs):
 	return _handle_gateway_call(
-		lambda: submit_delivery_service(order_name=order_name, delivery_items=delivery_items, kwargs=kwargs),
+		lambda: submit_delivery_service(
+			order_name=order_name,
+			delivery_items=delivery_items,
+			kwargs=_merge_kwargs(kwargs, extra_kwargs),
+		),
 		success_code="DELIVERY_SUBMITTED",
 	)
 
 
 @frappe.whitelist(allow_guest=True)
-def create_sales_invoice(source_name: str, invoice_items=None, kwargs=None):
+def create_sales_invoice(source_name: str, invoice_items=None, kwargs=None, **extra_kwargs):
 	return _handle_gateway_call(
-		lambda: create_sales_invoice_service(source_name=source_name, invoice_items=invoice_items, kwargs=kwargs),
+		lambda: create_sales_invoice_service(
+			source_name=source_name,
+			invoice_items=invoice_items,
+			kwargs=_merge_kwargs(kwargs, extra_kwargs),
+		),
 		success_code="SALES_INVOICE_CREATED",
 	)
 
