@@ -34,3 +34,11 @@ def store_idempotent_result(
 		expires_in_sec=ttl_seconds,
 	)
 	return result
+
+
+def run_idempotent(namespace: str, request_id, callback, ttl_seconds: int = DEFAULT_TTL):
+	if cached_result := get_idempotent_result(namespace, request_id):
+		return cached_result
+
+	result = callback()
+	return store_idempotent_result(namespace, request_id, result, ttl_seconds=ttl_seconds)

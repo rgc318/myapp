@@ -2,7 +2,7 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, nowdate
 
-from myapp.utils.idempotency import get_idempotent_result, store_idempotent_result
+from myapp.utils.idempotency import run_idempotent
 
 
 def _coerce_json_value(value, default):
@@ -123,33 +123,30 @@ def create_order(customer: str, items: list[dict], immediate: bool = False, **kw
 
 	_validate_order_inputs(customer, items, company)
 
-	if cint(immediate):
-		if cached_result := get_idempotent_result("create_order_immediate", request_id):
-			return cached_result
-
 	try:
-		so = frappe.new_doc("Sales Order")
-		so.customer = customer
-		so.transaction_date = kwargs.get("transaction_date") or nowdate()
-		so.delivery_date = delivery_date
-		so.company = company
-		if kwargs.get("currency"):
-			so.currency = kwargs["currency"]
-		if kwargs.get("selling_price_list"):
-			so.selling_price_list = kwargs["selling_price_list"]
-		if kwargs.get("po_no"):
-			so.po_no = kwargs["po_no"]
-		if kwargs.get("remarks"):
-			so.remarks = kwargs["remarks"]
+		def _create_order():
+			so = frappe.new_doc("Sales Order")
+			so.customer = customer
+			so.transaction_date = kwargs.get("transaction_date") or nowdate()
+			so.delivery_date = delivery_date
+			so.company = company
+			if kwargs.get("currency"):
+				so.currency = kwargs["currency"]
+			if kwargs.get("selling_price_list"):
+				so.selling_price_list = kwargs["selling_price_list"]
+			if kwargs.get("po_no"):
+				so.po_no = kwargs["po_no"]
+			if kwargs.get("remarks"):
+				so.remarks = kwargs["remarks"]
 
-		order_items = []
-		for item in items:
-			order_item = _build_sales_order_item(item, delivery_date, default_warehouse, company)
-			order_items.append(order_item)
-			so.append("items", order_item)
+			order_items = []
+			for item in items:
+				order_item = _build_sales_order_item(item, delivery_date, default_warehouse, company)
+				order_items.append(order_item)
+				so.append("items", order_item)
 
-		if cint(immediate):
-			_validate_stock_for_immediate_delivery(order_items)
+			if cint(immediate):
+				_validate_stock_for_immediate_delivery(order_items)
 
 			_insert_and_submit(so)
 
@@ -169,9 +166,13 @@ def create_order(customer: str, items: list[dict], immediate: bool = False, **kw
 						"message": _("订单 {0} 已完成下单、发货和开票。").format(so.name),
 					}
 				)
-				store_idempotent_result("create_order_immediate", request_id, result)
 
 			return result
+
+		if cint(immediate):
+			return run_idempotent("create_order_immediate", request_id, _create_order)
+
+		return _create_order()
 	except frappe.ValidationError:
 		raise
 	except Exception:

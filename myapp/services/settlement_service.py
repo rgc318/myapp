@@ -2,7 +2,7 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, nowdate
 
-from myapp.utils.idempotency import get_idempotent_result, store_idempotent_result
+from myapp.utils.idempotency import run_idempotent
 
 
 def _coerce_json_value(value, default):
@@ -73,23 +73,23 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 		frappe.throw(_("paid_amount 必须大于 0。"))
 
 	request_id = kwargs.get("request_id")
-	if cached_result := get_idempotent_result("update_payment_status", request_id):
-		return cached_result
 
 	try:
-		pe = get_payment_entry(reference_doctype, reference_name, party_amount=paid_amount)
-		pe.mode_of_payment = kwargs.get("mode_of_payment") or pe.mode_of_payment or "Cash"
-		pe.reference_no = kwargs.get("reference_no") or _("移动端收款")
-		pe.reference_date = kwargs.get("reference_date") or nowdate()
-		pe.insert()
-		pe.submit()
+		def _update_payment_status():
+			pe = get_payment_entry(reference_doctype, reference_name, party_amount=paid_amount)
+			pe.mode_of_payment = kwargs.get("mode_of_payment") or pe.mode_of_payment or "Cash"
+			pe.reference_no = kwargs.get("reference_no") or _("移动端收款")
+			pe.reference_date = kwargs.get("reference_date") or nowdate()
+			pe.insert()
+			pe.submit()
 
-		result = {
-			"status": "success",
-			"payment_entry": pe.name,
-			"message": _("成功为单据 {0} 录入收款 {1}。").format(reference_name, paid_amount),
-		}
-		return store_idempotent_result("update_payment_status", request_id, result)
+			return {
+				"status": "success",
+				"payment_entry": pe.name,
+				"message": _("成功为单据 {0} 录入收款 {1}。").format(reference_name, paid_amount),
+			}
+
+		return run_idempotent("update_payment_status", request_id, _update_payment_status)
 	except frappe.ValidationError:
 		raise
 	except Exception:
