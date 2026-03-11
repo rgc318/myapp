@@ -168,6 +168,7 @@ frappe.call({
 - `customer: str`
 - `items: list[dict] | json-string`
 - `immediate: bool = False`
+- `request_id: str | None`
 - `company: str | None`
 - `delivery_date: str | None`
 - `transaction_date: str | None`
@@ -192,11 +193,14 @@ frappe.call({
 - `immediate=True` 时继续创建并提交 `Delivery Note` 和 `Sales Invoice`
 - 在服务层提前校验仓库与公司归属
 - 在即时发货前提前校验库存
+- 当 `immediate=True` 且使用相同 `request_id` 重试时，直接返回第一次成功结果，不重复创建单据
 
 测试建议：
 
 - 如果后续要单独调用 `submit_delivery` 和 `create_sales_invoice`，请把 `immediate` 设为 `0`
 - 如果 `immediate=1`，同一个 `Sales Order` 除非仍有剩余可发货或可开票数量，否则不要再次调用这两个接口
+- `request_id` 是请求幂等键，不是业务单据主键
+- 只有在重试同一笔业务动作时，才应复用同一个 `request_id`
 
 示例：
 
@@ -247,6 +251,7 @@ frappe.call({
     ],
     company: "rgc (Demo)",
     immediate: 1,
+    request_id: "order-idem-001",
   },
 }).then((r) => {
   console.log(r.message.data.order);
@@ -320,6 +325,7 @@ frappe.call({
 - `reference_doctype: str`
 - `reference_name: str`
 - `paid_amount: float`
+- `request_id: str | None`
 - `mode_of_payment: str | None`
 - `reference_no: str | None`
 - `reference_date: str | None`
@@ -327,6 +333,7 @@ frappe.call({
 行为：
 
 - 基于引用单据创建并提交 `Payment Entry`
+- 当使用相同 `request_id` 重试时，直接返回第一次成功的 `payment_entry`
 
 HTTP 调用示例：
 
@@ -337,7 +344,8 @@ curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.update_p
   -d '{
     "reference_doctype": "Sales Invoice",
     "reference_name": "ACC-SINV-2026-00006",
-    "paid_amount": 1
+    "paid_amount": 1,
+    "request_id": "payment-idem-001"
   }'
 ```
 
@@ -350,6 +358,7 @@ frappe.call({
     reference_doctype: "Sales Invoice",
     reference_name: "ACC-SINV-2026-00006",
     paid_amount: 1,
+    request_id: "payment-idem-001",
   },
 }).then((r) => {
   console.log(r.message.data.payment_entry);

@@ -124,7 +124,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"customer\": \"{{customer}}\",\n  \"items\": [\n    {\n      \"item_code\": \"{{item_code}}\",\n      \"qty\": 1,\n      \"warehouse\": \"{{warehouse}}\"\n    }\n  ],\n  \"company\": \"{{company}}\",\n  \"immediate\": 1\n}"
+              "raw": "{\n  \"customer\": \"{{customer}}\",\n  \"items\": [\n    {\n      \"item_code\": \"{{item_code}}\",\n      \"qty\": 1,\n      \"warehouse\": \"{{warehouse}}\"\n    }\n  ],\n  \"company\": \"{{company}}\",\n  \"immediate\": 1,\n  \"request_id\": \"order-idem-001\"\n}"
             },
             "url": {
               "raw": "{{base_url}}/api/method/myapp.api.gateway.create_order",
@@ -306,7 +306,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"reference_doctype\": \"Sales Invoice\",\n  \"reference_name\": \"{{sales_invoice}}\",\n  \"paid_amount\": 1\n}"
+              "raw": "{\n  \"reference_doctype\": \"Sales Invoice\",\n  \"reference_name\": \"{{sales_invoice}}\",\n  \"paid_amount\": 1,\n  \"request_id\": \"payment-idem-001\"\n}"
             },
             "url": {
               "raw": "{{base_url}}/api/method/myapp.api.gateway.update_payment_status",

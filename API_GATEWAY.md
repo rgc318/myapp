@@ -199,6 +199,7 @@ Arguments:
 - `customer: str`
 - `items: list[dict] | json-string`
 - `immediate: bool = False`
+- `request_id: str | None`
 - `company: str | None`
 - `delivery_date: str | None`
 - `transaction_date: str | None`
@@ -223,11 +224,14 @@ Behavior:
 - When `immediate=True`, also creates and submits `Delivery Note` and `Sales Invoice`.
 - Validates warehouse-company consistency before document insert.
 - Validates stock availability before immediate delivery.
+- When `immediate=True` and the same `request_id` is retried, returns the first successful result instead of creating new documents.
 
 Testing note:
 
 - Use `immediate=0` when you plan to call `submit_delivery` and `create_sales_invoice` separately.
 - If `immediate=1`, do not call those two APIs again for the same `Sales Order` unless there are remaining deliverable or billable quantities.
+- `request_id` is an idempotency key for the request, not a document primary key.
+- Reuse the same `request_id` only when retrying the same business action.
 
 Example:
 
@@ -295,6 +299,7 @@ frappe.call({
     ],
     company: "rgc (Demo)",
     immediate: 1,
+    request_id: "order-idem-001",
   },
 }).then((r) => {
   console.log(r.message.data.order);
@@ -368,6 +373,7 @@ Arguments:
 - `reference_doctype: str`
 - `reference_name: str`
 - `paid_amount: float`
+- `request_id: str | None`
 - `mode_of_payment: str | None`
 - `reference_no: str | None`
 - `reference_date: str | None`
@@ -375,6 +381,7 @@ Arguments:
 Behavior:
 
 - Creates and submits `Payment Entry` from the reference document.
+- When the same `request_id` is retried, returns the first successful `payment_entry`.
 
 Example:
 
@@ -385,6 +392,7 @@ update_payment_status(
     reference_doctype="Sales Invoice",
     reference_name="ACC-SINV-2026-00006",
     paid_amount=1,
+    request_id="payment-idem-001",
 )
 ```
 
@@ -397,7 +405,8 @@ curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.update_p
   -d '{
     "reference_doctype": "Sales Invoice",
     "reference_name": "ACC-SINV-2026-00006",
-    "paid_amount": 1
+    "paid_amount": 1,
+    "request_id": "payment-idem-001"
   }'
 ```
 
@@ -410,6 +419,7 @@ frappe.call({
     reference_doctype: "Sales Invoice",
     reference_name: "ACC-SINV-2026-00006",
     paid_amount: 1,
+    request_id: "payment-idem-001",
   },
 }).then((r) => {
   console.log(r.message.data.payment_entry);

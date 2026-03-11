@@ -306,7 +306,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"reference_doctype\": \"Sales Invoice\",\n  \"reference_name\": \"{{sales_invoice}}\",\n  \"paid_amount\": 1\n}"
+              "raw": "{\n  \"reference_doctype\": \"Sales Invoice\",\n  \"reference_name\": \"{{sales_invoice}}\",\n  \"paid_amount\": 1,\n  \"request_id\": \"payment-idem-001\"\n}"
             },
             "url": {
               "raw": "{{base_url}}/api/method/myapp.api.gateway.update_payment_status",
