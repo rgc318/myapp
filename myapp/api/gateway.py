@@ -3,6 +3,11 @@ import frappe
 from .orders_api import create_order as create_order_service
 from .orders_api import create_sales_invoice as create_sales_invoice_service
 from .orders_api import submit_delivery as submit_delivery_service
+from .purchase_api import create_purchase_invoice as create_purchase_invoice_service
+from .purchase_api import create_purchase_order as create_purchase_order_service
+from .purchase_api import process_purchase_return as process_purchase_return_service
+from .purchase_api import receive_purchase_order as receive_purchase_order_service
+from .purchase_api import record_supplier_payment as record_supplier_payment_service
 from .settlement_api import confirm_pending_document as confirm_pending_document_service
 from .settlement_api import process_sales_return as process_sales_return_service
 from .settlement_api import update_payment_status as update_payment_status_service
@@ -56,6 +61,14 @@ def create_order(customer: str, items, immediate: bool = False, **kwargs):
 
 
 @frappe.whitelist(allow_guest=True)
+def create_purchase_order(supplier: str, items, **kwargs):
+	return _handle_gateway_call(
+		lambda: create_purchase_order_service(supplier=supplier, items=items, **kwargs),
+		success_code="PURCHASE_ORDER_CREATED",
+	)
+
+
+@frappe.whitelist(allow_guest=True)
 def submit_delivery(order_name: str, delivery_items=None, kwargs=None, **extra_kwargs):
 	return _handle_gateway_call(
 		lambda: submit_delivery_service(
@@ -76,6 +89,30 @@ def create_sales_invoice(source_name: str, invoice_items=None, kwargs=None, **ex
 			kwargs=_merge_kwargs(kwargs, extra_kwargs),
 		),
 		success_code="SALES_INVOICE_CREATED",
+	)
+
+
+@frappe.whitelist(allow_guest=True)
+def receive_purchase_order(order_name: str, receipt_items=None, kwargs=None, **extra_kwargs):
+	return _handle_gateway_call(
+		lambda: receive_purchase_order_service(
+			order_name=order_name,
+			receipt_items=receipt_items,
+			kwargs=_merge_kwargs(kwargs, extra_kwargs),
+		),
+		success_code="PURCHASE_RECEIPT_CREATED",
+	)
+
+
+@frappe.whitelist(allow_guest=True)
+def create_purchase_invoice(source_name: str, invoice_items=None, kwargs=None, **extra_kwargs):
+	return _handle_gateway_call(
+		lambda: create_purchase_invoice_service(
+			source_name=source_name,
+			invoice_items=invoice_items,
+			kwargs=_merge_kwargs(kwargs, extra_kwargs),
+		),
+		success_code="PURCHASE_INVOICE_CREATED",
 	)
 
 
@@ -123,6 +160,18 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 
 
 @frappe.whitelist(allow_guest=True)
+def record_supplier_payment(reference_name: str, paid_amount: float, **kwargs):
+	return _handle_gateway_call(
+		lambda: record_supplier_payment_service(
+			reference_name=reference_name,
+			paid_amount=paid_amount,
+			**kwargs,
+		),
+		success_code="SUPPLIER_PAYMENT_RECORDED",
+	)
+
+
+@frappe.whitelist(allow_guest=True)
 def process_sales_return(source_doctype: str, source_name: str, return_items=None, **kwargs):
 	return _handle_gateway_call(
 		lambda: process_sales_return_service(
@@ -132,4 +181,17 @@ def process_sales_return(source_doctype: str, source_name: str, return_items=Non
 			**kwargs,
 		),
 		success_code="SALES_RETURN_CREATED",
+	)
+
+
+@frappe.whitelist(allow_guest=True)
+def process_purchase_return(source_doctype: str, source_name: str, return_items=None, **kwargs):
+	return _handle_gateway_call(
+		lambda: process_purchase_return_service(
+			source_doctype=source_doctype,
+			source_name=source_name,
+			return_items=return_items,
+			**kwargs,
+		),
+		success_code="PURCHASE_RETURN_CREATED",
 	)

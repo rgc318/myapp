@@ -4,11 +4,16 @@
 
 - `myapp.api.gateway.search_product`
 - `myapp.api.gateway.create_order`
+- `myapp.api.gateway.create_purchase_order`
 - `myapp.api.gateway.submit_delivery`
+- `myapp.api.gateway.receive_purchase_order`
 - `myapp.api.gateway.create_sales_invoice`
+- `myapp.api.gateway.create_purchase_invoice`
 - `myapp.api.gateway.confirm_pending_document`
 - `myapp.api.gateway.update_payment_status`
+- `myapp.api.gateway.record_supplier_payment`
 - `myapp.api.gateway.process_sales_return`
+- `myapp.api.gateway.process_purchase_return`
 
 本文档只覆盖本应用的自定义接口，不封装 ERPNext / Frappe 原生接口。
 
@@ -258,6 +263,54 @@ frappe.call({
 });
 ```
 
+### create_purchase_order
+
+方法：
+
+- `myapp.api.gateway.create_purchase_order`
+
+参数：
+
+- `supplier: str`
+- `items: list[dict] | json-string`
+- `request_id: str | None`
+- `company: str | None`
+- `schedule_date: str | None`
+- `transaction_date: str | None`
+- `default_warehouse: str | None`
+- `currency: str | None`
+- `buying_price_list: str | None`
+- `supplier_ref: str | None`
+- `remarks: str | None`
+
+明细字段：
+
+- `item_code`
+- `qty`
+- `warehouse`
+- `uom` 可选
+- `price` 可选
+- `schedule_date` 可选
+
+行为：
+
+- 创建并提交 `Purchase Order`
+- 在服务层提前校验仓库与公司归属
+- 当使用相同 `request_id` 重试时，直接返回第一次成功的 `purchase_order`
+
+示例：
+
+```python
+from myapp.api.gateway import create_purchase_order
+
+create_purchase_order(
+    supplier="Test Supplier 1",
+    items=[{"item_code": "SKU010", "qty": 5, "warehouse": "Stores - RD"}],
+    company="rgc (Demo)",
+    request_id="purchase-order-idem-001",
+)
+```
+
 ### submit_delivery
 
 方法：
@@ -302,6 +355,51 @@ frappe.call({
 - 支持通过 `invoice_items` 做部分开票
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的 `sales_invoice`
 - 当源 `Sales Order` 已无可开票明细时，返回明确的校验错误
+
+### receive_purchase_order
+
+方法：
+
+- `myapp.api.gateway.receive_purchase_order`
+
+参数：
+
+- `order_name: str`
+- `receipt_items: list[dict] | json-string | None = None`
+- `request_id: str | None`
+- `posting_date: str | None`
+- `posting_time: str | None`
+- `set_posting_time: int | bool | None`
+- `remarks: str | None`
+
+行为：
+
+- 基于 `Purchase Order` 创建并提交 `Purchase Receipt`
+- 支持通过 `receipt_items` 做部分收货
+- 当使用相同 `request_id` 重试时，直接返回第一次成功的 `purchase_receipt`
+- 当源 `Purchase Order` 已无可收货明细时，返回明确的校验错误
+
+### create_purchase_invoice
+
+方法：
+
+- `myapp.api.gateway.create_purchase_invoice`
+
+参数：
+
+- `source_name: str`
+- `invoice_items: list[dict] | json-string | None = None`
+- `request_id: str | None`
+- `due_date: str | None`
+- `remarks: str | None`
+- `update_stock: int | bool | None`
+
+行为：
+
+- 基于 `Purchase Order` 创建并提交 `Purchase Invoice`
+- 支持通过 `invoice_items` 做部分开票
+- 当使用相同 `request_id` 重试时，直接返回第一次成功的 `purchase_invoice`
+- 当源 `Purchase Order` 已无可开票明细时，返回明确的校验错误
 
 ### confirm_pending_document
 
@@ -395,6 +493,49 @@ frappe.call({
 
 - 支持从 `Sales Invoice` 和 `Delivery Note` 创建退货
 - 创建并提交映射后的退货单据
+- 当使用相同 `request_id` 重试时，直接返回第一次成功的退货结果
+
+### record_supplier_payment
+
+方法：
+
+- `myapp.api.gateway.record_supplier_payment`
+
+参数：
+
+- `reference_name: str`
+- `paid_amount: float`
+- `request_id: str | None`
+- `mode_of_payment: str | None`
+- `reference_no: str | None`
+- `reference_date: str | None`
+
+行为：
+
+- 基于 `Purchase Invoice` 创建并提交 `Payment Entry`
+- 当使用相同 `request_id` 重试时，直接返回第一次成功的 `payment_entry`
+
+### process_purchase_return
+
+方法：
+
+- `myapp.api.gateway.process_purchase_return`
+
+参数：
+
+- `source_doctype: str`
+- `source_name: str`
+- `return_items: list[dict] | json-string | None = None`
+- `request_id: str | None`
+- `posting_date: str | None`
+- `posting_time: str | None`
+- `set_posting_time: int | bool | None`
+- `remarks: str | None`
+
+行为：
+
+- 支持从 `Purchase Receipt` 和 `Purchase Invoice` 创建采购退货
+- 创建并提交映射后的采购退货单据
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的退货结果
 
 ### 已验证样例数据

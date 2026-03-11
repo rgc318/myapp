@@ -1,0 +1,663 @@
+{
+  "info": {
+    "_postman_id": "2fc75374-4de6-4e52-be4d-866e507ef62a",
+    "name": "myapp Gateway API v3",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Postman collection for myapp gateway APIs on Frappe/ERPNext. Version: v3. Includes sales step-by-step flow, idempotency retry examples, and the first purchasing/inbound flow."
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"usr\": \"{{username}}\",\n  \"pwd\": \"{{password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/method/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "login"
+              ]
+            },
+            "description": "Login to Frappe. Postman will keep the session cookie for subsequent requests."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"login succeeded\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Gateway",
+      "item": [
+        {
+          "name": "search_product",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/method/myapp.api.gateway.search_product?search_key={{search_key}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "myapp.api.gateway.search_product"
+              ],
+              "query": [
+                {
+                  "key": "search_key",
+                  "value": "{{search_key}}"
+                },
+                {
+                  "key": "warehouse",
+                  "value": "{{warehouse}}",
+                  "disabled": true
+                },
+                {
+                  "key": "company",
+                  "value": "{{company}}",
+                  "disabled": true
+                },
+                {
+                  "key": "price_list",
+                  "value": "{{price_list}}",
+                  "disabled": true
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"search_product succeeded\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.message.ok).to.eql(true);",
+                  "  pm.expect(body.message.code).to.eql(\"PRODUCTS_FETCHED\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "create_order_step_by_step",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customer\": \"{{customer}}\",\n  \"items\": [\n    {\n      \"item_code\": \"{{item_code}}\",\n      \"qty\": 1,\n      \"warehouse\": \"{{warehouse}}\"\n    }\n  ],\n  \"company\": \"{{company}}\",\n  \"immediate\": 0\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/method/myapp.api.gateway.create_order",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "myapp.api.gateway.create_order"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"create_order_step_by_step succeeded\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.message.ok).to.eql(true);",
+                  "  pm.expect(body.message.code).to.eql(\"ORDER_CREATED\");",
+                  "  pm.environment.set(\"sales_order\", body.message.data.order || \"\");",
+                  "  pm.environment.set(\"delivery_note\", body.message.data.delivery_note || \"\");",
+                  "  pm.environment.set(\"sales_invoice\", body.message.data.sales_invoice || \"\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "create_order_missing_stock_record",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customer\": \"{{customer}}\",\n  \"items\": [\n    {\n      \"item_code\": \"{{item_code}}\",\n      \"qty\": 1,\n      \"warehouse\": \"{{warehouse_without_stock_record}}\"\n    }\n  ],\n  \"company\": \"{{company}}\",\n  \"immediate\": 1\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/method/myapp.api.gateway.create_order",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "myapp.api.gateway.create_order"
+              ]
+            },
+            "description": "Expected to return a unified error envelope."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"create_order_missing_stock_record returns unified error\", function () {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.message.ok).to.eql(false);",
+                  "  pm.expect(body.message.status).to.eql(\"error\");",
+                  "  pm.expect(body.message.code).to.be.oneOf([\"VALIDATION_ERROR\", \"PERMISSION_DENIED\", \"INSUFFICIENT_STOCK\"]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "submit_delivery",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_name\": \"{{sales_order}}\",\n  \"request_id\": \"{{delivery_request_id}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/method/myapp.api.gateway.submit_delivery",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "myapp.api.gateway.submit_delivery"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"submit_delivery succeeded\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.message.ok).to.eql(true);",
+                  "  pm.expect(body.message.code).to.eql(\"DELIVERY_SUBMITTED\");",
+                  "  pm.environment.set(\"delivery_note\", body.message.data.delivery_note || \"\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "create_sales_invoice",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_name\": \"{{sales_order}}\",\n  \"request_id\": \"{{sales_invoice_request_id}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/method/myapp.api.gateway.create_sales_invoice",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "myapp.api.gateway.create_sales_invoice"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"create_sales_invoice succeeded\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.message.ok).to.eql(true);",
+                  "  pm.expect(body.message.code).to.eql(\"SALES_INVOICE_CREATED\");",
+                  "  pm.environment.set(\"sales_invoice\", body.message.data.sales_invoice || \"\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "update_payment_status",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference_doctype\": \"Sales Invoice\",\n  \"reference_name\": \"{{sales_invoice}}\",\n  \"paid_amount\": 1,\n  \"request_id\": \"{{payment_request_id}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/method/myapp.api.gateway.update_payment_status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "myapp.api.gateway.update_payment_status"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"update_payment_status succeeded\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.message.ok).to.eql(true);",
+                  "  pm.expect(body.message.code).to.eql(\"PAYMENT_RECORDED\");",
+                  "  pm.environment.set(\"payment_entry\", body.message.data.payment_entry || \"\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "process_sales_return",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_doctype\": \"Sales Invoice\",\n  \"source_name\": \"{{sales_invoice}}\",\n  \"request_id\": \"{{sales_return_request_id}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/method/myapp.api.gateway.process_sales_return",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "myapp.api.gateway.process_sales_return"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"process_sales_return succeeded\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.message.ok).to.eql(true);",
+                  "  pm.expect(body.message.code).to.eql(\"SALES_RETURN_CREATED\");",
+                  "  pm.environment.set(\"return_document\", body.message.data.return_document || \"\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "confirm_pending_document",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"doctype\": \"Sales Order\",\n  \"docname\": \"{{sales_order}}\",\n  \"submit_on_confirm\": 1\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/method/myapp.api.gateway.confirm_pending_document",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "myapp.api.gateway.confirm_pending_document"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"confirm_pending_document response received\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.message.ok).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Purchase Gateway",
+          "item": [
+            {
+              "name": "create_purchase_order",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"supplier\": \"{{supplier}}\",\n  \"items\": [\n    {\n      \"item_code\": \"{{item_code}}\",\n      \"qty\": 5,\n      \"warehouse\": \"{{warehouse}}\"\n    }\n  ],\n  \"company\": \"{{company}}\",\n  \"request_id\": \"{{purchase_order_request_id}}\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/method/myapp.api.gateway.create_purchase_order",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "method",
+                    "myapp.api.gateway.create_purchase_order"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"create_purchase_order succeeded\", function () {",
+                      "  pm.response.to.have.status(200);",
+                      "  const body = pm.response.json();",
+                      "  pm.expect(body.message.ok).to.eql(true);",
+                      "  pm.expect(body.message.code).to.eql(\"PURCHASE_ORDER_CREATED\");",
+                      "  pm.environment.set(\"purchase_order\", body.message.data.purchase_order || \"\");",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "receive_purchase_order",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"order_name\": \"{{purchase_order}}\",\n  \"request_id\": \"{{purchase_receipt_request_id}}\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/method/myapp.api.gateway.receive_purchase_order",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "method",
+                    "myapp.api.gateway.receive_purchase_order"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"receive_purchase_order succeeded\", function () {",
+                      "  pm.response.to.have.status(200);",
+                      "  const body = pm.response.json();",
+                      "  pm.expect(body.message.ok).to.eql(true);",
+                      "  pm.expect(body.message.code).to.eql(\"PURCHASE_RECEIPT_CREATED\");",
+                      "  pm.environment.set(\"purchase_receipt\", body.message.data.purchase_receipt || \"\");",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "create_purchase_invoice",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"source_name\": \"{{purchase_order}}\",\n  \"request_id\": \"{{purchase_invoice_request_id}}\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/method/myapp.api.gateway.create_purchase_invoice",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "method",
+                    "myapp.api.gateway.create_purchase_invoice"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"create_purchase_invoice succeeded\", function () {",
+                      "  pm.response.to.have.status(200);",
+                      "  const body = pm.response.json();",
+                      "  pm.expect(body.message.ok).to.eql(true);",
+                      "  pm.expect(body.message.code).to.eql(\"PURCHASE_INVOICE_CREATED\");",
+                      "  pm.environment.set(\"purchase_invoice\", body.message.data.purchase_invoice || \"\");",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "record_supplier_payment",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"reference_name\": \"{{purchase_invoice}}\",\n  \"paid_amount\": 10,\n  \"request_id\": \"{{supplier_payment_request_id}}\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/method/myapp.api.gateway.record_supplier_payment",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "method",
+                    "myapp.api.gateway.record_supplier_payment"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"record_supplier_payment succeeded\", function () {",
+                      "  pm.response.to.have.status(200);",
+                      "  const body = pm.response.json();",
+                      "  pm.expect(body.message.ok).to.eql(true);",
+                      "  pm.expect(body.message.code).to.eql(\"SUPPLIER_PAYMENT_RECORDED\");",
+                      "  pm.environment.set(\"supplier_payment_entry\", body.message.data.payment_entry || \"\");",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "process_purchase_return",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"source_doctype\": \"Purchase Invoice\",\n  \"source_name\": \"{{purchase_invoice}}\",\n  \"request_id\": \"{{purchase_return_request_id}}\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/method/myapp.api.gateway.process_purchase_return",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "method",
+                    "myapp.api.gateway.process_purchase_return"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"process_purchase_return succeeded\", function () {",
+                      "  pm.response.to.have.status(200);",
+                      "  const body = pm.response.json();",
+                      "  pm.expect(body.message.ok).to.eql(true);",
+                      "  pm.expect(body.message.code).to.eql(\"PURCHASE_RETURN_CREATED\");",
+                      "  pm.environment.set(\"purchase_return_document\", body.message.data.return_document || \"\");",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

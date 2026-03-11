@@ -12,6 +12,7 @@
 - API 说明：`API_GATEWAY.md`
 - 中文 API 说明：`API_GATEWAY.zh-CN.md`
 - 开发设计基准文档：`WHOLESALE_TECH_DESIGN.zh-CN.md`
+- 采购与进货流程设计文档：`PURCHASE_TECH_DESIGN.zh-CN.md`
 
 ### 安装
 

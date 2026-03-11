@@ -12,6 +12,7 @@ Documentation:
 - API reference: `API_GATEWAY.md`
 - Chinese API reference: `API_GATEWAY.zh-CN.md`
 - Technical design baseline: `WHOLESALE_TECH_DESIGN.zh-CN.md`
+- Purchasing and inbound flow design: `PURCHASE_TECH_DESIGN.zh-CN.md`
 
 ### Installation
 

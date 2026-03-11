@@ -4,11 +4,16 @@ Recommended custom API entry points:
 
 - `myapp.api.gateway.search_product`
 - `myapp.api.gateway.create_order`
+- `myapp.api.gateway.create_purchase_order`
 - `myapp.api.gateway.submit_delivery`
+- `myapp.api.gateway.receive_purchase_order`
 - `myapp.api.gateway.create_sales_invoice`
+- `myapp.api.gateway.create_purchase_invoice`
 - `myapp.api.gateway.confirm_pending_document`
 - `myapp.api.gateway.update_payment_status`
+- `myapp.api.gateway.record_supplier_payment`
 - `myapp.api.gateway.process_sales_return`
+- `myapp.api.gateway.process_purchase_return`
 
 These methods are custom APIs for this app. ERPNext / Frappe native APIs are not wrapped by this document.
 
@@ -306,6 +311,54 @@ frappe.call({
 });
 ```
 
+### create_purchase_order
+
+Method:
+
+- `myapp.api.gateway.create_purchase_order`
+
+Arguments:
+
+- `supplier: str`
+- `items: list[dict] | json-string`
+- `request_id: str | None`
+- `company: str | None`
+- `schedule_date: str | None`
+- `transaction_date: str | None`
+- `default_warehouse: str | None`
+- `currency: str | None`
+- `buying_price_list: str | None`
+- `supplier_ref: str | None`
+- `remarks: str | None`
+
+Item fields:
+
+- `item_code`
+- `qty`
+- `warehouse`
+- `uom` optional
+- `price` optional
+- `schedule_date` optional
+
+Behavior:
+
+- Creates and submits `Purchase Order`.
+- Validates warehouse-company consistency before document insert.
+- When the same `request_id` is retried, returns the first successful `purchase_order`.
+
+Example:
+
+```python
+from myapp.api.gateway import create_purchase_order
+
+create_purchase_order(
+    supplier="Test Supplier 1",
+    items=[{"item_code": "SKU010", "qty": 5, "warehouse": "Stores - RD"}],
+    company="rgc (Demo)",
+    request_id="purchase-order-idem-001",
+)
+```
+
 ### submit_delivery
 
 Method:
@@ -350,6 +403,51 @@ Behavior:
 - Supports partial invoicing through `invoice_items`.
 - When the same `request_id` is retried, returns the first successful `sales_invoice`.
 - Returns a clear validation error when the source `Sales Order` has no billable items left.
+
+### receive_purchase_order
+
+Method:
+
+- `myapp.api.gateway.receive_purchase_order`
+
+Arguments:
+
+- `order_name: str`
+- `receipt_items: list[dict] | json-string | None = None`
+- `request_id: str | None`
+- `posting_date: str | None`
+- `posting_time: str | None`
+- `set_posting_time: int | bool | None`
+- `remarks: str | None`
+
+Behavior:
+
+- Creates and submits `Purchase Receipt` from a `Purchase Order`.
+- Supports partial receipt through `receipt_items`.
+- When the same `request_id` is retried, returns the first successful `purchase_receipt`.
+- Returns a clear validation error when the source `Purchase Order` has no receivable items left.
+
+### create_purchase_invoice
+
+Method:
+
+- `myapp.api.gateway.create_purchase_invoice`
+
+Arguments:
+
+- `source_name: str`
+- `invoice_items: list[dict] | json-string | None = None`
+- `request_id: str | None`
+- `due_date: str | None`
+- `remarks: str | None`
+- `update_stock: int | bool | None`
+
+Behavior:
+
+- Creates and submits a `Purchase Invoice` from a `Purchase Order`.
+- Supports partial invoicing through `invoice_items`.
+- When the same `request_id` is retried, returns the first successful `purchase_invoice`.
+- Returns a clear validation error when the source `Purchase Order` has no billable items left.
 
 ### confirm_pending_document
 
@@ -456,6 +554,49 @@ Behavior:
 
 - Supports return creation from `Sales Invoice` and `Delivery Note`.
 - Creates and submits the mapped return document.
+- When the same `request_id` is retried, returns the first successful return result.
+
+### record_supplier_payment
+
+Method:
+
+- `myapp.api.gateway.record_supplier_payment`
+
+Arguments:
+
+- `reference_name: str`
+- `paid_amount: float`
+- `request_id: str | None`
+- `mode_of_payment: str | None`
+- `reference_no: str | None`
+- `reference_date: str | None`
+
+Behavior:
+
+- Creates and submits `Payment Entry` from `Purchase Invoice`.
+- When the same `request_id` is retried, returns the first successful `payment_entry`.
+
+### process_purchase_return
+
+Method:
+
+- `myapp.api.gateway.process_purchase_return`
+
+Arguments:
+
+- `source_doctype: str`
+- `source_name: str`
+- `return_items: list[dict] | json-string | None = None`
+- `request_id: str | None`
+- `posting_date: str | None`
+- `posting_time: str | None`
+- `set_posting_time: int | bool | None`
+- `remarks: str | None`
+
+Behavior:
+
+- Supports return creation from `Purchase Receipt` and `Purchase Invoice`.
+- Creates and submits the mapped purchase return document.
 - When the same `request_id` is retried, returns the first successful return result.
 
 Example:
