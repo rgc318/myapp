@@ -268,12 +268,17 @@ frappe.call({
 
 - `order_name: str`
 - `delivery_items: list[dict] | json-string | None = None`
-- `kwargs: dict | json-string | None = None`
+- `request_id: str | None`
+- `posting_date: str | None`
+- `posting_time: str | None`
+- `set_posting_time: int | bool | None`
+- `remarks: str | None`
 
 行为：
 
 - 基于 `Sales Order` 创建并提交 `Delivery Note`
 - 支持通过 `delivery_items` 做部分发货
+- 当使用相同 `request_id` 重试时，直接返回第一次成功的 `delivery_note`
 - 当源 `Sales Order` 已无可发货明细时，返回明确的校验错误
 
 ### create_sales_invoice
@@ -286,12 +291,16 @@ frappe.call({
 
 - `source_name: str`
 - `invoice_items: list[dict] | json-string | None = None`
-- `kwargs: dict | json-string | None = None`
+- `request_id: str | None`
+- `due_date: str | None`
+- `remarks: str | None`
+- `update_stock: int | bool | None`
 
 行为：
 
 - 基于 `Sales Order` 创建并提交 `Sales Invoice`
 - 支持通过 `invoice_items` 做部分开票
+- 当使用相同 `request_id` 重试时，直接返回第一次成功的 `sales_invoice`
 - 当源 `Sales Order` 已无可开票明细时，返回明确的校验错误
 
 ### confirm_pending_document
@@ -376,6 +385,7 @@ frappe.call({
 - `source_doctype: str`
 - `source_name: str`
 - `return_items: list[dict] | json-string | None = None`
+- `request_id: str | None`
 - `posting_date: str | None`
 - `posting_time: str | None`
 - `set_posting_time: int | bool | None`
@@ -385,6 +395,7 @@ frappe.call({
 
 - 支持从 `Sales Invoice` 和 `Delivery Note` 创建退货
 - 创建并提交映射后的退货单据
+- 当使用相同 `request_id` 重试时，直接返回第一次成功的退货结果
 
 ### 已验证样例数据
 

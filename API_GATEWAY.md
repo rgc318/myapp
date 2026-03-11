@@ -316,12 +316,17 @@ Arguments:
 
 - `order_name: str`
 - `delivery_items: list[dict] | json-string | None = None`
-- `kwargs: dict | json-string | None = None`
+- `request_id: str | None`
+- `posting_date: str | None`
+- `posting_time: str | None`
+- `set_posting_time: int | bool | None`
+- `remarks: str | None`
 
 Behavior:
 
 - Creates and submits a `Delivery Note` from a `Sales Order`.
 - Supports partial delivery through `delivery_items`.
+- When the same `request_id` is retried, returns the first successful `delivery_note`.
 - Returns a clear validation error when the source `Sales Order` has no deliverable items left.
 
 ### create_sales_invoice
@@ -334,12 +339,16 @@ Arguments:
 
 - `source_name: str`
 - `invoice_items: list[dict] | json-string | None = None`
-- `kwargs: dict | json-string | None = None`
+- `request_id: str | None`
+- `due_date: str | None`
+- `remarks: str | None`
+- `update_stock: int | bool | None`
 
 Behavior:
 
 - Creates and submits a `Sales Invoice` from a `Sales Order`.
 - Supports partial invoicing through `invoice_items`.
+- When the same `request_id` is retried, returns the first successful `sales_invoice`.
 - Returns a clear validation error when the source `Sales Order` has no billable items left.
 
 ### confirm_pending_document
@@ -437,6 +446,7 @@ Arguments:
 - `source_doctype: str`
 - `source_name: str`
 - `return_items: list[dict] | json-string | None = None`
+- `request_id: str | None`
 - `posting_date: str | None`
 - `posting_time: str | None`
 - `set_posting_time: int | bool | None`
@@ -446,6 +456,7 @@ Behavior:
 
 - Supports return creation from `Sales Invoice` and `Delivery Note`.
 - Creates and submits the mapped return document.
+- When the same `request_id` is retried, returns the first successful return result.
 
 Example:
 

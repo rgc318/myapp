@@ -340,7 +340,7 @@
 - 所有对外接口返回统一 JSON 包
 - 业务错误优先在服务层显式抛出，避免落成底层通用报错
 - 优先通过配置与参数扩展，而不是复制接口
-- 保持接口幂等性意识，但当前尚未实现 request id 幂等控制
+- 对交易型接口提供基于 `request_id` 的幂等重试能力
 
 ## 8. 关键业务边界
 
@@ -466,8 +466,8 @@ Frappe Web Request 默认运行在单次请求事务中。
 
 当前状态：
 
-- 代码对重复提交保持风险意识
-- 但尚未实现正式的请求幂等控制
+- 交易型接口已支持基于 `request_id` 的幂等控制
+- 相同业务动作重试时会直接返回第一次成功结果
 
 风险场景：
 
@@ -484,13 +484,16 @@ Frappe Web Request 默认运行在单次请求事务中。
 
 - 所有交易型接口支持 `request_id`
 - 在网关层或独立幂等表中记录 `request_id -> result_docname`
-- 对 `create_order(immediate=1)`、`update_payment_status` 优先实现
+- 对高频交易动作优先实现
 - 对重复请求直接返回已有结果而不是再次创建单据
 
 当前已实现：
 
-- `create_order(immediate=1)`
+- `create_order`
+- `submit_delivery`
+- `create_sales_invoice`
 - `update_payment_status`
+- `process_sales_return`
 
 说明：
 
@@ -681,7 +684,7 @@ Client
 | 客户默认仓库 | 部分实现 | 当前支持传 `default_warehouse`，未自动从客户档案取值 |
 | 单位换算交易规则 | 部分实现 | 当前可返回 `all_uoms` 且允许传 `uom`，但计价与换算口径仍需补强 |
 | 客户信用控制 | 未实现 | 后续增强项 |
-| 幂等控制 | 未实现 | 建议提升优先级 |
+| 幂等控制 | 已实现 | `create_order`、`submit_delivery`、`create_sales_invoice`、`update_payment_status`、`process_sales_return` 已支持 `request_id` |
 | 批次与保质期 | 未实现 | 后续增强项 |
 | 自动打印 | 未实现 | 后续增强项 |
 
