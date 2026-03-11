@@ -7,6 +7,12 @@ Language:
 - English: `README.md`
 - 简体中文: `README.zh-CN.md`
 
+Documentation:
+
+- API reference: `API_GATEWAY.md`
+- Chinese API reference: `API_GATEWAY.zh-CN.md`
+- Technical design baseline: `WHOLESALE_TECH_DESIGN.zh-CN.md`
+
 ### Installation
 
 You can install this app using the [bench](https://github.com/frappe/bench) CLI:

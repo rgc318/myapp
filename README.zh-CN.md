@@ -7,6 +7,12 @@
 - English: `README.md`
 - 简体中文: `README.zh-CN.md`
 
+文档导航：
+
+- API 说明：`API_GATEWAY.md`
+- 中文 API 说明：`API_GATEWAY.zh-CN.md`
+- 开发设计基准文档：`WHOLESALE_TECH_DESIGN.zh-CN.md`
+
 ### 安装
 
 可以使用 [bench](https://github.com/frappe/bench) CLI 安装此应用：
