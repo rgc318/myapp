@@ -2,6 +2,8 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, nowdate
 
+from myapp.utils.idempotency import get_idempotent_result, store_idempotent_result
+
 
 def _coerce_json_value(value, default):
 	if value in (None, ""):
@@ -70,6 +72,10 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 	if paid_amount <= 0:
 		frappe.throw(_("paid_amount 必须大于 0。"))
 
+	request_id = kwargs.get("request_id")
+	if cached_result := get_idempotent_result("update_payment_status", request_id):
+		return cached_result
+
 	try:
 		pe = get_payment_entry(reference_doctype, reference_name, party_amount=paid_amount)
 		pe.mode_of_payment = kwargs.get("mode_of_payment") or pe.mode_of_payment or "Cash"
@@ -78,11 +84,12 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 		pe.insert()
 		pe.submit()
 
-		return {
+		result = {
 			"status": "success",
 			"payment_entry": pe.name,
 			"message": _("成功为单据 {0} 录入收款 {1}。").format(reference_name, paid_amount),
 		}
+		return store_idempotent_result("update_payment_status", request_id, result)
 	except frappe.ValidationError:
 		raise
 	except Exception:

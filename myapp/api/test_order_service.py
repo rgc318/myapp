@@ -87,3 +87,29 @@ class TestOrderService(TestCase):
 
 		with self.assertRaisesRegex(frappe.ValidationError, "没有可开票的商品明细"):
 			create_sales_invoice("SO-0001")
+
+	@patch("myapp.services.order_service.get_idempotent_result")
+	@patch("myapp.services.order_service.frappe.db.get_value")
+	@patch("myapp.services.order_service.frappe.defaults.get_user_default")
+	def test_create_order_immediate_returns_cached_result_for_same_request_id(
+		self, mock_get_user_default, mock_get_value, mock_get_idempotent_result
+	):
+		mock_get_user_default.return_value = "Test Company"
+		mock_get_value.return_value = "Test Company"
+		mock_get_idempotent_result.return_value = {
+			"status": "success",
+			"order": "SO-0009",
+			"delivery_note": "DN-0009",
+			"sales_invoice": "SINV-0009",
+		}
+
+		result = create_order(
+			customer="Test Customer",
+			items=[{"item_code": "ITEM-001", "qty": 2, "warehouse": "Stores - TC"}],
+			immediate=1,
+			request_id="req-001",
+		)
+
+		self.assertEqual(result["order"], "SO-0009")
+		self.assertEqual(result["delivery_note"], "DN-0009")
+		mock_get_idempotent_result.assert_called_once_with("create_order_immediate", "req-001")

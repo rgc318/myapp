@@ -85,3 +85,16 @@ class TestSettlementService(TestCase):
 		pe.insert.assert_called_once()
 		pe.submit.assert_called_once()
 		self.assertEqual(result["payment_entry"], "ACC-PAY-0001")
+
+	@patch("myapp.services.settlement_service.get_idempotent_result")
+	def test_update_payment_status_returns_cached_result_for_same_request_id(self, mock_get_idempotent_result):
+		mock_get_idempotent_result.return_value = {
+			"status": "success",
+			"payment_entry": "ACC-PAY-0099",
+			"message": "cached",
+		}
+
+		result = update_payment_status("Sales Invoice", "SINV-0001", 120, request_id="pay-001")
+
+		self.assertEqual(result["payment_entry"], "ACC-PAY-0099")
+		mock_get_idempotent_result.assert_called_once_with("update_payment_status", "pay-001")

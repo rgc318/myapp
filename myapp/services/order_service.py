@@ -2,6 +2,8 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, nowdate
 
+from myapp.utils.idempotency import get_idempotent_result, store_idempotent_result
+
 
 def _coerce_json_value(value, default):
 	if value in (None, ""):
@@ -117,8 +119,13 @@ def create_order(customer: str, items: list[dict], immediate: bool = False, **kw
 	company = kwargs.get("company") or frappe.defaults.get_user_default("company")
 	delivery_date = kwargs.get("delivery_date") or nowdate()
 	default_warehouse = kwargs.get("default_warehouse")
+	request_id = kwargs.get("request_id")
 
 	_validate_order_inputs(customer, items, company)
+
+	if cint(immediate):
+		if cached_result := get_idempotent_result("create_order_immediate", request_id):
+			return cached_result
 
 	try:
 		so = frappe.new_doc("Sales Order")
@@ -144,26 +151,27 @@ def create_order(customer: str, items: list[dict], immediate: bool = False, **kw
 		if cint(immediate):
 			_validate_stock_for_immediate_delivery(order_items)
 
-		_insert_and_submit(so)
+			_insert_and_submit(so)
 
-		result = {
-			"status": "success",
-			"order": so.name,
-			"message": _("销售订单 {0} 已创建并提交。").format(so.name),
-		}
+			result = {
+				"status": "success",
+				"order": so.name,
+				"message": _("销售订单 {0} 已创建并提交。").format(so.name),
+			}
 
-		if cint(immediate):
-			dn = submit_delivery(so.name, kwargs=kwargs)
-			si = create_sales_invoice(so.name, kwargs=kwargs)
-			result.update(
-				{
-					"delivery_note": dn["delivery_note"],
-					"sales_invoice": si["sales_invoice"],
-					"message": _("订单 {0} 已完成下单、发货和开票。").format(so.name),
-				}
-			)
+			if cint(immediate):
+				dn = submit_delivery(so.name, kwargs=kwargs)
+				si = create_sales_invoice(so.name, kwargs=kwargs)
+				result.update(
+					{
+						"delivery_note": dn["delivery_note"],
+						"sales_invoice": si["sales_invoice"],
+						"message": _("订单 {0} 已完成下单、发货和开票。").format(so.name),
+					}
+				)
+				store_idempotent_result("create_order_immediate", request_id, result)
 
-		return result
+			return result
 	except frappe.ValidationError:
 		raise
 	except Exception:
