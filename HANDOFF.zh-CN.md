@@ -68,8 +68,9 @@
 
 ### 3.2 测试
 
-- `myapp/api/test_purchase_service.py`
-- `myapp/api/test_gateway_wrappers.py`
+- `myapp/tests/unit/test_purchase_service.py`
+- `myapp/tests/unit/test_gateway_wrappers.py`
+- `myapp/tests/http/test_gateway_http.py`
 
 ### 3.3 文档
 
@@ -79,6 +80,7 @@
 - `PURCHASE_TECH_DESIGN.zh-CN.md`
 - `README.zh-CN.md`
 - `README.md`
+- `.env.http-test.example`
 
 ### 3.4 Postman
 
@@ -144,3 +146,31 @@
 1. 先确定移动端技术路线
 2. 列出第一版页面清单
 3. 明确打印机设备范围后再做打印能力接入
+
+## 8. 开发与测试环境提示
+
+当前项目以 VS Code devcontainer / Docker 中的 ERPNext 环境作为开发基准，不以宿主机 WSL 直接导入 Frappe 应用运行结果作为唯一依据。
+
+当前建议的接口测试方式：
+
+- 宿主机使用 `python3`
+- 通过 HTTP 访问 `http://localhost:8080`
+- 优先测试 `myapp.api.gateway.*` 对外入口
+
+已补充：
+
+- HTTP 冒烟测试文件：`myapp/tests/http/test_gateway_http.py`
+- 环境变量示例文件：`.env.http-test.example`
+
+推荐使用方式：
+
+1. 复制 `.env.http-test.example` 为 `.env.http-test`
+2. 配置测试账号密码或 API Token
+3. 在仓库根目录执行 `python3 apps/myapp/myapp/tests/http/test_gateway_http.py`
+
+补充说明：
+
+- 当前 HTTP 测试文件已经覆盖全部 `myapp.api.gateway.*` 接口的基础测试入口
+- 可按单个测试方法执行，不必一次跑完整个文件
+- 测试默认会打印并保存接口响应，便于多接口链路联调时复用返回值
+- 已支持从结果文件中读取上一步接口返回值，供链路测试复用

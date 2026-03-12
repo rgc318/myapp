@@ -1,0 +1,19 @@
+{
+  "test_test_remote_debug_returns_success": {
+    "method": "myapp.api.gateway.test_remote_debug",
+    "request": {},
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "REMOTE_DEBUG_OK",
+        "message": "太棒了！你的 VS Code 原生调试彻底打通了！",
+        "data": {
+          "magic_number": 34
+        },
+        "meta": {}
+      }
+    }
+  }
+}

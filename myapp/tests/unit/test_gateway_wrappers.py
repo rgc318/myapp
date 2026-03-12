@@ -1,17 +1,44 @@
 from unittest import TestCase
 from unittest.mock import patch
 
+import frappe
+
 from myapp.api.gateway import (
 	create_purchase_invoice,
 	create_sales_invoice,
+	create_order,
+	create_purchase_order,
 	process_purchase_return,
+	process_sales_return,
 	receive_purchase_order,
+	search_product,
+	test_remote_debug,
+	update_payment_status,
 	record_supplier_payment,
 	submit_delivery,
+	confirm_pending_document,
 )
 
 
 class TestGatewayWrappers(TestCase):
+	def test_gateway_methods_are_not_exposed_to_guest(self):
+		for method in (
+			test_remote_debug,
+			create_order,
+			create_purchase_order,
+			submit_delivery,
+			create_sales_invoice,
+			receive_purchase_order,
+			create_purchase_invoice,
+			search_product,
+			confirm_pending_document,
+			update_payment_status,
+			record_supplier_payment,
+			process_sales_return,
+			process_purchase_return,
+		):
+			self.assertNotIn(method, frappe.guest_methods)
+
 	@patch("myapp.api.gateway.submit_delivery_service")
 	def test_submit_delivery_passes_top_level_request_id_to_service(self, mock_submit_delivery_service):
 		mock_submit_delivery_service.return_value = {

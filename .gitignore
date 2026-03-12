@@ -25,6 +25,7 @@ MANIFEST
 
 # Environments
 .env
+.env.http-test
 .venv
 env/
 venv/

@@ -35,7 +35,7 @@ def _merge_kwargs(kwargs, extra_kwargs):
 	return merged
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist()
 def test_remote_debug():
 	welcome_message = "太棒了！你的 VS Code 原生调试彻底打通了！"
 
@@ -52,7 +52,7 @@ def test_remote_debug():
 	)
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist()
 def create_order(customer: str, items, immediate: bool = False, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_order_service(customer=customer, items=items, immediate=immediate, **kwargs),
@@ -60,7 +60,7 @@ def create_order(customer: str, items, immediate: bool = False, **kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist()
 def create_purchase_order(supplier: str, items, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_purchase_order_service(supplier=supplier, items=items, **kwargs),
@@ -68,7 +68,7 @@ def create_purchase_order(supplier: str, items, **kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist()
 def submit_delivery(order_name: str, delivery_items=None, kwargs=None, **extra_kwargs):
 	return _handle_gateway_call(
 		lambda: submit_delivery_service(
@@ -80,7 +80,7 @@ def submit_delivery(order_name: str, delivery_items=None, kwargs=None, **extra_k
 	)
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist()
 def create_sales_invoice(source_name: str, invoice_items=None, kwargs=None, **extra_kwargs):
 	return _handle_gateway_call(
 		lambda: create_sales_invoice_service(
@@ -92,7 +92,7 @@ def create_sales_invoice(source_name: str, invoice_items=None, kwargs=None, **ex
 	)
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist()
 def receive_purchase_order(order_name: str, receipt_items=None, kwargs=None, **extra_kwargs):
 	return _handle_gateway_call(
 		lambda: receive_purchase_order_service(
@@ -104,7 +104,7 @@ def receive_purchase_order(order_name: str, receipt_items=None, kwargs=None, **e
 	)
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist()
 def create_purchase_invoice(source_name: str, invoice_items=None, kwargs=None, **extra_kwargs):
 	return _handle_gateway_call(
 		lambda: create_purchase_invoice_service(
@@ -116,7 +116,7 @@ def create_purchase_invoice(source_name: str, invoice_items=None, kwargs=None, *
 	)
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist()
 def search_product(
 	search_key: str,
 	price_list: str = "Standard Selling",
@@ -138,7 +138,7 @@ def search_product(
 	)
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist()
 def confirm_pending_document(doctype: str, docname: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: confirm_pending_document_service(doctype=doctype, docname=docname, **kwargs),
@@ -146,7 +146,7 @@ def confirm_pending_document(doctype: str, docname: str, **kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist()
 def update_payment_status(reference_doctype: str, reference_name: str, paid_amount: float, **kwargs):
 	return _handle_gateway_call(
 		lambda: update_payment_status_service(
@@ -159,7 +159,7 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 	)
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist()
 def record_supplier_payment(reference_name: str, paid_amount: float, **kwargs):
 	return _handle_gateway_call(
 		lambda: record_supplier_payment_service(
@@ -171,7 +171,7 @@ def record_supplier_payment(reference_name: str, paid_amount: float, **kwargs):
 	)
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist()
 def process_sales_return(source_doctype: str, source_name: str, return_items=None, **kwargs):
 	return _handle_gateway_call(
 		lambda: process_sales_return_service(
@@ -184,7 +184,7 @@ def process_sales_return(source_doctype: str, source_name: str, return_items=Non
 	)
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist()
 def process_purchase_return(source_doctype: str, source_name: str, return_items=None, **kwargs):
 	return _handle_gateway_call(
 		lambda: process_purchase_return_service(

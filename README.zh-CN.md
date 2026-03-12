@@ -40,6 +40,55 @@ pre-commit install
 - prettier
 - pyupgrade
 
+当前开发环境约定：
+
+- 项目以 VS Code devcontainer / Docker 中的 ERPNext 运行环境为主，不以宿主机 WSL 直接运行 Frappe 代码为准
+- 若需要做接口联调或冒烟测试，优先通过 HTTP 访问 `http://localhost:8080`
+- 宿主机侧脚本请使用 `python3`，不要默认使用 `python`
+
+### HTTP 测试
+
+对于 `myapp.api.gateway.*` 这类接口，建议优先使用 HTTP 方式测试，而不是在 WSL 宿主机里直接导入项目服务层执行。
+
+已提供测试文件：
+
+- `myapp/tests/http/test_gateway_http.py`
+
+已提供环境变量示例文件：
+
+- `.env.http-test.example`
+
+推荐步骤：
+
+1. 复制示例文件为 `.env.http-test`
+2. 填入 `http://localhost:8080` 以及测试账号密码或 API Token
+3. 在仓库根目录执行 `python3 apps/myapp/myapp/tests/http/test_gateway_http.py`
+
+说明：
+
+- 测试文件会优先读取环境变量；如果未显式传入，也会自动尝试读取 `apps/myapp/.env.http-test`
+- 默认地址是 `http://localhost:8080`
+- 不要改成 `127.0.0.1`，保持与当前 devcontainer 约定一致
+- 建议优先使用 API Token，而不是长期使用管理员密码
+- 当前 HTTP 测试已覆盖所有 `myapp.api.gateway.*` 接口的基础可达性 / 鉴权后响应结构
+- 大多数用例只验证成功结构或校验错误结构，不依赖固定业务单据，适合日常冒烟检查
+- 测试会默认打印接口返回值，并把结果保存到 `apps/myapp/http-test-results.json`
+- 可通过 `MYAPP_HTTP_PRINT_RESPONSES` 和 `MYAPP_HTTP_SAVE_RESPONSES` 控制是否打印或保存
+- 若多接口联调需要串联参数，可直接从结果文件中读取上一个接口返回值
+- 若要启用依赖上一步返回值的链路测试，可设置 `MYAPP_HTTP_ENABLE_CHAIN_TESTS=1`
+
+如果只想跑单个接口测试，可以直接指定方法：
+
+```bash
+python3 apps/myapp/myapp/tests/http/test_gateway_http.py \
+  GatewayHttpTestCase.test_search_product_with_empty_query_returns_success_shape
+```
+
+当前测试目录建议：
+
+- `myapp/tests/http/`：HTTP 冒烟、链路、幂等、并发测试
+- `myapp/tests/unit/`：服务层与工具函数单元测试
+
 ### 服务验收
 
 `myapp/api/` 下的服务层已经在 VS Code devcontainer / ERPNext v16 环境中通过 `bench console` 做过真实验证。
