@@ -520,9 +520,9 @@
               ],
               "response": []
             },
-            {
-              "name": "create_purchase_invoice",
-              "request": {
+        {
+          "name": "create_purchase_invoice",
+          "request": {
                 "method": "POST",
                 "header": [
                   {
@@ -562,12 +562,57 @@
                     ]
                   }
                 }
-              ],
-              "response": []
+          ],
+          "response": []
+        },
+        {
+          "name": "create_purchase_invoice_from_receipt",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"receipt_name\": \"{{purchase_receipt}}\",\n  \"request_id\": \"{{purchase_invoice_from_receipt_request_id}}\"\n}"
             },
+            "url": {
+              "raw": "{{base_url}}/api/method/myapp.api.gateway.create_purchase_invoice_from_receipt",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "method",
+                "myapp.api.gateway.create_purchase_invoice_from_receipt"
+              ]
+            }
+          },
+          "event": [
             {
-              "name": "record_supplier_payment",
-              "request": {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"create_purchase_invoice_from_receipt succeeded\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.message.ok).to.eql(true);",
+                  "  pm.expect(body.message.code).to.eql(\"PURCHASE_INVOICE_CREATED\");",
+                  "  pm.environment.set(\"purchase_invoice\", body.message.data.purchase_invoice || \"\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "record_supplier_payment",
+          "request": {
                 "method": "POST",
                 "header": [
                   {

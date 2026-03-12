@@ -1,6 +1,6 @@
 ### myapp
 
-new app
+Custom application built on top of Frappe / ERPNext.
 
 Language:
 
@@ -71,6 +71,8 @@ Notes:
 - Keep the host as `localhost` to match the current devcontainer setup.
 - Responses are printed and also saved to `apps/myapp/http-test-results.json`.
 - The current HTTP test suite already covers sales and purchase flow happy paths, idempotent replay, different-data cases, and concurrent idempotency checks.
+- The chain tests were refactored to create fresh prerequisite data per test instead of depending on historical saved results.
+- Full regression currently passes with `Ran 47 tests ... OK`.
 
 ### Service Validation
 
