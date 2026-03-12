@@ -13,6 +13,43 @@ def _coerce_json_value(value, default):
 	return value
 
 
+def _build_item_override_map(items, *, detail_keys: tuple[str, ...]):
+	override_map = {}
+
+	for row in items or []:
+		if not isinstance(row, dict):
+			continue
+
+		detail_key = next((row.get(key) for key in detail_keys if row.get(key)), None)
+		lookup_key = detail_key or row.get("item_code")
+		if not lookup_key:
+			continue
+
+		override_map[lookup_key] = row
+
+	return override_map
+
+
+def _apply_return_item_overrides(target_items, item_overrides: dict, *, detail_attrs: tuple[str, ...] = ()):
+	filtered_items = []
+
+	for item in target_items:
+		override = next(
+			(item_overrides.get(getattr(item, attr, None)) for attr in detail_attrs if getattr(item, attr, None)),
+			None,
+		)
+		if not override:
+			override = item_overrides.get(item.item_code)
+		if not override:
+			continue
+
+		if override.get("qty") is not None:
+			item.qty = -abs(flt(override["qty"]))
+		filtered_items.append(item)
+
+	return filtered_items
+
+
 def confirm_pending_document(doctype: str, docname: str, **kwargs):
 	from frappe.model.workflow import apply_workflow
 
@@ -117,14 +154,20 @@ def process_sales_return(source_doctype: str, source_name: str, return_items: li
 			return_doc = frappe.get_attr(make_return_path)(source_name)
 
 			if return_items:
-				item_qty_map = {d["item_code"]: flt(d["qty"]) for d in return_items if d.get("item_code")}
-				filtered_items = []
-				for item in return_doc.items:
-					if item.item_code not in item_qty_map:
-						continue
-					item.qty = -abs(item_qty_map[item.item_code])
-					filtered_items.append(item)
-				return_doc.items = filtered_items
+				detail_keys = {
+					"Sales Invoice": ("sales_invoice_item", "si_detail"),
+					"Delivery Note": ("delivery_note_item", "dn_detail"),
+				}[source_doctype]
+				detail_attrs = {
+					"Sales Invoice": ("sales_invoice_item", "si_detail"),
+					"Delivery Note": ("delivery_note_item", "dn_detail"),
+				}[source_doctype]
+				item_overrides = _build_item_override_map(return_items, detail_keys=detail_keys)
+				return_doc.items = _apply_return_item_overrides(
+					return_doc.items,
+					item_overrides,
+					detail_attrs=detail_attrs,
+				)
 				if not return_doc.items:
 					frappe.throw(_("未找到可退货的商品明细。"))
 

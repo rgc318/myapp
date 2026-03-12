@@ -2,7 +2,7 @@
   "test_receive_purchase_order_success": {
     "method": "myapp.api.gateway.receive_purchase_order",
     "request": {
-      "order_name": "PUR-ORD-2026-00013",
+      "order_name": "PUR-ORD-2026-00028",
       "request_id": "http-chain-purchase-receipt-001"
     },
     "http_status": 200,
@@ -11,9 +11,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_RECEIPT_CREATED",
-        "message": "采购收货单 MAT-PRE-2026-00003 已创建并提交。",
+        "message": "采购收货单 MAT-PRE-2026-00013 已创建并提交。",
         "data": {
-          "purchase_receipt": "MAT-PRE-2026-00003"
+          "purchase_receipt": "MAT-PRE-2026-00013"
         },
         "meta": {}
       }
@@ -39,9 +39,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_ORDER_CREATED",
-        "message": "采购订单 PUR-ORD-2026-00013 已创建并提交。",
+        "message": "采购订单 PUR-ORD-2026-00028 已创建并提交。",
         "data": {
-          "purchase_order": "PUR-ORD-2026-00013"
+          "purchase_order": "PUR-ORD-2026-00028"
         },
         "meta": {}
       }
@@ -53,25 +53,24 @@
       "receipt_name": "MAT-PRE-2026-00003",
       "request_id": "http-chain-purchase-invoice-from-receipt-001"
     },
-    "http_status": 200,
+    "http_status": 422,
     "response": {
       "message": {
-        "ok": true,
-        "status": "success",
-        "code": "PURCHASE_INVOICE_CREATED",
-        "message": "采购发票 ACC-PINV-2026-00014 已根据收货单创建并提交。",
-        "data": {
-          "purchase_invoice": "ACC-PINV-2026-00014"
-        },
+        "ok": false,
+        "status": "error",
+        "code": "VALIDATION_ERROR",
+        "message": "所有物料已开具发票/退回",
+        "data": {},
         "meta": {}
-      }
+      },
+      "_server_messages": "[\"{\\\"message\\\":\\\"所有物料已开具发票/退回\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"4a802e969bccd2e042dae58647ee585914259ede8a01b882f6510563\\\"}\"]"
     }
   },
   "test_create_purchase_invoice_from_receipt_idempotent_replay": {
     "method": "myapp.api.gateway.create_purchase_invoice_from_receipt",
     "request": {
-      "receipt_name": "MAT-PRE-2026-00003",
-      "request_id": "http-chain-purchase-invoice-from-receipt-001"
+      "receipt_name": "MAT-PRE-2026-00026",
+      "request_id": "http-chain-purchase-invoice-from-receipt-1773311583776808768"
     },
     "http_status": 200,
     "response": {
@@ -79,9 +78,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_INVOICE_CREATED",
-        "message": "采购发票 ACC-PINV-2026-00014 已根据收货单创建并提交。",
+        "message": "采购发票 ACC-PINV-2026-00033 已根据收货单创建并提交。",
         "data": {
-          "purchase_invoice": "ACC-PINV-2026-00014"
+          "purchase_invoice": "ACC-PINV-2026-00033"
         },
         "meta": {}
       }
@@ -90,15 +89,15 @@
   "test_receive_purchase_order_partial_success": {
     "method": "myapp.api.gateway.receive_purchase_order",
     "request": {
-      "order_name": "PUR-ORD-2026-00025",
+      "order_name": "PUR-ORD-2026-00072",
       "receipt_items": [
         {
-          "purchase_order_item": "k747j4ra80",
+          "purchase_order_item": "nvklh1ofdm",
           "qty": 2,
           "price": 480
         }
       ],
-      "request_id": "http-partial-purchase-receipt-1773307927025095686"
+      "request_id": "http-partial-purchase-receipt-1773311589304368694"
     },
     "http_status": 200,
     "response": {
@@ -106,9 +105,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_RECEIPT_CREATED",
-        "message": "采购收货单 MAT-PRE-2026-00009 已创建并提交。",
+        "message": "采购收货单 MAT-PRE-2026-00032 已创建并提交。",
         "data": {
-          "purchase_receipt": "MAT-PRE-2026-00009"
+          "purchase_receipt": "MAT-PRE-2026-00032"
         },
         "meta": {}
       }
@@ -117,15 +116,15 @@
   "test_create_purchase_invoice_from_receipt_partial_success": {
     "method": "myapp.api.gateway.create_purchase_invoice_from_receipt",
     "request": {
-      "receipt_name": "MAT-PRE-2026-00009",
+      "receipt_name": "MAT-PRE-2026-00027",
       "invoice_items": [
         {
-          "purchase_receipt_item": "k768movu15",
+          "purchase_receipt_item": "nu1tdjbsc4",
           "qty": 1,
           "price": 470
         }
       ],
-      "request_id": "http-partial-purchase-invoice-from-receipt-1773307933668211279"
+      "request_id": "http-partial-purchase-invoice-from-receipt-1773311584257121502"
     },
     "http_status": 200,
     "response": {
@@ -133,9 +132,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_INVOICE_CREATED",
-        "message": "采购发票 ACC-PINV-2026-00016 已根据收货单创建并提交。",
+        "message": "采购发票 ACC-PINV-2026-00034 已根据收货单创建并提交。",
         "data": {
-          "purchase_invoice": "ACC-PINV-2026-00016"
+          "purchase_invoice": "ACC-PINV-2026-00034"
         },
         "meta": {}
       }
@@ -145,14 +144,14 @@
     "method": "myapp.api.gateway.process_purchase_return",
     "request": {
       "source_doctype": "Purchase Receipt",
-      "source_name": "MAT-PRE-2026-00009",
+      "source_name": "MAT-PRE-2026-00029",
       "return_items": [
         {
           "item_code": "SKU010",
           "qty": 1
         }
       ],
-      "request_id": "http-partial-purchase-return-from-receipt-1773307934620382913"
+      "request_id": "http-partial-purchase-return-from-receipt-1773311587172476397"
     },
     "http_status": 200,
     "response": {
@@ -160,9 +159,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_RETURN_CREATED",
-        "message": "采购退货单 MAT-PRE-2026-00010 已创建并提交。",
+        "message": "采购退货单 MAT-PRE-2026-00030 已创建并提交。",
         "data": {
-          "return_document": "MAT-PRE-2026-00010",
+          "return_document": "MAT-PRE-2026-00030",
           "return_doctype": "Purchase Receipt"
         },
         "meta": {}
@@ -172,15 +171,15 @@
   "test_submit_delivery_partial_success": {
     "method": "myapp.api.gateway.submit_delivery",
     "request": {
-      "order_name": "SAL-ORD-2026-00035",
+      "order_name": "SAL-ORD-2026-00079",
       "delivery_items": [
         {
-          "sales_order_item": "vqum26grk2",
+          "sales_order_item": "o03vtqqfk9",
           "qty": 2,
           "price": 880
         }
       ],
-      "request_id": "http-partial-delivery-1773309116817635576"
+      "request_id": "http-partial-delivery-1773311590855756993"
     },
     "http_status": 200,
     "response": {
@@ -188,9 +187,9 @@
         "ok": true,
         "status": "success",
         "code": "DELIVERY_SUBMITTED",
-        "message": "发货单 MAT-DN-2026-00020 已创建并提交。",
+        "message": "发货单 MAT-DN-2026-00029 已创建并提交。",
         "data": {
-          "delivery_note": "MAT-DN-2026-00020"
+          "delivery_note": "MAT-DN-2026-00029"
         },
         "meta": {}
       }
@@ -199,15 +198,15 @@
   "test_create_sales_invoice_partial_success": {
     "method": "myapp.api.gateway.create_sales_invoice",
     "request": {
-      "source_name": "SAL-ORD-2026-00035",
+      "source_name": "SAL-ORD-2026-00074",
       "invoice_items": [
         {
-          "sales_order_item": "vqum26grk2",
+          "sales_order_item": "nuncuio1gm",
           "qty": 1,
           "price": 870
         }
       ],
-      "request_id": "http-partial-sales-invoice-1773309123969875180"
+      "request_id": "http-partial-sales-invoice-1773311586460500648"
     },
     "http_status": 200,
     "response": {
@@ -215,9 +214,989 @@
         "ok": true,
         "status": "success",
         "code": "SALES_INVOICE_CREATED",
-        "message": "销售发票 ACC-SINV-2026-00037 已创建并提交。",
+        "message": "销售发票 ACC-SINV-2026-00061 已创建并提交。",
         "data": {
-          "sales_invoice": "ACC-SINV-2026-00037"
+          "sales_invoice": "ACC-SINV-2026-00061"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_confirm_pending_document_validation_error_shape": {
+    "method": "myapp.api.gateway.confirm_pending_document",
+    "request": {
+      "doctype": "",
+      "docname": ""
+    },
+    "http_status": 422,
+    "response": {
+      "message": {
+        "ok": false,
+        "status": "error",
+        "code": "VALIDATION_ERROR",
+        "message": "doctype 和 docname 不能为空。",
+        "data": {},
+        "meta": {}
+      },
+      "_server_messages": "[\"{\\\"message\\\":\\\"doctype 和 docname 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"9a4ccb0dba774798bb2a839e3772ab2c7e34f72d2cbaa833b06c74fb\\\"}\"]"
+    }
+  },
+  "test_create_order_concurrent_same_request_id_returns_single_order_worker_1": {
+    "method": "myapp.api.gateway.create_order",
+    "request": {
+      "customer": "Palmer Productions Ltd.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 1.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "immediate": 0,
+      "request_id": "http-concurrent-1773311582858704491"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "ORDER_CREATED",
+        "message": "销售订单 SAL-ORD-2026-00067 已创建并提交。",
+        "data": {
+          "order": "SAL-ORD-2026-00067"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_order_concurrent_same_request_id_returns_single_order_worker_0": {
+    "method": "myapp.api.gateway.create_order",
+    "request": {
+      "customer": "Palmer Productions Ltd.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 1.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "immediate": 0,
+      "request_id": "http-concurrent-1773311582858704491"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "ORDER_CREATED",
+        "message": "销售订单 SAL-ORD-2026-00067 已创建并提交。",
+        "data": {
+          "order": "SAL-ORD-2026-00067"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_order_concurrent_same_request_id_returns_single_order_worker_2": {
+    "method": "myapp.api.gateway.create_order",
+    "request": {
+      "customer": "Palmer Productions Ltd.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 1.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "immediate": 0,
+      "request_id": "http-concurrent-1773311582858704491"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "ORDER_CREATED",
+        "message": "销售订单 SAL-ORD-2026-00067 已创建并提交。",
+        "data": {
+          "order": "SAL-ORD-2026-00067"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_order_concurrent_same_request_id_returns_single_order_worker_3": {
+    "method": "myapp.api.gateway.create_order",
+    "request": {
+      "customer": "Palmer Productions Ltd.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 1.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "immediate": 0,
+      "request_id": "http-concurrent-1773311582858704491"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "ORDER_CREATED",
+        "message": "销售订单 SAL-ORD-2026-00067 已创建并提交。",
+        "data": {
+          "order": "SAL-ORD-2026-00067"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_order_idempotent_replay": {
+    "method": "myapp.api.gateway.create_order",
+    "request": {
+      "customer": "Palmer Productions Ltd.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 1.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "immediate": 0,
+      "request_id": "http-chain-order-1773311582970262018"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "ORDER_CREATED",
+        "message": "销售订单 SAL-ORD-2026-00068 已创建并提交。",
+        "data": {
+          "order": "SAL-ORD-2026-00068"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_order_new_request_id_with_different_data_creates_new_order": {
+    "method": "myapp.api.gateway.create_order",
+    "request": {
+      "customer": "Palmer Productions Ltd.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 2.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "immediate": 0,
+      "request_id": "http-newdata-b-1773311583177583814"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "ORDER_CREATED",
+        "message": "销售订单 SAL-ORD-2026-00070 已创建并提交。",
+        "data": {
+          "order": "SAL-ORD-2026-00070"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_order_same_request_id_with_different_data_returns_first_result": {
+    "method": "myapp.api.gateway.create_order",
+    "request": {
+      "customer": "Palmer Productions Ltd.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 2.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "immediate": 0,
+      "request_id": "http-diffdata-1773311583279221281"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "ORDER_CREATED",
+        "message": "销售订单 SAL-ORD-2026-00071 已创建并提交。",
+        "data": {
+          "order": "SAL-ORD-2026-00071"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_order_success": {
+    "method": "myapp.api.gateway.create_order",
+    "request": {
+      "customer": "Palmer Productions Ltd.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 1.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "immediate": 0,
+      "request_id": "http-chain-order-001"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "ORDER_CREATED",
+        "message": "销售订单 SAL-ORD-2026-00039 已创建并提交。",
+        "data": {
+          "order": "SAL-ORD-2026-00039"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_order_validation_error_shape": {
+    "method": "myapp.api.gateway.create_order",
+    "request": {
+      "customer": "",
+      "items": []
+    },
+    "http_status": 422,
+    "response": {
+      "message": {
+        "ok": false,
+        "status": "error",
+        "code": "VALIDATION_ERROR",
+        "message": "客户不能为空。",
+        "data": {},
+        "meta": {}
+      },
+      "_server_messages": "[\"{\\\"message\\\":\\\"客户不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"b3f24b57326fc6029b579a9a850fb4f9d889c730a4db17172f4ffd98\\\"}\"]"
+    }
+  },
+  "test_create_purchase_invoice_idempotent_replay": {
+    "method": "myapp.api.gateway.create_purchase_invoice",
+    "request": {
+      "source_name": "PUR-ORD-2026-00060",
+      "request_id": "http-chain-purchase-invoice-1773311585039467738"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_INVOICE_CREATED",
+        "message": "采购发票 ACC-PINV-2026-00036 已创建并提交。",
+        "data": {
+          "purchase_invoice": "ACC-PINV-2026-00036"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_purchase_invoice_success": {
+    "method": "myapp.api.gateway.create_purchase_invoice",
+    "request": {
+      "source_name": "PUR-ORD-2026-00013",
+      "request_id": "http-chain-purchase-invoice-001"
+    },
+    "http_status": 422,
+    "response": {
+      "message": {
+        "ok": false,
+        "status": "error",
+        "code": "VALIDATION_ERROR",
+        "message": "采购订单 PUR-ORD-2026-00013 当前没有可开票的商品明细。",
+        "data": {},
+        "meta": {}
+      },
+      "_server_messages": "[\"{\\\"message\\\":\\\"采购订单 PUR-ORD-2026-00013 当前没有可开票的商品明细。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"a39b27bbf7116cf80573d4c54cdbe469862a8cda921c3092d0619bc1\\\"}\"]"
+    }
+  },
+  "test_create_purchase_invoice_validation_error_shape": {
+    "method": "myapp.api.gateway.create_purchase_invoice",
+    "request": {
+      "source_name": ""
+    },
+    "http_status": 422,
+    "response": {
+      "message": {
+        "ok": false,
+        "status": "error",
+        "code": "VALIDATION_ERROR",
+        "message": "source_name 不能为空。",
+        "data": {},
+        "meta": {}
+      },
+      "_server_messages": "[\"{\\\"message\\\":\\\"source_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"65a8bb39f5916ca6030aa9ccf36ccd1b582246d6bbfd206088b4de7d\\\"}\"]"
+    }
+  },
+  "test_create_purchase_order_concurrent_same_request_id_returns_single_order_worker_0": {
+    "method": "myapp.api.gateway.create_purchase_order",
+    "request": {
+      "supplier": "MA Inc.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 5.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "request_id": "http-purchase-concurrent-1773311585497983813"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_ORDER_CREATED",
+        "message": "采购订单 PUR-ORD-2026-00062 已创建并提交。",
+        "data": {
+          "purchase_order": "PUR-ORD-2026-00062"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_purchase_order_concurrent_same_request_id_returns_single_order_worker_2": {
+    "method": "myapp.api.gateway.create_purchase_order",
+    "request": {
+      "supplier": "MA Inc.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 5.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "request_id": "http-purchase-concurrent-1773311585497983813"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_ORDER_CREATED",
+        "message": "采购订单 PUR-ORD-2026-00062 已创建并提交。",
+        "data": {
+          "purchase_order": "PUR-ORD-2026-00062"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_purchase_order_concurrent_same_request_id_returns_single_order_worker_1": {
+    "method": "myapp.api.gateway.create_purchase_order",
+    "request": {
+      "supplier": "MA Inc.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 5.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "request_id": "http-purchase-concurrent-1773311585497983813"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_ORDER_CREATED",
+        "message": "采购订单 PUR-ORD-2026-00062 已创建并提交。",
+        "data": {
+          "purchase_order": "PUR-ORD-2026-00062"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_purchase_order_concurrent_same_request_id_returns_single_order_worker_3": {
+    "method": "myapp.api.gateway.create_purchase_order",
+    "request": {
+      "supplier": "MA Inc.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 5.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "request_id": "http-purchase-concurrent-1773311585497983813"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_ORDER_CREATED",
+        "message": "采购订单 PUR-ORD-2026-00062 已创建并提交。",
+        "data": {
+          "purchase_order": "PUR-ORD-2026-00062"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_purchase_order_idempotent_replay": {
+    "method": "myapp.api.gateway.create_purchase_order",
+    "request": {
+      "supplier": "MA Inc.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 5.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "request_id": "http-chain-purchase-order-1773311585605593126"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_ORDER_CREATED",
+        "message": "采购订单 PUR-ORD-2026-00063 已创建并提交。",
+        "data": {
+          "purchase_order": "PUR-ORD-2026-00063"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_purchase_order_new_request_id_with_different_data_creates_new_order": {
+    "method": "myapp.api.gateway.create_purchase_order",
+    "request": {
+      "supplier": "MA Inc.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 6.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "request_id": "http-purchase-newdata-b-1773311585799401203"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_ORDER_CREATED",
+        "message": "采购订单 PUR-ORD-2026-00065 已创建并提交。",
+        "data": {
+          "purchase_order": "PUR-ORD-2026-00065"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_purchase_order_same_request_id_with_different_data_returns_first_result": {
+    "method": "myapp.api.gateway.create_purchase_order",
+    "request": {
+      "supplier": "MA Inc.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 6.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "request_id": "http-purchase-diffdata-1773311585896208362"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_ORDER_CREATED",
+        "message": "采购订单 PUR-ORD-2026-00066 已创建并提交。",
+        "data": {
+          "purchase_order": "PUR-ORD-2026-00066"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_purchase_order_validation_error_shape": {
+    "method": "myapp.api.gateway.create_purchase_order",
+    "request": {
+      "supplier": "",
+      "items": []
+    },
+    "http_status": 422,
+    "response": {
+      "message": {
+        "ok": false,
+        "status": "error",
+        "code": "VALIDATION_ERROR",
+        "message": "供应商不能为空。",
+        "data": {},
+        "meta": {}
+      },
+      "_server_messages": "[\"{\\\"message\\\":\\\"供应商不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"d3c2d4333547f6c18d79105002d392729fdaa0c896c4475f8a547607\\\"}\"]"
+    }
+  },
+  "test_create_sales_invoice_idempotent_replay": {
+    "method": "myapp.api.gateway.create_sales_invoice",
+    "request": {
+      "source_name": "SAL-ORD-2026-00073",
+      "request_id": "http-chain-sales-invoice-1773311586192193698"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "SALES_INVOICE_CREATED",
+        "message": "销售发票 ACC-SINV-2026-00060 已创建并提交。",
+        "data": {
+          "sales_invoice": "ACC-SINV-2026-00060"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_sales_invoice_success": {
+    "method": "myapp.api.gateway.create_sales_invoice",
+    "request": {
+      "source_name": "SAL-ORD-2026-00039",
+      "request_id": "http-chain-invoice-001"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "SALES_INVOICE_CREATED",
+        "message": "销售发票 ACC-SINV-2026-00041 已创建并提交。",
+        "data": {
+          "sales_invoice": "ACC-SINV-2026-00041"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_sales_invoice_validation_error_shape": {
+    "method": "myapp.api.gateway.create_sales_invoice",
+    "request": {
+      "source_name": ""
+    },
+    "http_status": 422,
+    "response": {
+      "message": {
+        "ok": false,
+        "status": "error",
+        "code": "VALIDATION_ERROR",
+        "message": "source_name 不能为空。",
+        "data": {},
+        "meta": {}
+      },
+      "_server_messages": "[\"{\\\"message\\\":\\\"source_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"bd179f7ad8be7fd071ce666a6aed8f2b19ab4bc5a43a45e25795ad76\\\"}\"]"
+    }
+  },
+  "test_process_purchase_return_validation_error_shape": {
+    "method": "myapp.api.gateway.process_purchase_return",
+    "request": {
+      "source_doctype": "Purchase Order",
+      "source_name": "PO-INVALID"
+    },
+    "http_status": 422,
+    "response": {
+      "message": {
+        "ok": false,
+        "status": "error",
+        "code": "VALIDATION_ERROR",
+        "message": "暂不支持对 Purchase Order 执行采购退货。",
+        "data": {},
+        "meta": {}
+      },
+      "_server_messages": "[\"{\\\"message\\\":\\\"暂不支持对 Purchase Order 执行采购退货。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"11bb59aacb0792fd969168562173d033952c155f2c98135c31d83e6b\\\"}\"]"
+    }
+  },
+  "test_process_sales_return_idempotent_replay": {
+    "method": "myapp.api.gateway.process_sales_return",
+    "request": {
+      "source_doctype": "Sales Invoice",
+      "source_name": "ACC-SINV-2026-00063",
+      "request_id": "http-chain-sales-return-1773311588413470360"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "SALES_RETURN_CREATED",
+        "message": "退货单 ACC-SINV-2026-00064 已创建并提交。",
+        "data": {
+          "return_document": "ACC-SINV-2026-00064",
+          "return_doctype": "Sales Invoice"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_process_sales_return_success": {
+    "method": "myapp.api.gateway.process_sales_return",
+    "request": {
+      "source_doctype": "Sales Invoice",
+      "source_name": "ACC-SINV-2026-00041",
+      "request_id": "http-chain-return-001"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "SALES_RETURN_CREATED",
+        "message": "退货单 ACC-SINV-2026-00043 已创建并提交。",
+        "data": {
+          "return_document": "ACC-SINV-2026-00043",
+          "return_doctype": "Sales Invoice"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_process_sales_return_validation_error_shape": {
+    "method": "myapp.api.gateway.process_sales_return",
+    "request": {
+      "source_doctype": "Sales Order",
+      "source_name": "SO-INVALID"
+    },
+    "http_status": 422,
+    "response": {
+      "message": {
+        "ok": false,
+        "status": "error",
+        "code": "VALIDATION_ERROR",
+        "message": "暂不支持对 Sales Order 执行退货。",
+        "data": {},
+        "meta": {}
+      },
+      "_server_messages": "[\"{\\\"message\\\":\\\"暂不支持对 Sales Order 执行退货。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"fe419a903c1f0c1cc9f43a028781fef1f88ed9f67497576aa8d21e6b\\\"}\"]"
+    }
+  },
+  "test_receive_purchase_order_idempotent_replay": {
+    "method": "myapp.api.gateway.receive_purchase_order",
+    "request": {
+      "order_name": "PUR-ORD-2026-00071",
+      "request_id": "http-chain-purchase-receipt-1773311589046126143"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_RECEIPT_CREATED",
+        "message": "采购收货单 MAT-PRE-2026-00031 已创建并提交。",
+        "data": {
+          "purchase_receipt": "MAT-PRE-2026-00031"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_receive_purchase_order_validation_error_shape": {
+    "method": "myapp.api.gateway.receive_purchase_order",
+    "request": {
+      "order_name": ""
+    },
+    "http_status": 422,
+    "response": {
+      "message": {
+        "ok": false,
+        "status": "error",
+        "code": "VALIDATION_ERROR",
+        "message": "order_name 不能为空。",
+        "data": {},
+        "meta": {}
+      },
+      "_server_messages": "[\"{\\\"message\\\":\\\"order_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"29c49aff95ff32508035b46d951caf1122a0dad42bed04348d8c7a90\\\"}\"]"
+    }
+  },
+  "test_record_supplier_payment_validation_error_shape": {
+    "method": "myapp.api.gateway.record_supplier_payment",
+    "request": {
+      "reference_name": "",
+      "paid_amount": 0
+    },
+    "http_status": 422,
+    "response": {
+      "message": {
+        "ok": false,
+        "status": "error",
+        "code": "VALIDATION_ERROR",
+        "message": "reference_name 不能为空。",
+        "data": {},
+        "meta": {}
+      },
+      "_server_messages": "[\"{\\\"message\\\":\\\"reference_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"ccb5172ee2fbbf58c83f4e4dddfff48478556680c2ca578b83a01c8a\\\"}\"]"
+    }
+  },
+  "test_search_product_success": {
+    "method": "myapp.api.gateway.search_product",
+    "request": {
+      "search_key": "SKU010",
+      "limit": 5
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PRODUCTS_FETCHED",
+        "message": "",
+        "data": [
+          {
+            "item_code": "SKU010",
+            "item_name": "Camera",
+            "uom": "Nos",
+            "all_uoms": [
+              {
+                "uom": "Nos",
+                "conversion_factor": 1.0
+              }
+            ],
+            "qty": 85.0,
+            "price": 900.0,
+            "image": "https://images.pexels.com/photos/51383/photo-camera-subject-photographer-51383.jpeg"
+          }
+        ],
+        "meta": {
+          "filters": {
+            "price_list": "Standard Selling",
+            "currency": "CNY",
+            "warehouse": null,
+            "company": null,
+            "limit": 5
+          }
+        }
+      }
+    }
+  },
+  "test_search_product_with_empty_query_returns_success_shape": {
+    "method": "myapp.api.gateway.search_product",
+    "request": {
+      "search_key": "",
+      "limit": 5
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PRODUCTS_FETCHED",
+        "message": "",
+        "data": [],
+        "meta": {}
+      }
+    }
+  },
+  "test_submit_delivery_idempotent_replay": {
+    "method": "myapp.api.gateway.submit_delivery",
+    "request": {
+      "order_name": "SAL-ORD-2026-00078",
+      "request_id": "http-chain-delivery-1773311590572973285"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "DELIVERY_SUBMITTED",
+        "message": "发货单 MAT-DN-2026-00028 已创建并提交。",
+        "data": {
+          "delivery_note": "MAT-DN-2026-00028"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_submit_delivery_success": {
+    "method": "myapp.api.gateway.submit_delivery",
+    "request": {
+      "order_name": "SAL-ORD-2026-00039",
+      "request_id": "http-chain-delivery-001"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "DELIVERY_SUBMITTED",
+        "message": "发货单 MAT-DN-2026-00022 已创建并提交。",
+        "data": {
+          "delivery_note": "MAT-DN-2026-00022"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_submit_delivery_validation_error_shape": {
+    "method": "myapp.api.gateway.submit_delivery",
+    "request": {
+      "order_name": ""
+    },
+    "http_status": 422,
+    "response": {
+      "message": {
+        "ok": false,
+        "status": "error",
+        "code": "VALIDATION_ERROR",
+        "message": "order_name 不能为空。",
+        "data": {},
+        "meta": {}
+      },
+      "_server_messages": "[\"{\\\"message\\\":\\\"order_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"e2cdda7205b743392803b0b908b5302b14f6170c48a503c7331d3e06\\\"}\"]"
+    }
+  },
+  "test_test_remote_debug_returns_success": {
+    "method": "myapp.api.gateway.test_remote_debug",
+    "request": {},
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "REMOTE_DEBUG_OK",
+        "message": "太棒了！你的 VS Code 原生调试彻底打通了！",
+        "data": {
+          "magic_number": 34
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_update_payment_status_idempotent_replay": {
+    "method": "myapp.api.gateway.update_payment_status",
+    "request": {
+      "reference_doctype": "Sales Invoice",
+      "reference_name": "ACC-SINV-2026-00067",
+      "paid_amount": 900.0,
+      "request_id": "http-chain-payment-1773311591554228472"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PAYMENT_RECORDED",
+        "message": "成功为单据 ACC-SINV-2026-00067 录入收款 900.0。",
+        "data": {
+          "payment_entry": "ACC-PAY-2026-00025"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_update_payment_status_success": {
+    "method": "myapp.api.gateway.update_payment_status",
+    "request": {
+      "reference_doctype": "Sales Invoice",
+      "reference_name": "ACC-SINV-2026-00041",
+      "paid_amount": 900.0,
+      "request_id": "http-chain-payment-001"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PAYMENT_RECORDED",
+        "message": "成功为单据 ACC-SINV-2026-00041 录入收款 900.0。",
+        "data": {
+          "payment_entry": "ACC-PAY-2026-00017"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_update_payment_status_validation_error_shape": {
+    "method": "myapp.api.gateway.update_payment_status",
+    "request": {
+      "reference_doctype": "",
+      "reference_name": "",
+      "paid_amount": 0
+    },
+    "http_status": 422,
+    "response": {
+      "message": {
+        "ok": false,
+        "status": "error",
+        "code": "VALIDATION_ERROR",
+        "message": "reference_doctype 和 reference_name 不能为空。",
+        "data": {},
+        "meta": {}
+      },
+      "_server_messages": "[\"{\\\"message\\\":\\\"reference_doctype 和 reference_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"b5cc3d4b59b38a789d013b8ec987aab45d7e35a5ea8c90747df76691\\\"}\"]"
+    }
+  },
+  "test_process_purchase_return_idempotent_replay": {
+    "method": "myapp.api.gateway.process_purchase_return",
+    "request": {
+      "source_doctype": "Purchase Invoice",
+      "source_name": "ACC-PINV-2026-00038",
+      "request_id": "http-chain-purchase-return-1773311587599403160"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_RETURN_CREATED",
+        "message": "采购退货单 ACC-PINV-2026-00039 已创建并提交。",
+        "data": {
+          "return_document": "ACC-PINV-2026-00039",
+          "return_doctype": "Purchase Invoice"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_record_supplier_payment_idempotent_replay": {
+    "method": "myapp.api.gateway.record_supplier_payment",
+    "request": {
+      "reference_name": "ACC-PINV-2026-00042",
+      "paid_amount": 10.0,
+      "request_id": "http-chain-supplier-payment-1773311589976802986"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "SUPPLIER_PAYMENT_RECORDED",
+        "message": "成功为采购发票 ACC-PINV-2026-00042 录入付款 10.0。",
+        "data": {
+          "payment_entry": "ACC-PAY-2026-00023"
         },
         "meta": {}
       }

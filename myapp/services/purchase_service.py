@@ -85,6 +85,20 @@ def _validate_purchase_inputs(supplier: str, items: list[dict], company: str | N
 		frappe.throw(_("请先提供公司，或在当前用户默认值中配置 company。"))
 
 
+def _validate_purchase_rate_override_allowed(items, *, action_label: str):
+	has_price_override = any(isinstance(row, dict) and row.get("price") is not None for row in (items or []))
+	if not has_price_override:
+		return
+
+	if cint(frappe.db.get_single_value("Buying Settings", "maintain_same_rate")):
+		frappe.throw(
+			_(
+				"{0}中检测到价格改写，但当前 ERPNext Buying Settings 启用了 maintain_same_rate。"
+				"如需在收货或开票阶段直接改价，请先关闭该设置。"
+			).format(action_label)
+		)
+
+
 def _validate_warehouse_company(warehouse: str, company: str, item_code: str):
 	warehouse_company = frappe.db.get_value("Warehouse", warehouse, "company")
 	if not warehouse_company:
@@ -189,6 +203,7 @@ def receive_purchase_order(order_name: str, receipt_items=None, kwargs: dict | N
 			_ensure_target_has_items(pr, _("采购订单 {0} 当前没有可收货的商品明细。").format(order_name))
 
 			if receipt_items:
+				_validate_purchase_rate_override_allowed(receipt_items, action_label=_("采购收货"))
 				item_overrides = _build_item_override_map(
 					receipt_items,
 					detail_keys=("purchase_order_item", "po_detail"),
@@ -237,6 +252,7 @@ def create_purchase_invoice(source_name: str, invoice_items=None, kwargs: dict |
 			_ensure_target_has_items(pi, _("采购订单 {0} 当前没有可开票的商品明细。").format(source_name))
 
 			if invoice_items:
+				_validate_purchase_rate_override_allowed(invoice_items, action_label=_("采购开票"))
 				item_overrides = _build_item_override_map(
 					invoice_items,
 					detail_keys=("purchase_order_item", "po_detail"),
@@ -285,6 +301,7 @@ def create_purchase_invoice_from_receipt(
 			_ensure_target_has_items(pi, _("采购收货单 {0} 当前没有可开票的商品明细。").format(receipt_name))
 
 			if invoice_items:
+				_validate_purchase_rate_override_allowed(invoice_items, action_label=_("基于收货单的采购开票"))
 				item_overrides = _build_item_override_map(
 					invoice_items,
 					detail_keys=("purchase_receipt_item", "pr_detail"),

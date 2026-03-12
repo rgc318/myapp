@@ -268,6 +268,7 @@ Client
 - 采购主链路已经具备可重复执行的 HTTP 回归测试
 - 采购结算已同时支持 `Purchase Order -> Purchase Invoice` 与 `Purchase Receipt -> Purchase Invoice`
 - 部分收货、基于收货单的部分开票、基于收货单的部分退货已完成真实 HTTP 验证
+- `myapp/tests/http/test_gateway_http.py` 已重构为可独立执行的链路测试，单条运行、分组运行和整份全量运行均已重新回归通过
 
 ## 6.6 当前系统设置约束补充
 
@@ -282,6 +283,16 @@ Client
 
 - 收货时改价可成功提交
 - 基于收货单的部分开票改价可成功提交
+
+当前代码补充说明：
+
+- `receive_purchase_order`
+- `create_purchase_invoice`
+- `create_purchase_invoice_from_receipt`
+
+在检测到请求中包含 `price` 改写时，会主动检查 `Buying Settings.maintain_same_rate`。
+
+若该设置重新启用，接口会直接返回明确业务错误，提示应先关闭该设置或先修改源采购订单价格，而不是落成 ERPNext 原生底层报错。
 
 若后续重新启用 `maintain_same_rate`，则价格浮动场景需要改为：
 

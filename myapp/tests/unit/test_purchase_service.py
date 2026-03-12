@@ -80,6 +80,14 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(item.rate, 18)
 		self.assertEqual(result["purchase_receipt"], "MAT-PRE-0001")
 
+	@patch("myapp.services.purchase_service.frappe.db.get_single_value", return_value=1)
+	def test_receive_purchase_order_rejects_price_override_when_maintain_same_rate_enabled(self, mock_get_single):
+		with self.assertRaisesRegex(frappe.ValidationError, "maintain_same_rate"):
+			receive_purchase_order(
+				"PO-0001",
+				receipt_items=[{"item_code": "ITEM-001", "qty": 1, "price": 18}],
+			)
+
 	@patch("erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_invoice")
 	def test_create_purchase_invoice_rejects_order_without_billable_items(self, mock_make_purchase_invoice):
 		pi = frappe._dict({"items": []})
@@ -114,6 +122,16 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(item.qty, 2)
 		self.assertEqual(item.rate, 16)
 		self.assertEqual(result["purchase_invoice"], "PINV-0002")
+
+	@patch("myapp.services.purchase_service.frappe.db.get_single_value", return_value=1)
+	def test_create_purchase_invoice_from_receipt_rejects_price_override_when_maintain_same_rate_enabled(
+		self, mock_get_single
+	):
+		with self.assertRaisesRegex(frappe.ValidationError, "maintain_same_rate"):
+			create_purchase_invoice_from_receipt(
+				"MAT-PRE-0001",
+				invoice_items=[{"item_code": "ITEM-001", "qty": 1, "price": 16}],
+			)
 
 	@patch("erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry")
 	def test_record_supplier_payment_creates_payment_entry(self, mock_get_payment_entry):

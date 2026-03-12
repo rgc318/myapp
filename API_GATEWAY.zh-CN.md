@@ -539,6 +539,7 @@ frappe.call({
 行为：
 
 - 支持从 `Sales Invoice` 和 `Delivery Note` 创建退货
+- 支持在 `return_items` 中按 `sales_invoice_item` / `si_detail`、`delivery_note_item` / `dn_detail` 或 `item_code` 指定退货数量
 - 创建并提交映射后的退货单据
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的退货结果
 
@@ -599,6 +600,7 @@ frappe.call({
 - `immediate=True` 需要目标仓库存在可用库存
 - 如果某个 `item_code + warehouse` 组合没有 `Bin` 记录，即时发货会被拦截
 - 采购侧若要在收货或开票阶段直接改价，需要关闭 ERPNext `Buying Settings.maintain_same_rate`
+- 采购侧若请求中包含 `price` 改写且 `maintain_same_rate` 重新启用，网关会主动返回明确业务错误
 - 当前环境的 `Selling Settings.maintain_same_sales_rate = 0`，销售侧允许在发货和开票阶段按实际成交结果改价
 
 ### 附录：联调中实际会用到的官方接口

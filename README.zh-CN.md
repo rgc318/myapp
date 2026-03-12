@@ -77,7 +77,9 @@ pre-commit install
 - 测试会默认打印接口返回值，并把结果保存到 `apps/myapp/http-test-results.json`
 - 可通过 `MYAPP_HTTP_PRINT_RESPONSES` 和 `MYAPP_HTTP_SAVE_RESPONSES` 控制是否打印或保存
 - 若多接口联调需要串联参数，可直接从结果文件中读取上一个接口返回值
-- 若要启用依赖上一步返回值的链路测试，可设置 `MYAPP_HTTP_ENABLE_CHAIN_TESTS=1`
+- 当前主链路测试已改为“单个测试自建前置数据”，不再依赖固定执行顺序或历史结果文件
+- 已重新验证单个方法、销售链路、采购链路、幂等/并发和整份文件全量执行
+- `python3 apps/myapp/myapp/tests/http/test_gateway_http.py` 当前全量结果为 `Ran 47 tests ... OK`
 
 本次测试工作额外说明：
 
