@@ -41,19 +41,32 @@ def _build_item_override_map(items, *, detail_keys: tuple[str, ...]):
 	return override_map
 
 
-def _apply_item_overrides(target_items, item_overrides: dict, *, detail_attr: str | None = None):
+def _apply_item_overrides(
+	target_items,
+	item_overrides: dict,
+	*,
+	detail_attr: str | None = None,
+	detail_attrs: tuple[str, ...] | None = None,
+	qty_transform=None,
+):
 	filtered_items = []
 
 	for item in target_items:
-		lookup_key = getattr(item, detail_attr, None) if detail_attr else None
-		override = item_overrides.get(lookup_key) if lookup_key else None
+		lookup_keys = []
+		if detail_attr:
+			lookup_keys.append(getattr(item, detail_attr, None))
+		for attr in detail_attrs or ():
+			lookup_keys.append(getattr(item, attr, None))
+
+		override = next((item_overrides.get(key) for key in lookup_keys if key and item_overrides.get(key)), None)
 		if not override:
 			override = item_overrides.get(item.item_code)
 		if not override:
 			continue
 
 		if override.get("qty") is not None:
-			item.qty = flt(override["qty"])
+			qty = flt(override["qty"])
+			item.qty = qty_transform(qty) if qty_transform else qty
 		if override.get("price") is not None:
 			item.rate = flt(override["price"])
 		filtered_items.append(item)
@@ -358,16 +371,22 @@ def process_purchase_return(source_doctype: str, source_name: str, return_items=
 			return_doc = make_return_doc(source_doctype, source_name)
 
 			if return_items:
-				item_qty_map = {d["item_code"]: flt(d["qty"]) for d in return_items if d.get("item_code")}
-				filtered_items = []
-				for item in return_doc.items:
-					if item.item_code not in item_qty_map:
-						continue
-					item.qty = -abs(item_qty_map[item.item_code])
-					filtered_items.append(item)
-				return_doc.items = filtered_items
-				if not return_doc.items:
-					frappe.throw(_("未找到可退货的商品明细。"))
+				detail_keys = {
+					"Purchase Receipt": ("purchase_receipt_item", "pr_detail"),
+					"Purchase Invoice": ("purchase_invoice_item", "pi_detail"),
+				}[source_doctype]
+				detail_attrs = {
+					"Purchase Receipt": ("purchase_receipt_item", "pr_detail"),
+					"Purchase Invoice": ("purchase_invoice_item", "pi_detail"),
+				}[source_doctype]
+				item_overrides = _build_item_override_map(return_items, detail_keys=detail_keys)
+				return_doc.items = _apply_item_overrides(
+					return_doc.items,
+					item_overrides,
+					detail_attrs=detail_attrs,
+					qty_transform=lambda qty: -abs(qty),
+				)
+				_ensure_target_has_items(return_doc, _("未找到可退货的商品明细。"))
 
 			if kwargs.get("posting_date"):
 				return_doc.posting_date = kwargs["posting_date"]

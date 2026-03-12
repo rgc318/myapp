@@ -125,6 +125,17 @@ class GatewayHttpTestCase(TestCase):
 			return exc.code, payload
 
 	@classmethod
+	def _get_resource(cls, doctype: str, name: str):
+		request = urllib.request.Request(
+			f"{BASE_URL}/api/resource/{urllib.parse.quote(doctype)}/{urllib.parse.quote(name)}",
+			headers=cls._headers(),
+			method="GET",
+		)
+		with cls._opener.open(request, timeout=15) as response:
+			payload = json.loads(response.read().decode() or "{}")
+		return payload["data"]
+
+	@classmethod
 	def _record_response(cls, *, test_name: str, method_path: str, request_payload: dict, status_code: int, payload: dict):
 		record = {
 			"method": method_path,
@@ -201,6 +212,11 @@ class GatewayHttpTestCase(TestCase):
 		first_value = self._get_saved_value(first_test, path)
 		second_value = self._get_saved_value(second_test, path)
 		self.assertEqual(first_value, second_value)
+
+	def _get_first_item(self, doctype: str, name: str):
+		doc = self._get_resource(doctype, name)
+		self.assertTrue(doc.get("items"))
+		return doc["items"][0]
 
 	def test_test_remote_debug_returns_success(self):
 		status_code, payload = self._call_gateway("myapp.api.gateway.test_remote_debug")
@@ -557,6 +573,48 @@ class GatewayHttpTestCase(TestCase):
 			"response.message.data.purchase_receipt",
 		)
 
+	def test_receive_purchase_order_partial_success(self):
+		order_status, order_payload = self._call_gateway(
+			"myapp.api.gateway.create_purchase_order",
+			{
+				"supplier": PURCHASE_SUPPLIER,
+				"items": [
+					{
+						"item_code": PURCHASE_ITEM_CODE,
+						"qty": PURCHASE_QTY,
+						"warehouse": PURCHASE_WAREHOUSE,
+						"price": 500,
+					}
+				],
+				"company": PURCHASE_COMPANY,
+				"request_id": self._unique_request_id("http-partial-purchase-order"),
+			},
+		)
+		self._assert_success(order_status, order_payload, code="PURCHASE_ORDER_CREATED")
+		order_name = order_payload["message"]["data"]["purchase_order"]
+		order_item = self._get_first_item("Purchase Order", order_name)
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.receive_purchase_order",
+			{
+				"order_name": order_name,
+				"receipt_items": [
+					{
+						"purchase_order_item": order_item["name"],
+						"qty": 2,
+						"price": 480,
+					}
+				],
+				"request_id": self._unique_request_id("http-partial-purchase-receipt"),
+			},
+		)
+
+		self._assert_success(status_code, payload, code="PURCHASE_RECEIPT_CREATED")
+		receipt_name = payload["message"]["data"]["purchase_receipt"]
+		receipt_item = self._get_first_item("Purchase Receipt", receipt_name)
+		self.assertEqual(receipt_item["qty"], 2.0)
+		self.assertEqual(receipt_item["rate"], 480.0)
+
 	def test_create_purchase_invoice_validation_error_shape(self):
 		status_code, payload = self._call_gateway(
 			"myapp.api.gateway.create_purchase_invoice",
@@ -632,6 +690,34 @@ class GatewayHttpTestCase(TestCase):
 			"test_create_purchase_invoice_from_receipt_idempotent_replay",
 			"response.message.data.purchase_invoice",
 		)
+
+	def test_create_purchase_invoice_from_receipt_partial_success(self):
+		receipt_name = self._get_saved_value(
+			"test_receive_purchase_order_partial_success",
+			"response.message.data.purchase_receipt",
+		)
+		receipt_item = self._get_first_item("Purchase Receipt", receipt_name)
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.create_purchase_invoice_from_receipt",
+			{
+				"receipt_name": receipt_name,
+				"invoice_items": [
+					{
+						"purchase_receipt_item": receipt_item["name"],
+						"qty": 1,
+						"price": 470,
+					}
+				],
+				"request_id": self._unique_request_id("http-partial-purchase-invoice-from-receipt"),
+			},
+		)
+
+		self._assert_success(status_code, payload, code="PURCHASE_INVOICE_CREATED")
+		invoice_name = payload["message"]["data"]["purchase_invoice"]
+		invoice_item = self._get_first_item("Purchase Invoice", invoice_name)
+		self.assertEqual(invoice_item["qty"], 1.0)
+		self.assertEqual(invoice_item["rate"], 470.0)
 
 	def test_confirm_pending_document_validation_error_shape(self):
 		status_code, payload = self._call_gateway(
@@ -757,6 +843,33 @@ class GatewayHttpTestCase(TestCase):
 			"test_process_purchase_return_idempotent_replay",
 			"response.message.data.return_document",
 		)
+
+	def test_process_purchase_return_from_receipt_partial_success(self):
+		receipt_name = self._get_saved_value(
+			"test_receive_purchase_order_partial_success",
+			"response.message.data.purchase_receipt",
+		)
+		receipt_item = self._get_first_item("Purchase Receipt", receipt_name)
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.process_purchase_return",
+			{
+				"source_doctype": "Purchase Receipt",
+				"source_name": receipt_name,
+				"return_items": [
+					{
+						"item_code": receipt_item["item_code"],
+						"qty": 1,
+					}
+				],
+				"request_id": self._unique_request_id("http-partial-purchase-return-from-receipt"),
+			},
+		)
+
+		self._assert_success(status_code, payload, code="PURCHASE_RETURN_CREATED")
+		return_name = payload["message"]["data"]["return_document"]
+		return_doc = self._get_resource(payload["message"]["data"]["return_doctype"], return_name)
+		self.assertEqual(return_doc["items"][0]["qty"], -1.0)
 
 	def test_create_purchase_order_concurrent_same_request_id_returns_single_order(self):
 		request_id = self._unique_request_id("http-purchase-concurrent")

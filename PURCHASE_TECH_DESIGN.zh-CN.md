@@ -171,7 +171,7 @@ Client
 
 本期规划：
 
-- 更多部分收货边界测试
+- 更多多行商品与复杂组合的部分收货边界测试
 
 ### 6.3 模块 P3：采购发票与结算
 
@@ -198,11 +198,12 @@ Client
 - `record_supplier_payment`
 - 采购发票创建与供应商付款主链路已验证
 - `Purchase Receipt -> Purchase Invoice` 主链路已完成真实 HTTP 验证
+- 基于 `Purchase Receipt` 的部分开票场景已完成真实 HTTP 验证
 - 付款动作已支持 `request_id` 幂等与顺序重放验证
 
 本期规划：
 
-- 更多部分开票边界测试
+- 更多多行商品与复杂组合的部分开票边界测试
 
 ### 6.4 模块 P4：采购退货
 
@@ -225,13 +226,15 @@ Client
 
 - `process_purchase_return`
 - 支持从 `Purchase Invoice` 发起采购退货
+- 支持从 `Purchase Receipt` 发起采购退货
 - `request_id` 幂等支持
 - 顺序重放验证
+- 基于 `Purchase Receipt` 的部分退货场景已完成真实 HTTP 验证
 
 本期规划：
 
-- 从 `Purchase Receipt` 发起退货的更多验证
-- 部分退货边界测试
+- 多行商品条件下按明细行退货的更多验证
+- 更复杂的部分退货边界测试
 
 ## 6.5 本轮测试补充
 
@@ -264,6 +267,26 @@ Client
 
 - 采购主链路已经具备可重复执行的 HTTP 回归测试
 - 采购结算已同时支持 `Purchase Order -> Purchase Invoice` 与 `Purchase Receipt -> Purchase Invoice`
+- 部分收货、基于收货单的部分开票、基于收货单的部分退货已完成真实 HTTP 验证
+
+## 6.6 当前系统设置约束补充
+
+当前环境验证表明，若 ERPNext `Buying Settings` 中启用 `maintain_same_rate`，则系统会阻止 `Purchase Receipt` / `Purchase Invoice` 相对 `Purchase Order` 的价格变动。
+
+对于存在“下单后供应商实际到货价格可能变化”需求的采购场景，建议：
+
+- 取消勾选 `maintain_same_rate`
+- 再允许在收货和基于收货单开票时传入实际价格
+
+在 2026-03-12 的本轮真实 HTTP 验证中，关闭 `maintain_same_rate` 后：
+
+- 收货时改价可成功提交
+- 基于收货单的部分开票改价可成功提交
+
+若后续重新启用 `maintain_same_rate`，则价格浮动场景需要改为：
+
+- 先更新 `Purchase Order` 价格
+- 再继续执行收货与开票
 - 现阶段最关键的幂等风险点已完成验证
 - 从 `Purchase Receipt` 直接生成采购发票的独立封装，仍然是后续优先事项
 

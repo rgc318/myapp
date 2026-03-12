@@ -145,6 +145,56 @@ class TestPurchaseService(TestCase):
 		return_doc.submit.assert_called_once()
 		self.assertEqual(result["return_document"], "MAT-PRE-RET-0001")
 
+	@patch("erpnext.controllers.sales_and_purchase_return.make_return_doc")
+	def test_process_purchase_return_updates_qty_by_receipt_detail(self, mock_make_return_doc):
+		item = frappe._dict(
+			{
+				"item_code": "ITEM-001",
+				"purchase_receipt_item": "PRI-001",
+				"pr_detail": "PRI-001",
+				"qty": -3,
+			}
+		)
+		return_doc = frappe._dict({"items": [item], "name": "MAT-PRE-RET-0002", "doctype": "Purchase Receipt"})
+		return_doc.get = lambda key: return_doc[key]
+		return_doc.insert = MagicMock()
+		return_doc.submit = MagicMock()
+		mock_make_return_doc.return_value = return_doc
+
+		result = process_purchase_return(
+			"Purchase Receipt",
+			"MAT-PRE-0001",
+			return_items=[{"purchase_receipt_item": "PRI-001", "qty": 1}],
+		)
+
+		self.assertEqual(item.qty, -1)
+		self.assertEqual(result["return_document"], "MAT-PRE-RET-0002")
+
+	@patch("erpnext.controllers.sales_and_purchase_return.make_return_doc")
+	def test_process_purchase_return_updates_qty_by_invoice_detail(self, mock_make_return_doc):
+		item = frappe._dict(
+			{
+				"item_code": "ITEM-001",
+				"purchase_invoice_item": "PII-001",
+				"pi_detail": "PII-001",
+				"qty": -3,
+			}
+		)
+		return_doc = frappe._dict({"items": [item], "name": "ACC-PINV-RET-0002", "doctype": "Purchase Invoice"})
+		return_doc.get = lambda key: return_doc[key]
+		return_doc.insert = MagicMock()
+		return_doc.submit = MagicMock()
+		mock_make_return_doc.return_value = return_doc
+
+		result = process_purchase_return(
+			"Purchase Invoice",
+			"ACC-PINV-0001",
+			return_items=[{"purchase_invoice_item": "PII-001", "qty": 2}],
+		)
+
+		self.assertEqual(item.qty, -2)
+		self.assertEqual(result["return_document"], "ACC-PINV-RET-0002")
+
 	@patch("myapp.services.purchase_service.run_idempotent")
 	def test_receive_purchase_order_uses_idempotent_runner(self, mock_run_idempotent):
 		mock_run_idempotent.return_value = {"status": "success", "purchase_receipt": "MAT-PRE-0010"}

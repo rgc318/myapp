@@ -86,5 +86,87 @@
         "meta": {}
       }
     }
+  },
+  "test_receive_purchase_order_partial_success": {
+    "method": "myapp.api.gateway.receive_purchase_order",
+    "request": {
+      "order_name": "PUR-ORD-2026-00025",
+      "receipt_items": [
+        {
+          "purchase_order_item": "k747j4ra80",
+          "qty": 2,
+          "price": 480
+        }
+      ],
+      "request_id": "http-partial-purchase-receipt-1773307927025095686"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_RECEIPT_CREATED",
+        "message": "采购收货单 MAT-PRE-2026-00009 已创建并提交。",
+        "data": {
+          "purchase_receipt": "MAT-PRE-2026-00009"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_purchase_invoice_from_receipt_partial_success": {
+    "method": "myapp.api.gateway.create_purchase_invoice_from_receipt",
+    "request": {
+      "receipt_name": "MAT-PRE-2026-00009",
+      "invoice_items": [
+        {
+          "purchase_receipt_item": "k768movu15",
+          "qty": 1,
+          "price": 470
+        }
+      ],
+      "request_id": "http-partial-purchase-invoice-from-receipt-1773307933668211279"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_INVOICE_CREATED",
+        "message": "采购发票 ACC-PINV-2026-00016 已根据收货单创建并提交。",
+        "data": {
+          "purchase_invoice": "ACC-PINV-2026-00016"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_process_purchase_return_from_receipt_partial_success": {
+    "method": "myapp.api.gateway.process_purchase_return",
+    "request": {
+      "source_doctype": "Purchase Receipt",
+      "source_name": "MAT-PRE-2026-00009",
+      "return_items": [
+        {
+          "item_code": "SKU010",
+          "qty": 1
+        }
+      ],
+      "request_id": "http-partial-purchase-return-from-receipt-1773307934620382913"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_RETURN_CREATED",
+        "message": "采购退货单 MAT-PRE-2026-00010 已创建并提交。",
+        "data": {
+          "return_document": "MAT-PRE-2026-00010",
+          "return_doctype": "Purchase Receipt"
+        },
+        "meta": {}
+      }
+    }
   }
 }
