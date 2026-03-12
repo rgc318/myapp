@@ -79,6 +79,45 @@ def _ensure_target_has_items(doc, message: str):
 		frappe.throw(message)
 
 
+def _build_item_override_map(items, *, detail_keys: tuple[str, ...]):
+	override_map = {}
+
+	for row in items or []:
+		if not isinstance(row, dict):
+			continue
+
+		detail_key = next((row.get(key) for key in detail_keys if row.get(key)), None)
+		lookup_key = detail_key or row.get("item_code")
+		if not lookup_key:
+			continue
+
+		override_map[lookup_key] = row
+
+	return override_map
+
+
+def _apply_item_overrides(target_items, item_overrides: dict, *, detail_attrs: tuple[str, ...] = ()):
+	filtered_items = []
+
+	for item in target_items:
+		override = next(
+			(item_overrides.get(getattr(item, attr, None)) for attr in detail_attrs if getattr(item, attr, None)),
+			None,
+		)
+		if not override:
+			override = item_overrides.get(item.item_code)
+		if not override:
+			continue
+
+		if override.get("qty") is not None:
+			item.qty = flt(override["qty"])
+		if override.get("price") is not None:
+			item.rate = flt(override["price"])
+		filtered_items.append(item)
+
+	return filtered_items
+
+
 def _validate_stock_for_immediate_delivery(items: list[dict]):
 	for item in items:
 		bin_rows = frappe.get_all(
@@ -193,14 +232,15 @@ def submit_delivery(order_name: str, delivery_items: list[dict] | None = None, k
 			_ensure_target_has_items(dn, _("销售订单 {0} 当前没有可发货的商品明细。").format(order_name))
 
 			if delivery_items:
-				delivery_qty_map = {d["item_code"]: flt(d["qty"]) for d in delivery_items if d.get("item_code")}
-				filtered_items = []
-				for item in dn.items:
-					if item.item_code not in delivery_qty_map:
-						continue
-					item.qty = delivery_qty_map[item.item_code]
-					filtered_items.append(item)
-				dn.items = filtered_items
+				item_overrides = _build_item_override_map(
+					delivery_items,
+					detail_keys=("sales_order_item", "so_detail"),
+				)
+				dn.items = _apply_item_overrides(
+					dn.items,
+					item_overrides,
+					detail_attrs=("so_detail", "sales_order_item"),
+				)
 				_ensure_target_has_items(dn, _("未找到可发货的商品明细。"))
 
 			if kwargs.get("set_posting_time") is not None:
@@ -244,14 +284,15 @@ def create_sales_invoice(source_name: str, invoice_items: list[dict] | None = No
 			_ensure_target_has_items(si, _("销售订单 {0} 当前没有可开票的商品明细。").format(source_name))
 
 			if invoice_items:
-				invoice_qty_map = {d["item_code"]: flt(d["qty"]) for d in invoice_items if d.get("item_code")}
-				filtered_items = []
-				for item in si.items:
-					if item.item_code not in invoice_qty_map:
-						continue
-					item.qty = invoice_qty_map[item.item_code]
-					filtered_items.append(item)
-				si.items = filtered_items
+				item_overrides = _build_item_override_map(
+					invoice_items,
+					detail_keys=("sales_order_item", "so_detail"),
+				)
+				si.items = _apply_item_overrides(
+					si.items,
+					item_overrides,
+					detail_attrs=("so_detail", "sales_order_item"),
+				)
 				_ensure_target_has_items(si, _("未找到可开票的商品明细。"))
 
 			if kwargs.get("due_date"):

@@ -80,6 +80,23 @@ class TestOrderService(TestCase):
 		with self.assertRaisesRegex(frappe.ValidationError, "没有可发货的商品明细"):
 			submit_delivery("SO-0001")
 
+	@patch("erpnext.selling.doctype.sales_order.sales_order.make_delivery_note")
+	def test_submit_delivery_updates_qty_and_price(self, mock_make_delivery_note):
+		item = frappe._dict({"item_code": "ITEM-001", "so_detail": "SOI-001", "qty": 1, "rate": 10})
+		dn = frappe._dict({"items": [item], "name": "DN-0002"})
+		dn.get = lambda key: dn[key]
+		mock_make_delivery_note.return_value = dn
+
+		with patch("myapp.services.order_service._insert_and_submit"):
+			result = submit_delivery(
+				"SO-0001",
+				delivery_items=[{"sales_order_item": "SOI-001", "qty": 3, "price": 16}],
+			)
+
+		self.assertEqual(item.qty, 3)
+		self.assertEqual(item.rate, 16)
+		self.assertEqual(result["delivery_note"], "DN-0002")
+
 	@patch("erpnext.selling.doctype.sales_order.sales_order.make_sales_invoice")
 	def test_create_sales_invoice_rejects_sales_order_without_billable_items(self, mock_make_sales_invoice):
 		si = frappe._dict({"items": []})
@@ -87,6 +104,23 @@ class TestOrderService(TestCase):
 
 		with self.assertRaisesRegex(frappe.ValidationError, "没有可开票的商品明细"):
 			create_sales_invoice("SO-0001")
+
+	@patch("erpnext.selling.doctype.sales_order.sales_order.make_sales_invoice")
+	def test_create_sales_invoice_updates_qty_and_price(self, mock_make_sales_invoice):
+		item = frappe._dict({"item_code": "ITEM-001", "so_detail": "SOI-001", "qty": 1, "rate": 10})
+		si = frappe._dict({"items": [item], "name": "SINV-0002"})
+		si.get = lambda key: si[key]
+		mock_make_sales_invoice.return_value = si
+
+		with patch("myapp.services.order_service._insert_and_submit"):
+			result = create_sales_invoice(
+				"SO-0001",
+				invoice_items=[{"sales_order_item": "SOI-001", "qty": 2, "price": 18}],
+			)
+
+		self.assertEqual(item.qty, 2)
+		self.assertEqual(item.rate, 18)
+		self.assertEqual(result["sales_invoice"], "SINV-0002")
 
 	@patch("myapp.services.order_service.run_idempotent")
 	@patch("myapp.services.order_service.frappe.db.get_value")

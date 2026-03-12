@@ -935,6 +935,48 @@ class GatewayHttpTestCase(TestCase):
 			"response.message.data.delivery_note",
 		)
 
+	def test_submit_delivery_partial_success(self):
+		order_status, order_payload = self._call_gateway(
+			"myapp.api.gateway.create_order",
+			{
+				"customer": SALES_CUSTOMER,
+				"items": [
+					{
+						"item_code": SALES_ITEM_CODE,
+						"qty": 3,
+						"warehouse": SALES_WAREHOUSE,
+						"price": 900,
+					}
+				],
+				"company": SALES_COMPANY,
+				"request_id": self._unique_request_id("http-partial-sales-order"),
+			},
+		)
+		self._assert_success(order_status, order_payload, code="ORDER_CREATED")
+		order_name = order_payload["message"]["data"]["order"]
+		order_item = self._get_first_item("Sales Order", order_name)
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.submit_delivery",
+			{
+				"order_name": order_name,
+				"delivery_items": [
+					{
+						"sales_order_item": order_item["name"],
+						"qty": 2,
+						"price": 880,
+					}
+				],
+				"request_id": self._unique_request_id("http-partial-delivery"),
+			},
+		)
+
+		self._assert_success(status_code, payload, code="DELIVERY_SUBMITTED")
+		delivery_name = payload["message"]["data"]["delivery_note"]
+		delivery_item = self._get_first_item("Delivery Note", delivery_name)
+		self.assertEqual(delivery_item["qty"], 2.0)
+		self.assertEqual(delivery_item["rate"], 880.0)
+
 	def test_create_sales_invoice_success(self):
 		status_code, payload = self._call_gateway(
 			"myapp.api.gateway.create_sales_invoice",
@@ -962,6 +1004,34 @@ class GatewayHttpTestCase(TestCase):
 			"test_create_sales_invoice_idempotent_replay",
 			"response.message.data.sales_invoice",
 		)
+
+	def test_create_sales_invoice_partial_success(self):
+		order_name = self._get_saved_value(
+			"test_submit_delivery_partial_success",
+			"request.order_name",
+		)
+		order_item = self._get_first_item("Sales Order", order_name)
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.create_sales_invoice",
+			{
+				"source_name": order_name,
+				"invoice_items": [
+					{
+						"sales_order_item": order_item["name"],
+						"qty": 1,
+						"price": 870,
+					}
+				],
+				"request_id": self._unique_request_id("http-partial-sales-invoice"),
+			},
+		)
+
+		self._assert_success(status_code, payload, code="SALES_INVOICE_CREATED")
+		invoice_name = payload["message"]["data"]["sales_invoice"]
+		invoice_item = self._get_first_item("Sales Invoice", invoice_name)
+		self.assertEqual(invoice_item["qty"], 1.0)
+		self.assertEqual(invoice_item["rate"], 870.0)
 
 	def test_update_payment_status_success(self):
 		status_code, payload = self._call_gateway(

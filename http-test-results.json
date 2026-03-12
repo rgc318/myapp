@@ -168,5 +168,59 @@
         "meta": {}
       }
     }
+  },
+  "test_submit_delivery_partial_success": {
+    "method": "myapp.api.gateway.submit_delivery",
+    "request": {
+      "order_name": "SAL-ORD-2026-00035",
+      "delivery_items": [
+        {
+          "sales_order_item": "vqum26grk2",
+          "qty": 2,
+          "price": 880
+        }
+      ],
+      "request_id": "http-partial-delivery-1773309116817635576"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "DELIVERY_SUBMITTED",
+        "message": "发货单 MAT-DN-2026-00020 已创建并提交。",
+        "data": {
+          "delivery_note": "MAT-DN-2026-00020"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_sales_invoice_partial_success": {
+    "method": "myapp.api.gateway.create_sales_invoice",
+    "request": {
+      "source_name": "SAL-ORD-2026-00035",
+      "invoice_items": [
+        {
+          "sales_order_item": "vqum26grk2",
+          "qty": 1,
+          "price": 870
+        }
+      ],
+      "request_id": "http-partial-sales-invoice-1773309123969875180"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "SALES_INVOICE_CREATED",
+        "message": "销售发票 ACC-SINV-2026-00037 已创建并提交。",
+        "data": {
+          "sales_invoice": "ACC-SINV-2026-00037"
+        },
+        "meta": {}
+      }
+    }
   }
 }
