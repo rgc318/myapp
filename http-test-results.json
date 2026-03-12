@@ -1,16 +1,27 @@
 {
-  "test_test_remote_debug_returns_success": {
-    "method": "myapp.api.gateway.test_remote_debug",
-    "request": {},
+  "test_create_purchase_order_new_request_id_with_different_data_creates_new_order": {
+    "method": "myapp.api.gateway.create_purchase_order",
+    "request": {
+      "supplier": "MA Inc.",
+      "items": [
+        {
+          "item_code": "SKU010",
+          "qty": 6.0,
+          "warehouse": "Stores - RD"
+        }
+      ],
+      "company": "rgc (Demo)",
+      "request_id": "http-purchase-newdata-b-1773303658534798876"
+    },
     "http_status": 200,
     "response": {
       "message": {
         "ok": true,
         "status": "success",
-        "code": "REMOTE_DEBUG_OK",
-        "message": "太棒了！你的 VS Code 原生调试彻底打通了！",
+        "code": "PURCHASE_ORDER_CREATED",
+        "message": "采购订单 PUR-ORD-2026-00020 已创建并提交。",
         "data": {
-          "magic_number": 34
+          "purchase_order": "PUR-ORD-2026-00020"
         },
         "meta": {}
       }

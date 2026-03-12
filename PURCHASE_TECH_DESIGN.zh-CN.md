@@ -5,8 +5,8 @@
 - 文档名称：副食批发采购与进货流程技术设计文档
 - 适用项目：`myapp` for Frappe / ERPNext
 - 文档定位：作为采购订单、到货收货、采购结算、采购退货功能的实现基线
-- 当前版本：v0.2
-- 更新日期：2026-03-11
+- 当前版本：v0.3
+- 更新日期：2026-03-12
 
 ## 2. 适用场景
 
@@ -122,12 +122,17 @@ Client
 
 已实现：
 
-- 无
+- 采购订单创建与提交
+- 仓库与公司归属校验
+- `request_id` 幂等支持
+- 顺序幂等重放验证
+- 同一 `request_id` 不同请求数据验证
+- 不同 `request_id` 不同请求数据验证
+- 并发条件下同一 `request_id` 验证
 
 本期规划：
 
-- 采购订单创建与提交
-- 幂等支持
+- 供应商默认参数和更多边界场景补充
 
 ### 6.2 模块 P2：到货收货与入库
 
@@ -148,13 +153,15 @@ Client
 
 已实现：
 
-- 无
+- `receive_purchase_order`
+- 基于采购订单生成采购收货单
+- `request_id` 幂等支持
+- 顺序重放验证
 
 本期规划：
 
-- `receive_purchase_order`
 - 按实收到货数量过滤和改写明细
-- 幂等支持
+- 更多部分收货边界测试
 
 ### 6.3 模块 P3：采购发票与结算
 
@@ -174,12 +181,15 @@ Client
 
 已实现：
 
-- 仅销售侧收付款已封装，采购侧未封装
+- `create_purchase_invoice`
+- `record_supplier_payment`
+- 采购发票创建与供应商付款主链路已验证
+- 付款动作已支持 `request_id` 幂等与顺序重放验证
 
 本期规划：
 
-- `create_purchase_invoice`
-- `record_supplier_payment`
+- `Purchase Receipt -> Purchase Invoice` 的独立封装
+- 更多部分开票边界测试
 
 ### 6.4 模块 P4：采购退货
 
@@ -198,12 +208,47 @@ Client
 
 已实现：
 
-- 无
+- `process_purchase_return`
+- 支持从 `Purchase Invoice` 发起采购退货
+- `request_id` 幂等支持
+- 顺序重放验证
 
 本期规划：
 
+- 从 `Purchase Receipt` 发起退货的更多验证
+- 部分退货边界测试
+
+## 6.5 本轮测试补充
+
+在 2026-03-12 的本轮开发与测试中，已通过宿主机 `python3` 直接访问 `http://localhost:8080` 的方式，对采购侧主链路完成真实 HTTP 验证。
+
+已跑通的采购侧链路：
+
+- `create_purchase_order`
+- `receive_purchase_order`
+- `create_purchase_invoice`
+- `record_supplier_payment`
 - `process_purchase_return`
-- 幂等支持
+
+已验证可用的当前样例主数据：
+
+- `supplier="MA Inc."`
+- `item_code="SKU010"`
+- `warehouse="Stores - RD"`
+- `company="rgc (Demo)"`
+
+已补充的幂等验证类型：
+
+- 同一 `request_id` 顺序重放
+- 同一 `request_id` 但不同请求数据
+- 不同 `request_id` 且不同请求数据
+- 并发条件下同一 `request_id`
+
+当前阶段结论：
+
+- 采购主链路已经具备可重复执行的 HTTP 回归测试
+- 现阶段最关键的幂等风险点已完成验证
+- 从 `Purchase Receipt` 直接生成采购发票的独立封装，仍然是后续优先事项
 
 ## 7. 建议接口清单
 

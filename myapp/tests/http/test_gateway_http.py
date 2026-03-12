@@ -53,6 +53,12 @@ SALES_WAREHOUSE = os.environ.get("MYAPP_TEST_WAREHOUSE", "Stores - RD").strip()
 SALES_COMPANY = os.environ.get("MYAPP_TEST_COMPANY", "rgc (Demo)").strip()
 SALES_QTY = float(os.environ.get("MYAPP_TEST_QTY", "1").strip() or "1")
 SALES_PAID_AMOUNT = float(os.environ.get("MYAPP_TEST_PAID_AMOUNT", "900").strip() or "900")
+PURCHASE_SUPPLIER = os.environ.get("MYAPP_TEST_SUPPLIER", "MA Inc.").strip()
+PURCHASE_ITEM_CODE = os.environ.get("MYAPP_TEST_PURCHASE_ITEM_CODE", SALES_ITEM_CODE).strip()
+PURCHASE_WAREHOUSE = os.environ.get("MYAPP_TEST_PURCHASE_WAREHOUSE", SALES_WAREHOUSE).strip()
+PURCHASE_COMPANY = os.environ.get("MYAPP_TEST_PURCHASE_COMPANY", SALES_COMPANY).strip()
+PURCHASE_QTY = float(os.environ.get("MYAPP_TEST_PURCHASE_QTY", "5").strip() or "5")
+PURCHASE_PAID_AMOUNT = float(os.environ.get("MYAPP_TEST_PURCHASE_PAID_AMOUNT", "10").strip() or "10")
 
 
 class GatewayHttpTestCase(TestCase):
@@ -363,6 +369,134 @@ class GatewayHttpTestCase(TestCase):
 
 		self._assert_validation_error(status_code, payload)
 
+	def test_create_purchase_order_success(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.create_purchase_order",
+			{
+				"supplier": PURCHASE_SUPPLIER,
+				"items": [
+					{
+						"item_code": PURCHASE_ITEM_CODE,
+						"qty": PURCHASE_QTY,
+						"warehouse": PURCHASE_WAREHOUSE,
+					}
+				],
+				"company": PURCHASE_COMPANY,
+				"request_id": "http-chain-purchase-order-001",
+			},
+		)
+
+		self._assert_success(status_code, payload, code="PURCHASE_ORDER_CREATED")
+		self.assertIn("purchase_order", payload["message"]["data"])
+
+	def test_create_purchase_order_idempotent_replay(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.create_purchase_order",
+			{
+				"supplier": PURCHASE_SUPPLIER,
+				"items": [
+					{
+						"item_code": PURCHASE_ITEM_CODE,
+						"qty": PURCHASE_QTY,
+						"warehouse": PURCHASE_WAREHOUSE,
+					}
+				],
+				"company": PURCHASE_COMPANY,
+				"request_id": "http-chain-purchase-order-001",
+			},
+		)
+
+		self._assert_success(status_code, payload, code="PURCHASE_ORDER_CREATED")
+		self._assert_same_saved_value(
+			"test_create_purchase_order_success",
+			"test_create_purchase_order_idempotent_replay",
+			"response.message.data.purchase_order",
+		)
+
+	def test_create_purchase_order_same_request_id_with_different_data_returns_first_result(self):
+		request_id = self._unique_request_id("http-purchase-diffdata")
+		first_payload = {
+			"supplier": PURCHASE_SUPPLIER,
+			"items": [
+				{
+					"item_code": PURCHASE_ITEM_CODE,
+					"qty": PURCHASE_QTY,
+					"warehouse": PURCHASE_WAREHOUSE,
+				}
+			],
+			"company": PURCHASE_COMPANY,
+			"request_id": request_id,
+		}
+		second_payload = {
+			"supplier": PURCHASE_SUPPLIER,
+			"items": [
+				{
+					"item_code": PURCHASE_ITEM_CODE,
+					"qty": PURCHASE_QTY + 1,
+					"warehouse": PURCHASE_WAREHOUSE,
+				}
+			],
+			"company": PURCHASE_COMPANY,
+			"request_id": request_id,
+		}
+
+		first_status, first_response = self._call_gateway(
+			"myapp.api.gateway.create_purchase_order",
+			first_payload,
+		)
+		self._assert_success(first_status, first_response, code="PURCHASE_ORDER_CREATED")
+
+		second_status, second_response = self._call_gateway(
+			"myapp.api.gateway.create_purchase_order",
+			second_payload,
+		)
+		self._assert_success(second_status, second_response, code="PURCHASE_ORDER_CREATED")
+
+		self.assertEqual(
+			first_response["message"]["data"]["purchase_order"],
+			second_response["message"]["data"]["purchase_order"],
+		)
+
+	def test_create_purchase_order_new_request_id_with_different_data_creates_new_order(self):
+		first_status, first_response = self._call_gateway(
+			"myapp.api.gateway.create_purchase_order",
+			{
+				"supplier": PURCHASE_SUPPLIER,
+				"items": [
+					{
+						"item_code": PURCHASE_ITEM_CODE,
+						"qty": PURCHASE_QTY,
+						"warehouse": PURCHASE_WAREHOUSE,
+					}
+				],
+				"company": PURCHASE_COMPANY,
+				"request_id": self._unique_request_id("http-purchase-newdata-a"),
+			},
+		)
+		self._assert_success(first_status, first_response, code="PURCHASE_ORDER_CREATED")
+
+		second_status, second_response = self._call_gateway(
+			"myapp.api.gateway.create_purchase_order",
+			{
+				"supplier": PURCHASE_SUPPLIER,
+				"items": [
+					{
+						"item_code": PURCHASE_ITEM_CODE,
+						"qty": PURCHASE_QTY + 1,
+						"warehouse": PURCHASE_WAREHOUSE,
+					}
+				],
+				"company": PURCHASE_COMPANY,
+				"request_id": self._unique_request_id("http-purchase-newdata-b"),
+			},
+		)
+		self._assert_success(second_status, second_response, code="PURCHASE_ORDER_CREATED")
+
+		self.assertNotEqual(
+			first_response["message"]["data"]["purchase_order"],
+			second_response["message"]["data"]["purchase_order"],
+		)
+
 	def test_submit_delivery_validation_error_shape(self):
 		status_code, payload = self._call_gateway(
 			"myapp.api.gateway.submit_delivery",
@@ -387,6 +521,40 @@ class GatewayHttpTestCase(TestCase):
 
 		self._assert_validation_error(status_code, payload)
 
+	def test_receive_purchase_order_success(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.receive_purchase_order",
+			{
+				"order_name": self._get_saved_value(
+					"test_create_purchase_order_success",
+					"response.message.data.purchase_order",
+				),
+				"request_id": "http-chain-purchase-receipt-001",
+			},
+		)
+
+		self._assert_success(status_code, payload, code="PURCHASE_RECEIPT_CREATED")
+		self.assertIn("purchase_receipt", payload["message"]["data"])
+
+	def test_receive_purchase_order_idempotent_replay(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.receive_purchase_order",
+			{
+				"order_name": self._get_saved_value(
+					"test_create_purchase_order_success",
+					"response.message.data.purchase_order",
+				),
+				"request_id": "http-chain-purchase-receipt-001",
+			},
+		)
+
+		self._assert_success(status_code, payload, code="PURCHASE_RECEIPT_CREATED")
+		self._assert_same_saved_value(
+			"test_receive_purchase_order_success",
+			"test_receive_purchase_order_idempotent_replay",
+			"response.message.data.purchase_receipt",
+		)
+
 	def test_create_purchase_invoice_validation_error_shape(self):
 		status_code, payload = self._call_gateway(
 			"myapp.api.gateway.create_purchase_invoice",
@@ -394,6 +562,40 @@ class GatewayHttpTestCase(TestCase):
 		)
 
 		self._assert_validation_error(status_code, payload)
+
+	def test_create_purchase_invoice_success(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.create_purchase_invoice",
+			{
+				"source_name": self._get_saved_value(
+					"test_create_purchase_order_success",
+					"response.message.data.purchase_order",
+				),
+				"request_id": "http-chain-purchase-invoice-001",
+			},
+		)
+
+		self._assert_success(status_code, payload, code="PURCHASE_INVOICE_CREATED")
+		self.assertIn("purchase_invoice", payload["message"]["data"])
+
+	def test_create_purchase_invoice_idempotent_replay(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.create_purchase_invoice",
+			{
+				"source_name": self._get_saved_value(
+					"test_create_purchase_order_success",
+					"response.message.data.purchase_order",
+				),
+				"request_id": "http-chain-purchase-invoice-001",
+			},
+		)
+
+		self._assert_success(status_code, payload, code="PURCHASE_INVOICE_CREATED")
+		self._assert_same_saved_value(
+			"test_create_purchase_invoice_success",
+			"test_create_purchase_invoice_idempotent_replay",
+			"response.message.data.purchase_invoice",
+		)
 
 	def test_confirm_pending_document_validation_error_shape(self):
 		status_code, payload = self._call_gateway(
@@ -426,6 +628,42 @@ class GatewayHttpTestCase(TestCase):
 
 		self._assert_validation_error(status_code, payload)
 
+	def test_record_supplier_payment_success(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.record_supplier_payment",
+			{
+				"reference_name": self._get_saved_value(
+					"test_create_purchase_invoice_success",
+					"response.message.data.purchase_invoice",
+				),
+				"paid_amount": PURCHASE_PAID_AMOUNT,
+				"request_id": "http-chain-supplier-payment-001",
+			},
+		)
+
+		self._assert_success(status_code, payload, code="SUPPLIER_PAYMENT_RECORDED")
+		self.assertIn("payment_entry", payload["message"]["data"])
+
+	def test_record_supplier_payment_idempotent_replay(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.record_supplier_payment",
+			{
+				"reference_name": self._get_saved_value(
+					"test_create_purchase_invoice_success",
+					"response.message.data.purchase_invoice",
+				),
+				"paid_amount": PURCHASE_PAID_AMOUNT,
+				"request_id": "http-chain-supplier-payment-001",
+			},
+		)
+
+		self._assert_success(status_code, payload, code="SUPPLIER_PAYMENT_RECORDED")
+		self._assert_same_saved_value(
+			"test_record_supplier_payment_success",
+			"test_record_supplier_payment_idempotent_replay",
+			"response.message.data.payment_entry",
+		)
+
 	def test_process_sales_return_validation_error_shape(self):
 		status_code, payload = self._call_gateway(
 			"myapp.api.gateway.process_sales_return",
@@ -447,6 +685,79 @@ class GatewayHttpTestCase(TestCase):
 		)
 
 		self._assert_validation_error(status_code, payload)
+
+	def test_process_purchase_return_success(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.process_purchase_return",
+			{
+				"source_doctype": "Purchase Invoice",
+				"source_name": self._get_saved_value(
+					"test_create_purchase_invoice_success",
+					"response.message.data.purchase_invoice",
+				),
+				"request_id": "http-chain-purchase-return-001",
+			},
+		)
+
+		self._assert_success(status_code, payload, code="PURCHASE_RETURN_CREATED")
+		self.assertIn("return_document", payload["message"]["data"])
+
+	def test_process_purchase_return_idempotent_replay(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.process_purchase_return",
+			{
+				"source_doctype": "Purchase Invoice",
+				"source_name": self._get_saved_value(
+					"test_create_purchase_invoice_success",
+					"response.message.data.purchase_invoice",
+				),
+				"request_id": "http-chain-purchase-return-001",
+			},
+		)
+
+		self._assert_success(status_code, payload, code="PURCHASE_RETURN_CREATED")
+		self._assert_same_saved_value(
+			"test_process_purchase_return_success",
+			"test_process_purchase_return_idempotent_replay",
+			"response.message.data.return_document",
+		)
+
+	def test_create_purchase_order_concurrent_same_request_id_returns_single_order(self):
+		request_id = self._unique_request_id("http-purchase-concurrent")
+		payload = {
+			"supplier": PURCHASE_SUPPLIER,
+			"items": [
+				{
+					"item_code": PURCHASE_ITEM_CODE,
+					"qty": PURCHASE_QTY,
+					"warehouse": PURCHASE_WAREHOUSE,
+				}
+			],
+			"company": PURCHASE_COMPANY,
+			"request_id": request_id,
+		}
+
+		def worker(index: int):
+			status_code, response_payload = self._post_method(
+				"myapp.api.gateway.create_purchase_order",
+				payload,
+			)
+			self._record_response(
+				test_name=f"{self._testMethodName}_worker_{index}",
+				method_path="myapp.api.gateway.create_purchase_order",
+				request_payload=payload,
+				status_code=status_code,
+				payload=response_payload,
+			)
+			return status_code, response_payload["message"]["data"]["purchase_order"]
+
+		with ThreadPoolExecutor(max_workers=4) as executor:
+			results = list(executor.map(worker, range(4)))
+
+		for status_code, _purchase_order in results:
+			self.assertEqual(status_code, 200)
+
+		self.assertEqual(len({purchase_order for _status, purchase_order in results}), 1)
 
 	def test_submit_delivery_success(self):
 		status_code, payload = self._call_gateway(

@@ -1,6 +1,6 @@
 # 开发交接摘要
 
-更新时间：2026-03-11
+更新时间：2026-03-12
 
 ## 1. 当前已完成
 
@@ -55,6 +55,41 @@
   - 无可开票明细
   - 物料已被退回
 
+## 2.1 本次对话新增验证结果
+
+本次对话中，已在宿主机通过 `python3 + HTTP` 方式，对 devcontainer 中运行的 ERPNext 服务进行了真实接口验证，而不是只做本地函数导入测试。
+
+已完成的销售侧真实验证：
+
+- `search_product`
+- `create_order`
+- `submit_delivery`
+- `create_sales_invoice`
+- `update_payment_status`
+- `process_sales_return`
+
+已完成的采购侧真实验证：
+
+- `create_purchase_order`
+- `receive_purchase_order`
+- `create_purchase_invoice`
+- `record_supplier_payment`
+- `process_purchase_return`
+
+本次新增的幂等验证类型：
+
+- 同一 `request_id` 顺序重放
+- 同一 `request_id` 但不同请求数据
+- 不同 `request_id` 且不同请求数据
+- 并发条件下同一 `request_id`
+
+当前结论：
+
+- 销售侧主链路已跑通，且已覆盖顺序幂等、不同数据和并发幂等
+- 采购侧主链路已跑通，且已覆盖顺序幂等、不同数据和并发幂等
+- 当前测试已经基本覆盖两条主链路在现阶段最关键的使用场景
+- 更复杂的边界测试可放在后续迭代补充
+
 ## 3. 已新增或更新的重要文件
 
 ### 3.1 代码
@@ -68,9 +103,12 @@
 
 ### 3.2 测试
 
+- `myapp/tests/http/test_gateway_http.py`
 - `myapp/tests/unit/test_purchase_service.py`
 - `myapp/tests/unit/test_gateway_wrappers.py`
-- `myapp/tests/http/test_gateway_http.py`
+- `myapp/tests/unit/test_idempotency.py`
+- `myapp/tests/unit/test_order_service.py`
+- `myapp/tests/unit/test_settlement_service.py`
 
 ### 3.3 文档
 
@@ -81,6 +119,7 @@
 - `README.zh-CN.md`
 - `README.md`
 - `.env.http-test.example`
+- `http-test-results.json`
 
 ### 3.4 Postman
 
@@ -174,3 +213,33 @@
 - 可按单个测试方法执行，不必一次跑完整个文件
 - 测试默认会打印并保存接口响应，便于多接口链路联调时复用返回值
 - 已支持从结果文件中读取上一步接口返回值，供链路测试复用
+- 当前返回值结果文件为 `apps/myapp/http-test-results.json`
+
+## 9. 当前测试覆盖说明
+
+目前测试分为两层：
+
+- `myapp/tests/http/`
+  用于 HTTP 冒烟测试、销售链路、采购链路、幂等和并发验证
+- `myapp/tests/unit/`
+  用于服务层和工具函数的单元测试
+
+当前已经完成的链路级测试重点：
+
+- 销售主链路成功测试
+- 销售幂等 replay 测试
+- 销售不同数据测试
+- 销售并发幂等测试
+- 采购主链路成功测试
+- 采购幂等 replay 测试
+- 采购不同数据测试
+- 采购并发幂等测试
+
+## 10. 注意事项
+
+- 宿主机执行 HTTP 测试时，应使用 `python3`，不要使用 `python`
+- 测试目标地址按当前约定使用 `http://localhost:8080`
+- 测试文件会直接打印接口返回值，同时将完整响应写入 `http-test-results.json`
+- `http-test-results.json` 中保存的是完整响应体，后续链路测试会从该文件中读取上一步结果
+- 日志中若出现 `422`，需要先区分这是预期校验失败还是主链路失败；例如探测不存在供应商时返回 `422` 属于正常现象
+- 当前顺序幂等、不同数据和并发幂等都已做真实 HTTP 验证，但部分收货、部分开票、部分退货等增强场景尚未系统补齐
