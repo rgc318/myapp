@@ -5,6 +5,7 @@ import frappe
 
 from myapp.services.purchase_service import (
 	create_purchase_invoice,
+	create_purchase_invoice_from_receipt,
 	create_purchase_order,
 	process_purchase_return,
 	receive_purchase_order,
@@ -62,6 +63,23 @@ class TestPurchaseService(TestCase):
 		with self.assertRaisesRegex(frappe.ValidationError, "没有可收货的商品明细"):
 			receive_purchase_order("PO-0001")
 
+	@patch("erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_receipt")
+	def test_receive_purchase_order_updates_qty_and_price(self, mock_make_purchase_receipt):
+		item = frappe._dict({"item_code": "ITEM-001", "purchase_order_item": "POI-001", "qty": 1, "rate": 10})
+		pr = frappe._dict({"items": [item], "name": "MAT-PRE-0001"})
+		pr.get = lambda key: pr[key]
+		mock_make_purchase_receipt.return_value = pr
+
+		with patch("myapp.services.purchase_service._insert_and_submit"):
+			result = receive_purchase_order(
+				"PO-0001",
+				receipt_items=[{"purchase_order_item": "POI-001", "qty": 3, "price": 18}],
+			)
+
+		self.assertEqual(item.qty, 3)
+		self.assertEqual(item.rate, 18)
+		self.assertEqual(result["purchase_receipt"], "MAT-PRE-0001")
+
 	@patch("erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_invoice")
 	def test_create_purchase_invoice_rejects_order_without_billable_items(self, mock_make_purchase_invoice):
 		pi = frappe._dict({"items": []})
@@ -69,6 +87,33 @@ class TestPurchaseService(TestCase):
 
 		with self.assertRaisesRegex(frappe.ValidationError, "没有可开票的商品明细"):
 			create_purchase_invoice("PO-0001")
+
+	@patch("erpnext.stock.doctype.purchase_receipt.purchase_receipt.make_purchase_invoice")
+	def test_create_purchase_invoice_from_receipt_rejects_receipt_without_billable_items(
+		self, mock_make_purchase_invoice
+	):
+		pi = frappe._dict({"items": []})
+		mock_make_purchase_invoice.return_value = pi
+
+		with self.assertRaisesRegex(frappe.ValidationError, "没有可开票的商品明细"):
+			create_purchase_invoice_from_receipt("MAT-PRE-0001")
+
+	@patch("erpnext.stock.doctype.purchase_receipt.purchase_receipt.make_purchase_invoice")
+	def test_create_purchase_invoice_from_receipt_updates_qty_and_price(self, mock_make_purchase_invoice):
+		item = frappe._dict({"item_code": "ITEM-001", "pr_detail": "PRI-001", "qty": 1, "rate": 10})
+		pi = frappe._dict({"items": [item], "name": "PINV-0002"})
+		pi.get = lambda key: pi[key]
+		mock_make_purchase_invoice.return_value = pi
+
+		with patch("myapp.services.purchase_service._insert_and_submit"):
+			result = create_purchase_invoice_from_receipt(
+				"MAT-PRE-0001",
+				invoice_items=[{"purchase_receipt_item": "PRI-001", "qty": 2, "price": 16}],
+			)
+
+		self.assertEqual(item.qty, 2)
+		self.assertEqual(item.rate, 16)
+		self.assertEqual(result["purchase_invoice"], "PINV-0002")
 
 	@patch("erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry")
 	def test_record_supplier_payment_creates_payment_entry(self, mock_get_payment_entry):
@@ -116,6 +161,15 @@ class TestPurchaseService(TestCase):
 		result = create_purchase_invoice("PO-0001", kwargs={"request_id": "pi-001"})
 
 		self.assertEqual(result["purchase_invoice"], "PINV-0010")
+		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.purchase_service.run_idempotent")
+	def test_create_purchase_invoice_from_receipt_uses_idempotent_runner(self, mock_run_idempotent):
+		mock_run_idempotent.return_value = {"status": "success", "purchase_invoice": "PINV-0020"}
+
+		result = create_purchase_invoice_from_receipt("MAT-PRE-0001", kwargs={"request_id": "pi-pr-001"})
+
+		self.assertEqual(result["purchase_invoice"], "PINV-0020")
 		mock_run_idempotent.assert_called_once()
 
 	@patch("myapp.services.purchase_service.run_idempotent")

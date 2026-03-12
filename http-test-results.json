@@ -1,17 +1,37 @@
 {
-  "test_create_purchase_order_new_request_id_with_different_data_creates_new_order": {
+  "test_receive_purchase_order_success": {
+    "method": "myapp.api.gateway.receive_purchase_order",
+    "request": {
+      "order_name": "PUR-ORD-2026-00013",
+      "request_id": "http-chain-purchase-receipt-001"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_RECEIPT_CREATED",
+        "message": "采购收货单 MAT-PRE-2026-00003 已创建并提交。",
+        "data": {
+          "purchase_receipt": "MAT-PRE-2026-00003"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_purchase_order_success": {
     "method": "myapp.api.gateway.create_purchase_order",
     "request": {
       "supplier": "MA Inc.",
       "items": [
         {
           "item_code": "SKU010",
-          "qty": 6.0,
+          "qty": 5.0,
           "warehouse": "Stores - RD"
         }
       ],
       "company": "rgc (Demo)",
-      "request_id": "http-purchase-newdata-b-1773303658534798876"
+      "request_id": "http-chain-purchase-order-001"
     },
     "http_status": 200,
     "response": {
@@ -19,9 +39,49 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_ORDER_CREATED",
-        "message": "采购订单 PUR-ORD-2026-00020 已创建并提交。",
+        "message": "采购订单 PUR-ORD-2026-00013 已创建并提交。",
         "data": {
-          "purchase_order": "PUR-ORD-2026-00020"
+          "purchase_order": "PUR-ORD-2026-00013"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_purchase_invoice_from_receipt_success": {
+    "method": "myapp.api.gateway.create_purchase_invoice_from_receipt",
+    "request": {
+      "receipt_name": "MAT-PRE-2026-00003",
+      "request_id": "http-chain-purchase-invoice-from-receipt-001"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_INVOICE_CREATED",
+        "message": "采购发票 ACC-PINV-2026-00014 已根据收货单创建并提交。",
+        "data": {
+          "purchase_invoice": "ACC-PINV-2026-00014"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_create_purchase_invoice_from_receipt_idempotent_replay": {
+    "method": "myapp.api.gateway.create_purchase_invoice_from_receipt",
+    "request": {
+      "receipt_name": "MAT-PRE-2026-00003",
+      "request_id": "http-chain-purchase-invoice-from-receipt-001"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PURCHASE_INVOICE_CREATED",
+        "message": "采购发票 ACC-PINV-2026-00014 已根据收货单创建并提交。",
+        "data": {
+          "purchase_invoice": "ACC-PINV-2026-00014"
         },
         "meta": {}
       }

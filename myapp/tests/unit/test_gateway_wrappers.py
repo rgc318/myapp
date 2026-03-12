@@ -5,6 +5,7 @@ import frappe
 
 from myapp.api.gateway import (
 	create_purchase_invoice,
+	create_purchase_invoice_from_receipt,
 	create_sales_invoice,
 	create_order,
 	create_purchase_order,
@@ -30,6 +31,7 @@ class TestGatewayWrappers(TestCase):
 			create_sales_invoice,
 			receive_purchase_order,
 			create_purchase_invoice,
+			create_purchase_invoice_from_receipt,
 			search_product,
 			confirm_pending_document,
 			update_payment_status,
@@ -103,6 +105,23 @@ class TestGatewayWrappers(TestCase):
 			source_name="PO-0001",
 			invoice_items=None,
 			kwargs={"request_id": "pi-001"},
+		)
+
+	@patch("myapp.api.gateway.create_purchase_invoice_from_receipt_service")
+	def test_create_purchase_invoice_from_receipt_passes_top_level_request_id_to_service(
+		self, mock_create_purchase_invoice_from_receipt_service
+	):
+		mock_create_purchase_invoice_from_receipt_service.return_value = {
+			"status": "success",
+			"purchase_invoice": "ACC-PINV-0002",
+		}
+
+		create_purchase_invoice_from_receipt("MAT-PRE-0001", request_id="pi-pr-001")
+
+		mock_create_purchase_invoice_from_receipt_service.assert_called_once_with(
+			receipt_name="MAT-PRE-0001",
+			invoice_items=None,
+			kwargs={"request_id": "pi-pr-001"},
 		)
 
 	@patch("myapp.api.gateway.record_supplier_payment_service")

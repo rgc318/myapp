@@ -1,6 +1,9 @@
 import frappe
 
 from myapp.services.purchase_service import create_purchase_invoice as create_purchase_invoice_service
+from myapp.services.purchase_service import (
+	create_purchase_invoice_from_receipt as create_purchase_invoice_from_receipt_service,
+)
 from myapp.services.purchase_service import create_purchase_order as create_purchase_order_service
 from myapp.services.purchase_service import process_purchase_return as process_purchase_return_service
 from myapp.services.purchase_service import receive_purchase_order as receive_purchase_order_service
@@ -31,6 +34,15 @@ def receive_purchase_order(order_name: str, receipt_items=None, kwargs=None, **e
 def create_purchase_invoice(source_name: str, invoice_items=None, kwargs=None, **extra_kwargs):
 	return create_purchase_invoice_service(
 		source_name=source_name,
+		invoice_items=invoice_items,
+		kwargs=_merge_kwargs(kwargs, extra_kwargs),
+	)
+
+
+@frappe.whitelist()
+def create_purchase_invoice_from_receipt(receipt_name: str, invoice_items=None, kwargs=None, **extra_kwargs):
+	return create_purchase_invoice_from_receipt_service(
+		receipt_name=receipt_name,
 		invoice_items=invoice_items,
 		kwargs=_merge_kwargs(kwargs, extra_kwargs),
 	)

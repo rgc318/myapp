@@ -24,6 +24,43 @@ def _ensure_target_has_items(doc, message: str):
 		frappe.throw(message)
 
 
+def _build_item_override_map(items, *, detail_keys: tuple[str, ...]):
+	override_map = {}
+
+	for row in items or []:
+		if not isinstance(row, dict):
+			continue
+
+		detail_key = next((row.get(key) for key in detail_keys if row.get(key)), None)
+		lookup_key = detail_key or row.get("item_code")
+		if not lookup_key:
+			continue
+
+		override_map[lookup_key] = row
+
+	return override_map
+
+
+def _apply_item_overrides(target_items, item_overrides: dict, *, detail_attr: str | None = None):
+	filtered_items = []
+
+	for item in target_items:
+		lookup_key = getattr(item, detail_attr, None) if detail_attr else None
+		override = item_overrides.get(lookup_key) if lookup_key else None
+		if not override:
+			override = item_overrides.get(item.item_code)
+		if not override:
+			continue
+
+		if override.get("qty") is not None:
+			item.qty = flt(override["qty"])
+		if override.get("price") is not None:
+			item.rate = flt(override["price"])
+		filtered_items.append(item)
+
+	return filtered_items
+
+
 def _validate_purchase_inputs(supplier: str, items: list[dict], company: str | None):
 	if not supplier:
 		frappe.throw(_("供应商不能为空。"))
@@ -139,14 +176,11 @@ def receive_purchase_order(order_name: str, receipt_items=None, kwargs: dict | N
 			_ensure_target_has_items(pr, _("采购订单 {0} 当前没有可收货的商品明细。").format(order_name))
 
 			if receipt_items:
-				receipt_qty_map = {d["item_code"]: flt(d["qty"]) for d in receipt_items if d.get("item_code")}
-				filtered_items = []
-				for item in pr.items:
-					if item.item_code not in receipt_qty_map:
-						continue
-					item.qty = receipt_qty_map[item.item_code]
-					filtered_items.append(item)
-				pr.items = filtered_items
+				item_overrides = _build_item_override_map(
+					receipt_items,
+					detail_keys=("purchase_order_item", "po_detail"),
+				)
+				pr.items = _apply_item_overrides(pr.items, item_overrides, detail_attr="purchase_order_item")
 				_ensure_target_has_items(pr, _("未找到可收货的商品明细。"))
 
 			if kwargs.get("set_posting_time") is not None:
@@ -190,14 +224,11 @@ def create_purchase_invoice(source_name: str, invoice_items=None, kwargs: dict |
 			_ensure_target_has_items(pi, _("采购订单 {0} 当前没有可开票的商品明细。").format(source_name))
 
 			if invoice_items:
-				invoice_qty_map = {d["item_code"]: flt(d["qty"]) for d in invoice_items if d.get("item_code")}
-				filtered_items = []
-				for item in pi.items:
-					if item.item_code not in invoice_qty_map:
-						continue
-					item.qty = invoice_qty_map[item.item_code]
-					filtered_items.append(item)
-				pi.items = filtered_items
+				item_overrides = _build_item_override_map(
+					invoice_items,
+					detail_keys=("purchase_order_item", "po_detail"),
+				)
+				pi.items = _apply_item_overrides(pi.items, item_overrides, detail_attr="po_detail")
 				_ensure_target_has_items(pi, _("未找到可开票的商品明细。"))
 
 			if kwargs.get("due_date"):
@@ -220,6 +251,58 @@ def create_purchase_invoice(source_name: str, invoice_items=None, kwargs: dict |
 		raise
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), _("采购开票处理失败"))
+		raise
+
+
+def create_purchase_invoice_from_receipt(
+	receipt_name: str, invoice_items=None, kwargs: dict | None = None
+):
+	from erpnext.stock.doctype.purchase_receipt.purchase_receipt import make_purchase_invoice
+
+	if not receipt_name:
+		frappe.throw(_("receipt_name 不能为空。"))
+
+	invoice_items = _coerce_json_value(invoice_items, [])
+	kwargs = _coerce_json_value(kwargs, {}) or {}
+	request_id = kwargs.get("request_id")
+
+	try:
+		def _create_purchase_invoice_from_receipt():
+			pi = make_purchase_invoice(receipt_name)
+			_ensure_target_has_items(pi, _("采购收货单 {0} 当前没有可开票的商品明细。").format(receipt_name))
+
+			if invoice_items:
+				item_overrides = _build_item_override_map(
+					invoice_items,
+					detail_keys=("purchase_receipt_item", "pr_detail"),
+				)
+				pi.items = _apply_item_overrides(pi.items, item_overrides, detail_attr="pr_detail")
+				_ensure_target_has_items(pi, _("未找到可开票的采购收货明细。"))
+
+			if kwargs.get("due_date"):
+				pi.due_date = kwargs["due_date"]
+			if kwargs.get("remarks"):
+				pi.remarks = kwargs["remarks"]
+			if kwargs.get("update_stock") is not None:
+				pi.update_stock = cint(kwargs["update_stock"])
+
+			_insert_and_submit(pi)
+
+			return {
+				"status": "success",
+				"purchase_invoice": pi.name,
+				"message": _("采购发票 {0} 已根据收货单创建并提交。").format(pi.name),
+			}
+
+		return run_idempotent(
+			"create_purchase_invoice_from_receipt",
+			request_id,
+			_create_purchase_invoice_from_receipt,
+		)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("基于采购收货单开票失败"))
 		raise
 
 

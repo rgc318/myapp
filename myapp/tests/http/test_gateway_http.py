@@ -135,8 +135,10 @@ class GatewayHttpTestCase(TestCase):
 		cls._results[test_name] = record
 
 		if SAVE_RESPONSES:
+			merged_results = cls._load_saved_results()
+			merged_results.update(cls._results)
 			RESULTS_FILE.write_text(
-				json.dumps(cls._results, ensure_ascii=False, indent=2),
+				json.dumps(merged_results, ensure_ascii=False, indent=2),
 				encoding="utf-8",
 			)
 
@@ -594,6 +596,40 @@ class GatewayHttpTestCase(TestCase):
 		self._assert_same_saved_value(
 			"test_create_purchase_invoice_success",
 			"test_create_purchase_invoice_idempotent_replay",
+			"response.message.data.purchase_invoice",
+		)
+
+	def test_create_purchase_invoice_from_receipt_success(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.create_purchase_invoice_from_receipt",
+			{
+				"receipt_name": self._get_saved_value(
+					"test_receive_purchase_order_success",
+					"response.message.data.purchase_receipt",
+				),
+				"request_id": "http-chain-purchase-invoice-from-receipt-001",
+			},
+		)
+
+		self._assert_success(status_code, payload, code="PURCHASE_INVOICE_CREATED")
+		self.assertIn("purchase_invoice", payload["message"]["data"])
+
+	def test_create_purchase_invoice_from_receipt_idempotent_replay(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.create_purchase_invoice_from_receipt",
+			{
+				"receipt_name": self._get_saved_value(
+					"test_receive_purchase_order_success",
+					"response.message.data.purchase_receipt",
+				),
+				"request_id": "http-chain-purchase-invoice-from-receipt-001",
+			},
+		)
+
+		self._assert_success(status_code, payload, code="PURCHASE_INVOICE_CREATED")
+		self._assert_same_saved_value(
+			"test_create_purchase_invoice_from_receipt_success",
+			"test_create_purchase_invoice_from_receipt_idempotent_replay",
 			"response.message.data.purchase_invoice",
 		)
 

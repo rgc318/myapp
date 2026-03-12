@@ -4,6 +4,9 @@ from .orders_api import create_order as create_order_service
 from .orders_api import create_sales_invoice as create_sales_invoice_service
 from .orders_api import submit_delivery as submit_delivery_service
 from .purchase_api import create_purchase_invoice as create_purchase_invoice_service
+from .purchase_api import (
+	create_purchase_invoice_from_receipt as create_purchase_invoice_from_receipt_service,
+)
 from .purchase_api import create_purchase_order as create_purchase_order_service
 from .purchase_api import process_purchase_return as process_purchase_return_service
 from .purchase_api import receive_purchase_order as receive_purchase_order_service
@@ -109,6 +112,18 @@ def create_purchase_invoice(source_name: str, invoice_items=None, kwargs=None, *
 	return _handle_gateway_call(
 		lambda: create_purchase_invoice_service(
 			source_name=source_name,
+			invoice_items=invoice_items,
+			kwargs=_merge_kwargs(kwargs, extra_kwargs),
+		),
+		success_code="PURCHASE_INVOICE_CREATED",
+	)
+
+
+@frappe.whitelist()
+def create_purchase_invoice_from_receipt(receipt_name: str, invoice_items=None, kwargs=None, **extra_kwargs):
+	return _handle_gateway_call(
+		lambda: create_purchase_invoice_from_receipt_service(
+			receipt_name=receipt_name,
 			invoice_items=invoice_items,
 			kwargs=_merge_kwargs(kwargs, extra_kwargs),
 		),

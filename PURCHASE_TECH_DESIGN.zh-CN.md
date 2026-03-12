@@ -60,7 +60,7 @@ Client
   <- Purchase Order
   -> receive_purchase_order
   <- Purchase Receipt
-  -> create_purchase_invoice
+  -> create_purchase_invoice / create_purchase_invoice_from_receipt
   <- Purchase Invoice
   -> record_supplier_payment
   <- Payment Entry
@@ -163,12 +163,14 @@ Client
 
 - `receive_purchase_order`
 - 基于采购订单生成采购收货单
+- 支持按采购订单明细或 `item_code` 改写本次收货数量
+- 支持按采购订单明细或 `item_code` 改写本次收货价格
+- 支持在收货时移除本次未到货商品
 - `request_id` 幂等支持
 - 顺序重放验证
 
 本期规划：
 
-- 按实收到货数量过滤和改写明细
 - 更多部分收货边界测试
 
 ### 6.3 模块 P3：采购发票与结算
@@ -180,8 +182,9 @@ Client
 #### 6.3.2 关键业务规则
 
 - 支持从 `Purchase Order` 直接生成 `Purchase Invoice`
-- 后续应优先评估是否补充“从 `Purchase Receipt` 生成采购发票”的业务封装
+- 支持从 `Purchase Receipt` 生成 `Purchase Invoice`
 - 支持部分开票
+- 支持按实际结算结果改写开票数量与价格
 - 支持按实际应付金额登记付款
 - 付款动作支持幂等
 - 从业务上更推荐按 `Purchase Receipt` 的实际收货结果生成采购发票，以保持应付口径与实收入库一致
@@ -191,13 +194,14 @@ Client
 已实现：
 
 - `create_purchase_invoice`
+- `create_purchase_invoice_from_receipt`
 - `record_supplier_payment`
 - 采购发票创建与供应商付款主链路已验证
+- `Purchase Receipt -> Purchase Invoice` 主链路已完成真实 HTTP 验证
 - 付款动作已支持 `request_id` 幂等与顺序重放验证
 
 本期规划：
 
-- `Purchase Receipt -> Purchase Invoice` 的独立封装
 - 更多部分开票边界测试
 
 ### 6.4 模块 P4：采购退货
@@ -238,6 +242,7 @@ Client
 - `create_purchase_order`
 - `receive_purchase_order`
 - `create_purchase_invoice`
+- `create_purchase_invoice_from_receipt`
 - `record_supplier_payment`
 - `process_purchase_return`
 
@@ -258,6 +263,7 @@ Client
 当前阶段结论：
 
 - 采购主链路已经具备可重复执行的 HTTP 回归测试
+- 采购结算已同时支持 `Purchase Order -> Purchase Invoice` 与 `Purchase Receipt -> Purchase Invoice`
 - 现阶段最关键的幂等风险点已完成验证
 - 从 `Purchase Receipt` 直接生成采购发票的独立封装，仍然是后续优先事项
 

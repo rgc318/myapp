@@ -31,6 +31,7 @@
 - `create_purchase_order`
 - `receive_purchase_order`
 - `create_purchase_invoice`
+- `create_purchase_invoice_from_receipt`
 - `record_supplier_payment`
 - `process_purchase_return`
 
@@ -73,8 +74,17 @@
 - `create_purchase_order`
 - `receive_purchase_order`
 - `create_purchase_invoice`
+- `create_purchase_invoice_from_receipt`
 - `record_supplier_payment`
 - `process_purchase_return`
+
+本次对话新增的采购侧代码调整：
+
+- `receive_purchase_order` 支持按明细行改写实际收货数量与实际收货价格
+- `receive_purchase_order` 支持在收货时移除未到货商品
+- 新增 `create_purchase_invoice_from_receipt`，用于按收货单直接生成采购发票
+- `create_purchase_invoice_from_receipt` 支持按收货明细改写开票数量与价格
+- HTTP 结果文件改为合并写入，避免分步执行链路测试时覆盖前置返回值
 
 本次新增的幂等验证类型：
 
@@ -162,7 +172,6 @@
 
 ### 6.2 采购侧
 
-- 从 `Purchase Receipt` 直接生成采购发票的独立封装路径
 - 采购部分收货 / 部分开票 / 部分退货的更完整测试
 - 后续若进入质检、拒收、批次、效期场景，可能需要新增字段或 DocType
 
@@ -176,9 +185,9 @@
 
 如果继续后端：
 
-1. 补 `Purchase Receipt -> Purchase Invoice` 的接口封装
-2. 补采购边界场景测试
-3. 开始批次 / 保质期规则设计
+1. 补采购边界场景测试
+2. 开始批次 / 保质期规则设计
+3. 评估按明细行标识而非纯 `item_code` 处理部分退货
 
 如果转前端：
 
