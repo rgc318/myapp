@@ -40,6 +40,38 @@ Pre-commit is configured to use the following tools for checking and formatting 
 - prettier
 - pyupgrade
 
+Current development environment assumptions:
+
+- The primary runtime is the VS Code devcontainer / Docker-based ERPNext environment, not direct Frappe execution from the host WSL environment.
+- For API validation and smoke tests, prefer HTTP requests against `http://localhost:8080`.
+- Use `python3` on the host side instead of assuming a `python` command is available.
+
+### HTTP Testing
+
+For `myapp.api.gateway.*` endpoints, prefer HTTP-based testing from the host instead of importing the Frappe service layer directly in WSL.
+
+Provided test file:
+
+- `myapp/tests/http/test_gateway_http.py`
+
+Provided environment example:
+
+- `.env.http-test.example`
+
+Recommended flow:
+
+1. Copy `.env.http-test.example` to `.env.http-test`.
+2. Fill in `http://localhost:8080` and either login credentials or API token values.
+3. Run `python3 apps/myapp/myapp/tests/http/test_gateway_http.py` from the repo root.
+
+Notes:
+
+- The test file reads environment variables first and then falls back to `apps/myapp/.env.http-test`.
+- The default base URL is `http://localhost:8080`.
+- Keep the host as `localhost` to match the current devcontainer setup.
+- Responses are printed and also saved to `apps/myapp/http-test-results.json`.
+- The current HTTP test suite already covers sales and purchase flow happy paths, idempotent replay, different-data cases, and concurrent idempotency checks.
+
 ### Service Validation
 
 The service layer under `myapp/api/` was validated in a VS Code devcontainer / ERPNext v16 environment through `bench console`.

@@ -304,7 +304,7 @@ frappe.call({
 from myapp.api.gateway import create_purchase_order
 
 create_purchase_order(
-    supplier="Test Supplier 1",
+    supplier="MA Inc.",
     items=[{"item_code": "SKU010", "qty": 5, "warehouse": "Stores - RD"}],
     company="rgc (Demo)",
     request_id="purchase-order-idem-001",
