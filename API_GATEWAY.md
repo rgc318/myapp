@@ -2,20 +2,40 @@
 
 Recommended custom API entry points:
 
+- Sales and product:
 - `myapp.api.gateway.search_product`
 - `myapp.api.gateway.create_order`
-- `myapp.api.gateway.create_purchase_order`
 - `myapp.api.gateway.submit_delivery`
-- `myapp.api.gateway.receive_purchase_order`
 - `myapp.api.gateway.create_sales_invoice`
-- `myapp.api.gateway.create_purchase_invoice`
-- `myapp.api.gateway.confirm_pending_document`
 - `myapp.api.gateway.update_payment_status`
-- `myapp.api.gateway.record_supplier_payment`
 - `myapp.api.gateway.process_sales_return`
+
+- Purchase and settlement:
+- `myapp.api.gateway.create_purchase_order`
+- `myapp.api.gateway.receive_purchase_order`
+- `myapp.api.gateway.create_purchase_invoice`
+- `myapp.api.gateway.create_purchase_invoice_from_receipt`
+- `myapp.api.gateway.record_supplier_payment`
 - `myapp.api.gateway.process_purchase_return`
 
-These methods are custom APIs for this app. ERPNext / Frappe native APIs are not wrapped by this document.
+- Shared utilities:
+- `myapp.api.gateway.confirm_pending_document`
+
+This document is primarily organized by business module, not by a binary split between custom APIs and official APIs.
+
+Why:
+
+- Callers usually think in terms of sales flow vs purchase flow.
+- Frontend pages, tests, and implementation guides are easier to align by module.
+- ERPNext / Frappe native APIs are better documented as underlying mappings, not as the main reading path.
+
+This document only covers custom APIs from this app. ERPNext / Frappe native APIs are referenced only when the underlying mapping matters.
+
+### Module Navigation
+
+- Sales and product: `search_product`, `create_order`, `submit_delivery`, `create_sales_invoice`, `update_payment_status`, `process_sales_return`
+- Purchase and settlement: `create_purchase_order`, `receive_purchase_order`, `create_purchase_invoice`, `create_purchase_invoice_from_receipt`, `record_supplier_payment`, `process_purchase_return`
+- Shared utilities: `confirm_pending_document`
 
 ### Unified Success Response
 
@@ -379,6 +399,7 @@ Behavior:
 
 - Creates and submits a `Delivery Note` from a `Sales Order`.
 - Supports partial delivery through `delivery_items`.
+- Supports overriding quantity and price in `delivery_items` by `sales_order_item` / `so_detail`, with `item_code` as fallback.
 - When the same `request_id` is retried, returns the first successful `delivery_note`.
 - Returns a clear validation error when the source `Sales Order` has no deliverable items left.
 
@@ -401,6 +422,7 @@ Behavior:
 
 - Creates and submits a `Sales Invoice` from a `Sales Order`.
 - Supports partial invoicing through `invoice_items`.
+- Supports overriding quantity and price in `invoice_items` by `sales_order_item` / `so_detail`, with `item_code` as fallback.
 - When the same `request_id` is retried, returns the first successful `sales_invoice`.
 - Returns a clear validation error when the source `Sales Order` has no billable items left.
 
@@ -424,6 +446,7 @@ Behavior:
 
 - Creates and submits `Purchase Receipt` from a `Purchase Order`.
 - Supports partial receipt through `receipt_items`.
+- Supports overriding quantity and price in `receipt_items` by `purchase_order_item` / `po_detail`, with `item_code` as fallback.
 - When the same `request_id` is retried, returns the first successful `purchase_receipt`.
 - Returns a clear validation error when the source `Purchase Order` has no receivable items left.
 
@@ -446,8 +469,32 @@ Behavior:
 
 - Creates and submits a `Purchase Invoice` from a `Purchase Order`.
 - Supports partial invoicing through `invoice_items`.
+- Supports overriding quantity and price in `invoice_items` by `purchase_order_item` / `po_detail`, with `item_code` as fallback.
 - When the same `request_id` is retried, returns the first successful `purchase_invoice`.
 - Returns a clear validation error when the source `Purchase Order` has no billable items left.
+
+### create_purchase_invoice_from_receipt
+
+Method:
+
+- `myapp.api.gateway.create_purchase_invoice_from_receipt`
+
+Arguments:
+
+- `receipt_name: str`
+- `invoice_items: list[dict] | json-string | None = None`
+- `request_id: str | None`
+- `due_date: str | None`
+- `remarks: str | None`
+- `update_stock: int | bool | None`
+
+Behavior:
+
+- Creates and submits a `Purchase Invoice` from a `Purchase Receipt`.
+- Supports partial invoicing through `invoice_items`.
+- Supports overriding quantity and price in `invoice_items` by `purchase_receipt_item` / `pr_detail`, with `item_code` as fallback.
+- When the same `request_id` is retried, returns the first successful `purchase_invoice`.
+- Returns a clear validation error when the source `Purchase Receipt` has no billable items left.
 
 ### confirm_pending_document
 
@@ -596,6 +643,7 @@ Arguments:
 Behavior:
 
 - Supports return creation from `Purchase Receipt` and `Purchase Invoice`.
+- Supports specifying return quantity by detail line first, with `item_code` as fallback.
 - Creates and submits the mapped purchase return document.
 - When the same `request_id` is retried, returns the first successful return result.
 
@@ -622,3 +670,103 @@ process_sales_return(
 - Warehouse must belong to the same company as the order.
 - `immediate=True` requires available stock in the selected warehouse.
 - If no `Bin` exists for an `item_code + warehouse` pair, immediate delivery is blocked.
+- Purchase-side direct price overrides during receipt or invoicing require ERPNext `Buying Settings.maintain_same_rate` to be disabled.
+- In the current environment, `Selling Settings.maintain_same_sales_rate = 0`, so sales price overrides during delivery and invoicing are allowed.
+
+### Appendix: Official APIs Used in Integration
+
+These official APIs are not the primary business entry points of this app, but they are used in testing, frontend reads, debugging, and reconciliation.
+
+Principles:
+
+- Prefer `myapp.api.gateway.*` for write operations.
+- Use official resource APIs for read operations when needed.
+- Do not directly create or submit core sales / purchase documents through official APIs, otherwise you bypass idempotency, unified error handling, and business rules in the gateway layer.
+
+#### 1. Login API
+
+Used for host-side HTTP tests or frontend session-based integration.
+
+Path:
+
+- `POST /api/method/login`
+
+Example:
+
+```bash
+curl -X POST http://localhost:8080/api/method/login \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d 'usr=Administrator&pwd=your-password'
+```
+
+#### 2. Resource Detail API
+
+Used to read full documents and child rows, for example to fetch `items` from `Sales Order`, `Purchase Receipt`, `Sales Invoice`, or `Purchase Invoice` before calling the next gateway step by detail row.
+
+Path:
+
+- `GET /api/resource/<DocType>/<name>`
+
+Common usage:
+
+- Read `Sales Order` items to get `sales_order_item`
+- Read `Purchase Order` items to get `purchase_order_item`
+- Read `Purchase Receipt` items to get `purchase_receipt_item`
+- Read `Delivery Note` / `Sales Invoice` / `Purchase Invoice` result details
+
+Example:
+
+```bash
+curl -X GET \
+  "http://localhost:8080/api/resource/Purchase%20Receipt/MAT-PRE-2026-00011" \
+  -H "Authorization: token api_key:api_secret"
+```
+
+#### 3. Resource List API
+
+Used to query resources by filters, for example stock ledger entries created by a receipt.
+
+Path:
+
+- `GET /api/resource/<DocType>?filters=...&fields=...`
+
+Common usage:
+
+- Query `Stock Ledger Entry`
+- Query `Payment Entry` by condition
+- Query result lists for specific vouchers
+
+Example:
+
+```bash
+curl -X GET \
+  "http://localhost:8080/api/resource/Stock%20Ledger%20Entry?filters=%5B%5B%22Stock%20Ledger%20Entry%22%2C%22voucher_no%22%2C%22%3D%22%2C%22MAT-PRE-2026-00011%22%5D%5D&fields=%5B%22name%22%2C%22voucher_no%22%2C%22actual_qty%22%2C%22incoming_rate%22%2C%22stock_value_difference%22%5D" \
+  -H "Authorization: token api_key:api_secret"
+```
+
+#### 4. Official DocTypes Already Used in Integration
+
+- `Sales Order`
+- `Delivery Note`
+- `Sales Invoice`
+- `Purchase Order`
+- `Purchase Receipt`
+- `Purchase Invoice`
+- `Payment Entry`
+- `Stock Ledger Entry`
+- `Selling Settings`
+- `Buying Settings`
+
+#### 5. Business Actions That Should Still Use the Custom Gateway
+
+- Create sales order
+- Create purchase order
+- Deliver goods
+- Receive goods
+- Create sales invoice
+- Create purchase invoice
+- Record customer payment
+- Record supplier payment
+- Create sales return
+- Create purchase return
+- Confirm draft documents and run workflow actions

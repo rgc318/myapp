@@ -2,20 +2,40 @@
 
 推荐使用以下自定义接口入口：
 
+- 销售与商品：
 - `myapp.api.gateway.search_product`
 - `myapp.api.gateway.create_order`
-- `myapp.api.gateway.create_purchase_order`
 - `myapp.api.gateway.submit_delivery`
-- `myapp.api.gateway.receive_purchase_order`
 - `myapp.api.gateway.create_sales_invoice`
-- `myapp.api.gateway.create_purchase_invoice`
-- `myapp.api.gateway.confirm_pending_document`
 - `myapp.api.gateway.update_payment_status`
-- `myapp.api.gateway.record_supplier_payment`
 - `myapp.api.gateway.process_sales_return`
+
+- 采购与结算：
+- `myapp.api.gateway.create_purchase_order`
+- `myapp.api.gateway.receive_purchase_order`
+- `myapp.api.gateway.create_purchase_invoice`
+- `myapp.api.gateway.create_purchase_invoice_from_receipt`
+- `myapp.api.gateway.record_supplier_payment`
 - `myapp.api.gateway.process_purchase_return`
 
-本文档只覆盖本应用的自定义接口，不封装 ERPNext / Frappe 原生接口。
+- 通用辅助：
+- `myapp.api.gateway.confirm_pending_document`
+
+本文档主结构按业务模块划分，而不是按“自定义接口 / 官方接口”二分。
+
+原因：
+
+- 调用方首先关心“销售要调哪些接口、采购要调哪些接口”
+- 后续前端页面、测试用例和实施手册也更适合按模块对齐
+- ERPNext / Frappe 原生接口更适合作为底层映射说明，而不是主阅读路径
+
+本文档只覆盖本应用的自定义接口。ERPNext / Frappe 原生接口不作为主接口文档展开，仅在必要时说明底层映射关系。
+
+### 模块导航
+
+- 销售与商品：`search_product`、`create_order`、`submit_delivery`、`create_sales_invoice`、`update_payment_status`、`process_sales_return`
+- 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
+- 通用辅助：`confirm_pending_document`
 
 ### 统一成功响应格式
 
@@ -331,6 +351,7 @@ create_purchase_order(
 
 - 基于 `Sales Order` 创建并提交 `Delivery Note`
 - 支持通过 `delivery_items` 做部分发货
+- 支持在 `delivery_items` 中按 `sales_order_item` / `so_detail` 或 `item_code` 改写数量与价格
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的 `delivery_note`
 - 当源 `Sales Order` 已无可发货明细时，返回明确的校验错误
 
@@ -353,6 +374,7 @@ create_purchase_order(
 
 - 基于 `Sales Order` 创建并提交 `Sales Invoice`
 - 支持通过 `invoice_items` 做部分开票
+- 支持在 `invoice_items` 中按 `sales_order_item` / `so_detail` 或 `item_code` 改写数量与价格
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的 `sales_invoice`
 - 当源 `Sales Order` 已无可开票明细时，返回明确的校验错误
 
@@ -376,6 +398,7 @@ create_purchase_order(
 
 - 基于 `Purchase Order` 创建并提交 `Purchase Receipt`
 - 支持通过 `receipt_items` 做部分收货
+- 支持在 `receipt_items` 中按 `purchase_order_item` / `po_detail` 或 `item_code` 改写数量与价格
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的 `purchase_receipt`
 - 当源 `Purchase Order` 已无可收货明细时，返回明确的校验错误
 
@@ -398,8 +421,32 @@ create_purchase_order(
 
 - 基于 `Purchase Order` 创建并提交 `Purchase Invoice`
 - 支持通过 `invoice_items` 做部分开票
+- 支持在 `invoice_items` 中按 `purchase_order_item` / `po_detail` 或 `item_code` 改写数量与价格
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的 `purchase_invoice`
 - 当源 `Purchase Order` 已无可开票明细时，返回明确的校验错误
+
+### create_purchase_invoice_from_receipt
+
+方法：
+
+- `myapp.api.gateway.create_purchase_invoice_from_receipt`
+
+参数：
+
+- `receipt_name: str`
+- `invoice_items: list[dict] | json-string | None = None`
+- `request_id: str | None`
+- `due_date: str | None`
+- `remarks: str | None`
+- `update_stock: int | bool | None`
+
+行为：
+
+- 基于 `Purchase Receipt` 创建并提交 `Purchase Invoice`
+- 支持通过 `invoice_items` 做部分开票
+- 支持在 `invoice_items` 中按 `purchase_receipt_item` / `pr_detail` 或 `item_code` 改写数量与价格
+- 当使用相同 `request_id` 重试时，直接返回第一次成功的 `purchase_invoice`
+- 当源 `Purchase Receipt` 已无可开票明细时，返回明确的校验错误
 
 ### confirm_pending_document
 
@@ -535,6 +582,7 @@ frappe.call({
 行为：
 
 - 支持从 `Purchase Receipt` 和 `Purchase Invoice` 创建采购退货
+- 支持在 `return_items` 中按明细行优先、`item_code` 兜底指定退货数量
 - 创建并提交映射后的采购退货单据
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的退货结果
 
@@ -550,3 +598,103 @@ frappe.call({
 - 仓库必须属于与订单相同的公司
 - `immediate=True` 需要目标仓库存在可用库存
 - 如果某个 `item_code + warehouse` 组合没有 `Bin` 记录，即时发货会被拦截
+- 采购侧若要在收货或开票阶段直接改价，需要关闭 ERPNext `Buying Settings.maintain_same_rate`
+- 当前环境的 `Selling Settings.maintain_same_sales_rate = 0`，销售侧允许在发货和开票阶段按实际成交结果改价
+
+### 附录：联调中实际会用到的官方接口
+
+以下官方接口不是本应用的主业务入口，但在测试、前端查询、调试和对账时会实际用到。
+
+原则：
+
+- 写操作优先走 `myapp.api.gateway.*`
+- 读操作可按需要使用官方资源接口
+- 不建议直接通过官方接口自行创建或提交销售/采购主单据，避免绕过幂等、统一错误码和业务封装
+
+#### 1. 登录接口
+
+用于宿主机 HTTP 测试或前端联调时获取会话。
+
+路径：
+
+- `POST /api/method/login`
+
+示例：
+
+```bash
+curl -X POST http://localhost:8080/api/method/login \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d 'usr=Administrator&pwd=your-password'
+```
+
+#### 2. 资源详情查询
+
+用于读取单据完整字段和明细行，例如读取 `Sales Order` / `Purchase Receipt` / `Sales Invoice` / `Purchase Invoice` 的 `items`，以便后续接口按明细行继续处理。
+
+路径：
+
+- `GET /api/resource/<DocType>/<name>`
+
+常见用法：
+
+- 读取 `Sales Order` 明细，获取 `sales_order_item`
+- 读取 `Purchase Order` 明细，获取 `purchase_order_item`
+- 读取 `Purchase Receipt` 明细，获取 `purchase_receipt_item`
+- 读取 `Delivery Note` / `Sales Invoice` / `Purchase Invoice` 结果详情
+
+示例：
+
+```bash
+curl -X GET \
+  "http://localhost:8080/api/resource/Purchase%20Receipt/MAT-PRE-2026-00011" \
+  -H "Authorization: token api_key:api_secret"
+```
+
+#### 3. 资源列表查询
+
+用于按过滤条件查询资源，例如查询某张收货单对应的库存分录。
+
+路径：
+
+- `GET /api/resource/<DocType>?filters=...&fields=...`
+
+常见用法：
+
+- 查询 `Stock Ledger Entry`
+- 查询特定条件下的 `Payment Entry`
+- 查询指定单据的列表结果
+
+示例：
+
+```bash
+curl -X GET \
+  "http://localhost:8080/api/resource/Stock%20Ledger%20Entry?filters=%5B%5B%22Stock%20Ledger%20Entry%22%2C%22voucher_no%22%2C%22%3D%22%2C%22MAT-PRE-2026-00011%22%5D%5D&fields=%5B%22name%22%2C%22voucher_no%22%2C%22actual_qty%22%2C%22incoming_rate%22%2C%22stock_value_difference%22%5D" \
+  -H "Authorization: token api_key:api_secret"
+```
+
+#### 4. 当前联调中已实际使用的官方 DocType
+
+- `Sales Order`
+- `Delivery Note`
+- `Sales Invoice`
+- `Purchase Order`
+- `Purchase Receipt`
+- `Purchase Invoice`
+- `Payment Entry`
+- `Stock Ledger Entry`
+- `Selling Settings`
+- `Buying Settings`
+
+#### 5. 建议直接走自定义网关的业务动作
+
+- 创建销售订单
+- 创建采购订单
+- 发货
+- 收货
+- 销售开票
+- 采购开票
+- 收款
+- 供应商付款
+- 销售退货
+- 采购退货
+- 草稿确认与工作流动作
