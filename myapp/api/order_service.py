@@ -7,6 +7,8 @@ from myapp.services.order_service import (
 	_validate_warehouse_company,
 	create_order,
 	create_sales_invoice,
+	get_sales_order_detail,
+	get_sales_order_status_summary,
 	submit_delivery,
 )
 
@@ -19,5 +21,7 @@ __all__ = [
 	"_validate_warehouse_company",
 	"create_order",
 	"create_sales_invoice",
+	"get_sales_order_detail",
+	"get_sales_order_status_summary",
 	"submit_delivery",
 ]

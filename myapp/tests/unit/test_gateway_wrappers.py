@@ -6,13 +6,18 @@ import frappe
 from myapp.api.gateway import (
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
+	create_product_and_stock,
 	create_sales_invoice,
 	create_order,
 	create_purchase_order,
+	get_sales_order_detail,
+	get_sales_order_status_summary,
+	get_customer_sales_context,
 	process_purchase_return,
 	process_sales_return,
 	receive_purchase_order,
 	search_product,
+	search_product_v2,
 	test_remote_debug,
 	update_payment_status,
 	record_supplier_payment,
@@ -27,12 +32,17 @@ class TestGatewayWrappers(TestCase):
 			test_remote_debug,
 			create_order,
 			create_purchase_order,
+			get_sales_order_detail,
+			get_sales_order_status_summary,
+			get_customer_sales_context,
 			submit_delivery,
 			create_sales_invoice,
 			receive_purchase_order,
 			create_purchase_invoice,
 			create_purchase_invoice_from_receipt,
 			search_product,
+			search_product_v2,
+			create_product_and_stock,
 			confirm_pending_document,
 			update_payment_status,
 			record_supplier_payment,
@@ -154,3 +164,96 @@ class TestGatewayWrappers(TestCase):
 			return_items=None,
 			request_id="ret-001",
 		)
+
+	@patch("myapp.api.gateway.create_product_and_stock_service")
+	def test_create_product_and_stock_passes_fields_to_service(self, mock_create_product_and_stock_service):
+		mock_create_product_and_stock_service.return_value = {
+			"status": "success",
+			"data": {"item_code": "NEW-ITEM"},
+		}
+
+		create_product_and_stock(
+			item_name="临时矿泉水",
+			opening_qty=6,
+			default_warehouse="Stores - RD",
+			standard_rate=12,
+			request_id="product-001",
+		)
+
+		mock_create_product_and_stock_service.assert_called_once_with(
+			item_name="临时矿泉水",
+			warehouse=None,
+			opening_qty=6,
+			default_warehouse="Stores - RD",
+			standard_rate=12,
+			request_id="product-001",
+		)
+
+	@patch("myapp.api.gateway.get_sales_order_detail_service")
+	def test_get_sales_order_detail_passes_order_name_to_service(self, mock_get_sales_order_detail_service):
+		mock_get_sales_order_detail_service.return_value = {
+			"status": "success",
+			"data": {"order_name": "SO-0001"},
+		}
+
+		get_sales_order_detail("SO-0001")
+
+		mock_get_sales_order_detail_service.assert_called_once_with(order_name="SO-0001")
+
+	@patch("myapp.api.gateway.search_product_v2_service")
+	def test_search_product_v2_passes_search_filters_to_service(self, mock_search_product_v2_service):
+		mock_search_product_v2_service.return_value = {
+			"status": "success",
+			"data": [],
+		}
+
+		search_product_v2(
+			"可乐",
+			search_fields=["item_name", "nickname"],
+			sort_by="price",
+			sort_order="desc",
+			in_stock_only=1,
+		)
+
+		mock_search_product_v2_service.assert_called_once_with(
+			search_key="可乐",
+			price_list="Standard Selling",
+			currency=None,
+			warehouse=None,
+			company=None,
+			limit=20,
+			search_fields=["item_name", "nickname"],
+			sort_by="price",
+			sort_order="desc",
+			in_stock_only=1,
+		)
+
+	@patch("myapp.api.gateway.get_sales_order_status_summary_service")
+	def test_get_sales_order_status_summary_passes_filters_to_service(
+		self, mock_get_sales_order_status_summary_service
+	):
+		mock_get_sales_order_status_summary_service.return_value = {
+			"status": "success",
+			"data": [],
+		}
+
+		get_sales_order_status_summary(customer="Test Customer", company="Test Company", limit=5)
+
+		mock_get_sales_order_status_summary_service.assert_called_once_with(
+			customer="Test Customer",
+			company="Test Company",
+			limit=5,
+		)
+
+	@patch("myapp.api.gateway.get_customer_sales_context_service")
+	def test_get_customer_sales_context_passes_customer_to_service(
+		self, mock_get_customer_sales_context_service
+	):
+		mock_get_customer_sales_context_service.return_value = {
+			"status": "success",
+			"data": {"customer": {"name": "Test Customer"}},
+		}
+
+		get_customer_sales_context("Test Customer")
+
+		mock_get_customer_sales_context_service.assert_called_once_with(customer="Test Customer")

@@ -5,8 +5,8 @@
 - 文档名称：副食批发业务二次开发需求及技术设计文档
 - 适用项目：`myapp` for Frappe / ERPNext
 - 文档定位：作为后续开发、接口联调、测试验收和团队协作的统一基准
-- 当前版本：v1.3
-- 更新日期：2026-03-12
+- 当前版本：v1.4
+- 更新日期：2026-03-17
 
 ## 2. 文档目标
 
@@ -106,6 +106,34 @@
 - 技术选型优先考虑 Flutter 一类适合设备能力接入的移动技术
 - 大单据打印优先采用固定模板 + 预览确认 + 系统打印或标准打印能力
 - 前端需围绕现有 `myapp.api.gateway.*` 网关接口建设，而不是直接暴露 ERPNext 原生复杂接口
+
+### 4.6 当前代码状态总览
+
+为方便研发、测试和前端对齐，当前销售 v2 相关能力状态明确如下：
+
+已完成并通过真实 HTTP 验证：
+
+- `search_product_v2`
+- `create_product_and_stock`
+- `create_order_v2`
+- `get_customer_sales_context`
+- `get_sales_order_detail`
+- `get_sales_order_status_summary`
+
+当前第一阶段可视为已完成的目标：
+
+- 商品工作台具备“搜索 + 快速建商品并入库”的后端能力
+- 销售订单具备 v2 建单能力，可显式携带联系人与收货地址文本快照
+- 销售单创建前具备客户销售上下文聚合能力，可预填默认联系人、默认地址和建议仓库
+- 销售详情页与列表页具备统一聚合状态接口
+- 以上接口已完成逐接口复测与整份 v2 HTTP 回归
+
+当前仍未完成、应进入下一阶段的能力：
+
+- 商品编辑接口
+- 商品详情接口
+- 送达确认与 `delivery.status` 真正落地
+- 更完整的订单双联系人 / 地址持久化模型
 
 ## 5. 业务流程设计
 
@@ -252,6 +280,25 @@
 - 客户默认配送路线 / 配送日期策略
 - 价格规则和促销规则联动
 - 客户信用额度校验
+- `create_order_v2` 第二阶段增强
+
+#### 6.1.4 v2 订单创建补充
+
+在本轮升级中，销售下单能力已新增 `create_order_v2`。
+
+当前第一版 `create_order_v2` 已支持：
+
+- 保留原有 `create_order` 的公司、仓库、库存和即时联动校验
+- 通过 `customer_info` 传入联系人快照
+- 通过 `shipping_info` 传入收货信息与地址文本快照
+- 在响应中返回 `snapshot`
+- 使用 `request_id` 做顺序幂等
+
+当前限制：
+
+- ERPNext 标准 `Sales Order` 对“客户联系人”和“收货联系人”没有完全分离的原生模型
+- 因此第一版优先保证地址文本快照和联系人展示信息可追溯
+- 若后续要支持更完整的双联系人持久化，建议通过自定义字段继续增强
 
 ### 6.2 模块 B：增强型商品搜索系统
 
@@ -272,20 +319,30 @@
 已实现：
 
 - 名称 / 编码 / 条码检索
+- `search_product_v2`
 - 商品库存汇总
 - 多 UOM 列表回传
 - 价格回传
 - 过滤 `disabled = 0` 且 `is_sales_item = 1`
 - 已通过 HTTP 方式对 `SKU010` 等真实样例完成联调验证
+- 支持按 `nickname` 兜底搜索
+- 支持排序字段：`relevance`、`name`、`created`、`modified`、`qty`、`price`
+- 支持 `in_stock_only`
+- 支持快速建商品并入库接口 `create_product_and_stock`
 
 ### 6.2.4 本轮测试补充
 
-在 2026-03-12 的本轮开发与测试中，已通过宿主机 `python3` 直接访问 `http://localhost:8080` 的方式，对销售侧主链路完成真实 HTTP 验证，而不是只做本地服务层导入测试。
+在 2026-03-17 的本轮开发与测试中，已通过宿主机 `python3` 直接访问 `http://localhost:8080` 的方式，对销售侧 v2 能力完成真实 HTTP 验证，而不是只做本地服务层导入测试。
 
 已跑通的销售侧链路：
 
 - `search_product`
+- `search_product_v2`
+- `create_product_and_stock`
 - `create_order`
+- `create_order_v2`
+- `get_sales_order_detail`
+- `get_sales_order_status_summary`
 - `submit_delivery`
 - `create_sales_invoice`
 - `update_payment_status`
@@ -310,9 +367,13 @@
 
 - 销售主链路已经具备可重复执行的 HTTP 回归测试
 - 现阶段最关键的幂等风险点已完成验证
+- 商品工作台相关 v2 接口已经具备可重复执行的 HTTP 回归测试
+- `create_order_v2` 已完成真实 HTTP 建单、幂等与详情回读验证
 - 部分发货、部分开票及对应改价场景已完成第一版真实 HTTP 验证
 - 销售退货已支持按明细行优先处理，并完成基于 `sales_invoice_item` 的真实 HTTP 验证
 - `myapp/tests/http/test_gateway_http.py` 已重构为可独立执行的链路测试，单条运行、分组运行和整份全量运行均已重新回归通过
+- `myapp/tests/http/test_gateway_v2_http.py` 已完成逐接口复测与全量回归
+- 当前最新一次 v2 HTTP 全量结果为 `Ran 110 tests in 22.280s ... OK`
 
 当前系统设置补充：
 
@@ -326,6 +387,8 @@
 - 支持最近成交价 / 客户专属价
 - 支持模糊拼音
 - 支持高频商品缓存和搜索排序优化
+- 商品编辑接口
+- 商品详情接口
 
 ### 6.3 模块 C：灵活收款与结算
 

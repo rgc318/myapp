@@ -4,7 +4,13 @@
 
 - 销售与商品：
 - `myapp.api.gateway.search_product`
+- `myapp.api.gateway.search_product_v2`
+- `myapp.api.gateway.create_product_and_stock`
 - `myapp.api.gateway.create_order`
+- `myapp.api.gateway.create_order_v2`
+- `myapp.api.gateway.get_customer_sales_context`
+- `myapp.api.gateway.get_sales_order_detail`
+- `myapp.api.gateway.get_sales_order_status_summary`
 - `myapp.api.gateway.submit_delivery`
 - `myapp.api.gateway.create_sales_invoice`
 - `myapp.api.gateway.update_payment_status`
@@ -33,7 +39,7 @@
 
 ### 模块导航
 
-- 销售与商品：`search_product`、`create_order`、`submit_delivery`、`create_sales_invoice`、`update_payment_status`、`process_sales_return`
+- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_order`、`create_order_v2`、`get_customer_sales_context`、`get_sales_order_detail`、`get_sales_order_status_summary`、`submit_delivery`、`create_sales_invoice`、`update_payment_status`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
 - 通用辅助：`confirm_pending_document`
 
@@ -255,10 +261,314 @@ curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.create_o
         "warehouse": "Stores - RD"
       }
     ],
-    "company": "rgc (Demo)",
-    "immediate": 1
+  "company": "rgc (Demo)",
+  "immediate": 1
   }'
 ```
+
+### create_order_v2
+
+方法：
+
+- `myapp.api.gateway.create_order_v2`
+
+参数：
+
+- `customer: str`
+- `items: list[dict] | json-string`
+- `immediate: bool = False`
+- `request_id: str | None`
+- `company: str | None`
+- `delivery_date: str | None`
+- `transaction_date: str | None`
+- `default_warehouse: str | None`
+- `currency: str | None`
+- `selling_price_list: str | None`
+- `po_no: str | None`
+- `remarks: str | None`
+- `customer_info: dict | json-string | None`
+- `shipping_info: dict | json-string | None`
+
+明细字段：
+
+- `item_code`
+- `qty`
+- `warehouse`
+- `uom` 可选
+- `price` 可选
+- `delivery_date` 可选
+
+`customer_info` 当前建议字段：
+
+- `contact_person`
+- `contact_display_name`
+- `contact_phone`
+- `contact_email`
+
+`shipping_info` 当前建议字段：
+
+- `receiver_name`
+- `receiver_phone`
+- `shipping_address_name`
+- `shipping_address_text`
+
+行为：
+
+- 创建并提交 `Sales Order`
+- 保留旧 `create_order` 的仓库归属、库存和即时出单校验逻辑
+- 支持在创建时显式传入客户联系人快照和收货信息快照
+- 当前会把可映射字段写入订单标准联系人 / 地址展示字段
+- 同时在响应中返回原始 `snapshot`，便于移动端直接继续使用
+- 使用相同 `request_id` 重试时，直接返回第一次成功结果，不重复创建单据
+
+适用场景：
+
+- 移动端销售单 v2 创建
+- 需要在订单上显式携带联系人、电话、收货地址文本
+- 后续围绕订单详情页与状态聚合继续扩展
+
+说明：
+
+- 当前 ERPNext 标准 `Sales Order` 字段对“客户联系人”和“收货联系人”并没有完全分离的原生承载模型
+- 因此 `create_order_v2` 第一版会优先保证地址文本快照和联系人展示信息可追溯
+- 更细粒度的双联系人持久化，如果后续确认要做，建议配合自定义字段继续增强
+
+示例：
+
+```python
+from myapp.api.gateway import create_order_v2
+
+create_order_v2(
+    customer="Palmer Productions Ltd.",
+    items=[{"item_code": "SKU010", "qty": 1, "warehouse": "Stores - RD", "price": 900}],
+    company="rgc (Demo)",
+    customer_info={
+        "contact_display_name": "张三",
+        "contact_phone": "13800138000",
+        "contact_email": "zhangsan@example.com",
+    },
+    shipping_info={
+        "receiver_name": "李四",
+        "receiver_phone": "13900139000",
+        "shipping_address_text": "上海市浦东新区测试路 88 号 5 楼",
+    },
+    request_id="order-v2-idem-001",
+)
+```
+
+### create_product_and_stock
+
+方法：
+
+- `myapp.api.gateway.create_product_and_stock`
+
+参数：
+
+- `item_name: str`
+- `warehouse: str | None`
+- `default_warehouse: str | None`
+- `opening_qty: float = 0`
+- `stock_uom: str | None`
+- `standard_rate: float | None`
+- `barcode: str | None`
+- `image: str | None`
+- `description: str | None`
+- `item_group: str | None`
+- `item_code: str | None`
+- `request_id: str | None`
+
+行为：
+
+- 创建正式 `Item`
+- `warehouse` 为空时优先使用 `default_warehouse`，再回退到当前用户默认仓库
+- `opening_qty > 0` 时自动创建一张 `Material Receipt` 入库
+- `standard_rate` 有值时自动补一条 `Standard Selling` 价格
+- 返回新商品基础信息，前端可直接加入当前订单草稿
+
+适用场景：
+
+- 商品搜索页找不到商品时，现场快速建档并立即加入销售单
+- 需要先补基础库存，再继续开单
+
+示例：
+
+```python
+from myapp.api.gateway import create_product_and_stock
+
+create_product_and_stock(
+    item_name="临时矿泉水",
+    default_warehouse="Stores - RD",
+    opening_qty=12,
+    standard_rate=3.5,
+)
+```
+
+### get_customer_sales_context
+
+方法：
+
+- `myapp.api.gateway.get_customer_sales_context`
+
+参数：
+
+- `customer: str`
+
+行为：
+
+- 返回销售开单前可直接使用的客户上下文
+- 聚合客户基本信息、默认联系人、默认地址
+- 返回最近销售订单中使用过的收货地址文本快照
+- 返回当前用户建议公司与建议仓库，便于移动端预填
+
+返回重点字段：
+
+- `customer`
+- `default_contact`
+- `default_address`
+- `recent_addresses`
+- `suggestions`
+
+适用场景：
+
+- 销售单 v2 创建前预加载客户信息
+- 开单页面自动带出默认联系人、默认地址、建议仓库
+- 辅助移动端减少对 `Customer`、`Contact`、`Address` 多接口拼装
+
+示例：
+
+```python
+from myapp.api.gateway import get_customer_sales_context
+
+get_customer_sales_context(customer="Palmer Productions Ltd.")
+```
+
+### search_product_v2
+
+方法：
+
+- `myapp.api.gateway.search_product_v2`
+
+参数：
+
+- `search_key: str`
+- `search_fields: list[str] | json-string | csv-string | None`
+- `warehouse: str | None`
+- `company: str | None`
+- `in_stock_only: bool = False`
+- `sort_by: str = "relevance"`
+- `sort_order: str = "asc"`
+- `price_list: str = "Standard Selling"`
+- `currency: str | None`
+- `limit: int = 20`
+
+当前支持的搜索字段：
+
+- `barcode`
+- `item_code`
+- `item_name`
+- `nickname`
+
+当前支持的排序字段：
+
+- `relevance`
+- `name`
+- `created`
+- `modified`
+- `qty`
+- `price`
+
+行为：
+
+- 支持多字段搜索
+- 支持只看有库存商品
+- 支持仓库 / 公司口径库存过滤
+- 返回更完整的商品摘要，包括 `description`、`creation`、`modified`
+- 当前 `nickname` 先复用商品描述字段作为别名搜索兜底口径
+
+适用场景：
+
+- 商品工作台
+- 多条件搜索
+- 排序与筛选
+- 后续扫码、商品编辑、快速加单入口
+
+### get_sales_order_detail
+
+方法：
+
+- `myapp.api.gateway.get_sales_order_detail`
+
+参数：
+
+- `order_name: str`
+
+行为：
+
+- 返回销售单详情聚合数据
+- 返回发货状态 `fulfillment`
+- 返回收款状态 `payment`
+- 返回完成状态 `completion`
+- 当前阶段 `delivery.status` 固定返回 `unknown`，等待后续送达确认能力接入
+
+适用场景：
+
+- 销售单详情页
+- 发货前确认
+- 开票前确认
+- 收款前查看整单状态
+
+当前返回重点字段：
+
+- `customer.contact_display_name`
+- `customer.contact_phone`
+- `customer.contact_email`
+- `shipping.shipping_address_text`
+- `shipping.address_line1`
+- `shipping.city`
+- `shipping.state`
+- `shipping.country`
+- `amounts.order_amount_estimate`
+- `amounts.receivable_amount`
+- `amounts.paid_amount`
+- `amounts.outstanding_amount`
+- `fulfillment.status`
+- `payment.status`
+- `completion.status`
+- `actions.can_submit_delivery`
+- `actions.can_create_sales_invoice`
+- `actions.can_record_payment`
+- `actions.can_process_return`
+
+### get_sales_order_status_summary
+
+方法：
+
+- `myapp.api.gateway.get_sales_order_status_summary`
+
+参数：
+
+- `customer: str | None`
+- `company: str | None`
+- `limit: int = 20`
+
+行为：
+
+- 返回销售订单列表级摘要
+- 复用销售详情聚合状态口径
+- 适合首页待办、列表卡片和最近订单展示
+
+当前返回重点字段：
+
+- `order_name`
+- `customer_name`
+- `transaction_date`
+- `document_status`
+- `order_amount_estimate`
+- `fulfillment.status`
+- `payment.status`
+- `completion.status`
+- `outstanding_amount`
+- `modified`
 
 Frappe Desk / 前端调用：
 

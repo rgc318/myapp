@@ -11,6 +11,7 @@
 
 - API 说明：`API_GATEWAY.md`
 - 中文 API 说明：`API_GATEWAY.zh-CN.md`
+- 中文测试说明：`TESTING.zh-CN.md`
 - 开发设计基准文档：`WHOLESALE_TECH_DESIGN.zh-CN.md`
 - 采购与进货流程设计文档：`PURCHASE_TECH_DESIGN.zh-CN.md`
 
@@ -53,6 +54,7 @@ pre-commit install
 已提供测试文件：
 
 - `myapp/tests/http/test_gateway_http.py`
+- `myapp/tests/http/test_gateway_v2_http.py`
 
 已提供环境变量示例文件：
 
@@ -73,6 +75,7 @@ pre-commit install
 - 当前 HTTP 测试已覆盖所有 `myapp.api.gateway.*` 接口的基础可达性 / 鉴权后响应结构
 - 当前已补充销售主链路与采购主链路的真实成功测试
 - 当前已补充销售侧与采购侧的顺序幂等、不同数据、并发幂等测试
+- 当前已补充 v2 商品与销售状态聚合接口的真实 HTTP 测试
 - 大多数基础用例只验证成功结构或校验错误结构，不依赖固定业务单据，适合日常冒烟检查
 - 测试会默认打印接口返回值，并把结果保存到 `apps/myapp/http-test-results.json`
 - 可通过 `MYAPP_HTTP_PRINT_RESPONSES` 和 `MYAPP_HTTP_SAVE_RESPONSES` 控制是否打印或保存
@@ -80,6 +83,9 @@ pre-commit install
 - 当前主链路测试已改为“单个测试自建前置数据”，不再依赖固定执行顺序或历史结果文件
 - 已重新验证单个方法、销售链路、采购链路、幂等/并发和整份文件全量执行
 - `python3 apps/myapp/myapp/tests/http/test_gateway_http.py` 当前全量结果为 `Ran 47 tests ... OK`
+- `python3 -m unittest apps.myapp.myapp.tests.http.test_gateway_v2_http` 当前全量结果为 `Ran 110 tests in 22.280s ... OK`
+
+更完整的当前覆盖范围、权限要求和本轮测试结论，请参见 `TESTING.zh-CN.md`。
 
 本次测试工作额外说明：
 

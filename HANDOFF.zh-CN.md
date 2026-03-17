@@ -1,6 +1,6 @@
 # 开发交接摘要
 
-更新时间：2026-03-12
+更新时间：2026-03-17
 
 ## 1. 当前已完成
 
@@ -125,6 +125,7 @@
 ### 3.2 测试
 
 - `myapp/tests/http/test_gateway_http.py`
+- `myapp/tests/http/test_gateway_v2_http.py`
 - `myapp/tests/unit/test_purchase_service.py`
 - `myapp/tests/unit/test_gateway_wrappers.py`
 - `myapp/tests/unit/test_idempotency.py`
@@ -135,6 +136,7 @@
 
 - `API_GATEWAY.zh-CN.md`
 - `API_GATEWAY.md`
+- `TESTING.zh-CN.md`
 - `WHOLESALE_TECH_DESIGN.zh-CN.md`
 - `PURCHASE_TECH_DESIGN.zh-CN.md`
 - `README.zh-CN.md`
@@ -235,8 +237,10 @@
 - 已支持从结果文件中读取上一步接口返回值，供链路测试复用
 - 当前返回值结果文件为 `apps/myapp/http-test-results.json`
 - `myapp/tests/http/test_gateway_http.py` 已重构为“每个链路测试自行创建前置数据”，避免固定 `request_id`、历史结果文件和执行顺序互相污染
+- `myapp/tests/http/test_gateway_v2_http.py` 已补充商品工作台与销售状态聚合相关 v2 测试
 - 已重新验证单条接口、销售链路、采购链路、幂等/并发以及整份文件全量回归
 - 当前整份 HTTP 测试文件全量结果为 `Ran 47 tests ... OK`
+- 当前 v2 HTTP 测试文件全量结果为 `Ran 110 tests in 22.280s ... OK`
 
 ## 9. 当前测试覆盖说明
 
@@ -253,6 +257,13 @@
 - 销售幂等 replay 测试
 - 销售不同数据测试
 - 销售并发幂等测试
+- v2 商品创建并入库成功测试
+- v2 商品条码 / 昵称搜索测试
+- v2 商品幂等 replay / 不同数据 / 并发幂等测试
+- v2 商品负数数量与重复条码校验测试
+- v2 销售订单详情聚合测试
+- v2 销售订单状态摘要测试
+- v2 商品到销售单的轻链路 smoke test
 - 采购主链路成功测试
 - 采购幂等 replay 测试
 - 采购不同数据测试

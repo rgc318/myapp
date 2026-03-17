@@ -37,6 +37,14 @@ def _validate_warehouse_company(warehouse: str, company: str, item_code: str):
 		)
 
 
+def _set_doc_field_if_present(doc, fieldname: str, value):
+	if value in (None, ""):
+		return
+
+	if doc.meta.has_field(fieldname):
+		doc.set(fieldname, value)
+
+
 def _build_sales_order_item(item: dict, delivery_date: str, default_warehouse: str | None, company: str):
 	item_code = item.get("item_code")
 	qty = flt(item.get("qty"))
@@ -66,6 +74,89 @@ def _build_sales_order_item(item: dict, delivery_date: str, default_warehouse: s
 		row["rate"] = flt(item["price"])
 
 	return row
+
+
+def _normalize_snapshot_payload(snapshot):
+	if snapshot in (None, ""):
+		return {}
+	return _coerce_json_value(snapshot, {}) or {}
+
+
+def _apply_sales_order_v2_snapshot(so, *, customer_info=None, shipping_info=None, kwargs=None):
+	customer_info = _normalize_snapshot_payload(customer_info)
+	shipping_info = _normalize_snapshot_payload(shipping_info)
+	kwargs = kwargs or {}
+
+	contact_person = (
+		customer_info.get("contact_person")
+		or shipping_info.get("contact_person")
+		or kwargs.get("contact_person")
+	)
+	contact_display = (
+		customer_info.get("contact_display_name")
+		or customer_info.get("contact_display")
+		or shipping_info.get("contact_display")
+		or shipping_info.get("receiver_name")
+		or kwargs.get("contact_display")
+		or kwargs.get("contact_display_name")
+	)
+	contact_phone = (
+		customer_info.get("contact_phone")
+		or shipping_info.get("contact_phone")
+		or shipping_info.get("receiver_phone")
+		or kwargs.get("contact_phone")
+		or kwargs.get("receiver_phone")
+	)
+	contact_email = (
+		customer_info.get("contact_email")
+		or shipping_info.get("contact_email")
+		or kwargs.get("contact_email")
+	)
+	shipping_address_name = (
+		shipping_info.get("shipping_address_name")
+		or kwargs.get("shipping_address_name")
+	)
+	shipping_address_text = (
+		shipping_info.get("shipping_address_text")
+		or shipping_info.get("address_display")
+		or kwargs.get("shipping_address_text")
+		or kwargs.get("address_display")
+	)
+
+	_set_doc_field_if_present(so, "contact_person", contact_person)
+	_set_doc_field_if_present(so, "contact_display", contact_display)
+	_set_doc_field_if_present(so, "contact_mobile", contact_phone)
+	_set_doc_field_if_present(so, "contact_phone", contact_phone)
+	_set_doc_field_if_present(so, "contact_email", contact_email)
+	_set_doc_field_if_present(so, "shipping_address_name", shipping_address_name)
+	_set_doc_field_if_present(so, "customer_address", shipping_address_name)
+	_set_doc_field_if_present(so, "address_display", shipping_address_text)
+
+	return {
+		"customer": {
+			"contact_person": contact_person,
+			"contact_display_name": customer_info.get("contact_display_name") or customer_info.get("contact_display"),
+			"contact_phone": customer_info.get("contact_phone"),
+			"contact_email": customer_info.get("contact_email"),
+		},
+		"shipping": {
+			"receiver_name": shipping_info.get("receiver_name"),
+			"receiver_phone": shipping_info.get("receiver_phone"),
+			"contact_display": shipping_info.get("contact_display"),
+			"contact_phone": shipping_info.get("contact_phone"),
+			"contact_email": shipping_info.get("contact_email"),
+			"shipping_address_name": shipping_address_name,
+			"shipping_address_text": shipping_address_text,
+		},
+		"applied": {
+			"contact_person": contact_person,
+			"contact_display": contact_display,
+			"contact_phone": contact_phone,
+			"contact_email": contact_email,
+			"shipping_address_name": shipping_address_name,
+			"shipping_address_text": shipping_address_text,
+		},
+	}
 
 
 def _insert_and_submit(doc):
@@ -153,6 +244,497 @@ def _validate_stock_for_immediate_delivery(items: list[dict]):
 			)
 
 
+def _sum_row_values(rows, fieldname: str):
+	return sum(flt(getattr(row, fieldname, 0) or 0) for row in rows or [])
+
+
+def _build_fulfillment_summary(order_items):
+	total_qty = _sum_row_values(order_items, "qty")
+	delivered_qty = _sum_row_values(order_items, "delivered_qty")
+	remaining_qty = max(total_qty - delivered_qty, 0)
+
+	if delivered_qty <= 0:
+		status = "pending"
+	elif delivered_qty < total_qty:
+		status = "partial"
+	else:
+		status = "shipped"
+
+	return {
+		"total_qty": total_qty,
+		"delivered_qty": delivered_qty,
+		"remaining_qty": remaining_qty,
+		"status": status,
+		"is_fully_delivered": total_qty > 0 and remaining_qty <= 0,
+	}
+
+
+def _build_payment_summary(invoice_rows):
+	receivable_amount = sum(
+		flt(
+			getattr(row, "rounded_total", None)
+			or getattr(row, "grand_total", None)
+			or getattr(row, "base_rounded_total", None)
+			or 0
+		)
+		for row in invoice_rows
+	)
+	outstanding_amount = sum(flt(getattr(row, "outstanding_amount", 0) or 0) for row in invoice_rows)
+	paid_amount = receivable_amount - outstanding_amount
+
+	if receivable_amount <= 0:
+		status = "unpaid"
+	elif outstanding_amount <= 0:
+		status = "paid"
+	elif paid_amount <= 0:
+		status = "unpaid"
+	else:
+		status = "partial"
+
+	return {
+		"receivable_amount": receivable_amount,
+		"paid_amount": max(paid_amount, 0),
+		"outstanding_amount": max(outstanding_amount, 0),
+		"status": status,
+		"is_fully_paid": receivable_amount > 0 and outstanding_amount <= 0,
+	}
+
+
+def _build_completion_summary(fulfillment: dict, payment: dict, *, docstatus: int):
+	if cint(docstatus) == 2:
+		return {"status": "closed", "is_completed": False}
+
+	is_completed = bool(fulfillment.get("is_fully_delivered") and payment.get("is_fully_paid"))
+	return {
+		"status": "completed" if is_completed else "open",
+		"is_completed": is_completed,
+	}
+
+
+def _build_action_flags(fulfillment: dict, payment: dict, *, invoice_names: list[str], delivery_note_names: list[str], docstatus: int):
+	is_submitted = cint(docstatus) == 1
+	return {
+		"can_submit_delivery": is_submitted and not fulfillment.get("is_fully_delivered"),
+		"can_create_sales_invoice": is_submitted and not payment.get("is_fully_paid"),
+		"can_record_payment": is_submitted and payment.get("outstanding_amount", 0) > 0,
+		"can_process_return": bool(is_submitted and (invoice_names or delivery_note_names)),
+	}
+
+
+def _serialize_order_items(order_items):
+	return [
+		{
+			"sales_order_item": getattr(item, "name", None),
+			"item_code": getattr(item, "item_code", None),
+			"item_name": getattr(item, "item_name", None),
+			"uom": getattr(item, "uom", None),
+			"warehouse": getattr(item, "warehouse", None),
+			"qty": flt(getattr(item, "qty", 0) or 0),
+			"delivered_qty": flt(getattr(item, "delivered_qty", 0) or 0),
+			"rate": flt(getattr(item, "rate", 0) or 0),
+			"amount": flt(getattr(item, "amount", 0) or 0),
+		}
+		for item in order_items or []
+	]
+
+
+def _document_status_label(docstatus: int):
+	if cint(docstatus) == 2:
+		return "cancelled"
+	if cint(docstatus) == 1:
+		return "submitted"
+	return "draft"
+
+
+def _extract_first_non_empty(*values):
+	for value in values:
+		if isinstance(value, str) and value.strip():
+			return value.strip()
+	return None
+
+
+def _get_doc_if_exists(doctype: str, name: str | None):
+	normalized = (name or "").strip() if isinstance(name, str) else ""
+	if not normalized:
+		return None
+	try:
+		return frappe.get_doc(doctype, normalized)
+	except frappe.DoesNotExistError:
+		return None
+
+
+def _serialize_contact_doc(contact_doc):
+	if not contact_doc:
+		return None
+
+	return {
+		"name": getattr(contact_doc, "name", None),
+		"display_name": _extract_first_non_empty(
+			getattr(contact_doc, "full_name", None),
+			getattr(contact_doc, "first_name", None),
+		),
+		"phone": _extract_first_non_empty(getattr(contact_doc, "mobile_no", None), getattr(contact_doc, "phone", None)),
+		"email": _extract_first_non_empty(getattr(contact_doc, "email_id", None)),
+	}
+
+
+def _serialize_address_doc(address_doc):
+	if not address_doc:
+		return None
+
+	return {
+		"name": getattr(address_doc, "name", None),
+		"address_display": _extract_first_non_empty(getattr(address_doc, "address_display", None)),
+		"address_line1": _extract_first_non_empty(getattr(address_doc, "address_line1", None)),
+		"address_line2": _extract_first_non_empty(getattr(address_doc, "address_line2", None)),
+		"city": _extract_first_non_empty(getattr(address_doc, "city", None)),
+		"county": _extract_first_non_empty(getattr(address_doc, "county", None)),
+		"state": _extract_first_non_empty(getattr(address_doc, "state", None)),
+		"country": _extract_first_non_empty(getattr(address_doc, "country", None)),
+		"pincode": _extract_first_non_empty(getattr(address_doc, "pincode", None)),
+	}
+
+
+def _get_linked_parent_names(link_name: str, *, parenttype: str, limit: int = 5):
+	if not link_name:
+		return []
+
+	rows = frappe.get_all(
+		"Dynamic Link",
+		filters={
+			"link_doctype": "Customer",
+			"link_name": link_name,
+			"parenttype": parenttype,
+		},
+		fields=["parent"],
+		order_by="modified desc",
+		limit_page_length=limit,
+	)
+
+	seen = set()
+	result = []
+	for row in rows:
+		parent = getattr(row, "parent", None)
+		if parent and parent not in seen:
+			seen.add(parent)
+			result.append(parent)
+	return result
+
+
+def _get_recent_sales_order_shipping_addresses(customer: str, limit: int = 5):
+	rows = frappe.get_all(
+		"Sales Order",
+		filters={"customer": customer, "docstatus": 1},
+		fields=["shipping_address_name", "address_display"],
+		order_by="modified desc",
+		limit_page_length=max(limit * 3, 10),
+	)
+
+	seen = set()
+	result = []
+	for row in rows:
+		address_name = _extract_first_non_empty(getattr(row, "shipping_address_name", None))
+		address_text = _extract_first_non_empty(getattr(row, "address_display", None))
+		key = address_name or address_text
+		if not key or key in seen:
+			continue
+		seen.add(key)
+		result.append(
+			{
+				"name": address_name,
+				"address_display": address_text,
+			}
+		)
+		if len(result) >= limit:
+			break
+	return result
+
+
+def _get_default_warehouse_for_context(company: str | None):
+	warehouse = _extract_first_non_empty(frappe.defaults.get_user_default("warehouse"))
+	if warehouse:
+		return warehouse
+
+	if not company:
+		return None
+
+	return frappe.db.get_value("Warehouse", {"company": company, "is_group": 0}, "name")
+
+
+def get_customer_sales_context(customer: str):
+	if not customer:
+		frappe.throw(_("customer 不能为空。"))
+
+	customer_doc = frappe.get_doc("Customer", customer)
+	default_contact_name = _extract_first_non_empty(getattr(customer_doc, "customer_primary_contact", None))
+	default_address_name = _extract_first_non_empty(getattr(customer_doc, "customer_primary_address", None))
+
+	contact_names = [default_contact_name] if default_contact_name else []
+	for name in _get_linked_parent_names(customer, parenttype="Contact", limit=5):
+		if name not in contact_names:
+			contact_names.append(name)
+
+	address_names = [default_address_name] if default_address_name else []
+	for name in _get_linked_parent_names(customer, parenttype="Address", limit=5):
+		if name not in address_names:
+			address_names.append(name)
+
+	default_contact = _serialize_contact_doc(_get_doc_if_exists("Contact", contact_names[0] if contact_names else None))
+	default_address = _serialize_address_doc(_get_doc_if_exists("Address", address_names[0] if address_names else None))
+	recent_addresses = _get_recent_sales_order_shipping_addresses(customer, limit=5)
+
+	company = _extract_first_non_empty(frappe.defaults.get_user_default("company"))
+	warehouse = _get_default_warehouse_for_context(company)
+
+	return {
+		"status": "success",
+		"message": _("客户 {0} 销售上下文获取成功。").format(customer_doc.customer_name or customer_doc.name),
+		"data": {
+			"customer": {
+				"name": customer_doc.name,
+				"display_name": customer_doc.customer_name or customer_doc.name,
+				"customer_group": getattr(customer_doc, "customer_group", None),
+				"territory": getattr(customer_doc, "territory", None),
+				"default_currency": getattr(customer_doc, "default_currency", None),
+			},
+			"default_contact": default_contact,
+			"default_address": default_address,
+			"recent_addresses": recent_addresses,
+			"suggestions": {
+				"company": company,
+				"warehouse": warehouse,
+			},
+		},
+	}
+
+
+def _build_customer_snapshot(so):
+	contact_doc = _get_doc_if_exists("Contact", so.get("contact_person"))
+	address_doc = _get_doc_if_exists("Address", so.get("shipping_address_name"))
+
+	contact_phone = _extract_first_non_empty(
+		so.get("contact_mobile"),
+		so.get("contact_phone"),
+		getattr(contact_doc, "mobile_no", None) if contact_doc else None,
+		getattr(contact_doc, "phone", None) if contact_doc else None,
+	)
+	contact_email = _extract_first_non_empty(
+		so.get("contact_email"),
+		getattr(contact_doc, "email_id", None) if contact_doc else None,
+	)
+
+	return {
+		"name": so.customer,
+		"display_name": so.get("customer_name") or so.customer,
+		"contact_person": so.get("contact_person"),
+		"contact_display_name": _extract_first_non_empty(
+			getattr(contact_doc, "full_name", None) if contact_doc else None,
+			getattr(contact_doc, "first_name", None) if contact_doc else None,
+			so.get("contact_display"),
+		),
+		"contact_phone": contact_phone,
+		"contact_email": contact_email,
+		"shipping_address_name": so.get("shipping_address_name"),
+		"shipping_address_text": _extract_first_non_empty(
+			so.get("address_display"),
+			getattr(address_doc, "address_display", None) if address_doc else None,
+		),
+	}
+
+
+def _build_shipping_snapshot(so):
+	address_doc = _get_doc_if_exists("Address", so.get("shipping_address_name"))
+	contact_doc = _get_doc_if_exists("Contact", so.get("contact_person"))
+
+	return {
+		"shipping_address_name": so.get("shipping_address_name"),
+		"shipping_address_text": _extract_first_non_empty(
+			so.get("address_display"),
+			getattr(address_doc, "address_display", None) if address_doc else None,
+		),
+		"address_line1": _extract_first_non_empty(
+			getattr(address_doc, "address_line1", None) if address_doc else None,
+		),
+		"address_line2": _extract_first_non_empty(
+			getattr(address_doc, "address_line2", None) if address_doc else None,
+		),
+		"city": _extract_first_non_empty(getattr(address_doc, "city", None) if address_doc else None),
+		"county": _extract_first_non_empty(getattr(address_doc, "county", None) if address_doc else None),
+		"state": _extract_first_non_empty(getattr(address_doc, "state", None) if address_doc else None),
+		"country": _extract_first_non_empty(getattr(address_doc, "country", None) if address_doc else None),
+		"pincode": _extract_first_non_empty(getattr(address_doc, "pincode", None) if address_doc else None),
+		"contact_person": so.get("contact_person"),
+		"contact_display": _extract_first_non_empty(
+			so.get("contact_display"),
+			getattr(contact_doc, "full_name", None) if contact_doc else None,
+		),
+		"contact_phone": _extract_first_non_empty(
+			so.get("contact_mobile"),
+			so.get("contact_phone"),
+			getattr(contact_doc, "mobile_no", None) if contact_doc else None,
+			getattr(contact_doc, "phone", None) if contact_doc else None,
+		),
+		"contact_email": _extract_first_non_empty(
+			so.get("contact_email"),
+			getattr(contact_doc, "email_id", None) if contact_doc else None,
+		),
+	}
+
+
+def get_sales_order_detail(order_name: str):
+	if not order_name:
+		frappe.throw(_("order_name 不能为空。"))
+
+	try:
+		so = frappe.get_doc("Sales Order", order_name)
+		order_items = list(so.get("items") or [])
+
+		delivery_note_rows = frappe.get_all(
+			"Delivery Note Item",
+			filters={"against_sales_order": order_name, "docstatus": 1},
+			fields=["parent"],
+		)
+		delivery_note_names = sorted({row.parent for row in delivery_note_rows if getattr(row, "parent", None)})
+
+		invoice_item_rows = frappe.get_all(
+			"Sales Invoice Item",
+			filters={"sales_order": order_name, "docstatus": 1},
+			fields=["parent"],
+		)
+		invoice_names = sorted({row.parent for row in invoice_item_rows if getattr(row, "parent", None)})
+
+		invoice_rows = []
+		if invoice_names:
+			invoice_rows = frappe.get_all(
+				"Sales Invoice",
+				filters={"name": ["in", invoice_names], "docstatus": 1, "is_return": 0},
+				fields=["name", "grand_total", "rounded_total", "base_rounded_total", "outstanding_amount"],
+			)
+
+		fulfillment = _build_fulfillment_summary(order_items)
+		payment = _build_payment_summary(invoice_rows)
+		completion = _build_completion_summary(fulfillment, payment, docstatus=so.docstatus)
+		amount_estimate = flt(so.get("rounded_total") or so.get("grand_total") or 0)
+
+		return {
+			"status": "success",
+			"data": {
+				"order_name": so.name,
+				"document_status": _document_status_label(so.docstatus),
+				"customer": _build_customer_snapshot(so),
+				"shipping": _build_shipping_snapshot(so),
+				"amounts": {
+					"order_amount_estimate": amount_estimate,
+					"receivable_amount": payment["receivable_amount"],
+					"paid_amount": payment["paid_amount"],
+					"outstanding_amount": payment["outstanding_amount"],
+				},
+				"fulfillment": fulfillment,
+				"delivery": {
+					"status": "unknown",
+					"delivered_at": None,
+					"delivery_confirmed_by": None,
+				},
+				"payment": payment,
+				"completion": completion,
+				"actions": _build_action_flags(
+					fulfillment,
+					payment,
+					invoice_names=invoice_names,
+					delivery_note_names=delivery_note_names,
+					docstatus=so.docstatus,
+				),
+				"items": _serialize_order_items(order_items),
+				"references": {
+					"delivery_notes": delivery_note_names,
+					"sales_invoices": invoice_names,
+				},
+				"meta": {
+					"company": so.company,
+					"currency": so.get("currency"),
+					"transaction_date": so.get("transaction_date"),
+					"delivery_date": so.get("delivery_date"),
+					"remarks": so.get("remarks"),
+				},
+			},
+			"message": _("销售订单 {0} 详情获取成功。").format(so.name),
+		}
+	except frappe.DoesNotExistError:
+		raise
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("销售订单详情获取失败"))
+		raise
+
+
+def get_sales_order_status_summary(customer: str | None = None, company: str | None = None, limit: int = 20):
+	limit = max(1, min(int(limit or 20), 100))
+	filters = {}
+	if customer:
+		filters["customer"] = customer
+	if company:
+		filters["company"] = company
+
+	try:
+		order_rows = frappe.get_all(
+			"Sales Order",
+			filters=filters,
+			fields=[
+				"name",
+				"customer",
+				"customer_name",
+				"transaction_date",
+				"company",
+				"docstatus",
+				"rounded_total",
+				"grand_total",
+				"modified",
+			],
+			order_by="modified desc",
+			limit_page_length=limit,
+		)
+
+		summaries = []
+		for row in order_rows:
+			detail = get_sales_order_detail(row.name)
+			data = detail.get("data", {})
+			summaries.append(
+				{
+					"order_name": row.name,
+					"customer_name": row.customer_name or row.customer,
+					"customer": row.customer,
+					"company": row.company,
+					"transaction_date": row.transaction_date,
+					"document_status": _document_status_label(row.docstatus),
+					"order_amount_estimate": flt(row.rounded_total or row.grand_total or 0),
+					"fulfillment": data.get("fulfillment", {}),
+					"payment": data.get("payment", {}),
+					"completion": data.get("completion", {}),
+					"outstanding_amount": flt(data.get("payment", {}).get("outstanding_amount", 0) or 0),
+					"modified": row.modified,
+				}
+			)
+
+		return {
+			"status": "success",
+			"data": summaries,
+			"meta": {
+				"filters": {
+					"customer": customer,
+					"company": company,
+					"limit": limit,
+				}
+			},
+			"message": _("销售订单状态摘要获取成功。"),
+		}
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("销售订单状态摘要获取失败"))
+		raise
+
+
 def create_order(customer: str, items: list[dict], immediate: bool = False, **kwargs):
 	items = _coerce_json_value(items, [])
 	company = kwargs.get("company") or frappe.defaults.get_user_default("company")
@@ -213,6 +795,79 @@ def create_order(customer: str, items: list[dict], immediate: bool = False, **kw
 		raise
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), _("订单创建失败"))
+		raise
+
+
+def create_order_v2(customer: str, items: list[dict], immediate: bool = False, **kwargs):
+	items = _coerce_json_value(items, [])
+	company = kwargs.get("company") or frappe.defaults.get_user_default("company")
+	delivery_date = kwargs.get("delivery_date") or nowdate()
+	default_warehouse = kwargs.get("default_warehouse")
+	request_id = kwargs.get("request_id")
+	customer_info = kwargs.get("customer_info")
+	shipping_info = kwargs.get("shipping_info")
+
+	_validate_order_inputs(customer, items, company)
+
+	try:
+		def _create_order_v2():
+			so = frappe.new_doc("Sales Order")
+			so.customer = customer
+			so.transaction_date = kwargs.get("transaction_date") or nowdate()
+			so.delivery_date = delivery_date
+			so.company = company
+			if kwargs.get("currency"):
+				so.currency = kwargs["currency"]
+			if kwargs.get("selling_price_list"):
+				so.selling_price_list = kwargs["selling_price_list"]
+			if kwargs.get("po_no"):
+				so.po_no = kwargs["po_no"]
+			if kwargs.get("remarks"):
+				so.remarks = kwargs["remarks"]
+
+			snapshot = _apply_sales_order_v2_snapshot(
+				so,
+				customer_info=customer_info,
+				shipping_info=shipping_info,
+				kwargs=kwargs,
+			)
+
+			order_items = []
+			for item in items:
+				order_item = _build_sales_order_item(item, delivery_date, default_warehouse, company)
+				order_items.append(order_item)
+				so.append("items", order_item)
+
+			if cint(immediate):
+				_validate_stock_for_immediate_delivery(order_items)
+
+			_insert_and_submit(so)
+
+			result = {
+				"status": "success",
+				"order": so.name,
+				"message": _("销售订单 {0} 已按 v2 模型创建并提交。").format(so.name),
+				"snapshot": snapshot,
+			}
+
+			if cint(immediate):
+				dn = submit_delivery(so.name, kwargs=kwargs)
+				si = create_sales_invoice(so.name, kwargs=kwargs)
+				result.update(
+					{
+						"delivery_note": dn["delivery_note"],
+						"sales_invoice": si["sales_invoice"],
+						"message": _("订单 {0} 已按 v2 模型完成下单、发货和开票。").format(so.name),
+					}
+				)
+
+			return result
+
+		return run_idempotent("create_order_v2", request_id, _create_order_v2)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("v2 订单创建失败"))
 		raise
 
 
