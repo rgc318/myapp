@@ -538,6 +538,12 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `actions.can_create_sales_invoice`
 - `actions.can_record_payment`
 - `actions.can_process_return`
+- `items[].image`
+
+补充说明：
+
+- `items` 当前会返回适合移动端 / 详情页直接渲染的商品摘要字段
+- 其中 `items[].image` 来自 `Item.image`，用于避免前端为订单详情逐行再次查询商品主数据
 
 ### get_sales_order_status_summary
 

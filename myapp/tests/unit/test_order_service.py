@@ -373,6 +373,7 @@ class TestOrderService(TestCase):
 					}
 				)
 			],
+			[frappe._dict({"name": "ITEM-001", "image": "/files/item-001.png"})],
 		]
 
 		result = get_sales_order_detail("SO-0001")
@@ -385,6 +386,7 @@ class TestOrderService(TestCase):
 		self.assertTrue(result["data"]["actions"]["can_record_payment"])
 		self.assertEqual(result["data"]["customer"]["contact_display_name"], "张三")
 		self.assertEqual(result["data"]["shipping"]["city"], "测试市")
+		self.assertEqual(result["data"]["items"][0]["image"], "/files/item-001.png")
 
 	@patch("myapp.services.order_service.get_sales_order_detail")
 	@patch("myapp.services.order_service.frappe.get_all")

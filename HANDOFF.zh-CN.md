@@ -93,6 +93,7 @@
 - `submit_delivery` 已支持按明细行优先改写数量与价格
 - `create_sales_invoice` 已支持按明细行优先改写数量与价格
 - `process_sales_return` 已补成按明细行优先、`item_code` 兜底处理
+- `get_sales_order_detail` 的 `items` 已补充返回 `image`，用于移动端订单详情直接展示商品图片，避免前端逐行补查 `Item`
 
 本次新增的幂等验证类型：
 

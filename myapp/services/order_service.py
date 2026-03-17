@@ -322,6 +322,24 @@ def _build_action_flags(fulfillment: dict, payment: dict, *, invoice_names: list
 
 
 def _serialize_order_items(order_items):
+	item_codes = []
+	for item in order_items or []:
+		item_code = getattr(item, "item_code", None)
+		if isinstance(item_code, str) and item_code and item_code not in item_codes:
+			item_codes.append(item_code)
+
+	item_image_map = {}
+	if item_codes:
+		for row in frappe.get_all(
+			"Item",
+			filters={"name": ["in", item_codes]},
+			fields=["name", "image"],
+			limit_page_length=len(item_codes),
+		):
+			item_name = getattr(row, "name", None)
+			if item_name:
+				item_image_map[item_name] = getattr(row, "image", None)
+
 	return [
 		{
 			"sales_order_item": getattr(item, "name", None),
@@ -333,6 +351,7 @@ def _serialize_order_items(order_items):
 			"delivered_qty": flt(getattr(item, "delivered_qty", 0) or 0),
 			"rate": flt(getattr(item, "rate", 0) or 0),
 			"amount": flt(getattr(item, "amount", 0) or 0),
+			"image": item_image_map.get(getattr(item, "item_code", None)),
 		}
 		for item in order_items or []
 	]
