@@ -45,6 +45,12 @@ def _set_doc_field_if_present(doc, fieldname: str, value):
 		doc.set(fieldname, value)
 
 
+def _set_doc_field(doc, fieldname: str, value):
+	if not doc.meta.has_field(fieldname):
+		return
+	doc.set(fieldname, value)
+
+
 def _build_sales_order_item(item: dict, delivery_date: str, default_warehouse: str | None, company: str):
 	item_code = item.get("item_code")
 	qty = flt(item.get("qty"))
@@ -82,7 +88,7 @@ def _normalize_snapshot_payload(snapshot):
 	return _coerce_json_value(snapshot, {}) or {}
 
 
-def _apply_sales_order_v2_snapshot(so, *, customer_info=None, shipping_info=None, kwargs=None):
+def _apply_sales_order_v2_snapshot(so, *, customer_info=None, shipping_info=None, kwargs=None, overwrite: bool = False):
 	customer_info = _normalize_snapshot_payload(customer_info)
 	shipping_info = _normalize_snapshot_payload(shipping_info)
 	kwargs = kwargs or {}
@@ -123,14 +129,15 @@ def _apply_sales_order_v2_snapshot(so, *, customer_info=None, shipping_info=None
 		or kwargs.get("address_display")
 	)
 
-	_set_doc_field_if_present(so, "contact_person", contact_person)
-	_set_doc_field_if_present(so, "contact_display", contact_display)
-	_set_doc_field_if_present(so, "contact_mobile", contact_phone)
-	_set_doc_field_if_present(so, "contact_phone", contact_phone)
-	_set_doc_field_if_present(so, "contact_email", contact_email)
-	_set_doc_field_if_present(so, "shipping_address_name", shipping_address_name)
-	_set_doc_field_if_present(so, "customer_address", shipping_address_name)
-	_set_doc_field_if_present(so, "address_display", shipping_address_text)
+	field_setter = _set_doc_field if overwrite else _set_doc_field_if_present
+	field_setter(so, "contact_person", contact_person)
+	field_setter(so, "contact_display", contact_display)
+	field_setter(so, "contact_mobile", contact_phone)
+	field_setter(so, "contact_phone", contact_phone)
+	field_setter(so, "contact_email", contact_email)
+	field_setter(so, "shipping_address_name", shipping_address_name)
+	field_setter(so, "customer_address", shipping_address_name)
+	field_setter(so, "address_display", shipping_address_text)
 
 	return {
 		"customer": {
@@ -600,6 +607,88 @@ def _build_shipping_snapshot(so):
 	}
 
 
+def _collect_sales_order_reference_names(order_name: str):
+	delivery_note_rows = frappe.get_all(
+		"Delivery Note Item",
+		filters={"against_sales_order": order_name, "docstatus": 1},
+		fields=["parent"],
+	)
+	delivery_note_names = sorted({row.parent for row in delivery_note_rows if getattr(row, "parent", None)})
+
+	invoice_item_rows = frappe.get_all(
+		"Sales Invoice Item",
+		filters={"sales_order": order_name, "docstatus": 1},
+		fields=["parent"],
+	)
+	invoice_names = sorted({row.parent for row in invoice_item_rows if getattr(row, "parent", None)})
+	return delivery_note_names, invoice_names
+
+
+def _load_sales_invoice_rows(invoice_names: list[str]):
+	if not invoice_names:
+		return []
+
+	return frappe.get_all(
+		"Sales Invoice",
+		filters={"name": ["in", invoice_names], "docstatus": 1, "is_return": 0},
+		fields=["name", "grand_total", "rounded_total", "base_rounded_total", "outstanding_amount"],
+	)
+
+
+def _get_sales_order_doc_for_update(order_name: str):
+	if not order_name:
+		frappe.throw(_("order_name 不能为空。"))
+
+	so = frappe.get_doc("Sales Order", order_name)
+	if cint(so.docstatus) == 2:
+		frappe.throw(_("已取消的销售订单不允许继续修改。"))
+	return so
+
+
+def _ensure_sales_order_items_editable(so):
+	if cint(so.docstatus) == 2:
+		frappe.throw(_("已取消的销售订单不允许修改商品明细。"))
+
+	delivery_note_names, invoice_names = _collect_sales_order_reference_names(so.name)
+	if delivery_note_names or invoice_names:
+		frappe.throw(_("销售订单 {0} 已存在发货或开票记录，当前不允许修改商品明细。").format(so.name))
+
+	fulfillment = _build_fulfillment_summary(list(so.get("items") or []))
+	if fulfillment.get("delivered_qty", 0) > 0:
+		frappe.throw(_("销售订单 {0} 已存在出货记录，当前不允许修改商品明细。").format(so.name))
+
+
+def _save_sales_order_after_update(so):
+	so.flags.ignore_validate_update_after_submit = True
+	so.flags.ignore_permissions = True
+	so.save()
+	return so
+
+
+def _commit_sales_order_context_update(so, fieldnames: list[str]):
+	if cint(so.docstatus) == 1:
+		for fieldname in fieldnames:
+			if so.meta.has_field(fieldname):
+				so.db_set(fieldname, so.get(fieldname), update_modified=True)
+		so.reload()
+		return so
+
+	return _save_sales_order_after_update(so)
+
+
+def _prepare_sales_order_for_item_replacement(so):
+	if cint(so.docstatus) != 1:
+		return so, so.name
+
+	original_name = so.name
+	so.cancel()
+	amended = frappe.copy_doc(so)
+	amended.amended_from = original_name
+	amended.docstatus = 0
+	amended.name = None
+	return amended, original_name
+
+
 def get_sales_order_detail(order_name: str):
 	if not order_name:
 		frappe.throw(_("order_name 不能为空。"))
@@ -607,28 +696,8 @@ def get_sales_order_detail(order_name: str):
 	try:
 		so = frappe.get_doc("Sales Order", order_name)
 		order_items = list(so.get("items") or [])
-
-		delivery_note_rows = frappe.get_all(
-			"Delivery Note Item",
-			filters={"against_sales_order": order_name, "docstatus": 1},
-			fields=["parent"],
-		)
-		delivery_note_names = sorted({row.parent for row in delivery_note_rows if getattr(row, "parent", None)})
-
-		invoice_item_rows = frappe.get_all(
-			"Sales Invoice Item",
-			filters={"sales_order": order_name, "docstatus": 1},
-			fields=["parent"],
-		)
-		invoice_names = sorted({row.parent for row in invoice_item_rows if getattr(row, "parent", None)})
-
-		invoice_rows = []
-		if invoice_names:
-			invoice_rows = frappe.get_all(
-				"Sales Invoice",
-				filters={"name": ["in", invoice_names], "docstatus": 1, "is_return": 0},
-				fields=["name", "grand_total", "rounded_total", "base_rounded_total", "outstanding_amount"],
-			)
+		delivery_note_names, invoice_names = _collect_sales_order_reference_names(order_name)
+		invoice_rows = _load_sales_invoice_rows(invoice_names)
 
 		fulfillment = _build_fulfillment_summary(order_items)
 		payment = _build_payment_summary(invoice_rows)
@@ -887,6 +956,120 @@ def create_order_v2(customer: str, items: list[dict], immediate: bool = False, *
 		raise
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), _("v2 订单创建失败"))
+		raise
+
+
+def update_order_v2(order_name: str, **kwargs):
+	request_id = kwargs.get("request_id")
+	customer_info = kwargs.get("customer_info")
+	shipping_info = kwargs.get("shipping_info")
+
+	try:
+		def _update_order_v2():
+			so = _get_sales_order_doc_for_update(order_name)
+			if kwargs.get("delivery_date") is not None:
+				so.delivery_date = kwargs.get("delivery_date") or None
+			if kwargs.get("transaction_date") is not None:
+				so.transaction_date = kwargs.get("transaction_date") or None
+			if kwargs.get("remarks") is not None:
+				so.remarks = kwargs.get("remarks") or None
+			if kwargs.get("po_no") is not None and so.meta.has_field("po_no"):
+				so.po_no = kwargs.get("po_no") or None
+
+			snapshot = _apply_sales_order_v2_snapshot(
+				so,
+				customer_info=customer_info,
+				shipping_info=shipping_info,
+				kwargs=kwargs,
+				overwrite=True,
+			)
+
+			_commit_sales_order_context_update(
+				so,
+				[
+					"transaction_date",
+					"delivery_date",
+					"remarks",
+					"po_no",
+					"contact_person",
+					"contact_display",
+					"contact_mobile",
+					"contact_phone",
+					"contact_email",
+					"shipping_address_name",
+					"customer_address",
+					"address_display",
+				],
+			)
+
+			return {
+				"status": "success",
+				"order": so.name,
+				"message": _("销售订单 {0} 已按 v2 模型更新。").format(so.name),
+				"snapshot": snapshot,
+				"meta": {
+					"transaction_date": so.get("transaction_date"),
+					"delivery_date": so.get("delivery_date"),
+					"remarks": so.get("remarks"),
+				},
+			}
+
+		return run_idempotent("update_order_v2", request_id, _update_order_v2)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("v2 订单更新失败"))
+		raise
+
+
+def update_order_items_v2(order_name: str, items: list[dict], **kwargs):
+	items = _coerce_json_value(items, [])
+	request_id = kwargs.get("request_id")
+
+	try:
+		def _update_order_items_v2():
+			so = _get_sales_order_doc_for_update(order_name)
+			_ensure_sales_order_items_editable(so)
+			target_so, source_order_name = _prepare_sales_order_for_item_replacement(so)
+
+			company = kwargs.get("company") or target_so.company
+			delivery_date = kwargs.get("delivery_date") or target_so.get("delivery_date") or nowdate()
+			default_warehouse = kwargs.get("default_warehouse")
+
+			if not items:
+				frappe.throw(_("无法将销售订单更新为空商品明细。"))
+
+			normalized_items = [
+				_build_sales_order_item(item, delivery_date, default_warehouse, company)
+				for item in items
+			]
+
+			target_so.set("items", [])
+			for row in normalized_items:
+				target_so.append("items", row)
+
+			if kwargs.get("delivery_date") is not None:
+				target_so.delivery_date = kwargs.get("delivery_date") or None
+
+			_insert_and_submit(target_so)
+
+			return {
+				"status": "success",
+				"order": target_so.name,
+				"source_order": source_order_name,
+				"message": _("销售订单 {0} 商品明细已按 v2 模型更新。").format(target_so.name),
+				"items": _serialize_order_items(list(target_so.get("items") or [])),
+				"meta": {
+					"delivery_date": target_so.get("delivery_date"),
+					"company": target_so.company,
+				},
+			}
+
+		return run_idempotent("update_order_items_v2", request_id, _update_order_items_v2)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("v2 订单商品明细更新失败"))
 		raise
 
 

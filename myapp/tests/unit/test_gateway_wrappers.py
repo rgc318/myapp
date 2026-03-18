@@ -20,6 +20,8 @@ from myapp.api.gateway import (
 	search_product_v2,
 	test_remote_debug,
 	update_payment_status,
+	update_order_items_v2,
+	update_order_v2,
 	record_supplier_payment,
 	submit_delivery,
 	confirm_pending_document,
@@ -35,6 +37,8 @@ class TestGatewayWrappers(TestCase):
 			get_sales_order_detail,
 			get_sales_order_status_summary,
 			get_customer_sales_context,
+			update_order_v2,
+			update_order_items_v2,
 			submit_delivery,
 			create_sales_invoice,
 			receive_purchase_order,
@@ -243,6 +247,46 @@ class TestGatewayWrappers(TestCase):
 			customer="Test Customer",
 			company="Test Company",
 			limit=5,
+		)
+
+	@patch("myapp.api.gateway.update_order_v2_service")
+	def test_update_order_v2_passes_fields_to_service(self, mock_update_order_v2_service):
+		mock_update_order_v2_service.return_value = {
+			"status": "success",
+			"order": "SO-0001",
+		}
+
+		update_order_v2(
+			"SO-0001",
+			delivery_date="2026-03-20",
+			remarks="updated",
+			customer_info={"contact_phone": "13800138000"},
+		)
+
+		mock_update_order_v2_service.assert_called_once_with(
+			order_name="SO-0001",
+			delivery_date="2026-03-20",
+			remarks="updated",
+			customer_info={"contact_phone": "13800138000"},
+		)
+
+	@patch("myapp.api.gateway.update_order_items_v2_service")
+	def test_update_order_items_v2_passes_items_to_service(self, mock_update_order_items_v2_service):
+		mock_update_order_items_v2_service.return_value = {
+			"status": "success",
+			"order": "SO-0001",
+		}
+
+		update_order_items_v2(
+			"SO-0001",
+			items=[{"item_code": "ITEM-001", "qty": 2, "warehouse": "Stores - TC"}],
+			request_id="upd-items-001",
+		)
+
+		mock_update_order_items_v2_service.assert_called_once_with(
+			order_name="SO-0001",
+			items=[{"item_code": "ITEM-001", "qty": 2, "warehouse": "Stores - TC"}],
+			request_id="upd-items-001",
 		)
 
 	@patch("myapp.api.gateway.get_customer_sales_context_service")

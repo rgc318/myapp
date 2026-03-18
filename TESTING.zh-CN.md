@@ -108,6 +108,8 @@ python3 -m unittest \
 - `search_product_v2`
 - `create_product_and_stock`
 - `create_order_v2`
+- `update_order_v2`
+- `update_order_items_v2`
 - `get_customer_sales_context`
 - `get_sales_order_detail`
 - `get_sales_order_status_summary`
@@ -118,6 +120,8 @@ python3 -m unittest \
   - `search_product_v2`
   - `create_product_and_stock`
   - `create_order_v2`
+  - `update_order_v2`
+  - `update_order_items_v2`
   - `get_customer_sales_context`
   - `get_sales_order_detail`
   - `get_sales_order_status_summary`
@@ -139,6 +143,10 @@ python3 -m unittest \
 - `create_order_v2` 成功路径
 - `create_order_v2` 顺序幂等 replay
 - `create_order_v2` 创建后详情接口可回读地址文本快照
+- `update_order_v2` 成功路径
+- `update_order_v2` 更新后详情接口可回读联系人 / 地址 / 交货日期
+- `update_order_items_v2` 成功路径
+- `update_order_items_v2` 在提交态订单上自动 amendment 并返回新订单号
 - v2 轻链路 smoke test
 
 v2 轻链路内容：
@@ -158,6 +166,8 @@ v2 轻链路内容：
 - `myapp.api.gateway.search_product_v2`
 - `myapp.api.gateway.create_product_and_stock`
 - `myapp.api.gateway.create_order_v2`
+- `myapp.api.gateway.update_order_v2`
+- `myapp.api.gateway.update_order_items_v2`
 - `myapp.api.gateway.get_customer_sales_context`
 - `myapp.api.gateway.get_sales_order_detail`
 - `myapp.api.gateway.get_sales_order_status_summary`
@@ -202,15 +212,17 @@ v2 轻链路内容：
 
 - 新增的 6 个 v2 商品增强用例：`OK`
 - 新增的 3 个 `create_order_v2` 用例：`OK`
+- 新增的 2 个订单更新 v2 用例：`OK`
 - 新增的 1 个 `get_customer_sales_context` 用例：`OK`
 - 单接口复测结果：`Ran 1 test in 0.165s ... OK`
-- 最新一次 `test_gateway_v2_http.py` 全量执行结果：`Ran 110 tests in 22.280s ... OK`
+- 最新一次定向订单更新测试结果：`Ran 2 tests in 0.494s ... OK`
+- 最新一次 `test_gateway_v2_http.py` 全量执行结果：`Ran 112 tests in 22.138s ... OK`
 
 说明：
 
 - 该全量结果包含 v2 文件直接定义的测试，以及测试模块中可被发现的既有 HTTP 测试类
-- 其中商品工作台与销售状态聚合相关新增能力已全部通过
-- 本次重新复测后，6 个升级接口都已再次确认可用
+- 其中商品工作台、销售状态聚合、订单更新相关新增能力已全部通过
+- 本次重新复测后，8 个销售侧 v2 升级接口都已再次确认可用
 
 ## 9. 当前仍建议后续补充的测试
 

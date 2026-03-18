@@ -5,11 +5,14 @@ import frappe
 
 from myapp.services.order_service import (
 	create_order,
+	create_order_v2,
 	create_sales_invoice,
 	get_customer_sales_context,
 	get_sales_order_detail,
 	get_sales_order_status_summary,
 	submit_delivery,
+	update_order_items_v2,
+	update_order_v2,
 )
 
 
@@ -255,6 +258,105 @@ class TestOrderService(TestCase):
 
 		self.assertEqual(result["order"], "SO-0009")
 		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.order_service.run_idempotent")
+	@patch("myapp.services.order_service._commit_sales_order_context_update")
+	@patch("myapp.services.order_service._get_sales_order_doc_for_update")
+	def test_update_order_v2_updates_snapshot_and_meta(
+		self, mock_get_order, mock_commit_order, mock_run_idempotent
+	):
+		so = frappe._dict(
+			{
+				"name": "SO-0002",
+				"docstatus": 1,
+				"company": "Test Company",
+				"delivery_date": "2026-03-18",
+				"transaction_date": "2026-03-18",
+				"remarks": None,
+				"contact_person": None,
+				"contact_display": None,
+				"contact_mobile": None,
+				"contact_phone": None,
+				"contact_email": None,
+				"shipping_address_name": None,
+				"customer_address": None,
+				"address_display": None,
+			}
+		)
+		so.meta = MagicMock()
+		so.meta.has_field.return_value = True
+		so.set = lambda field, value: so.__setitem__(field, value)
+		so.get = lambda field, default=None: so[field] if field in so else default
+		mock_get_order.return_value = so
+		mock_commit_order.return_value = so
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
+
+		result = update_order_v2(
+			order_name="SO-0002",
+			delivery_date="2026-03-20",
+			remarks="updated",
+			customer_info={"contact_display_name": "张三", "contact_phone": "13800138000"},
+			shipping_info={"receiver_name": "李四", "shipping_address_text": "上海市测试路 1 号"},
+			request_id="upd-001",
+		)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["order"], "SO-0002")
+		self.assertEqual(result["snapshot"]["applied"]["contact_display"], "张三")
+		self.assertEqual(result["snapshot"]["applied"]["shipping_address_text"], "上海市测试路 1 号")
+		self.assertEqual(so.delivery_date, "2026-03-20")
+		self.assertEqual(so.remarks, "updated")
+		mock_commit_order.assert_called_once()
+
+	@patch("myapp.services.order_service.run_idempotent")
+	@patch("myapp.services.order_service._serialize_order_items")
+	@patch("myapp.services.order_service._insert_and_submit")
+	@patch("myapp.services.order_service._prepare_sales_order_for_item_replacement")
+	@patch("myapp.services.order_service._build_sales_order_item")
+	@patch("myapp.services.order_service._ensure_sales_order_items_editable")
+	@patch("myapp.services.order_service._get_sales_order_doc_for_update")
+	def test_update_order_items_v2_replaces_order_items(
+		self,
+		mock_get_order,
+		mock_ensure_editable,
+		mock_build_item,
+		mock_prepare_replace,
+		mock_insert_and_submit,
+		mock_serialize_items,
+		mock_run_idempotent,
+	):
+		so = MagicMock()
+		so.name = "SO-0003"
+		so.docstatus = 1
+		so.company = "Test Company"
+		so.delivery_date = "2026-03-18"
+		items_holder = []
+		so.get.side_effect = lambda field, default=None: items_holder if field == "items" else getattr(so, field, default)
+		so.set.side_effect = lambda field, value: items_holder.clear() if field == "items" else None
+		so.append.side_effect = lambda field, value: items_holder.append(frappe._dict(value))
+		mock_get_order.return_value = so
+		mock_prepare_replace.return_value = (so, "SO-0003")
+		mock_build_item.side_effect = [
+			{"item_code": "ITEM-001", "qty": 2, "warehouse": "Stores - TC", "delivery_date": "2026-03-18"},
+			{"item_code": "ITEM-002", "qty": 1, "warehouse": "Stores - TC", "delivery_date": "2026-03-18"},
+		]
+		mock_serialize_items.return_value = [{"item_code": "ITEM-001"}, {"item_code": "ITEM-002"}]
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
+
+		result = update_order_items_v2(
+			order_name="SO-0003",
+			items=[
+				{"item_code": "ITEM-001", "qty": 2, "warehouse": "Stores - TC"},
+				{"item_code": "ITEM-002", "qty": 1, "warehouse": "Stores - TC"},
+			],
+			request_id="item-upd-001",
+		)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["order"], "SO-0003")
+		self.assertEqual(len(items_holder), 2)
+		mock_ensure_editable.assert_called_once_with(so)
+		mock_insert_and_submit.assert_called_once_with(so)
 
 	@patch("myapp.services.order_service.run_idempotent")
 	@patch("myapp.services.order_service.frappe.db.get_value")

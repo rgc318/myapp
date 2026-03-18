@@ -86,6 +86,27 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self._assert_success(status_code, response, code="ORDER_V2_CREATED")
 		return payload, response
 
+	def _update_sales_order_v2(self, order_name: str, **kwargs):
+		payload = {
+			"order_name": order_name,
+			"request_id": kwargs.pop("request_id", self._unique_request_id("http-v2-update-order")),
+		}
+		payload.update(kwargs)
+		status_code, response = self._call_gateway("myapp.api.gateway.update_order_v2", payload)
+		self._assert_success(status_code, response, code="ORDER_V2_UPDATED")
+		return payload, response
+
+	def _update_sales_order_items_v2(self, order_name: str, items: list[dict], **kwargs):
+		payload = {
+			"order_name": order_name,
+			"items": items,
+			"request_id": kwargs.pop("request_id", self._unique_request_id("http-v2-update-order-items")),
+		}
+		payload.update(kwargs)
+		status_code, response = self._call_gateway("myapp.api.gateway.update_order_items_v2", payload)
+		self._assert_success(status_code, response, code="ORDER_ITEMS_V2_UPDATED")
+		return payload, response
+
 	def _create_product_and_stock(
 		self,
 		*,
@@ -231,6 +252,69 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self._assert_success(status_code, detail_payload, code="ORDER_DETAIL_FETCHED")
 		data = detail_payload["message"]["data"]
 		self.assertEqual(data["shipping"]["shipping_address_text"], "上海市浦东新区测试路 88 号 5 楼")
+
+	def test_update_order_v2_success(self):
+		_order_request, order_payload = self._create_sales_order_v2()
+		order_name = order_payload["message"]["data"]["order"]
+
+		_update_request, update_payload = self._update_sales_order_v2(
+			order_name,
+			delivery_date="2026-03-25",
+			remarks="updated via v2 http",
+			customer_info={
+				"contact_display_name": "王五",
+				"contact_phone": "13600136000",
+			},
+			shipping_info={
+				"receiver_name": "赵六",
+				"receiver_phone": "13700137000",
+				"shipping_address_text": "北京市朝阳区移动端更新路 66 号",
+			},
+		)
+
+		self.assertEqual(update_payload["message"]["data"]["order"], order_name)
+		self.assertEqual(update_payload["message"]["data"]["snapshot"]["applied"]["contact_display"], "王五")
+
+		detail_status, detail_payload = self._call_gateway(
+			"myapp.api.gateway.get_sales_order_detail",
+			{"order_name": order_name},
+		)
+		self._assert_success(detail_status, detail_payload, code="ORDER_DETAIL_FETCHED")
+		data = detail_payload["message"]["data"]
+		self.assertEqual(data["meta"]["delivery_date"], "2026-03-25")
+		self.assertEqual(data["shipping"]["shipping_address_text"], "北京市朝阳区移动端更新路 66 号")
+
+	def test_update_order_items_v2_success(self):
+		_order_request, order_payload = self._create_sales_order_v2()
+		order_name = order_payload["message"]["data"]["order"]
+
+		_update_request, update_payload = self._update_sales_order_items_v2(
+			order_name,
+			items=[
+				{
+					"item_code": "SKU010",
+					"qty": 2,
+					"warehouse": SALES_WAREHOUSE,
+					"price": 300,
+				}
+			],
+		)
+
+		updated_order_name = update_payload["message"]["data"]["order"]
+		self.assertNotEqual(updated_order_name, "")
+		self.assertEqual(update_payload["message"]["data"]["source_order"], order_name)
+		self.assertEqual(len(update_payload["message"]["data"]["items"]), 1)
+		self.assertEqual(update_payload["message"]["data"]["items"][0]["item_code"], "SKU010")
+
+		detail_status, detail_payload = self._call_gateway(
+			"myapp.api.gateway.get_sales_order_detail",
+			{"order_name": updated_order_name},
+		)
+		self._assert_success(detail_status, detail_payload, code="ORDER_DETAIL_FETCHED")
+		data = detail_payload["message"]["data"]
+		self.assertEqual(len(data["items"]), 1)
+		self.assertEqual(data["items"][0]["item_code"], "SKU010")
+		self.assertEqual(data["items"][0]["qty"], 2.0)
 
 	def test_get_customer_sales_context_success(self):
 		status_code, payload = self._call_gateway(

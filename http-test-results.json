@@ -69,8 +69,8 @@
   "test_create_purchase_invoice_from_receipt_idempotent_replay": {
     "method": "myapp.api.gateway.create_purchase_invoice_from_receipt",
     "request": {
-      "receipt_name": "MAT-PRE-2026-00090",
-      "request_id": "http-chain-purchase-invoice-from-receipt-1773751851053165741"
+      "receipt_name": "MAT-PRE-2026-00106",
+      "request_id": "http-chain-purchase-invoice-from-receipt-1773825224261678191"
     },
     "http_status": 200,
     "response": {
@@ -78,9 +78,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_INVOICE_CREATED",
-        "message": "采购发票 ACC-PINV-2026-00121 已根据收货单创建并提交。",
+        "message": "采购发票 ACC-PINV-2026-00143 已根据收货单创建并提交。",
         "data": {
-          "purchase_invoice": "ACC-PINV-2026-00121"
+          "purchase_invoice": "ACC-PINV-2026-00143"
         },
         "meta": {}
       }
@@ -89,15 +89,15 @@
   "test_receive_purchase_order_partial_success": {
     "method": "myapp.api.gateway.receive_purchase_order",
     "request": {
-      "order_name": "PUR-ORD-2026-00224",
+      "order_name": "PUR-ORD-2026-00262",
       "receipt_items": [
         {
-          "purchase_order_item": "3fcv6lfu50",
+          "purchase_order_item": "g0glb5jrvk",
           "qty": 2,
           "price": 480
         }
       ],
-      "request_id": "http-partial-purchase-receipt-1773751857335738859"
+      "request_id": "http-partial-purchase-receipt-1773825230563005593"
     },
     "http_status": 200,
     "response": {
@@ -105,9 +105,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_RECEIPT_CREATED",
-        "message": "采购收货单 MAT-PRE-2026-00096 已创建并提交。",
+        "message": "采购收货单 MAT-PRE-2026-00112 已创建并提交。",
         "data": {
-          "purchase_receipt": "MAT-PRE-2026-00096"
+          "purchase_receipt": "MAT-PRE-2026-00112"
         },
         "meta": {}
       }
@@ -116,15 +116,15 @@
   "test_create_purchase_invoice_from_receipt_partial_success": {
     "method": "myapp.api.gateway.create_purchase_invoice_from_receipt",
     "request": {
-      "receipt_name": "MAT-PRE-2026-00091",
+      "receipt_name": "MAT-PRE-2026-00107",
       "invoice_items": [
         {
-          "purchase_receipt_item": "3dip103g66",
+          "purchase_receipt_item": "fum3hvqle8",
           "qty": 1,
           "price": 470
         }
       ],
-      "request_id": "http-partial-purchase-invoice-from-receipt-1773751851549012181"
+      "request_id": "http-partial-purchase-invoice-from-receipt-1773825224782169269"
     },
     "http_status": 200,
     "response": {
@@ -132,9 +132,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_INVOICE_CREATED",
-        "message": "采购发票 ACC-PINV-2026-00122 已根据收货单创建并提交。",
+        "message": "采购发票 ACC-PINV-2026-00144 已根据收货单创建并提交。",
         "data": {
-          "purchase_invoice": "ACC-PINV-2026-00122"
+          "purchase_invoice": "ACC-PINV-2026-00144"
         },
         "meta": {}
       }
@@ -144,14 +144,14 @@
     "method": "myapp.api.gateway.process_purchase_return",
     "request": {
       "source_doctype": "Purchase Receipt",
-      "source_name": "MAT-PRE-2026-00093",
+      "source_name": "MAT-PRE-2026-00109",
       "return_items": [
         {
           "item_code": "SKU010",
           "qty": 1
         }
       ],
-      "request_id": "http-partial-purchase-return-from-receipt-1773751854973471207"
+      "request_id": "http-partial-purchase-return-from-receipt-1773825228231985706"
     },
     "http_status": 200,
     "response": {
@@ -159,9 +159,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_RETURN_CREATED",
-        "message": "采购退货单 MAT-PRE-2026-00094 已创建并提交。",
+        "message": "采购退货单 MAT-PRE-2026-00110 已创建并提交。",
         "data": {
-          "return_document": "MAT-PRE-2026-00094",
+          "return_document": "MAT-PRE-2026-00110",
           "return_doctype": "Purchase Receipt"
         },
         "meta": {}
@@ -171,15 +171,15 @@
   "test_submit_delivery_partial_success": {
     "method": "myapp.api.gateway.submit_delivery",
     "request": {
-      "order_name": "SAL-ORD-2026-00243",
+      "order_name": "SAL-ORD-2026-00291",
       "delivery_items": [
         {
-          "sales_order_item": "3fu3hdsohg",
+          "sales_order_item": "g127tqkm2b",
           "qty": 2,
           "price": 880
         }
       ],
-      "request_id": "http-partial-delivery-1773751859150690371"
+      "request_id": "http-partial-delivery-1773825232320500080"
     },
     "http_status": 200,
     "response": {
@@ -187,9 +187,9 @@
         "ok": true,
         "status": "success",
         "code": "DELIVERY_SUBMITTED",
-        "message": "发货单 MAT-DN-2026-00053 已创建并提交。",
+        "message": "发货单 MAT-DN-2026-00059 已创建并提交。",
         "data": {
-          "delivery_note": "MAT-DN-2026-00053"
+          "delivery_note": "MAT-DN-2026-00059"
         },
         "meta": {}
       }
@@ -198,15 +198,15 @@
   "test_create_sales_invoice_partial_success": {
     "method": "myapp.api.gateway.create_sales_invoice",
     "request": {
-      "source_name": "SAL-ORD-2026-00236",
+      "source_name": "SAL-ORD-2026-00284",
       "invoice_items": [
         {
-          "sales_order_item": "3eaoivk3rn",
+          "sales_order_item": "fveeean0g9",
           "qty": 1,
           "price": 870
         }
       ],
-      "request_id": "http-partial-sales-invoice-1773751853916294231"
+      "request_id": "http-partial-sales-invoice-1773825227196207809"
     },
     "http_status": 200,
     "response": {
@@ -214,9 +214,9 @@
         "ok": true,
         "status": "success",
         "code": "SALES_INVOICE_CREATED",
-        "message": "销售发票 ACC-SINV-2026-00133 已创建并提交。",
+        "message": "销售发票 ACC-SINV-2026-00151 已创建并提交。",
         "data": {
-          "sales_invoice": "ACC-SINV-2026-00133"
+          "sales_invoice": "ACC-SINV-2026-00151"
         },
         "meta": {}
       }
@@ -238,7 +238,7 @@
         "data": {},
         "meta": {}
       },
-      "_server_messages": "[\"{\\\"message\\\":\\\"doctype 和 docname 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"cad4f837f8a86165e3ba7db456dfca5532d13e4cd9777d43202a9432\\\"}\"]"
+      "_server_messages": "[\"{\\\"message\\\":\\\"doctype 和 docname 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"a380c1eb2ddc980b8eba734a29b71d0ed764f1b80e44851f8d3b4223\\\"}\"]"
     }
   },
   "test_create_order_concurrent_same_request_id_returns_single_order_worker_1": {
@@ -254,7 +254,7 @@
       ],
       "company": "rgc (Demo)",
       "immediate": 0,
-      "request_id": "http-concurrent-1773751849097221340"
+      "request_id": "http-concurrent-1773825222380615761"
     },
     "http_status": 200,
     "response": {
@@ -262,9 +262,9 @@
         "ok": true,
         "status": "success",
         "code": "ORDER_CREATED",
-        "message": "销售订单 SAL-ORD-2026-00226 已创建并提交。",
+        "message": "销售订单 SAL-ORD-2026-00274 已创建并提交。",
         "data": {
-          "order": "SAL-ORD-2026-00226"
+          "order": "SAL-ORD-2026-00274"
         },
         "meta": {}
       }
@@ -283,7 +283,7 @@
       ],
       "company": "rgc (Demo)",
       "immediate": 0,
-      "request_id": "http-concurrent-1773751849097221340"
+      "request_id": "http-concurrent-1773825222380615761"
     },
     "http_status": 200,
     "response": {
@@ -291,9 +291,9 @@
         "ok": true,
         "status": "success",
         "code": "ORDER_CREATED",
-        "message": "销售订单 SAL-ORD-2026-00226 已创建并提交。",
+        "message": "销售订单 SAL-ORD-2026-00274 已创建并提交。",
         "data": {
-          "order": "SAL-ORD-2026-00226"
+          "order": "SAL-ORD-2026-00274"
         },
         "meta": {}
       }
@@ -312,7 +312,7 @@
       ],
       "company": "rgc (Demo)",
       "immediate": 0,
-      "request_id": "http-concurrent-1773751849097221340"
+      "request_id": "http-concurrent-1773825222380615761"
     },
     "http_status": 200,
     "response": {
@@ -320,9 +320,9 @@
         "ok": true,
         "status": "success",
         "code": "ORDER_CREATED",
-        "message": "销售订单 SAL-ORD-2026-00226 已创建并提交。",
+        "message": "销售订单 SAL-ORD-2026-00274 已创建并提交。",
         "data": {
-          "order": "SAL-ORD-2026-00226"
+          "order": "SAL-ORD-2026-00274"
         },
         "meta": {}
       }
@@ -341,7 +341,7 @@
       ],
       "company": "rgc (Demo)",
       "immediate": 0,
-      "request_id": "http-concurrent-1773751849097221340"
+      "request_id": "http-concurrent-1773825222380615761"
     },
     "http_status": 200,
     "response": {
@@ -349,9 +349,9 @@
         "ok": true,
         "status": "success",
         "code": "ORDER_CREATED",
-        "message": "销售订单 SAL-ORD-2026-00226 已创建并提交。",
+        "message": "销售订单 SAL-ORD-2026-00274 已创建并提交。",
         "data": {
-          "order": "SAL-ORD-2026-00226"
+          "order": "SAL-ORD-2026-00274"
         },
         "meta": {}
       }
@@ -370,7 +370,7 @@
       ],
       "company": "rgc (Demo)",
       "immediate": 0,
-      "request_id": "http-chain-order-1773751849212890429"
+      "request_id": "http-chain-order-1773825222490137750"
     },
     "http_status": 200,
     "response": {
@@ -378,9 +378,9 @@
         "ok": true,
         "status": "success",
         "code": "ORDER_CREATED",
-        "message": "销售订单 SAL-ORD-2026-00227 已创建并提交。",
+        "message": "销售订单 SAL-ORD-2026-00275 已创建并提交。",
         "data": {
-          "order": "SAL-ORD-2026-00227"
+          "order": "SAL-ORD-2026-00275"
         },
         "meta": {}
       }
@@ -399,7 +399,7 @@
       ],
       "company": "rgc (Demo)",
       "immediate": 0,
-      "request_id": "http-newdata-b-1773751849423573630"
+      "request_id": "http-newdata-b-1773825222692705360"
     },
     "http_status": 200,
     "response": {
@@ -407,9 +407,9 @@
         "ok": true,
         "status": "success",
         "code": "ORDER_CREATED",
-        "message": "销售订单 SAL-ORD-2026-00229 已创建并提交。",
+        "message": "销售订单 SAL-ORD-2026-00277 已创建并提交。",
         "data": {
-          "order": "SAL-ORD-2026-00229"
+          "order": "SAL-ORD-2026-00277"
         },
         "meta": {}
       }
@@ -428,7 +428,7 @@
       ],
       "company": "rgc (Demo)",
       "immediate": 0,
-      "request_id": "http-diffdata-1773751849530684289"
+      "request_id": "http-diffdata-1773825222796121802"
     },
     "http_status": 200,
     "response": {
@@ -436,9 +436,9 @@
         "ok": true,
         "status": "success",
         "code": "ORDER_CREATED",
-        "message": "销售订单 SAL-ORD-2026-00230 已创建并提交。",
+        "message": "销售订单 SAL-ORD-2026-00278 已创建并提交。",
         "data": {
-          "order": "SAL-ORD-2026-00230"
+          "order": "SAL-ORD-2026-00278"
         },
         "meta": {}
       }
@@ -489,14 +489,14 @@
         "data": {},
         "meta": {}
       },
-      "_server_messages": "[\"{\\\"message\\\":\\\"客户不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"b46d9abf7a3d4fd60d08499b2c020a358045822295269c4a2a593be9\\\"}\"]"
+      "_server_messages": "[\"{\\\"message\\\":\\\"客户不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"8f2b79fe24fba9de94c747bf3851fc681788ffdf035fb279450d5d0f\\\"}\"]"
     }
   },
   "test_create_purchase_invoice_idempotent_replay": {
     "method": "myapp.api.gateway.create_purchase_invoice",
     "request": {
-      "source_name": "PUR-ORD-2026-00212",
-      "request_id": "http-chain-purchase-invoice-1773751852334613364"
+      "source_name": "PUR-ORD-2026-00250",
+      "request_id": "http-chain-purchase-invoice-1773825225603514200"
     },
     "http_status": 200,
     "response": {
@@ -504,9 +504,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_INVOICE_CREATED",
-        "message": "采购发票 ACC-PINV-2026-00124 已创建并提交。",
+        "message": "采购发票 ACC-PINV-2026-00146 已创建并提交。",
         "data": {
-          "purchase_invoice": "ACC-PINV-2026-00124"
+          "purchase_invoice": "ACC-PINV-2026-00146"
         },
         "meta": {}
       }
@@ -546,7 +546,7 @@
         "data": {},
         "meta": {}
       },
-      "_server_messages": "[\"{\\\"message\\\":\\\"source_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"3b93851f2c2dc93191b163b652ee0aaf4f7a6f587648dfcfc8763e7f\\\"}\"]"
+      "_server_messages": "[\"{\\\"message\\\":\\\"source_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"3684b3ca55bca60e01f439b8cf706f26f76df3372a37e6a90afa268c\\\"}\"]"
     }
   },
   "test_create_purchase_order_concurrent_same_request_id_returns_single_order_worker_0": {
@@ -561,7 +561,7 @@
         }
       ],
       "company": "rgc (Demo)",
-      "request_id": "http-purchase-concurrent-1773751852826060670"
+      "request_id": "http-purchase-concurrent-1773825226107498411"
     },
     "http_status": 200,
     "response": {
@@ -569,9 +569,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_ORDER_CREATED",
-        "message": "采购订单 PUR-ORD-2026-00214 已创建并提交。",
+        "message": "采购订单 PUR-ORD-2026-00252 已创建并提交。",
         "data": {
-          "purchase_order": "PUR-ORD-2026-00214"
+          "purchase_order": "PUR-ORD-2026-00252"
         },
         "meta": {}
       }
@@ -589,7 +589,7 @@
         }
       ],
       "company": "rgc (Demo)",
-      "request_id": "http-purchase-concurrent-1773751852826060670"
+      "request_id": "http-purchase-concurrent-1773825226107498411"
     },
     "http_status": 200,
     "response": {
@@ -597,9 +597,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_ORDER_CREATED",
-        "message": "采购订单 PUR-ORD-2026-00214 已创建并提交。",
+        "message": "采购订单 PUR-ORD-2026-00252 已创建并提交。",
         "data": {
-          "purchase_order": "PUR-ORD-2026-00214"
+          "purchase_order": "PUR-ORD-2026-00252"
         },
         "meta": {}
       }
@@ -617,7 +617,7 @@
         }
       ],
       "company": "rgc (Demo)",
-      "request_id": "http-purchase-concurrent-1773751852826060670"
+      "request_id": "http-purchase-concurrent-1773825226107498411"
     },
     "http_status": 200,
     "response": {
@@ -625,9 +625,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_ORDER_CREATED",
-        "message": "采购订单 PUR-ORD-2026-00214 已创建并提交。",
+        "message": "采购订单 PUR-ORD-2026-00252 已创建并提交。",
         "data": {
-          "purchase_order": "PUR-ORD-2026-00214"
+          "purchase_order": "PUR-ORD-2026-00252"
         },
         "meta": {}
       }
@@ -645,7 +645,7 @@
         }
       ],
       "company": "rgc (Demo)",
-      "request_id": "http-purchase-concurrent-1773751852826060670"
+      "request_id": "http-purchase-concurrent-1773825226107498411"
     },
     "http_status": 200,
     "response": {
@@ -653,9 +653,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_ORDER_CREATED",
-        "message": "采购订单 PUR-ORD-2026-00214 已创建并提交。",
+        "message": "采购订单 PUR-ORD-2026-00252 已创建并提交。",
         "data": {
-          "purchase_order": "PUR-ORD-2026-00214"
+          "purchase_order": "PUR-ORD-2026-00252"
         },
         "meta": {}
       }
@@ -673,7 +673,7 @@
         }
       ],
       "company": "rgc (Demo)",
-      "request_id": "http-chain-purchase-order-1773751852946802044"
+      "request_id": "http-chain-purchase-order-1773825226225427181"
     },
     "http_status": 200,
     "response": {
@@ -681,9 +681,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_ORDER_CREATED",
-        "message": "采购订单 PUR-ORD-2026-00215 已创建并提交。",
+        "message": "采购订单 PUR-ORD-2026-00253 已创建并提交。",
         "data": {
-          "purchase_order": "PUR-ORD-2026-00215"
+          "purchase_order": "PUR-ORD-2026-00253"
         },
         "meta": {}
       }
@@ -701,7 +701,7 @@
         }
       ],
       "company": "rgc (Demo)",
-      "request_id": "http-purchase-newdata-b-1773751853168697909"
+      "request_id": "http-purchase-newdata-b-1773825226445567969"
     },
     "http_status": 200,
     "response": {
@@ -709,9 +709,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_ORDER_CREATED",
-        "message": "采购订单 PUR-ORD-2026-00217 已创建并提交。",
+        "message": "采购订单 PUR-ORD-2026-00255 已创建并提交。",
         "data": {
-          "purchase_order": "PUR-ORD-2026-00217"
+          "purchase_order": "PUR-ORD-2026-00255"
         },
         "meta": {}
       }
@@ -729,7 +729,7 @@
         }
       ],
       "company": "rgc (Demo)",
-      "request_id": "http-purchase-diffdata-1773751853277565649"
+      "request_id": "http-purchase-diffdata-1773825226555395372"
     },
     "http_status": 200,
     "response": {
@@ -737,9 +737,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_ORDER_CREATED",
-        "message": "采购订单 PUR-ORD-2026-00218 已创建并提交。",
+        "message": "采购订单 PUR-ORD-2026-00256 已创建并提交。",
         "data": {
-          "purchase_order": "PUR-ORD-2026-00218"
+          "purchase_order": "PUR-ORD-2026-00256"
         },
         "meta": {}
       }
@@ -761,14 +761,14 @@
         "data": {},
         "meta": {}
       },
-      "_server_messages": "[\"{\\\"message\\\":\\\"供应商不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"d6e34dd9573134b559edf3f3711a81d88e68944907fb23d64fe74e9f\\\"}\"]"
+      "_server_messages": "[\"{\\\"message\\\":\\\"供应商不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"eb3ea91ec0b2055d00c2e9e0dbf986e37a8025194ea60cabdb4a0b5f\\\"}\"]"
     }
   },
   "test_create_sales_invoice_idempotent_replay": {
     "method": "myapp.api.gateway.create_sales_invoice",
     "request": {
-      "source_name": "SAL-ORD-2026-00235",
-      "request_id": "http-chain-sales-invoice-1773751853612904640"
+      "source_name": "SAL-ORD-2026-00283",
+      "request_id": "http-chain-sales-invoice-1773825226889696328"
     },
     "http_status": 200,
     "response": {
@@ -776,9 +776,9 @@
         "ok": true,
         "status": "success",
         "code": "SALES_INVOICE_CREATED",
-        "message": "销售发票 ACC-SINV-2026-00132 已创建并提交。",
+        "message": "销售发票 ACC-SINV-2026-00150 已创建并提交。",
         "data": {
-          "sales_invoice": "ACC-SINV-2026-00132"
+          "sales_invoice": "ACC-SINV-2026-00150"
         },
         "meta": {}
       }
@@ -819,7 +819,7 @@
         "data": {},
         "meta": {}
       },
-      "_server_messages": "[\"{\\\"message\\\":\\\"source_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"e7c13417d99209cc2333d3b78e2a8809f94445f4801afb7c8e119f47\\\"}\"]"
+      "_server_messages": "[\"{\\\"message\\\":\\\"source_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"2a9a21d210d753a8296f40d931e122df8bf8a8316d83e60a37714610\\\"}\"]"
     }
   },
   "test_process_purchase_return_validation_error_shape": {
@@ -838,15 +838,15 @@
         "data": {},
         "meta": {}
       },
-      "_server_messages": "[\"{\\\"message\\\":\\\"暂不支持对 Purchase Order 执行采购退货。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"5f4dabde4dee70aa2bd628425df200cbca76184a296defcac32d565a\\\"}\"]"
+      "_server_messages": "[\"{\\\"message\\\":\\\"暂不支持对 Purchase Order 执行采购退货。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"b892cd61b785d73a27f3c903c5eb0de136b24d6d56b2588d55cecf7c\\\"}\"]"
     }
   },
   "test_process_sales_return_idempotent_replay": {
     "method": "myapp.api.gateway.process_sales_return",
     "request": {
       "source_doctype": "Sales Invoice",
-      "source_name": "ACC-SINV-2026-00135",
-      "request_id": "http-chain-sales-return-1773751856320168142"
+      "source_name": "ACC-SINV-2026-00153",
+      "request_id": "http-chain-sales-return-1773825229556276221"
     },
     "http_status": 200,
     "response": {
@@ -854,9 +854,9 @@
         "ok": true,
         "status": "success",
         "code": "SALES_RETURN_CREATED",
-        "message": "退货单 ACC-SINV-2026-00136 已创建并提交。",
+        "message": "退货单 ACC-SINV-2026-00154 已创建并提交。",
         "data": {
-          "return_document": "ACC-SINV-2026-00136",
+          "return_document": "ACC-SINV-2026-00154",
           "return_doctype": "Sales Invoice"
         },
         "meta": {}
@@ -901,14 +901,14 @@
         "data": {},
         "meta": {}
       },
-      "_server_messages": "[\"{\\\"message\\\":\\\"暂不支持对 Sales Order 执行退货。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"b9bb9def92fe41dfb86e7a1d75269baa4853953e66809eee878fb23a\\\"}\"]"
+      "_server_messages": "[\"{\\\"message\\\":\\\"暂不支持对 Sales Order 执行退货。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"a726cbf0f03bc9ffef63ee110f859ec71cc90c5f3709b8adeefbcc62\\\"}\"]"
     }
   },
   "test_receive_purchase_order_idempotent_replay": {
     "method": "myapp.api.gateway.receive_purchase_order",
     "request": {
-      "order_name": "PUR-ORD-2026-00223",
-      "request_id": "http-chain-purchase-receipt-1773751857040458034"
+      "order_name": "PUR-ORD-2026-00261",
+      "request_id": "http-chain-purchase-receipt-1773825230251853018"
     },
     "http_status": 200,
     "response": {
@@ -916,9 +916,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_RECEIPT_CREATED",
-        "message": "采购收货单 MAT-PRE-2026-00095 已创建并提交。",
+        "message": "采购收货单 MAT-PRE-2026-00111 已创建并提交。",
         "data": {
-          "purchase_receipt": "MAT-PRE-2026-00095"
+          "purchase_receipt": "MAT-PRE-2026-00111"
         },
         "meta": {}
       }
@@ -939,7 +939,7 @@
         "data": {},
         "meta": {}
       },
-      "_server_messages": "[\"{\\\"message\\\":\\\"order_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"59817b0a07bb162a2f10ed38680e628efa7c9fdbb838cecfe1932df2\\\"}\"]"
+      "_server_messages": "[\"{\\\"message\\\":\\\"order_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"b4933a6be90ecaa4fae57f23d2eec12850bb9d4776663c919a0f5e20\\\"}\"]"
     }
   },
   "test_record_supplier_payment_validation_error_shape": {
@@ -958,7 +958,7 @@
         "data": {},
         "meta": {}
       },
-      "_server_messages": "[\"{\\\"message\\\":\\\"reference_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"1b0e97c92cc6de0f2ee1e334290bd5db5a8483d90e1b9806dd4874d2\\\"}\"]"
+      "_server_messages": "[\"{\\\"message\\\":\\\"reference_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"a384e202415dc9c9e32b839638be9b9d8eeffefb2037d17b3fc111d6\\\"}\"]"
     }
   },
   "test_search_product_success": {
@@ -985,7 +985,7 @@
                 "conversion_factor": 1.0
               }
             ],
-            "qty": 253.0,
+            "qty": 295.0,
             "price": 900.0,
             "image": "https://images.pexels.com/photos/51383/photo-camera-subject-photographer-51383.jpeg"
           }
@@ -1023,8 +1023,8 @@
   "test_submit_delivery_idempotent_replay": {
     "method": "myapp.api.gateway.submit_delivery",
     "request": {
-      "order_name": "SAL-ORD-2026-00242",
-      "request_id": "http-chain-delivery-1773751858868341539"
+      "order_name": "SAL-ORD-2026-00290",
+      "request_id": "http-chain-delivery-1773825232040772524"
     },
     "http_status": 200,
     "response": {
@@ -1032,9 +1032,9 @@
         "ok": true,
         "status": "success",
         "code": "DELIVERY_SUBMITTED",
-        "message": "发货单 MAT-DN-2026-00052 已创建并提交。",
+        "message": "发货单 MAT-DN-2026-00058 已创建并提交。",
         "data": {
-          "delivery_note": "MAT-DN-2026-00052"
+          "delivery_note": "MAT-DN-2026-00058"
         },
         "meta": {}
       }
@@ -1075,7 +1075,7 @@
         "data": {},
         "meta": {}
       },
-      "_server_messages": "[\"{\\\"message\\\":\\\"order_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"95389779e1cee5667b66258a971d7104ec2df8f82797aab6e27b7ada\\\"}\"]"
+      "_server_messages": "[\"{\\\"message\\\":\\\"order_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"0eb3054537c39009292198f958ece9dc779022f69041583c9e44834c\\\"}\"]"
     }
   },
   "test_test_remote_debug_returns_success": {
@@ -1099,9 +1099,9 @@
     "method": "myapp.api.gateway.update_payment_status",
     "request": {
       "reference_doctype": "Sales Invoice",
-      "reference_name": "ACC-SINV-2026-00139",
+      "reference_name": "ACC-SINV-2026-00157",
       "paid_amount": 900.0,
-      "request_id": "http-chain-payment-1773751859897501483"
+      "request_id": "http-chain-payment-1773825233491849513"
     },
     "http_status": 200,
     "response": {
@@ -1109,9 +1109,9 @@
         "ok": true,
         "status": "success",
         "code": "PAYMENT_RECORDED",
-        "message": "成功为单据 ACC-SINV-2026-00139 录入收款 900.0。",
+        "message": "成功为单据 ACC-SINV-2026-00157 录入收款 900.0。",
         "data": {
-          "payment_entry": "ACC-PAY-2026-00057"
+          "payment_entry": "ACC-PAY-2026-00065"
         },
         "meta": {}
       }
@@ -1156,15 +1156,15 @@
         "data": {},
         "meta": {}
       },
-      "_server_messages": "[\"{\\\"message\\\":\\\"reference_doctype 和 reference_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"5c893a2199df6eca50346400ecd07dce15a3817098cc20f0e5c96bad\\\"}\"]"
+      "_server_messages": "[\"{\\\"message\\\":\\\"reference_doctype 和 reference_name 不能为空。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"f0ef0c5aa4a0680e58eced8403f7c1238c85adcaa6e82dd6ab92107a\\\"}\"]"
     }
   },
   "test_process_purchase_return_idempotent_replay": {
     "method": "myapp.api.gateway.process_purchase_return",
     "request": {
       "source_doctype": "Purchase Invoice",
-      "source_name": "ACC-PINV-2026-00126",
-      "request_id": "http-chain-purchase-return-1773751855432540344"
+      "source_name": "ACC-PINV-2026-00148",
+      "request_id": "http-chain-purchase-return-1773825228690782166"
     },
     "http_status": 200,
     "response": {
@@ -1172,9 +1172,9 @@
         "ok": true,
         "status": "success",
         "code": "PURCHASE_RETURN_CREATED",
-        "message": "采购退货单 ACC-PINV-2026-00127 已创建并提交。",
+        "message": "采购退货单 ACC-PINV-2026-00149 已创建并提交。",
         "data": {
-          "return_document": "ACC-PINV-2026-00127",
+          "return_document": "ACC-PINV-2026-00149",
           "return_doctype": "Purchase Invoice"
         },
         "meta": {}
@@ -1184,9 +1184,9 @@
   "test_record_supplier_payment_idempotent_replay": {
     "method": "myapp.api.gateway.record_supplier_payment",
     "request": {
-      "reference_name": "ACC-PINV-2026-00130",
+      "reference_name": "ACC-PINV-2026-00152",
       "paid_amount": 10.0,
-      "request_id": "http-chain-supplier-payment-1773751858103115084"
+      "request_id": "http-chain-supplier-payment-1773825231316177047"
     },
     "http_status": 200,
     "response": {
@@ -1194,9 +1194,9 @@
         "ok": true,
         "status": "success",
         "code": "SUPPLIER_PAYMENT_RECORDED",
-        "message": "成功为采购发票 ACC-PINV-2026-00130 录入付款 10.0。",
+        "message": "成功为采购发票 ACC-PINV-2026-00152 录入付款 10.0。",
         "data": {
-          "payment_entry": "ACC-PAY-2026-00055"
+          "payment_entry": "ACC-PAY-2026-00063"
         },
         "meta": {}
       }
@@ -1268,13 +1268,13 @@
                 "conversion_factor": 1.0
               }
             ],
-            "qty": 253.0,
+            "qty": 295.0,
             "price": 900.0,
             "image": "https://images.pexels.com/photos/51383/photo-camera-subject-photographer-51383.jpeg",
             "nickname": null,
             "description": null,
             "creation": "2026-03-09 14:21:43.474716",
-            "modified": "2026-03-17 20:50:58.461018"
+            "modified": "2026-03-18 17:13:51.659302"
           },
           {
             "item_code": "SKU006",
@@ -1335,14 +1335,14 @@
   "test_create_product_and_stock_success": {
     "method": "myapp.api.gateway.create_product_and_stock",
     "request": {
-      "item_name": "HTTP-V2-商品-1773751850601634522",
+      "item_name": "HTTP-V2-商品-1773825223814887249",
       "default_warehouse": "Stores - RD",
       "opening_qty": 1,
       "standard_rate": 9,
-      "barcode": "HTTPV20601634522",
+      "barcode": "HTTPV23814887249",
       "description": "HTTP v2 test product",
       "image": "/files/test-product.png",
-      "request_id": "http-v2-product-1773751850601636581"
+      "request_id": "http-v2-product-1773825223814889094"
     },
     "http_status": 200,
     "response": {
@@ -1350,21 +1350,21 @@
         "ok": true,
         "status": "success",
         "code": "PRODUCT_CREATED",
-        "message": "商品 HTTP-V2-商品-1773751850601634522 已创建，并可直接加入订单。",
+        "message": "商品 HTTP-V2-商品-1773825223814887249 已创建，并可直接加入订单。",
         "data": {
-          "item_code": "HTTP-V2-商品-1773751850601634522",
-          "item_name": "HTTP-V2-商品-1773751850601634522",
+          "item_code": "HTTP-V2-商品-1773825223814887249",
+          "item_name": "HTTP-V2-商品-1773825223814887249",
           "uom": "Nos",
           "qty": 1.0,
           "price": 9.0,
           "warehouse": "Stores - RD",
           "image": "/files/test-product.png",
           "item_group": "All Item Groups",
-          "stock_entry": "MAT-STE-2026-00039"
+          "stock_entry": "MAT-STE-2026-00047"
         },
         "meta": {}
       },
-      "_server_messages": "[\"{\\\"message\\\":\\\"因勾选了成本价为0，物料 <strong>HTTP-V2-商品-1773751850601634522</strong> 的单价已设置为0\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"alert\\\":1}\"]"
+      "_server_messages": "[\"{\\\"message\\\":\\\"因勾选了成本价为0，物料 <strong>HTTP-V2-商品-1773825223814887249</strong> 的单价已设置为0\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"alert\\\":1}\"]"
     }
   },
   "test_get_sales_order_status_summary_success": {
@@ -1383,11 +1383,11 @@
         "message": "销售订单状态摘要获取成功。",
         "data": [
           {
-            "order_name": "SAL-ORD-2026-00239",
+            "order_name": "SAL-ORD-2026-00287",
             "customer_name": "Palmer Productions Ltd.",
             "customer": "Palmer Productions Ltd.",
             "company": "rgc (Demo)",
-            "transaction_date": "2026-03-17",
+            "transaction_date": "2026-03-18",
             "document_status": "submitted",
             "order_amount_estimate": 900.0,
             "fulfillment": {
@@ -1409,14 +1409,14 @@
               "is_completed": false
             },
             "outstanding_amount": 0.0,
-            "modified": "2026-03-17 20:50:54.608515"
+            "modified": "2026-03-18 17:13:47.872771"
           },
           {
-            "order_name": "SAL-ORD-2026-00238",
+            "order_name": "SAL-ORD-2026-00286",
             "customer_name": "Palmer Productions Ltd.",
             "customer": "Palmer Productions Ltd.",
             "company": "rgc (Demo)",
-            "transaction_date": "2026-03-17",
+            "transaction_date": "2026-03-18",
             "document_status": "submitted",
             "order_amount_estimate": 900.0,
             "fulfillment": {
@@ -1438,14 +1438,14 @@
               "is_completed": false
             },
             "outstanding_amount": 0.0,
-            "modified": "2026-03-17 20:50:54.493783"
+            "modified": "2026-03-18 17:13:47.759031"
           },
           {
-            "order_name": "SAL-ORD-2026-00237",
+            "order_name": "SAL-ORD-2026-00285",
             "customer_name": "Palmer Productions Ltd.",
             "customer": "Palmer Productions Ltd.",
             "company": "rgc (Demo)",
-            "transaction_date": "2026-03-17",
+            "transaction_date": "2026-03-18",
             "document_status": "submitted",
             "order_amount_estimate": 900.0,
             "fulfillment": {
@@ -1467,14 +1467,14 @@
               "is_completed": false
             },
             "outstanding_amount": 900.0,
-            "modified": "2026-03-17 20:50:54.369112"
+            "modified": "2026-03-18 17:13:47.644629"
           },
           {
-            "order_name": "SAL-ORD-2026-00236",
+            "order_name": "SAL-ORD-2026-00284",
             "customer_name": "Palmer Productions Ltd.",
             "customer": "Palmer Productions Ltd.",
             "company": "rgc (Demo)",
-            "transaction_date": "2026-03-17",
+            "transaction_date": "2026-03-18",
             "document_status": "submitted",
             "order_amount_estimate": 2700.0,
             "fulfillment": {
@@ -1496,14 +1496,14 @@
               "is_completed": false
             },
             "outstanding_amount": 870.0,
-            "modified": "2026-03-17 20:50:54.062623"
+            "modified": "2026-03-18 17:13:47.351681"
           },
           {
-            "order_name": "SAL-ORD-2026-00235",
+            "order_name": "SAL-ORD-2026-00283",
             "customer_name": "Palmer Productions Ltd.",
             "customer": "Palmer Productions Ltd.",
             "company": "rgc (Demo)",
-            "transaction_date": "2026-03-17",
+            "transaction_date": "2026-03-18",
             "document_status": "submitted",
             "order_amount_estimate": 900.0,
             "fulfillment": {
@@ -1525,7 +1525,7 @@
               "is_completed": false
             },
             "outstanding_amount": 900.0,
-            "modified": "2026-03-17 20:50:53.758407"
+            "modified": "2026-03-18 17:13:47.035787"
           }
         ],
         "meta": {
@@ -1541,7 +1541,7 @@
   "test_get_sales_order_detail_success": {
     "method": "myapp.api.gateway.get_sales_order_detail",
     "request": {
-      "order_name": "SAL-ORD-2026-00238"
+      "order_name": "SAL-ORD-2026-00286"
     },
     "http_status": 200,
     "response": {
@@ -1549,9 +1549,9 @@
         "ok": true,
         "status": "success",
         "code": "ORDER_DETAIL_FETCHED",
-        "message": "销售订单 SAL-ORD-2026-00238 详情获取成功。",
+        "message": "销售订单 SAL-ORD-2026-00286 详情获取成功。",
         "data": {
-          "order_name": "SAL-ORD-2026-00238",
+          "order_name": "SAL-ORD-2026-00286",
           "document_status": "submitted",
           "customer": {
             "name": "Palmer Productions Ltd.",
@@ -1615,7 +1615,7 @@
           },
           "items": [
             {
-              "sales_order_item": "3egnvrqtgi",
+              "sales_order_item": "fvl2f8d9mu",
               "item_code": "SKU010",
               "item_name": "Camera",
               "uom": "Nos",
@@ -1623,7 +1623,8 @@
               "qty": 1.0,
               "delivered_qty": 0.0,
               "rate": 900.0,
-              "amount": 900.0
+              "amount": 900.0,
+              "image": "https://images.pexels.com/photos/51383/photo-camera-subject-photographer-51383.jpeg"
             }
           ],
           "references": {
@@ -1633,8 +1634,8 @@
           "meta": {
             "company": "rgc (Demo)",
             "currency": "CNY",
-            "transaction_date": "2026-03-17",
-            "delivery_date": "2026-03-17",
+            "transaction_date": "2026-03-18",
+            "delivery_date": "2026-03-18",
             "remarks": null
           }
         },
@@ -1658,11 +1659,11 @@
         "message": "销售订单状态摘要获取成功。",
         "data": [
           {
-            "order_name": "SAL-ORD-2026-00247",
+            "order_name": "SAL-ORD-2026-00297",
             "customer_name": "Palmer Productions Ltd.",
             "customer": "Palmer Productions Ltd.",
             "company": "rgc (Demo)",
-            "transaction_date": "2026-03-17",
+            "transaction_date": "2026-03-18",
             "document_status": "submitted",
             "order_amount_estimate": 12.0,
             "fulfillment": {
@@ -1684,14 +1685,14 @@
               "is_completed": false
             },
             "outstanding_amount": 0.0,
-            "modified": "2026-03-17 20:51:00.572100"
+            "modified": "2026-03-18 17:13:54.190518"
           },
           {
-            "order_name": "SAL-ORD-2026-00246",
+            "order_name": "SAL-ORD-2026-00296",
             "customer_name": "Palmer Productions Ltd.",
             "customer": "Palmer Productions Ltd.",
             "company": "rgc (Demo)",
-            "transaction_date": "2026-03-17",
+            "transaction_date": "2026-03-18",
             "document_status": "submitted",
             "order_amount_estimate": 900.0,
             "fulfillment": {
@@ -1713,14 +1714,14 @@
               "is_completed": false
             },
             "outstanding_amount": 0.0,
-            "modified": "2026-03-17 20:51:00.259624"
+            "modified": "2026-03-18 17:13:53.867058"
           },
           {
-            "order_name": "SAL-ORD-2026-00245",
+            "order_name": "SAL-ORD-2026-00295",
             "customer_name": "Palmer Productions Ltd.",
             "customer": "Palmer Productions Ltd.",
             "company": "rgc (Demo)",
-            "transaction_date": "2026-03-17",
+            "transaction_date": "2026-03-18",
             "document_status": "submitted",
             "order_amount_estimate": 900.0,
             "fulfillment": {
@@ -1742,14 +1743,101 @@
               "is_completed": false
             },
             "outstanding_amount": 0.0,
-            "modified": "2026-03-17 20:50:59.853451"
+            "modified": "2026-03-18 17:13:53.450004"
           },
           {
-            "order_name": "SAL-ORD-2026-00244",
+            "order_name": "SAL-ORD-2026-00294",
             "customer_name": "Palmer Productions Ltd.",
             "customer": "Palmer Productions Ltd.",
             "company": "rgc (Demo)",
-            "transaction_date": "2026-03-17",
+            "transaction_date": "2026-03-18",
+            "document_status": "submitted",
+            "order_amount_estimate": 900.0,
+            "fulfillment": {
+              "total_qty": 1.0,
+              "delivered_qty": 0.0,
+              "remaining_qty": 1.0,
+              "status": "pending",
+              "is_fully_delivered": false
+            },
+            "payment": {
+              "receivable_amount": 0,
+              "paid_amount": 0,
+              "outstanding_amount": 0,
+              "status": "unpaid",
+              "is_fully_paid": false
+            },
+            "completion": {
+              "status": "open",
+              "is_completed": false
+            },
+            "outstanding_amount": 0.0,
+            "modified": "2026-03-18 17:13:53.168900"
+          },
+          {
+            "order_name": "SAL-ORD-2026-00293-1",
+            "customer_name": "Palmer Productions Ltd.",
+            "customer": "Palmer Productions Ltd.",
+            "company": "rgc (Demo)",
+            "transaction_date": "2026-03-18",
+            "document_status": "submitted",
+            "order_amount_estimate": 600.0,
+            "fulfillment": {
+              "total_qty": 2.0,
+              "delivered_qty": 0.0,
+              "remaining_qty": 2.0,
+              "status": "pending",
+              "is_fully_delivered": false
+            },
+            "payment": {
+              "receivable_amount": 0,
+              "paid_amount": 0,
+              "outstanding_amount": 0,
+              "status": "unpaid",
+              "is_fully_paid": false
+            },
+            "completion": {
+              "status": "open",
+              "is_completed": false
+            },
+            "outstanding_amount": 0.0,
+            "modified": "2026-03-18 17:13:52.985225"
+          },
+          {
+            "order_name": "SAL-ORD-2026-00293",
+            "customer_name": "Palmer Productions Ltd.",
+            "customer": "Palmer Productions Ltd.",
+            "company": "rgc (Demo)",
+            "transaction_date": "2026-03-18",
+            "document_status": "cancelled",
+            "order_amount_estimate": 900.0,
+            "fulfillment": {
+              "total_qty": 1.0,
+              "delivered_qty": 0.0,
+              "remaining_qty": 1.0,
+              "status": "pending",
+              "is_fully_delivered": false
+            },
+            "payment": {
+              "receivable_amount": 0,
+              "paid_amount": 0,
+              "outstanding_amount": 0,
+              "status": "unpaid",
+              "is_fully_paid": false
+            },
+            "completion": {
+              "status": "closed",
+              "is_completed": false
+            },
+            "outstanding_amount": 0.0,
+            "modified": "2026-03-18 17:13:52.891147"
+          },
+          {
+            "order_name": "SAL-ORD-2026-00292",
+            "customer_name": "Palmer Productions Ltd.",
+            "customer": "Palmer Productions Ltd.",
+            "company": "rgc (Demo)",
+            "transaction_date": "2026-03-18",
             "document_status": "submitted",
             "order_amount_estimate": 900.0,
             "fulfillment": {
@@ -1771,14 +1859,14 @@
               "is_completed": false
             },
             "outstanding_amount": 0.0,
-            "modified": "2026-03-17 20:50:59.542905"
+            "modified": "2026-03-18 17:13:52.701138"
           },
           {
-            "order_name": "SAL-ORD-2026-00243",
+            "order_name": "SAL-ORD-2026-00291",
             "customer_name": "Palmer Productions Ltd.",
             "customer": "Palmer Productions Ltd.",
             "company": "rgc (Demo)",
-            "transaction_date": "2026-03-17",
+            "transaction_date": "2026-03-18",
             "document_status": "submitted",
             "order_amount_estimate": 2700.0,
             "fulfillment": {
@@ -1800,14 +1888,14 @@
               "is_completed": false
             },
             "outstanding_amount": 0.0,
-            "modified": "2026-03-17 20:50:59.264899"
+            "modified": "2026-03-18 17:13:52.430285"
           },
           {
-            "order_name": "SAL-ORD-2026-00242",
+            "order_name": "SAL-ORD-2026-00290",
             "customer_name": "Palmer Productions Ltd.",
             "customer": "Palmer Productions Ltd.",
             "company": "rgc (Demo)",
-            "transaction_date": "2026-03-17",
+            "transaction_date": "2026-03-18",
             "document_status": "submitted",
             "order_amount_estimate": 900.0,
             "fulfillment": {
@@ -1829,14 +1917,14 @@
               "is_completed": false
             },
             "outstanding_amount": 0.0,
-            "modified": "2026-03-17 20:50:58.981798"
+            "modified": "2026-03-18 17:13:52.155783"
           },
           {
-            "order_name": "SAL-ORD-2026-00241",
+            "order_name": "SAL-ORD-2026-00289",
             "customer_name": "Palmer Productions Ltd.",
             "customer": "Palmer Productions Ltd.",
             "company": "rgc (Demo)",
-            "transaction_date": "2026-03-17",
+            "transaction_date": "2026-03-18",
             "document_status": "submitted",
             "order_amount_estimate": 900.0,
             "fulfillment": {
@@ -1858,94 +1946,7 @@
               "is_completed": false
             },
             "outstanding_amount": 900.0,
-            "modified": "2026-03-17 20:50:56.730704"
-          },
-          {
-            "order_name": "SAL-ORD-2026-00240",
-            "customer_name": "Palmer Productions Ltd.",
-            "customer": "Palmer Productions Ltd.",
-            "company": "rgc (Demo)",
-            "transaction_date": "2026-03-17",
-            "document_status": "submitted",
-            "order_amount_estimate": 900.0,
-            "fulfillment": {
-              "total_qty": 1.0,
-              "delivered_qty": 0.0,
-              "remaining_qty": 1.0,
-              "status": "pending",
-              "is_fully_delivered": false
-            },
-            "payment": {
-              "receivable_amount": 900.0,
-              "paid_amount": 0.0,
-              "outstanding_amount": 900.0,
-              "status": "unpaid",
-              "is_fully_paid": false
-            },
-            "completion": {
-              "status": "open",
-              "is_completed": false
-            },
-            "outstanding_amount": 900.0,
-            "modified": "2026-03-17 20:50:56.280605"
-          },
-          {
-            "order_name": "SAL-ORD-2026-00239",
-            "customer_name": "Palmer Productions Ltd.",
-            "customer": "Palmer Productions Ltd.",
-            "company": "rgc (Demo)",
-            "transaction_date": "2026-03-17",
-            "document_status": "submitted",
-            "order_amount_estimate": 900.0,
-            "fulfillment": {
-              "total_qty": 1.0,
-              "delivered_qty": 0.0,
-              "remaining_qty": 1.0,
-              "status": "pending",
-              "is_fully_delivered": false
-            },
-            "payment": {
-              "receivable_amount": 0,
-              "paid_amount": 0,
-              "outstanding_amount": 0,
-              "status": "unpaid",
-              "is_fully_paid": false
-            },
-            "completion": {
-              "status": "open",
-              "is_completed": false
-            },
-            "outstanding_amount": 0.0,
-            "modified": "2026-03-17 20:50:54.608515"
-          },
-          {
-            "order_name": "SAL-ORD-2026-00238",
-            "customer_name": "Palmer Productions Ltd.",
-            "customer": "Palmer Productions Ltd.",
-            "company": "rgc (Demo)",
-            "transaction_date": "2026-03-17",
-            "document_status": "submitted",
-            "order_amount_estimate": 900.0,
-            "fulfillment": {
-              "total_qty": 1.0,
-              "delivered_qty": 0.0,
-              "remaining_qty": 1.0,
-              "status": "pending",
-              "is_fully_delivered": false
-            },
-            "payment": {
-              "receivable_amount": 0,
-              "paid_amount": 0,
-              "outstanding_amount": 0,
-              "status": "unpaid",
-              "is_fully_paid": false
-            },
-            "completion": {
-              "status": "open",
-              "is_completed": false
-            },
-            "outstanding_amount": 0.0,
-            "modified": "2026-03-17 20:50:54.493783"
+            "modified": "2026-03-18 17:13:49.954432"
           }
         ],
         "meta": {
@@ -1978,6 +1979,150 @@
         "code": "PRODUCTS_FETCHED",
         "message": "",
         "data": [
+          {
+            "item_code": "HTTP-V2-商品-1773825231838985214",
+            "item_name": "HTTP-V2-商品-1773825231838985214",
+            "uom": "Nos",
+            "all_uoms": [
+              {
+                "uom": "Nos",
+                "conversion_factor": 1.0
+              }
+            ],
+            "qty": 1.0,
+            "price": 9.0,
+            "image": "/files/test-product.png",
+            "nickname": "HTTP v2 test product",
+            "description": "HTTP v2 test product",
+            "creation": "2026-03-18 17:13:51.846222",
+            "modified": "2026-03-18 17:13:51.846222"
+          },
+          {
+            "item_code": "HTTP-V2-商品-1773825223892323475",
+            "item_name": "HTTP-V2-商品-1773825223892323475",
+            "uom": "Nos",
+            "all_uoms": [
+              {
+                "uom": "Nos",
+                "conversion_factor": 1.0
+              }
+            ],
+            "qty": 1.0,
+            "price": 15.0,
+            "image": "/files/test-product.png",
+            "nickname": "HTTP v2 test product",
+            "description": "HTTP v2 test product",
+            "creation": "2026-03-18 17:13:43.900252",
+            "modified": "2026-03-18 17:13:43.900252"
+          },
+          {
+            "item_code": "HTTP-V2-商品-1773825223814887249",
+            "item_name": "HTTP-V2-商品-1773825223814887249",
+            "uom": "Nos",
+            "all_uoms": [
+              {
+                "uom": "Nos",
+                "conversion_factor": 1.0
+              }
+            ],
+            "qty": 1.0,
+            "price": 9.0,
+            "image": "/files/test-product.png",
+            "nickname": "HTTP v2 test product",
+            "description": "HTTP v2 test product",
+            "creation": "2026-03-18 17:13:43.822219",
+            "modified": "2026-03-18 17:13:43.822219"
+          },
+          {
+            "item_code": "HTTP-V2-幂等A-1773825223728459558",
+            "item_name": "HTTP-V2-幂等A-1773825223728459558",
+            "uom": "Nos",
+            "all_uoms": [
+              {
+                "uom": "Nos",
+                "conversion_factor": 1.0
+              }
+            ],
+            "qty": 2.0,
+            "price": 11.0,
+            "image": "/files/test-product.png",
+            "nickname": "HTTP v2 test product",
+            "description": "HTTP v2 test product",
+            "creation": "2026-03-18 17:13:43.736325",
+            "modified": "2026-03-18 17:13:43.736325"
+          },
+          {
+            "item_code": "HTTP-V2-商品-1773825223627966889",
+            "item_name": "HTTP-V2-商品-1773825223627966889",
+            "uom": "Nos",
+            "all_uoms": [
+              {
+                "uom": "Nos",
+                "conversion_factor": 1.0
+              }
+            ],
+            "qty": 1.0,
+            "price": 9.0,
+            "image": "/files/test-product.png",
+            "nickname": "HTTP v2 test product",
+            "description": "HTTP v2 test product",
+            "creation": "2026-03-18 17:13:43.634645",
+            "modified": "2026-03-18 17:13:43.634645"
+          },
+          {
+            "item_code": "HTTP-V2-商品-1773825223532930750",
+            "item_name": "HTTP-V2-商品-1773825223532930750",
+            "uom": "Nos",
+            "all_uoms": [
+              {
+                "uom": "Nos",
+                "conversion_factor": 1.0
+              }
+            ],
+            "qty": 1.0,
+            "price": 9.0,
+            "image": "/files/test-product.png",
+            "nickname": "HTTP v2 test product",
+            "description": "HTTP v2 test product",
+            "creation": "2026-03-18 17:13:43.540394",
+            "modified": "2026-03-18 17:13:43.540394"
+          },
+          {
+            "item_code": "HTTP-V2-并发-1773825223329311393",
+            "item_name": "HTTP-V2-并发-1773825223329311393",
+            "uom": "Nos",
+            "all_uoms": [
+              {
+                "uom": "Nos",
+                "conversion_factor": 1.0
+              }
+            ],
+            "qty": 1.0,
+            "price": 9.0,
+            "image": "/files/test-product.png",
+            "nickname": "HTTP v2 test product",
+            "description": "HTTP v2 test product",
+            "creation": "2026-03-18 17:13:43.347735",
+            "modified": "2026-03-18 17:13:43.347735"
+          },
+          {
+            "item_code": "HTTP-V2-商品-1773751860419258381",
+            "item_name": "HTTP-V2-商品-1773751860419258381",
+            "uom": "Nos",
+            "all_uoms": [
+              {
+                "uom": "Nos",
+                "conversion_factor": 1.0
+              }
+            ],
+            "qty": 3.0,
+            "price": 12.0,
+            "image": "/files/test-product.png",
+            "nickname": "HTTP v2 test product",
+            "description": "HTTP v2 test product",
+            "creation": "2026-03-17 20:51:00.427531",
+            "modified": "2026-03-17 20:51:00.427531"
+          },
           {
             "item_code": "HTTP-V2-商品-1773751858654298432",
             "item_name": "HTTP-V2-商品-1773751858654298432",
@@ -2013,150 +2158,6 @@
             "description": "HTTP v2 test product",
             "creation": "2026-03-17 20:50:50.689949",
             "modified": "2026-03-17 20:50:50.689949"
-          },
-          {
-            "item_code": "HTTP-V2-商品-1773751850601634522",
-            "item_name": "HTTP-V2-商品-1773751850601634522",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 1.0,
-            "price": 9.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-17 20:50:50.608866",
-            "modified": "2026-03-17 20:50:50.608866"
-          },
-          {
-            "item_code": "HTTP-V2-幂等A-1773751850513624984",
-            "item_name": "HTTP-V2-幂等A-1773751850513624984",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 2.0,
-            "price": 11.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-17 20:50:50.520801",
-            "modified": "2026-03-17 20:50:50.520801"
-          },
-          {
-            "item_code": "HTTP-V2-商品-1773751850410786200",
-            "item_name": "HTTP-V2-商品-1773751850410786200",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 1.0,
-            "price": 9.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-17 20:50:50.418586",
-            "modified": "2026-03-17 20:50:50.418586"
-          },
-          {
-            "item_code": "HTTP-V2-商品-1773751850311414319",
-            "item_name": "HTTP-V2-商品-1773751850311414319",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 1.0,
-            "price": 9.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-17 20:50:50.318309",
-            "modified": "2026-03-17 20:50:50.318309"
-          },
-          {
-            "item_code": "HTTP-V2-并发-1773751850101016989",
-            "item_name": "HTTP-V2-并发-1773751850101016989",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 1.0,
-            "price": 9.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-17 20:50:50.121878",
-            "modified": "2026-03-17 20:50:50.121878"
-          },
-          {
-            "item_code": "HTTP-V2-商品-1773750453886624166",
-            "item_name": "HTTP-V2-商品-1773750453886624166",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 3.0,
-            "price": 12.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-17 20:27:33.894249",
-            "modified": "2026-03-17 20:27:33.894249"
-          },
-          {
-            "item_code": "HTTP-V2-商品-1773750452148523308",
-            "item_name": "HTTP-V2-商品-1773750452148523308",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 1.0,
-            "price": 9.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-17 20:27:32.155752",
-            "modified": "2026-03-17 20:27:32.155752"
-          },
-          {
-            "item_code": "HTTP-V2-商品-1773750444276511607",
-            "item_name": "HTTP-V2-商品-1773750444276511607",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 1.0,
-            "price": 15.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-17 20:27:24.284288",
-            "modified": "2026-03-17 20:27:24.284288"
           }
         ],
         "meta": {
@@ -2180,14 +2181,14 @@
   "test_create_product_and_stock_idempotent_replay": {
     "method": "myapp.api.gateway.create_product_and_stock",
     "request": {
-      "item_name": "HTTP-V2-商品-1773751850410786200",
+      "item_name": "HTTP-V2-商品-1773825223627966889",
       "default_warehouse": "Stores - RD",
       "opening_qty": 1,
       "standard_rate": 9,
-      "barcode": "HTTPV20410786200",
+      "barcode": "HTTPV23627966889",
       "description": "HTTP v2 test product",
       "image": "/files/test-product.png",
-      "request_id": "http-v2-product-idem-1773751850410784482"
+      "request_id": "http-v2-product-idem-1773825223627965389"
     },
     "http_status": 200,
     "response": {
@@ -2195,17 +2196,17 @@
         "ok": true,
         "status": "success",
         "code": "PRODUCT_CREATED",
-        "message": "商品 HTTP-V2-商品-1773751850410786200 已创建，并可直接加入订单。",
+        "message": "商品 HTTP-V2-商品-1773825223627966889 已创建，并可直接加入订单。",
         "data": {
-          "item_code": "HTTP-V2-商品-1773751850410786200",
-          "item_name": "HTTP-V2-商品-1773751850410786200",
+          "item_code": "HTTP-V2-商品-1773825223627966889",
+          "item_name": "HTTP-V2-商品-1773825223627966889",
           "uom": "Nos",
           "qty": 1.0,
           "price": 9.0,
           "warehouse": "Stores - RD",
           "image": "/files/test-product.png",
           "item_group": "All Item Groups",
-          "stock_entry": "MAT-STE-2026-00037"
+          "stock_entry": "MAT-STE-2026-00045"
         },
         "meta": {}
       }
@@ -2214,14 +2215,14 @@
   "test_create_product_and_stock_same_request_id_with_different_data_returns_first_result": {
     "method": "myapp.api.gateway.create_product_and_stock",
     "request": {
-      "item_name": "HTTP-V2-幂等B-1773751850513627446",
+      "item_name": "HTTP-V2-幂等B-1773825223728462100",
       "default_warehouse": "Stores - RD",
       "opening_qty": 8,
       "standard_rate": 29,
-      "barcode": "HTTPV20513627664",
+      "barcode": "HTTPV23728462312",
       "description": "HTTP v2 test product",
       "image": "/files/test-product.png",
-      "request_id": "http-v2-product-diffdata-1773751850513623753"
+      "request_id": "http-v2-product-diffdata-1773825223728457958"
     },
     "http_status": 200,
     "response": {
@@ -2229,17 +2230,17 @@
         "ok": true,
         "status": "success",
         "code": "PRODUCT_CREATED",
-        "message": "商品 HTTP-V2-幂等A-1773751850513624984 已创建，并可直接加入订单。",
+        "message": "商品 HTTP-V2-幂等A-1773825223728459558 已创建，并可直接加入订单。",
         "data": {
-          "item_code": "HTTP-V2-幂等A-1773751850513624984",
-          "item_name": "HTTP-V2-幂等A-1773751850513624984",
+          "item_code": "HTTP-V2-幂等A-1773825223728459558",
+          "item_name": "HTTP-V2-幂等A-1773825223728459558",
           "uom": "Nos",
           "qty": 2.0,
           "price": 11.0,
           "warehouse": "Stores - RD",
           "image": "/files/test-product.png",
           "item_group": "All Item Groups",
-          "stock_entry": "MAT-STE-2026-00038"
+          "stock_entry": "MAT-STE-2026-00046"
         },
         "meta": {}
       }
@@ -2248,14 +2249,14 @@
   "test_create_product_and_stock_concurrent_same_request_id_returns_single_item_worker_0": {
     "method": "myapp.api.gateway.create_product_and_stock",
     "request": {
-      "item_name": "HTTP-V2-并发-1773751850101016989",
+      "item_name": "HTTP-V2-并发-1773825223329311393",
       "default_warehouse": "Stores - RD",
       "opening_qty": 1,
       "standard_rate": 9,
-      "barcode": "HTTPV20101024165",
+      "barcode": "HTTPV23329312847",
       "description": "HTTP v2 test product",
       "image": "/files/test-product.png",
-      "request_id": "http-v2-product-concurrent-1773751850101015600"
+      "request_id": "http-v2-product-concurrent-1773825223329309936"
     },
     "http_status": 200,
     "response": {
@@ -2263,34 +2264,34 @@
         "ok": true,
         "status": "success",
         "code": "PRODUCT_CREATED",
-        "message": "商品 HTTP-V2-并发-1773751850101016989 已创建，并可直接加入订单。",
+        "message": "商品 HTTP-V2-并发-1773825223329311393 已创建，并可直接加入订单。",
         "data": {
-          "item_code": "HTTP-V2-并发-1773751850101016989",
-          "item_name": "HTTP-V2-并发-1773751850101016989",
+          "item_code": "HTTP-V2-并发-1773825223329311393",
+          "item_name": "HTTP-V2-并发-1773825223329311393",
           "uom": "Nos",
           "qty": 1.0,
           "price": 9.0,
           "warehouse": "Stores - RD",
           "image": "/files/test-product.png",
           "item_group": "All Item Groups",
-          "stock_entry": "MAT-STE-2026-00035"
+          "stock_entry": "MAT-STE-2026-00043"
         },
         "meta": {}
       },
-      "_server_messages": "[\"{\\\"message\\\":\\\"因勾选了成本价为0，物料 <strong>HTTP-V2-并发-1773751850101016989</strong> 的单价已设置为0\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"alert\\\":1}\"]"
+      "_server_messages": "[\"{\\\"message\\\":\\\"因勾选了成本价为0，物料 <strong>HTTP-V2-并发-1773825223329311393</strong> 的单价已设置为0\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"alert\\\":1}\"]"
     }
   },
   "test_create_product_and_stock_concurrent_same_request_id_returns_single_item_worker_1": {
     "method": "myapp.api.gateway.create_product_and_stock",
     "request": {
-      "item_name": "HTTP-V2-并发-1773751850101016989",
+      "item_name": "HTTP-V2-并发-1773825223329311393",
       "default_warehouse": "Stores - RD",
       "opening_qty": 1,
       "standard_rate": 9,
-      "barcode": "HTTPV20101024165",
+      "barcode": "HTTPV23329312847",
       "description": "HTTP v2 test product",
       "image": "/files/test-product.png",
-      "request_id": "http-v2-product-concurrent-1773751850101015600"
+      "request_id": "http-v2-product-concurrent-1773825223329309936"
     },
     "http_status": 200,
     "response": {
@@ -2298,17 +2299,17 @@
         "ok": true,
         "status": "success",
         "code": "PRODUCT_CREATED",
-        "message": "商品 HTTP-V2-并发-1773751850101016989 已创建，并可直接加入订单。",
+        "message": "商品 HTTP-V2-并发-1773825223329311393 已创建，并可直接加入订单。",
         "data": {
-          "item_code": "HTTP-V2-并发-1773751850101016989",
-          "item_name": "HTTP-V2-并发-1773751850101016989",
+          "item_code": "HTTP-V2-并发-1773825223329311393",
+          "item_name": "HTTP-V2-并发-1773825223329311393",
           "uom": "Nos",
           "qty": 1.0,
           "price": 9.0,
           "warehouse": "Stores - RD",
           "image": "/files/test-product.png",
           "item_group": "All Item Groups",
-          "stock_entry": "MAT-STE-2026-00035"
+          "stock_entry": "MAT-STE-2026-00043"
         },
         "meta": {}
       }
@@ -2317,14 +2318,14 @@
   "test_create_product_and_stock_concurrent_same_request_id_returns_single_item_worker_2": {
     "method": "myapp.api.gateway.create_product_and_stock",
     "request": {
-      "item_name": "HTTP-V2-并发-1773751850101016989",
+      "item_name": "HTTP-V2-并发-1773825223329311393",
       "default_warehouse": "Stores - RD",
       "opening_qty": 1,
       "standard_rate": 9,
-      "barcode": "HTTPV20101024165",
+      "barcode": "HTTPV23329312847",
       "description": "HTTP v2 test product",
       "image": "/files/test-product.png",
-      "request_id": "http-v2-product-concurrent-1773751850101015600"
+      "request_id": "http-v2-product-concurrent-1773825223329309936"
     },
     "http_status": 200,
     "response": {
@@ -2332,17 +2333,17 @@
         "ok": true,
         "status": "success",
         "code": "PRODUCT_CREATED",
-        "message": "商品 HTTP-V2-并发-1773751850101016989 已创建，并可直接加入订单。",
+        "message": "商品 HTTP-V2-并发-1773825223329311393 已创建，并可直接加入订单。",
         "data": {
-          "item_code": "HTTP-V2-并发-1773751850101016989",
-          "item_name": "HTTP-V2-并发-1773751850101016989",
+          "item_code": "HTTP-V2-并发-1773825223329311393",
+          "item_name": "HTTP-V2-并发-1773825223329311393",
           "uom": "Nos",
           "qty": 1.0,
           "price": 9.0,
           "warehouse": "Stores - RD",
           "image": "/files/test-product.png",
           "item_group": "All Item Groups",
-          "stock_entry": "MAT-STE-2026-00035"
+          "stock_entry": "MAT-STE-2026-00043"
         },
         "meta": {}
       }
@@ -2351,14 +2352,14 @@
   "test_create_product_and_stock_concurrent_same_request_id_returns_single_item_worker_3": {
     "method": "myapp.api.gateway.create_product_and_stock",
     "request": {
-      "item_name": "HTTP-V2-并发-1773751850101016989",
+      "item_name": "HTTP-V2-并发-1773825223329311393",
       "default_warehouse": "Stores - RD",
       "opening_qty": 1,
       "standard_rate": 9,
-      "barcode": "HTTPV20101024165",
+      "barcode": "HTTPV23329312847",
       "description": "HTTP v2 test product",
       "image": "/files/test-product.png",
-      "request_id": "http-v2-product-concurrent-1773751850101015600"
+      "request_id": "http-v2-product-concurrent-1773825223329309936"
     },
     "http_status": 200,
     "response": {
@@ -2366,17 +2367,17 @@
         "ok": true,
         "status": "success",
         "code": "PRODUCT_CREATED",
-        "message": "商品 HTTP-V2-并发-1773751850101016989 已创建，并可直接加入订单。",
+        "message": "商品 HTTP-V2-并发-1773825223329311393 已创建，并可直接加入订单。",
         "data": {
-          "item_code": "HTTP-V2-并发-1773751850101016989",
-          "item_name": "HTTP-V2-并发-1773751850101016989",
+          "item_code": "HTTP-V2-并发-1773825223329311393",
+          "item_name": "HTTP-V2-并发-1773825223329311393",
           "uom": "Nos",
           "qty": 1.0,
           "price": 9.0,
           "warehouse": "Stores - RD",
           "image": "/files/test-product.png",
           "item_group": "All Item Groups",
-          "stock_entry": "MAT-STE-2026-00035"
+          "stock_entry": "MAT-STE-2026-00043"
         },
         "meta": {}
       }
@@ -2385,14 +2386,14 @@
   "test_create_product_and_stock_negative_qty_validation_error": {
     "method": "myapp.api.gateway.create_product_and_stock",
     "request": {
-      "item_name": "HTTP-V2-商品-1773751850500950375",
+      "item_name": "HTTP-V2-商品-1773825223716283370",
       "default_warehouse": "Stores - RD",
       "opening_qty": -1,
       "standard_rate": 9,
-      "barcode": "HTTPV20500950375",
+      "barcode": "HTTPV23716283370",
       "description": "HTTP v2 test product",
       "image": "/files/test-product.png",
-      "request_id": "http-v2-product-1773751850500952445"
+      "request_id": "http-v2-product-1773825223716285421"
     },
     "http_status": 422,
     "response": {
@@ -2404,20 +2405,20 @@
         "data": {},
         "meta": {}
       },
-      "_server_messages": "[\"{\\\"message\\\":\\\"初始入库数量不能为负数。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"bb68d1305576614bb7676924da796029f09dbaeda8c86f7f7ede0d4f\\\"}\"]"
+      "_server_messages": "[\"{\\\"message\\\":\\\"初始入库数量不能为负数。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"1fe98cf239d0bf084119aeeae2116b07fd004e829498cf623aa16c90\\\"}\"]"
     }
   },
   "test_create_product_and_stock_duplicate_barcode_validation_error": {
     "method": "myapp.api.gateway.create_product_and_stock",
     "request": {
-      "item_name": "HTTP-V2-重复条码-1773751850397465557",
+      "item_name": "HTTP-V2-重复条码-1773825223614720538",
       "default_warehouse": "Stores - RD",
       "opening_qty": 1,
       "standard_rate": 9,
-      "barcode": "HTTPV20311414319",
+      "barcode": "HTTPV23532930750",
       "description": "HTTP v2 test product",
       "image": "/files/test-product.png",
-      "request_id": "http-v2-product-1773751850397468141"
+      "request_id": "http-v2-product-1773825223614723062"
     },
     "http_status": 422,
     "response": {
@@ -2425,17 +2426,17 @@
         "ok": false,
         "status": "error",
         "code": "VALIDATION_ERROR",
-        "message": "条码 HTTPV20311414319 已存在。",
+        "message": "条码 HTTPV23532930750 已存在。",
         "data": {},
         "meta": {}
       },
-      "_server_messages": "[\"{\\\"message\\\":\\\"条码 HTTPV20311414319 已存在。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"b4e0687624dc0aada0103bd7539ace6495a91e49f26de1d201dd0f75\\\"}\"]"
+      "_server_messages": "[\"{\\\"message\\\":\\\"条码 HTTPV23532930750 已存在。\\\",\\\"as_table\\\":false,\\\"title\\\":\\\"信息\\\",\\\"indicator\\\":\\\"red\\\",\\\"raise_exception\\\":1,\\\"__frappe_exc_id\\\":\\\"1d1f80de3afc9b6cfccc9819e949d756269073b0669f69cba8463188\\\"}\"]"
     }
   },
   "test_create_product_and_stock_then_search_product_v2_finds_new_item": {
     "method": "myapp.api.gateway.search_product_v2",
     "request": {
-      "search_key": "HTTP-V2-商品-1773751850682318686",
+      "search_key": "HTTP-V2-商品-1773825223892323475",
       "search_fields": [
         "item_code"
       ],
@@ -2453,8 +2454,8 @@
         "message": "",
         "data": [
           {
-            "item_code": "HTTP-V2-商品-1773751850682318686",
-            "item_name": "HTTP-V2-商品-1773751850682318686",
+            "item_code": "HTTP-V2-商品-1773825223892323475",
+            "item_name": "HTTP-V2-商品-1773825223892323475",
             "uom": "Nos",
             "all_uoms": [
               {
@@ -2467,8 +2468,8 @@
             "image": "/files/test-product.png",
             "nickname": "HTTP v2 test product",
             "description": "HTTP v2 test product",
-            "creation": "2026-03-17 20:50:50.689949",
-            "modified": "2026-03-17 20:50:50.689949"
+            "creation": "2026-03-18 17:13:43.900252",
+            "modified": "2026-03-18 17:13:43.900252"
           }
         ],
         "meta": {
@@ -2503,7 +2504,7 @@
       ],
       "company": "rgc (Demo)",
       "immediate": 0,
-      "request_id": "http-v2-create-order-1773751849982089967",
+      "request_id": "http-v2-create-order-1773825223219077106",
       "customer_info": {
         "contact_display_name": "张三",
         "contact_phone": "13800138000",
@@ -2522,9 +2523,9 @@
         "ok": true,
         "status": "success",
         "code": "ORDER_V2_CREATED",
-        "message": "销售订单 SAL-ORD-2026-00234 已按 v2 模型创建并提交。",
+        "message": "销售订单 SAL-ORD-2026-00282 已按 v2 模型创建并提交。",
         "data": {
-          "order": "SAL-ORD-2026-00234",
+          "order": "SAL-ORD-2026-00282",
           "snapshot": {
             "customer": {
               "contact_person": null,
@@ -2569,7 +2570,7 @@
       ],
       "company": "rgc (Demo)",
       "immediate": 0,
-      "request_id": "http-v2-order-idem-1773751849866517313",
+      "request_id": "http-v2-order-idem-1773825223111630210",
       "customer_info": {
         "contact_display_name": "张三",
         "contact_phone": "13800138000",
@@ -2588,9 +2589,9 @@
         "ok": true,
         "status": "success",
         "code": "ORDER_V2_CREATED",
-        "message": "销售订单 SAL-ORD-2026-00233 已按 v2 模型创建并提交。",
+        "message": "销售订单 SAL-ORD-2026-00281 已按 v2 模型创建并提交。",
         "data": {
-          "order": "SAL-ORD-2026-00233",
+          "order": "SAL-ORD-2026-00281",
           "snapshot": {
             "customer": {
               "contact_person": null,
@@ -2624,7 +2625,7 @@
   "test_create_order_v2_detail_contains_snapshot": {
     "method": "myapp.api.gateway.get_sales_order_detail",
     "request": {
-      "order_name": "SAL-ORD-2026-00232"
+      "order_name": "SAL-ORD-2026-00280"
     },
     "http_status": 200,
     "response": {
@@ -2632,9 +2633,9 @@
         "ok": true,
         "status": "success",
         "code": "ORDER_DETAIL_FETCHED",
-        "message": "销售订单 SAL-ORD-2026-00232 详情获取成功。",
+        "message": "销售订单 SAL-ORD-2026-00280 详情获取成功。",
         "data": {
-          "order_name": "SAL-ORD-2026-00232",
+          "order_name": "SAL-ORD-2026-00280",
           "document_status": "submitted",
           "customer": {
             "name": "Palmer Productions Ltd.",
@@ -2698,7 +2699,7 @@
           },
           "items": [
             {
-              "sales_order_item": "3d1u7f1cs9",
+              "sales_order_item": "fu6d7hn09t",
               "item_code": "SKU010",
               "item_name": "Camera",
               "uom": "Nos",
@@ -2706,7 +2707,8 @@
               "qty": 1.0,
               "delivered_qty": 0.0,
               "rate": 900.0,
-              "amount": 900.0
+              "amount": 900.0,
+              "image": "https://images.pexels.com/photos/51383/photo-camera-subject-photographer-51383.jpeg"
             }
           ],
           "references": {
@@ -2716,8 +2718,8 @@
           "meta": {
             "company": "rgc (Demo)",
             "currency": "CNY",
-            "transaction_date": "2026-03-17",
-            "delivery_date": "2026-03-17",
+            "transaction_date": "2026-03-18",
+            "delivery_date": "2026-03-18",
             "remarks": null
           }
         },
@@ -2756,6 +2758,216 @@
           "suggestions": {
             "company": "rgc",
             "warehouse": "在途物料 - R"
+          }
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_update_order_v2_success": {
+    "method": "myapp.api.gateway.get_sales_order_detail",
+    "request": {
+      "order_name": "SAL-ORD-2026-00294"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "ORDER_DETAIL_FETCHED",
+        "message": "销售订单 SAL-ORD-2026-00294 详情获取成功。",
+        "data": {
+          "order_name": "SAL-ORD-2026-00294",
+          "document_status": "submitted",
+          "customer": {
+            "name": "Palmer Productions Ltd.",
+            "display_name": "Palmer Productions Ltd.",
+            "contact_person": null,
+            "contact_display_name": "王五",
+            "contact_phone": "13600136000",
+            "contact_email": null,
+            "shipping_address_name": null,
+            "shipping_address_text": "北京市朝阳区移动端更新路 66 号"
+          },
+          "shipping": {
+            "shipping_address_name": null,
+            "shipping_address_text": "北京市朝阳区移动端更新路 66 号",
+            "address_line1": null,
+            "address_line2": null,
+            "city": null,
+            "county": null,
+            "state": null,
+            "country": null,
+            "pincode": null,
+            "contact_person": null,
+            "contact_display": "王五",
+            "contact_phone": "13600136000",
+            "contact_email": null
+          },
+          "amounts": {
+            "order_amount_estimate": 900.0,
+            "receivable_amount": 0,
+            "paid_amount": 0,
+            "outstanding_amount": 0
+          },
+          "fulfillment": {
+            "total_qty": 1.0,
+            "delivered_qty": 0.0,
+            "remaining_qty": 1.0,
+            "status": "pending",
+            "is_fully_delivered": false
+          },
+          "delivery": {
+            "status": "unknown",
+            "delivered_at": null,
+            "delivery_confirmed_by": null
+          },
+          "payment": {
+            "receivable_amount": 0,
+            "paid_amount": 0,
+            "outstanding_amount": 0,
+            "status": "unpaid",
+            "is_fully_paid": false
+          },
+          "completion": {
+            "status": "open",
+            "is_completed": false
+          },
+          "actions": {
+            "can_submit_delivery": true,
+            "can_create_sales_invoice": true,
+            "can_record_payment": false,
+            "can_process_return": false
+          },
+          "items": [
+            {
+              "sales_order_item": "g1aqodkq16",
+              "item_code": "SKU010",
+              "item_name": "Camera",
+              "uom": "Nos",
+              "warehouse": "Stores - RD",
+              "qty": 1.0,
+              "delivered_qty": 0.0,
+              "rate": 900.0,
+              "amount": 900.0,
+              "image": "https://images.pexels.com/photos/51383/photo-camera-subject-photographer-51383.jpeg"
+            }
+          ],
+          "references": {
+            "delivery_notes": [],
+            "sales_invoices": []
+          },
+          "meta": {
+            "company": "rgc (Demo)",
+            "currency": "CNY",
+            "transaction_date": "2026-03-18",
+            "delivery_date": "2026-03-25",
+            "remarks": null
+          }
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_update_order_items_v2_success": {
+    "method": "myapp.api.gateway.get_sales_order_detail",
+    "request": {
+      "order_name": "SAL-ORD-2026-00293-1"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "ORDER_DETAIL_FETCHED",
+        "message": "销售订单 SAL-ORD-2026-00293-1 详情获取成功。",
+        "data": {
+          "order_name": "SAL-ORD-2026-00293-1",
+          "document_status": "submitted",
+          "customer": {
+            "name": "Palmer Productions Ltd.",
+            "display_name": "Palmer Productions Ltd.",
+            "contact_person": null,
+            "contact_display_name": "张三",
+            "contact_phone": "13800138000",
+            "contact_email": "zhangsan@example.com",
+            "shipping_address_name": null,
+            "shipping_address_text": "上海市浦东新区测试路 88 号 5 楼"
+          },
+          "shipping": {
+            "shipping_address_name": null,
+            "shipping_address_text": "上海市浦东新区测试路 88 号 5 楼",
+            "address_line1": null,
+            "address_line2": null,
+            "city": null,
+            "county": null,
+            "state": null,
+            "country": null,
+            "pincode": null,
+            "contact_person": null,
+            "contact_display": "张三",
+            "contact_phone": "13800138000",
+            "contact_email": "zhangsan@example.com"
+          },
+          "amounts": {
+            "order_amount_estimate": 600.0,
+            "receivable_amount": 0,
+            "paid_amount": 0,
+            "outstanding_amount": 0
+          },
+          "fulfillment": {
+            "total_qty": 2.0,
+            "delivered_qty": 0.0,
+            "remaining_qty": 2.0,
+            "status": "pending",
+            "is_fully_delivered": false
+          },
+          "delivery": {
+            "status": "unknown",
+            "delivered_at": null,
+            "delivery_confirmed_by": null
+          },
+          "payment": {
+            "receivable_amount": 0,
+            "paid_amount": 0,
+            "outstanding_amount": 0,
+            "status": "unpaid",
+            "is_fully_paid": false
+          },
+          "completion": {
+            "status": "open",
+            "is_completed": false
+          },
+          "actions": {
+            "can_submit_delivery": true,
+            "can_create_sales_invoice": true,
+            "can_record_payment": false,
+            "can_process_return": false
+          },
+          "items": [
+            {
+              "sales_order_item": "g19e9b59vu",
+              "item_code": "SKU010",
+              "item_name": "Camera",
+              "uom": "Nos",
+              "warehouse": "Stores - RD",
+              "qty": 2.0,
+              "delivered_qty": 0.0,
+              "rate": 300.0,
+              "amount": 600.0,
+              "image": "https://images.pexels.com/photos/51383/photo-camera-subject-photographer-51383.jpeg"
+            }
+          ],
+          "references": {
+            "delivery_notes": [],
+            "sales_invoices": []
+          },
+          "meta": {
+            "company": "rgc (Demo)",
+            "currency": "CNY",
+            "transaction_date": "2026-03-18",
+            "delivery_date": "2026-03-18",
+            "remarks": null
           }
         },
         "meta": {}

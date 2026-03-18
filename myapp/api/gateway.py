@@ -7,6 +7,8 @@ from .orders_api import get_customer_sales_context as get_customer_sales_context
 from .orders_api import get_sales_order_detail as get_sales_order_detail_service
 from .orders_api import get_sales_order_status_summary as get_sales_order_status_summary_service
 from .orders_api import submit_delivery as submit_delivery_service
+from .orders_api import update_order_items_v2 as update_order_items_v2_service
+from .orders_api import update_order_v2 as update_order_v2_service
 from .purchase_api import create_purchase_invoice as create_purchase_invoice_service
 from .purchase_api import (
 	create_purchase_invoice_from_receipt as create_purchase_invoice_from_receipt_service,
@@ -98,6 +100,22 @@ def get_sales_order_status_summary(customer: str | None = None, company: str | N
 	return _handle_gateway_call(
 		lambda: get_sales_order_status_summary_service(customer=customer, company=company, limit=limit),
 		success_code="ORDER_SUMMARY_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def update_order_v2(order_name: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: update_order_v2_service(order_name=order_name, **kwargs),
+		success_code="ORDER_V2_UPDATED",
+	)
+
+
+@frappe.whitelist()
+def update_order_items_v2(order_name: str, items, **kwargs):
+	return _handle_gateway_call(
+		lambda: update_order_items_v2_service(order_name=order_name, items=items, **kwargs),
+		success_code="ORDER_ITEMS_V2_UPDATED",
 	)
 
 

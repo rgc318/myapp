@@ -356,6 +356,120 @@ create_order_v2(
 )
 ```
 
+### update_order_v2
+
+方法：
+
+- `myapp.api.gateway.update_order_v2`
+
+参数：
+
+- `order_name: str`
+- `request_id: str | None`
+- `delivery_date: str | None`
+- `transaction_date: str | None`
+- `remarks: str | None`
+- `po_no: str | None`
+- `customer_info: dict | json-string | None`
+- `shipping_info: dict | json-string | None`
+
+行为：
+
+- 按 v2 口径更新销售订单头信息、联系人快照、收货快照
+- 适用于已提交但尚未取消的销售订单
+- 更新后返回新的 `snapshot`
+- 使用相同 `request_id` 重试时，直接返回第一次成功结果
+
+当前说明：
+
+- `delivery_date`、联系人展示信息、收货地址文本快照已完成真实 HTTP 验证
+- `remarks` 在当前标准 `Sales Order` 模型中仍属于弱承载字段
+- 因此第一版 contract 允许传入 `remarks`，但前端当前应优先依赖已验证的联系人 / 地址 / 日期字段
+
+示例：
+
+```python
+from myapp.api.gateway import update_order_v2
+
+update_order_v2(
+    order_name="SAL-ORD-2026-00254",
+    delivery_date="2026-03-25",
+    customer_info={
+        "contact_display_name": "王五",
+        "contact_phone": "13600136000",
+    },
+    shipping_info={
+        "receiver_name": "赵六",
+        "receiver_phone": "13700137000",
+        "shipping_address_text": "北京市朝阳区移动端更新路 66 号",
+    },
+    request_id="order-v2-update-001",
+)
+```
+
+### update_order_items_v2
+
+方法：
+
+- `myapp.api.gateway.update_order_items_v2`
+
+参数：
+
+- `order_name: str`
+- `items: list[dict] | json-string`
+- `request_id: str | None`
+- `delivery_date: str | None`
+- `default_warehouse: str | None`
+- `company: str | None`
+
+明细字段：
+
+- `item_code`
+- `qty`
+- `warehouse`
+- `uom` 可选
+- `price` 可选
+- `delivery_date` 可选
+
+行为：
+
+- 按 v2 口径整体替换销售订单商品明细
+- 当前要求：
+  - 原订单未取消
+  - 原订单不存在发货 / 开票下游单据
+- 若原订单为已提交状态，则接口会：
+  - 自动取消原订单
+  - 生成 amendment 单据
+  - 在 amendment 上写入新商品明细并重新提交
+- 响应中返回：
+  - 新订单号 `order`
+  - 原订单号 `source_order`
+  - 更新后的 `items`
+
+说明：
+
+- 这是当前第一版最稳妥的做法，避免直接在已提交单据上强改商品事实
+- 前端收到新单号后，应继续以后端返回的 `order` 作为后续详情/发货/开票的目标
+
+示例：
+
+```python
+from myapp.api.gateway import update_order_items_v2
+
+update_order_items_v2(
+    order_name="SAL-ORD-2026-00257",
+    items=[
+        {
+            "item_code": "SKU010",
+            "qty": 2,
+            "warehouse": "Stores - RD",
+            "price": 300,
+        }
+    ],
+    request_id="order-v2-items-001",
+)
+```
+
 ### create_product_and_stock
 
 方法：
