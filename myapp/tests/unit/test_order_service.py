@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 import frappe
 
 from myapp.services.order_service import (
+	cancel_order_v2,
 	create_order,
 	create_order_v2,
 	create_sales_invoice,
@@ -258,6 +259,53 @@ class TestOrderService(TestCase):
 
 		self.assertEqual(result["order"], "SO-0009")
 		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.order_service.run_idempotent")
+	def test_cancel_order_v2_returns_cached_result_for_same_request_id(self, mock_run_idempotent):
+		mock_run_idempotent.return_value = {
+			"status": "success",
+			"order": "SO-0008",
+			"document_status": "cancelled",
+		}
+
+		result = cancel_order_v2("SO-0008", request_id="cancel-001")
+
+		self.assertEqual(result["document_status"], "cancelled")
+		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.order_service.get_sales_order_detail")
+	@patch("myapp.services.order_service._collect_sales_order_reference_names")
+	@patch("myapp.services.order_service._get_sales_order_doc_for_update")
+	def test_cancel_order_v2_cancels_submitted_order_without_downstream_documents(
+		self,
+		mock_get_sales_order_doc_for_update,
+		mock_collect_sales_order_reference_names,
+		mock_get_sales_order_detail,
+	):
+		so = MagicMock()
+		so.name = "SO-0012"
+		so.docstatus = 1
+		mock_get_sales_order_doc_for_update.return_value = so
+		mock_collect_sales_order_reference_names.return_value = ([], [])
+		mock_get_sales_order_detail.return_value = {
+			"data": {"order_name": "SO-0012", "document_status": "cancelled"}
+		}
+
+		result = cancel_order_v2("SO-0012")
+
+		so.cancel.assert_called_once_with()
+		self.assertEqual(result["order"], "SO-0012")
+		self.assertEqual(result["document_status"], "cancelled")
+
+	@patch("myapp.services.order_service._collect_sales_order_reference_names")
+	def test_cancel_order_v2_rejects_order_with_downstream_documents(self, mock_collect_sales_order_reference_names):
+		so = frappe._dict({"name": "SO-0013", "docstatus": 1})
+		mock_collect_sales_order_reference_names.return_value = (["DN-0001"], [])
+
+		from myapp.services.order_service import _ensure_sales_order_cancellable
+
+		with self.assertRaises(frappe.ValidationError):
+			_ensure_sales_order_cancellable(so)
 
 	@patch("myapp.services.order_service.run_idempotent")
 	@patch("myapp.services.order_service._commit_sales_order_context_update")

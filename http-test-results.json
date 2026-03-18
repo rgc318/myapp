@@ -1962,7 +1962,7 @@
   "test_search_product_v2_supports_barcode_and_nickname": {
     "method": "myapp.api.gateway.search_product_v2",
     "request": {
-      "search_key": "HTTP v2 test product",
+      "search_key": "HTTP 昵称 1773827013880681109",
       "search_fields": [
         "nickname"
       ],
@@ -1980,8 +1980,8 @@
         "message": "",
         "data": [
           {
-            "item_code": "HTTP-V2-商品-1773825231838985214",
-            "item_name": "HTTP-V2-商品-1773825231838985214",
+            "item_code": "HTTP-V2-商品-1773827013880682900",
+            "item_name": "HTTP-V2-商品-1773827013880682900",
             "uom": "Nos",
             "all_uoms": [
               {
@@ -1992,172 +1992,10 @@
             "qty": 1.0,
             "price": 9.0,
             "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
+            "nickname": "HTTP 昵称 1773827013880681109",
             "description": "HTTP v2 test product",
-            "creation": "2026-03-18 17:13:51.846222",
-            "modified": "2026-03-18 17:13:51.846222"
-          },
-          {
-            "item_code": "HTTP-V2-商品-1773825223892323475",
-            "item_name": "HTTP-V2-商品-1773825223892323475",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 1.0,
-            "price": 15.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-18 17:13:43.900252",
-            "modified": "2026-03-18 17:13:43.900252"
-          },
-          {
-            "item_code": "HTTP-V2-商品-1773825223814887249",
-            "item_name": "HTTP-V2-商品-1773825223814887249",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 1.0,
-            "price": 9.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-18 17:13:43.822219",
-            "modified": "2026-03-18 17:13:43.822219"
-          },
-          {
-            "item_code": "HTTP-V2-幂等A-1773825223728459558",
-            "item_name": "HTTP-V2-幂等A-1773825223728459558",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 2.0,
-            "price": 11.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-18 17:13:43.736325",
-            "modified": "2026-03-18 17:13:43.736325"
-          },
-          {
-            "item_code": "HTTP-V2-商品-1773825223627966889",
-            "item_name": "HTTP-V2-商品-1773825223627966889",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 1.0,
-            "price": 9.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-18 17:13:43.634645",
-            "modified": "2026-03-18 17:13:43.634645"
-          },
-          {
-            "item_code": "HTTP-V2-商品-1773825223532930750",
-            "item_name": "HTTP-V2-商品-1773825223532930750",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 1.0,
-            "price": 9.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-18 17:13:43.540394",
-            "modified": "2026-03-18 17:13:43.540394"
-          },
-          {
-            "item_code": "HTTP-V2-并发-1773825223329311393",
-            "item_name": "HTTP-V2-并发-1773825223329311393",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 1.0,
-            "price": 9.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-18 17:13:43.347735",
-            "modified": "2026-03-18 17:13:43.347735"
-          },
-          {
-            "item_code": "HTTP-V2-商品-1773751860419258381",
-            "item_name": "HTTP-V2-商品-1773751860419258381",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 3.0,
-            "price": 12.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-17 20:51:00.427531",
-            "modified": "2026-03-17 20:51:00.427531"
-          },
-          {
-            "item_code": "HTTP-V2-商品-1773751858654298432",
-            "item_name": "HTTP-V2-商品-1773751858654298432",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 1.0,
-            "price": 9.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-17 20:50:58.661909",
-            "modified": "2026-03-17 20:50:58.661909"
-          },
-          {
-            "item_code": "HTTP-V2-商品-1773751850682318686",
-            "item_name": "HTTP-V2-商品-1773751850682318686",
-            "uom": "Nos",
-            "all_uoms": [
-              {
-                "uom": "Nos",
-                "conversion_factor": 1.0
-              }
-            ],
-            "qty": 1.0,
-            "price": 15.0,
-            "image": "/files/test-product.png",
-            "nickname": "HTTP v2 test product",
-            "description": "HTTP v2 test product",
-            "creation": "2026-03-17 20:50:50.689949",
-            "modified": "2026-03-17 20:50:50.689949"
+            "creation": "2026-03-18 17:43:33.887711",
+            "modified": "2026-03-18 17:43:33.887711"
           }
         ],
         "meta": {
@@ -2968,6 +2806,208 @@
             "transaction_date": "2026-03-18",
             "delivery_date": "2026-03-18",
             "remarks": null
+          }
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_get_product_detail_v2_success": {
+    "method": "myapp.api.gateway.get_product_detail_v2",
+    "request": {
+      "item_code": "HTTP-V2-商品-1773827391489362847",
+      "warehouse": "Stores - RD"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PRODUCT_DETAIL_FETCHED",
+        "message": "",
+        "data": {
+          "item_code": "HTTP-V2-商品-1773827391489362847",
+          "item_name": "HTTP-V2-商品-1773827391489362847",
+          "item_group": "All Item Groups",
+          "stock_uom": "Nos",
+          "uom": "Nos",
+          "all_uoms": [
+            {
+              "uom": "Nos",
+              "conversion_factor": 1.0
+            }
+          ],
+          "image": "/files/test-product.png",
+          "nickname": "详情昵称 1773827391489361251",
+          "description": "HTTP v2 test product",
+          "disabled": 0,
+          "is_sales_item": 1,
+          "barcode": "HTTPV21489362847",
+          "qty": 1.0,
+          "price": 16.0,
+          "price_list": "Standard Selling",
+          "currency": "CNY",
+          "warehouse": "Stores - RD",
+          "company": null,
+          "creation": "2026-03-18 17:49:51.544929",
+          "modified": "2026-03-18 17:49:51.544929"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_update_product_v2_success": {
+    "method": "myapp.api.gateway.get_product_detail_v2",
+    "request": {
+      "item_code": "HTTP-V2-更新商品-1773827391850743508",
+      "warehouse": "Stores - RD"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PRODUCT_DETAIL_FETCHED",
+        "message": "",
+        "data": {
+          "item_code": "HTTP-V2-更新商品-1773827391850743508",
+          "item_name": "HTTP-V2-更新商品-1773827391850743508-已更新",
+          "item_group": "All Item Groups",
+          "stock_uom": "Nos",
+          "uom": "Nos",
+          "all_uoms": [
+            {
+              "uom": "Nos",
+              "conversion_factor": 1.0
+            }
+          ],
+          "image": "/files/test-product.png",
+          "nickname": "更新昵称 1773827391932210324",
+          "description": "更新后的商品描述",
+          "disabled": 0,
+          "is_sales_item": 1,
+          "barcode": "HTTPV21850745484",
+          "qty": 1.0,
+          "price": 19.0,
+          "price_list": "Standard Selling",
+          "currency": "CNY",
+          "warehouse": "Stores - RD",
+          "company": null,
+          "creation": "2026-03-18 17:49:51.857785",
+          "modified": "2026-03-18 17:49:51.940324"
+        },
+        "meta": {}
+      }
+    }
+  },
+  "test_cancel_order_v2_success": {
+    "method": "myapp.api.gateway.cancel_order_v2",
+    "request": {
+      "order_name": "SAL-ORD-2026-00299",
+      "request_id": "http-v2-cancel-order-1773828486906054253"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "ORDER_V2_CANCELLED",
+        "message": "销售订单 SAL-ORD-2026-00299 已按 v2 模型作废。",
+        "data": {
+          "order": "SAL-ORD-2026-00299",
+          "document_status": "cancelled",
+          "references": {
+            "delivery_notes": [],
+            "sales_invoices": []
+          },
+          "detail": {
+            "order_name": "SAL-ORD-2026-00299",
+            "document_status": "cancelled",
+            "customer": {
+              "name": "Palmer Productions Ltd.",
+              "display_name": "Palmer Productions Ltd.",
+              "contact_person": null,
+              "contact_display_name": "张三",
+              "contact_phone": "13800138000",
+              "contact_email": "zhangsan@example.com",
+              "shipping_address_name": null,
+              "shipping_address_text": "上海市浦东新区测试路 88 号 5 楼"
+            },
+            "shipping": {
+              "shipping_address_name": null,
+              "shipping_address_text": "上海市浦东新区测试路 88 号 5 楼",
+              "address_line1": null,
+              "address_line2": null,
+              "city": null,
+              "county": null,
+              "state": null,
+              "country": null,
+              "pincode": null,
+              "contact_person": null,
+              "contact_display": "张三",
+              "contact_phone": "13800138000",
+              "contact_email": "zhangsan@example.com"
+            },
+            "amounts": {
+              "order_amount_estimate": 900.0,
+              "receivable_amount": 0,
+              "paid_amount": 0,
+              "outstanding_amount": 0
+            },
+            "fulfillment": {
+              "total_qty": 1.0,
+              "delivered_qty": 0.0,
+              "remaining_qty": 1.0,
+              "status": "pending",
+              "is_fully_delivered": false
+            },
+            "delivery": {
+              "status": "unknown",
+              "delivered_at": null,
+              "delivery_confirmed_by": null
+            },
+            "payment": {
+              "receivable_amount": 0,
+              "paid_amount": 0,
+              "outstanding_amount": 0,
+              "status": "unpaid",
+              "is_fully_paid": false
+            },
+            "completion": {
+              "status": "closed",
+              "is_completed": false
+            },
+            "actions": {
+              "can_submit_delivery": false,
+              "can_create_sales_invoice": false,
+              "can_record_payment": false,
+              "can_process_return": false
+            },
+            "items": [
+              {
+                "sales_order_item": "fq3sk9nmsp",
+                "item_code": "SKU010",
+                "item_name": "Camera",
+                "uom": "Nos",
+                "warehouse": "Stores - RD",
+                "qty": 1.0,
+                "delivered_qty": 0.0,
+                "rate": 900.0,
+                "amount": 900.0,
+                "image": "https://images.pexels.com/photos/51383/photo-camera-subject-photographer-51383.jpeg"
+              }
+            ],
+            "references": {
+              "delivery_notes": [],
+              "sales_invoices": []
+            },
+            "meta": {
+              "company": "rgc (Demo)",
+              "currency": "CNY",
+              "transaction_date": "2026-03-18",
+              "delivery_date": "2026-03-18",
+              "remarks": null
+            }
           }
         },
         "meta": {}

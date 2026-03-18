@@ -3,6 +3,7 @@ import frappe
 from myapp.services.order_service import create_order as create_order_service
 from myapp.services.order_service import create_order_v2 as create_order_v2_service
 from myapp.services.order_service import create_sales_invoice as create_sales_invoice_service
+from myapp.services.order_service import cancel_order_v2 as cancel_order_v2_service
 from myapp.services.order_service import get_customer_sales_context as get_customer_sales_context_service
 from myapp.services.order_service import get_sales_order_detail as get_sales_order_detail_service
 from myapp.services.order_service import get_sales_order_status_summary as get_sales_order_status_summary_service
@@ -58,6 +59,11 @@ def get_sales_order_detail(order_name: str):
 @frappe.whitelist()
 def get_sales_order_status_summary(customer: str | None = None, company: str | None = None, limit: int = 20):
 	return get_sales_order_status_summary_service(customer=customer, company=company, limit=limit)
+
+
+@frappe.whitelist()
+def cancel_order_v2(order_name: str, **kwargs):
+	return cancel_order_v2_service(order_name=order_name, **kwargs)
 
 
 @frappe.whitelist()

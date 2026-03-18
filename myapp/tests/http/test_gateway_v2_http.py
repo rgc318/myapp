@@ -107,6 +107,16 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self._assert_success(status_code, response, code="ORDER_ITEMS_V2_UPDATED")
 		return payload, response
 
+	def _cancel_sales_order_v2(self, order_name: str, **kwargs):
+		payload = {
+			"order_name": order_name,
+			"request_id": kwargs.pop("request_id", self._unique_request_id("http-v2-cancel-order")),
+		}
+		payload.update(kwargs)
+		status_code, response = self._call_gateway("myapp.api.gateway.cancel_order_v2", payload)
+		self._assert_success(status_code, response, code="ORDER_V2_CANCELLED")
+		return payload, response
+
 	def _create_product_and_stock(
 		self,
 		*,
@@ -123,6 +133,23 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		)
 		status_code, response = self._post_create_product_and_stock(payload)
 		self._assert_success(status_code, response, code="PRODUCT_CREATED")
+		return payload, response
+
+	def _get_product_detail_v2(self, item_code: str, **kwargs):
+		payload = {"item_code": item_code}
+		payload.update(kwargs)
+		status_code, response = self._call_gateway("myapp.api.gateway.get_product_detail_v2", payload)
+		self._assert_success(status_code, response, code="PRODUCT_DETAIL_FETCHED")
+		return payload, response
+
+	def _update_product_v2(self, item_code: str, **kwargs):
+		payload = {
+			"item_code": item_code,
+			"request_id": kwargs.pop("request_id", self._unique_request_id("http-v2-update-product")),
+		}
+		payload.update(kwargs)
+		status_code, response = self._call_gateway("myapp.api.gateway.update_product_v2", payload)
+		self._assert_success(status_code, response, code="PRODUCT_UPDATED")
 		return payload, response
 
 	def test_search_product_v2_success(self):
@@ -186,10 +213,17 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self._assert_success(barcode_status, barcode_payload, code="PRODUCTS_FETCHED")
 		self.assertTrue(any(row["item_code"] == item_code for row in barcode_payload["message"]["data"]))
 
+		nickname = f"HTTP 昵称 {time.time_ns()}"
+		nickname_create_request = self._build_product_payload(nickname=nickname)
+		nickname_create_status, nickname_create_payload = self._post_create_product_and_stock(nickname_create_request)
+		self._assert_success(nickname_create_status, nickname_create_payload, code="PRODUCT_CREATED")
+		nickname_item_code = nickname_create_payload["message"]["data"]["item_code"]
+		self.assertEqual(nickname_create_payload["message"]["data"]["nickname"], nickname)
+
 		nickname_status, nickname_payload = self._call_gateway(
 			"myapp.api.gateway.search_product_v2",
 			{
-				"search_key": "HTTP v2 test product",
+				"search_key": nickname,
 				"search_fields": ["nickname"],
 				"in_stock_only": 1,
 				"sort_by": "modified",
@@ -198,7 +232,51 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 			},
 		)
 		self._assert_success(nickname_status, nickname_payload, code="PRODUCTS_FETCHED")
-		self.assertTrue(any(row["item_code"] == item_code for row in nickname_payload["message"]["data"]))
+		self.assertTrue(any(row["item_code"] == nickname_item_code for row in nickname_payload["message"]["data"]))
+
+	def test_get_product_detail_v2_success(self):
+		create_request = self._build_product_payload(nickname=f"详情昵称 {time.time_ns()}", standard_rate=16)
+		create_status, create_payload = self._post_create_product_and_stock(create_request)
+		self._assert_success(create_status, create_payload, code="PRODUCT_CREATED")
+		item_code = create_payload["message"]["data"]["item_code"]
+
+		_detail_request, detail_payload = self._get_product_detail_v2(item_code, warehouse=SALES_WAREHOUSE)
+		data = detail_payload["message"]["data"]
+		self.assertEqual(data["item_code"], item_code)
+		self.assertEqual(data["nickname"], create_request["nickname"])
+		self.assertEqual(data["image"], "/files/test-product.png")
+		self.assertEqual(data["warehouse"], SALES_WAREHOUSE)
+		self.assertGreaterEqual(float(data["price"]), 0)
+
+	def test_update_product_v2_success(self):
+		create_request, create_payload = self._create_product_and_stock(
+			item_name=f"HTTP-V2-更新商品-{time.time_ns()}",
+			standard_rate=12,
+		)
+		item_code = create_payload["message"]["data"]["item_code"]
+
+		new_nickname = f"更新昵称 {time.time_ns()}"
+		_update_request, update_payload = self._update_product_v2(
+			item_code,
+			item_name=f"{item_code}-已更新",
+			description="更新后的商品描述",
+			nickname=new_nickname,
+			image="/files/test-product.png",
+			standard_rate=19,
+			warehouse=SALES_WAREHOUSE,
+		)
+
+		update_data = update_payload["message"]["data"]
+		self.assertEqual(update_data["item_code"], item_code)
+		self.assertEqual(update_data["nickname"], new_nickname)
+		self.assertEqual(update_data["description"], "更新后的商品描述")
+		self.assertEqual(update_data["price"], 19.0)
+
+		_detail_request, detail_payload = self._get_product_detail_v2(item_code, warehouse=SALES_WAREHOUSE)
+		detail_data = detail_payload["message"]["data"]
+		self.assertEqual(detail_data["nickname"], new_nickname)
+		self.assertEqual(detail_data["description"], "更新后的商品描述")
+		self.assertEqual(detail_data["price"], 19.0)
 
 	def test_get_sales_order_detail_success(self):
 		_order_request, order_payload = self._create_sales_order()
@@ -315,6 +393,17 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self.assertEqual(len(data["items"]), 1)
 		self.assertEqual(data["items"][0]["item_code"], "SKU010")
 		self.assertEqual(data["items"][0]["qty"], 2.0)
+
+	def test_cancel_order_v2_success(self):
+		_order_request, order_payload = self._create_sales_order_v2()
+		order_name = order_payload["message"]["data"]["order"]
+
+		_cancel_request, cancel_payload = self._cancel_sales_order_v2(order_name)
+		data = cancel_payload["message"]["data"]
+		self.assertEqual(data["order"], order_name)
+		self.assertEqual(data["document_status"], "cancelled")
+		self.assertEqual(data["detail"]["order_name"], order_name)
+		self.assertEqual(data["detail"]["document_status"], "cancelled")
 
 	def test_get_customer_sales_context_success(self):
 		status_code, payload = self._call_gateway(

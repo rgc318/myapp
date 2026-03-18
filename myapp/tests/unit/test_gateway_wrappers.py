@@ -4,12 +4,14 @@ from unittest.mock import patch
 import frappe
 
 from myapp.api.gateway import (
+	cancel_order_v2,
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
 	create_product_and_stock,
 	create_sales_invoice,
 	create_order,
 	create_purchase_order,
+	get_product_detail_v2,
 	get_sales_order_detail,
 	get_sales_order_status_summary,
 	get_customer_sales_context,
@@ -20,6 +22,7 @@ from myapp.api.gateway import (
 	search_product_v2,
 	test_remote_debug,
 	update_payment_status,
+	update_product_v2,
 	update_order_items_v2,
 	update_order_v2,
 	record_supplier_payment,
@@ -37,6 +40,7 @@ class TestGatewayWrappers(TestCase):
 			get_sales_order_detail,
 			get_sales_order_status_summary,
 			get_customer_sales_context,
+			cancel_order_v2,
 			update_order_v2,
 			update_order_items_v2,
 			submit_delivery,
@@ -47,6 +51,8 @@ class TestGatewayWrappers(TestCase):
 			search_product,
 			search_product_v2,
 			create_product_and_stock,
+			get_product_detail_v2,
+			update_product_v2,
 			confirm_pending_document,
 			update_payment_status,
 			record_supplier_payment,
@@ -232,6 +238,48 @@ class TestGatewayWrappers(TestCase):
 			in_stock_only=1,
 		)
 
+	@patch("myapp.api.gateway.get_product_detail_v2_service")
+	def test_get_product_detail_v2_passes_filters_to_service(self, mock_get_product_detail_v2_service):
+		mock_get_product_detail_v2_service.return_value = {
+			"status": "success",
+			"data": {"item_code": "ITEM-001"},
+		}
+
+		get_product_detail_v2("ITEM-001", warehouse="Stores - TC", price_list="Standard Selling")
+
+		mock_get_product_detail_v2_service.assert_called_once_with(
+			item_code="ITEM-001",
+			warehouse="Stores - TC",
+			company=None,
+			price_list="Standard Selling",
+			currency=None,
+		)
+
+	@patch("myapp.api.gateway.update_product_v2_service")
+	def test_update_product_v2_passes_fields_to_service(self, mock_update_product_v2_service):
+		mock_update_product_v2_service.return_value = {
+			"status": "success",
+			"data": {"item_code": "ITEM-001"},
+		}
+
+		update_product_v2(
+			"ITEM-001",
+			item_name="新名称",
+			nickname="新昵称",
+			description="新描述",
+			image="/files/new.png",
+			standard_rate=18,
+		)
+
+		mock_update_product_v2_service.assert_called_once_with(
+			item_code="ITEM-001",
+			item_name="新名称",
+			nickname="新昵称",
+			description="新描述",
+			image="/files/new.png",
+			standard_rate=18,
+		)
+
 	@patch("myapp.api.gateway.get_sales_order_status_summary_service")
 	def test_get_sales_order_status_summary_passes_filters_to_service(
 		self, mock_get_sales_order_status_summary_service
@@ -268,6 +316,21 @@ class TestGatewayWrappers(TestCase):
 			delivery_date="2026-03-20",
 			remarks="updated",
 			customer_info={"contact_phone": "13800138000"},
+		)
+
+	@patch("myapp.api.gateway.cancel_order_v2_service")
+	def test_cancel_order_v2_passes_order_name_to_service(self, mock_cancel_order_v2_service):
+		mock_cancel_order_v2_service.return_value = {
+			"status": "success",
+			"order": "SO-0001",
+			"document_status": "cancelled",
+		}
+
+		cancel_order_v2("SO-0001", request_id="cancel-001")
+
+		mock_cancel_order_v2_service.assert_called_once_with(
+			order_name="SO-0001",
+			request_id="cancel-001",
 		)
 
 	@patch("myapp.api.gateway.update_order_items_v2_service")

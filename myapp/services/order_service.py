@@ -635,12 +635,12 @@ def _load_sales_invoice_rows(invoice_names: list[str]):
 	)
 
 
-def _get_sales_order_doc_for_update(order_name: str):
+def _get_sales_order_doc_for_update(order_name: str, *, allow_cancelled: bool = False):
 	if not order_name:
 		frappe.throw(_("order_name 不能为空。"))
 
 	so = frappe.get_doc("Sales Order", order_name)
-	if cint(so.docstatus) == 2:
+	if cint(so.docstatus) == 2 and not allow_cancelled:
 		frappe.throw(_("已取消的销售订单不允许继续修改。"))
 	return so
 
@@ -687,6 +687,17 @@ def _prepare_sales_order_for_item_replacement(so):
 	amended.docstatus = 0
 	amended.name = None
 	return amended, original_name
+
+
+def _ensure_sales_order_cancellable(so):
+	if cint(so.docstatus) == 2:
+		return
+	if cint(so.docstatus) != 1:
+		frappe.throw(_("只有已提交的销售订单才允许作废。"))
+
+	delivery_note_names, invoice_names = _collect_sales_order_reference_names(so.name)
+	if delivery_note_names or invoice_names:
+		frappe.throw(_("销售订单 {0} 已存在发货或开票记录，当前不允许作废。").format(so.name))
 
 
 def get_sales_order_detail(order_name: str):
@@ -1070,6 +1081,51 @@ def update_order_items_v2(order_name: str, items: list[dict], **kwargs):
 		raise
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), _("v2 订单商品明细更新失败"))
+		raise
+
+
+def cancel_order_v2(order_name: str, **kwargs):
+	request_id = kwargs.get("request_id")
+
+	try:
+		def _cancel_order_v2():
+			so = _get_sales_order_doc_for_update(order_name, allow_cancelled=True)
+			delivery_note_names, invoice_names = _collect_sales_order_reference_names(so.name)
+
+			if cint(so.docstatus) == 2:
+				detail = get_sales_order_detail(so.name)
+				return {
+					"status": "success",
+					"order": so.name,
+					"document_status": "cancelled",
+					"message": _("销售订单 {0} 已处于作废状态。").format(so.name),
+					"references": {
+						"delivery_notes": delivery_note_names,
+						"sales_invoices": invoice_names,
+					},
+					"detail": detail.get("data", {}),
+				}
+
+			_ensure_sales_order_cancellable(so)
+			so.cancel()
+			detail = get_sales_order_detail(so.name)
+			return {
+				"status": "success",
+				"order": so.name,
+				"document_status": "cancelled",
+				"message": _("销售订单 {0} 已按 v2 模型作废。").format(so.name),
+				"references": {
+					"delivery_notes": delivery_note_names,
+					"sales_invoices": invoice_names,
+				},
+				"detail": detail.get("data", {}),
+			}
+
+		return run_idempotent("cancel_order_v2", request_id, _cancel_order_v2)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("v2 订单作废失败"))
 		raise
 
 

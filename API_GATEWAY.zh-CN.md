@@ -6,8 +6,11 @@
 - `myapp.api.gateway.search_product`
 - `myapp.api.gateway.search_product_v2`
 - `myapp.api.gateway.create_product_and_stock`
+- `myapp.api.gateway.get_product_detail_v2`
+- `myapp.api.gateway.update_product_v2`
 - `myapp.api.gateway.create_order`
 - `myapp.api.gateway.create_order_v2`
+- `myapp.api.gateway.cancel_order_v2`
 - `myapp.api.gateway.get_customer_sales_context`
 - `myapp.api.gateway.get_sales_order_detail`
 - `myapp.api.gateway.get_sales_order_status_summary`
@@ -39,7 +42,7 @@
 
 ### 模块导航
 
-- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_order`、`create_order_v2`、`get_customer_sales_context`、`get_sales_order_detail`、`get_sales_order_status_summary`、`submit_delivery`、`create_sales_invoice`、`update_payment_status`、`process_sales_return`
+- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`get_product_detail_v2`、`update_product_v2`、`create_order`、`create_order_v2`、`get_customer_sales_context`、`get_sales_order_detail`、`get_sales_order_status_summary`、`submit_delivery`、`create_sales_invoice`、`update_payment_status`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
 - 通用辅助：`confirm_pending_document`
 
@@ -470,6 +473,42 @@ update_order_items_v2(
 )
 ```
 
+### cancel_order_v2
+
+- `myapp.api.gateway.cancel_order_v2`
+- 用途：按 v2 语义作废销售订单，不暴露 ERPNext 原生取消动作给前端
+
+请求参数：
+
+- `order_name`: 销售订单号
+- `request_id`: 可选；用于幂等控制
+
+返回字段：
+
+- `order`: 被作废的订单号
+- `document_status`: 固定返回 `cancelled`
+- `references.delivery_notes`: 已关联发货单列表
+- `references.sales_invoices`: 已关联销售发票列表
+- `detail`: 作废后的订单详情快照，结构与 `get_sales_order_detail` 保持一致
+
+行为说明：
+
+- 仅允许对已提交且无下游发货 / 开票单据的销售订单执行作废
+- 若订单已存在下游单据，接口会返回业务错误，不允许直接作废
+- 若订单已处于取消状态，接口按幂等成功返回当前状态
+- 当前接口语义是“作废/取消”，不是物理删除订单
+
+示例：
+
+```python
+from myapp.api.gateway import cancel_order_v2
+
+cancel_order_v2(
+    order_name="SAL-ORD-2026-00246",
+    request_id="cancel-order-v2-001",
+)
+```
+
 ### create_product_and_stock
 
 方法：
@@ -487,6 +526,7 @@ update_order_items_v2(
 - `barcode: str | None`
 - `image: str | None`
 - `description: str | None`
+- `nickname: str | None`
 - `item_group: str | None`
 - `item_code: str | None`
 - `request_id: str | None`
@@ -497,7 +537,14 @@ update_order_items_v2(
 - `warehouse` 为空时优先使用 `default_warehouse`，再回退到当前用户默认仓库
 - `opening_qty > 0` 时自动创建一张 `Material Receipt` 入库
 - `standard_rate` 有值时自动补一条 `Standard Selling` 价格
+- `image` 写入标准字段 `Item.image`
+- `nickname` 优先写入自定义字段 `Item.custom_nickname`；若站点尚未完成迁移，则回退为旧的 `description` 兼容口径
 - 返回新商品基础信息，前端可直接加入当前订单草稿
+
+部署说明：
+
+- 正式启用 `custom_nickname` 前，应先执行 `bench migrate`
+- 本应用已提供 patch：`myapp.patches.add_item_nickname_field`
 
 适用场景：
 
@@ -597,7 +644,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 支持只看有库存商品
 - 支持仓库 / 公司口径库存过滤
 - 返回更完整的商品摘要，包括 `description`、`creation`、`modified`
-- 当前 `nickname` 先复用商品描述字段作为别名搜索兜底口径
+- 当前 `nickname` 优先读取 `Item.custom_nickname`
+- 若站点尚未迁移出正式昵称字段，则仍会回退复用 `description` 作为兼容搜索口径
 
 适用场景：
 
@@ -605,6 +653,62 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 多条件搜索
 - 排序与筛选
 - 后续扫码、商品编辑、快速加单入口
+
+### get_product_detail_v2
+
+方法：
+
+- `myapp.api.gateway.get_product_detail_v2`
+
+参数：
+
+- `item_code: str`
+- `warehouse: str | None = None`
+- `company: str | None = None`
+- `price_list: str = "Standard Selling"`
+- `currency: str | None = None`
+
+行为：
+
+- 返回商品详情摘要
+- 返回标准图片字段 `Item.image`
+- 返回正式昵称字段 `Item.custom_nickname`，未迁移站点回退到旧 `description` 兼容口径
+- 返回当前价格、库存、主条码与换算单位信息
+
+适用场景：
+
+- 商品详情页
+- 下单页回填旧草稿商品图片与摘要
+- 商品编辑前预加载
+
+### update_product_v2
+
+方法：
+
+- `myapp.api.gateway.update_product_v2`
+
+参数：
+
+- `item_code: str`
+- `item_name: str | None`
+- `nickname: str | None`
+- `description: str | None`
+- `image: str | None`
+- `disabled: bool | int | None`
+- `standard_rate: float | None`
+- `price_list: str = "Standard Selling"`
+- `currency: str | None = None`
+- `warehouse: str | None = None`
+- `company: str | None = None`
+- `request_id: str | None`
+
+行为：
+
+- 更新商品基础信息
+- `nickname` 优先写入 `Item.custom_nickname`
+- `image` 写入标准字段 `Item.image`
+- `standard_rate` 有值时同步更新标准售价
+- 返回更新后的商品详情快照，便于前端直接回显
 
 ### get_sales_order_detail
 

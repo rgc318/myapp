@@ -115,6 +115,8 @@
 
 - `search_product_v2`
 - `create_product_and_stock`
+- `get_product_detail_v2`
+- `update_product_v2`
 - `create_order_v2`
 - `get_customer_sales_context`
 - `get_sales_order_detail`
@@ -123,6 +125,7 @@
 当前第一阶段可视为已完成的目标：
 
 - 商品工作台具备“搜索 + 快速建商品并入库”的后端能力
+- 商品详情与商品基础信息更新已具备 v2 接口骨架
 - 销售订单具备 v2 建单能力，可显式携带联系人与收货地址文本快照
 - 销售单创建前具备客户销售上下文聚合能力，可预填默认联系人、默认地址和建议仓库
 - 销售详情页与列表页具备统一聚合状态接口
@@ -134,6 +137,14 @@
 - 商品详情接口
 - 送达确认与 `delivery.status` 真正落地
 - 更完整的订单双联系人 / 地址持久化模型
+
+商品主数据补充约束：
+
+- 当前已正式引入商品昵称字段方案：`Item.custom_nickname`
+- 搜索与建商品接口会优先读写 `custom_nickname`
+- 为兼容未执行 patch / migrate 的旧站点，运行时仍保留 `description` 兜底逻辑
+- 商品图片继续沿用 ERPNext 标准字段 `Item.image`，不额外引入独立媒体模型
+- 站点升级时需执行 `bench migrate` 以落地 patch：`myapp.patches.add_item_nickname_field`
 
 ## 5. 业务流程设计
 
@@ -304,6 +315,7 @@
 
 在本轮升级中，销售订单更新能力已新增：
 
+- `cancel_order_v2`
 - `update_order_v2`
 - `update_order_items_v2`
 
@@ -322,6 +334,13 @@
 - 修改数量与价格
 - 在提交态且无下游单据时自动走 amendment
 - 返回新订单号与原订单号映射
+
+当前第一版 `cancel_order_v2` 已支持：
+
+- 按“作废/取消”语义处理销售订单，而不是物理删除
+- 仅允许取消已提交且无下游发货 / 开票单据的订单
+- 返回统一的 v2 响应结构与作废后详情快照
+- 对已取消订单按幂等成功返回当前状态
 
 当前限制：
 

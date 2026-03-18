@@ -5,6 +5,8 @@ from frappe.utils import cint, flt
 
 from myapp.utils.idempotency import run_idempotent
 
+ITEM_NICKNAME_FIELD = "custom_nickname"
+
 
 def _normalize_text(value: str | None):
 	return (value or "").strip()
@@ -54,6 +56,17 @@ def _get_item_filters():
 	return {"disabled": 0, "is_sales_item": 1}
 
 
+def _has_item_field(fieldname: str):
+	try:
+		return bool(frappe.get_meta("Item").has_field(fieldname))
+	except Exception:
+		return False
+
+
+def _get_item_nickname_field():
+	return ITEM_NICKNAME_FIELD if _has_item_field(ITEM_NICKNAME_FIELD) else None
+
+
 def _search_item_codes(search_key: str, *, search_fields: list[str], limit: int):
 	item_filters = _get_item_filters()
 	matched_codes = []
@@ -96,13 +109,17 @@ def _search_item_codes(search_key: str, *, search_fields: list[str], limit: int)
 			return matched_codes
 
 	if "nickname" in search_fields:
+		nickname_field = _get_item_nickname_field()
+		or_filters = {
+			"description": ["like", f"%{search_key}%"],
+			"item_name": ["like", f"%{search_key}%"],
+		}
+		if nickname_field:
+			or_filters[nickname_field] = ["like", f"%{search_key}%"]
 		codes = frappe.get_all(
 			"Item",
 			filters=item_filters,
-			or_filters={
-				"description": ["like", f"%{search_key}%"],
-				"item_name": ["like", f"%{search_key}%"],
-			},
+			or_filters=or_filters,
 			pluck="name",
 			limit_page_length=limit,
 			order_by="modified desc",
@@ -116,12 +133,17 @@ def _get_item_data_map(item_codes: list[str]):
 	if not item_codes:
 		return {}
 
+	fields = ["name", "item_name", "stock_uom", "image", "description", "creation", "modified"]
+	nickname_field = _get_item_nickname_field()
+	if nickname_field:
+		fields.append(nickname_field)
+
 	return {
 		d.name: d
 		for d in frappe.get_all(
 			"Item",
 			filters={**_get_item_filters(), "name": ["in", item_codes]},
-			fields=["name", "item_name", "stock_uom", "image", "description", "creation", "modified"],
+			fields=fields,
 		)
 	}
 
@@ -200,6 +222,55 @@ def _sort_search_results(results: list[dict], *, sort_by: str, sort_order: str, 
 	return sorted(results, key=_sort_key, reverse=reverse)
 
 
+def _extract_item_nickname(item):
+	nickname_field = _get_item_nickname_field()
+	if nickname_field:
+		nickname = _normalize_text(getattr(item, nickname_field, None))
+		if nickname:
+			return nickname
+	return _normalize_text(getattr(item, "description", None)) or None
+
+
+def _get_primary_barcode(item_code: str):
+	return frappe.db.get_value("Item Barcode", {"parent": item_code}, "barcode")
+
+
+def _build_product_detail_payload(
+	item,
+	*,
+	warehouse: str | None = None,
+	company: str | None = None,
+	price_list: str = "Standard Selling",
+	currency: str | None = None,
+):
+	qty_map = _get_qty_map([item.name], warehouse=warehouse, company=company)
+	price_map = _get_price_map([item.name], price_list=price_list, currency=currency)
+	uom_map = _get_uom_map([item.name])
+
+	return {
+		"item_code": item.name,
+		"item_name": item.item_name,
+		"item_group": item.item_group,
+		"stock_uom": item.stock_uom,
+		"uom": item.stock_uom,
+		"all_uoms": uom_map.get(item.name, []),
+		"image": item.image,
+		"nickname": _extract_item_nickname(item),
+		"description": item.description,
+		"disabled": cint(item.disabled),
+		"is_sales_item": cint(getattr(item, "is_sales_item", 0)),
+		"barcode": _get_primary_barcode(item.name),
+		"qty": flt(qty_map.get(item.name, 0)),
+		"price": flt(price_map.get(item.name, 0) or 0),
+		"price_list": price_list,
+		"currency": currency,
+		"warehouse": warehouse,
+		"company": company,
+		"creation": getattr(item, "creation", None),
+		"modified": getattr(item, "modified", None),
+	}
+
+
 def search_product(
 	search_key: str,
 	price_list: str = "Standard Selling",
@@ -271,6 +342,35 @@ def search_product(
 	}
 
 
+def get_product_detail_v2(
+	item_code: str,
+	warehouse: str | None = None,
+	company: str | None = None,
+	price_list: str = "Standard Selling",
+	currency: str | None = None,
+):
+	item_code = _normalize_text(item_code)
+	if not item_code:
+		frappe.throw(_("商品编码不能为空。"))
+
+	warehouse = _normalize_text(warehouse) or None
+	company = _normalize_text(company) or None
+	price_list = _normalize_text(price_list) or "Standard Selling"
+	currency = _normalize_currency(currency)
+
+	item = frappe.get_doc("Item", item_code)
+	return {
+		"status": "success",
+		"data": _build_product_detail_payload(
+			item,
+			warehouse=warehouse,
+			company=company,
+			price_list=price_list,
+			currency=currency,
+		),
+	}
+
+
 def search_product_v2(
 	search_key: str,
 	price_list: str = "Standard Selling",
@@ -325,7 +425,7 @@ def search_product_v2(
 				"qty": qty,
 				"price": flt(price_map.get(code, 0) or 0),
 				"image": item.image,
-				"nickname": item.description,
+				"nickname": _extract_item_nickname(item),
 				"description": item.description,
 				"creation": item.creation,
 				"modified": item.modified,
@@ -496,6 +596,71 @@ def _create_stock_entry(
 	return stock_entry
 
 
+def update_product_v2(
+	item_code: str,
+	**kwargs,
+):
+	item_code = _normalize_text(item_code)
+	if not item_code:
+		frappe.throw(_("商品编码不能为空。"))
+
+	request_id = kwargs.get("request_id")
+
+	def _update_product():
+		item = frappe.get_doc("Item", item_code)
+		nickname_field = _get_item_nickname_field()
+
+		item_name = kwargs.get("item_name")
+		if item_name is not None:
+			item.item_name = _normalize_text(item_name)
+
+		description = kwargs.get("description")
+		if description is not None:
+			item.description = _normalize_text(description)
+
+		image = kwargs.get("image")
+		if image is not None:
+			item.image = _normalize_text(image)
+
+		if "disabled" in kwargs and kwargs.get("disabled") is not None:
+			item.disabled = cint(kwargs.get("disabled"))
+
+		nickname = kwargs.get("nickname")
+		if nickname is not None:
+			normalized_nickname = _normalize_text(nickname)
+			if nickname_field:
+				setattr(item, nickname_field, normalized_nickname)
+			elif description is None and normalized_nickname:
+				item.description = normalized_nickname
+
+		item.save()
+
+		standard_rate = kwargs.get("standard_rate")
+		price_list = _normalize_text(kwargs.get("price_list")) or "Standard Selling"
+		currency = _normalize_currency(kwargs.get("currency"))
+		if standard_rate not in (None, ""):
+			_upsert_item_price(
+				item_code=item.name,
+				rate=flt(standard_rate),
+				price_list=price_list,
+				currency=currency,
+			)
+
+		item.reload()
+		return {
+			"status": "success",
+			"data": _build_product_detail_payload(
+				item,
+				warehouse=_normalize_text(kwargs.get("warehouse")) or None,
+				company=_normalize_text(kwargs.get("company")) or None,
+				price_list=price_list,
+				currency=currency,
+			),
+		}
+
+	return run_idempotent("update_product_v2", request_id, _update_product)
+
+
 def create_product_and_stock(
 	item_name: str,
 	warehouse: str | None = None,
@@ -537,11 +702,15 @@ def create_product_and_stock(
 		if kwargs.get("image"):
 			item.image = kwargs["image"]
 		if kwargs.get("nickname"):
-			item.description = (
-				f"{kwargs['nickname']}\n{item.description}".strip()
-				if item.description
-				else kwargs["nickname"]
-			)
+			nickname_field = _get_item_nickname_field()
+			if nickname_field:
+				setattr(item, nickname_field, kwargs["nickname"])
+			else:
+				item.description = (
+					f"{kwargs['nickname']}\n{item.description}".strip()
+					if item.description
+					else kwargs["nickname"]
+				)
 		if barcode:
 			item.append("barcodes", {"barcode": barcode})
 		item.insert()
@@ -577,6 +746,8 @@ def create_product_and_stock(
 				"price": flt(standard_rate) if standard_rate not in (None, "") else 0,
 				"warehouse": resolved_warehouse,
 				"image": item.image,
+				"nickname": _extract_item_nickname(item),
+				"description": item.description,
 				"item_group": item_group,
 				"stock_entry": stock_entry.name if stock_entry else None,
 			},

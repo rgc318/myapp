@@ -107,7 +107,10 @@ python3 -m unittest \
 
 - `search_product_v2`
 - `create_product_and_stock`
+- `get_product_detail_v2`
+- `update_product_v2`
 - `create_order_v2`
+- `cancel_order_v2`
 - `update_order_v2`
 - `update_order_items_v2`
 - `get_customer_sales_context`
@@ -119,7 +122,10 @@ python3 -m unittest \
 - 单接口复测：
   - `search_product_v2`
   - `create_product_and_stock`
+  - `get_product_detail_v2`
+  - `update_product_v2`
   - `create_order_v2`
+  - `cancel_order_v2`
   - `update_order_v2`
   - `update_order_items_v2`
   - `get_customer_sales_context`
@@ -134,6 +140,8 @@ python3 -m unittest \
 - 商品创建后可被 `search_product_v2` 搜到
 - 条码搜索
 - 昵称搜索
+- 商品详情读取
+- 商品基础信息更新
 - 多条件搜索与排序的基础验证
 - `create_product_and_stock` 顺序幂等 replay
 - 相同 `request_id` 但不同请求数据，返回第一次结果
@@ -143,6 +151,7 @@ python3 -m unittest \
 - `create_order_v2` 成功路径
 - `create_order_v2` 顺序幂等 replay
 - `create_order_v2` 创建后详情接口可回读地址文本快照
+- `cancel_order_v2` 成功路径
 - `update_order_v2` 成功路径
 - `update_order_v2` 更新后详情接口可回读联系人 / 地址 / 交货日期
 - `update_order_items_v2` 成功路径
@@ -165,12 +174,20 @@ v2 轻链路内容：
 
 - `myapp.api.gateway.search_product_v2`
 - `myapp.api.gateway.create_product_and_stock`
+- `myapp.api.gateway.get_product_detail_v2`
+- `myapp.api.gateway.update_product_v2`
 - `myapp.api.gateway.create_order_v2`
+- `myapp.api.gateway.cancel_order_v2`
 - `myapp.api.gateway.update_order_v2`
 - `myapp.api.gateway.update_order_items_v2`
 - `myapp.api.gateway.get_customer_sales_context`
 - `myapp.api.gateway.get_sales_order_detail`
 - `myapp.api.gateway.get_sales_order_status_summary`
+
+当前补充说明：
+
+- `cancel_order_v2` 的真实 HTTP 用例已加入测试文件
+- 最新复测结果：`test_cancel_order_v2_success` 已通过真实 HTTP 验证
 
 ### 6.2 幂等结论
 
@@ -211,6 +228,7 @@ v2 轻链路内容：
 本轮最新一次真实执行结果：
 
 - 新增的 6 个 v2 商品增强用例：`OK`
+- 新增的 2 个商品详情 / 更新 v2 用例：`OK`
 - 新增的 3 个 `create_order_v2` 用例：`OK`
 - 新增的 2 个订单更新 v2 用例：`OK`
 - 新增的 1 个 `get_customer_sales_context` 用例：`OK`

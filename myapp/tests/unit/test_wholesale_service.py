@@ -3,10 +3,57 @@ from unittest.mock import MagicMock, patch
 
 import frappe
 
-from myapp.services.wholesale_service import create_product_and_stock, search_product_v2
+from myapp.services.wholesale_service import (
+	create_product_and_stock,
+	get_product_detail_v2,
+	search_product_v2,
+	update_product_v2,
+)
 
 
 class TestWholesaleService(TestCase):
+	@patch("myapp.services.wholesale_service._get_primary_barcode")
+	@patch("myapp.services.wholesale_service._get_uom_map")
+	@patch("myapp.services.wholesale_service._get_price_map")
+	@patch("myapp.services.wholesale_service._get_qty_map")
+	@patch("myapp.services.wholesale_service.frappe.get_doc")
+	def test_get_product_detail_v2_returns_product_snapshot(
+		self,
+		mock_get_doc,
+		mock_get_qty_map,
+		mock_get_price_map,
+		mock_get_uom_map,
+		mock_get_primary_barcode,
+	):
+		mock_get_doc.return_value = frappe._dict(
+			{
+				"name": "ITEM-001",
+				"item_name": "商品一",
+				"item_group": "饮料",
+				"stock_uom": "Nos",
+				"image": "/files/a.png",
+				"custom_nickname": "冰可乐",
+				"description": "标准描述",
+				"disabled": 0,
+				"is_sales_item": 1,
+				"creation": "2026-03-18 10:00:00",
+				"modified": "2026-03-18 11:00:00",
+			}
+		)
+		mock_get_qty_map.return_value = {"ITEM-001": 8}
+		mock_get_price_map.return_value = {"ITEM-001": 15}
+		mock_get_uom_map.return_value = {"ITEM-001": [{"uom": "Box", "conversion_factor": 12}]}
+		mock_get_primary_barcode.return_value = "BAR-001"
+
+		result = get_product_detail_v2("ITEM-001", warehouse="Stores - RD")
+
+		self.assertEqual(result["data"]["item_code"], "ITEM-001")
+		self.assertEqual(result["data"]["nickname"], "冰可乐")
+		self.assertEqual(result["data"]["image"], "/files/a.png")
+		self.assertEqual(result["data"]["price"], 15)
+		self.assertEqual(result["data"]["qty"], 8)
+		self.assertEqual(result["data"]["barcode"], "BAR-001")
+
 	@patch("myapp.services.wholesale_service._get_qty_map")
 	@patch("myapp.services.wholesale_service._get_uom_map")
 	@patch("myapp.services.wholesale_service._get_price_map")
@@ -28,6 +75,7 @@ class TestWholesaleService(TestCase):
 					"item_name": "商品一",
 					"stock_uom": "Nos",
 					"image": None,
+					"custom_nickname": "昵称一",
 					"description": "别名一",
 					"creation": "2026-03-16 10:00:00",
 					"modified": "2026-03-17 10:00:00",
@@ -39,6 +87,7 @@ class TestWholesaleService(TestCase):
 					"item_name": "商品二",
 					"stock_uom": "Nos",
 					"image": None,
+					"custom_nickname": "昵称二",
 					"description": "别名二",
 					"creation": "2026-03-15 10:00:00",
 					"modified": "2026-03-17 09:00:00",
@@ -59,6 +108,7 @@ class TestWholesaleService(TestCase):
 
 		self.assertEqual(len(result["data"]), 1)
 		self.assertEqual(result["data"][0]["item_code"], "ITEM-002")
+		self.assertEqual(result["data"][0]["nickname"], "昵称二")
 		self.assertEqual(result["filters"]["sort_by"], "price")
 		self.assertTrue(result["filters"]["in_stock_only"])
 
@@ -90,6 +140,7 @@ class TestWholesaleService(TestCase):
 		mock_run_idempotent.assert_called_once()
 
 	@patch("myapp.services.wholesale_service._create_stock_entry")
+	@patch("myapp.services.wholesale_service._get_item_nickname_field")
 	@patch("myapp.services.wholesale_service._upsert_item_price")
 	@patch("myapp.services.wholesale_service.frappe.new_doc")
 	@patch("myapp.services.wholesale_service.frappe.db.get_value")
@@ -100,6 +151,7 @@ class TestWholesaleService(TestCase):
 		mock_get_value,
 		mock_new_doc,
 		mock_upsert_item_price,
+		mock_get_item_nickname_field,
 		mock_create_stock_entry,
 	):
 		def fake_exists(doctype, filters=None):
@@ -115,6 +167,7 @@ class TestWholesaleService(TestCase):
 
 		mock_exists.side_effect = fake_exists
 		mock_get_value.return_value = "Test Company"
+		mock_get_item_nickname_field.return_value = "custom_nickname"
 
 		item = MagicMock()
 		item.item_code = "TEST-COLA"
@@ -134,9 +187,11 @@ class TestWholesaleService(TestCase):
 			standard_rate=5.5,
 			image="/files/cola.png",
 			barcode="BAR-001X",
+			nickname="冰可乐",
 		)
 
 		mock_new_doc.assert_called_once_with("Item")
+		self.assertEqual(item.custom_nickname, "冰可乐")
 		item.insert.assert_called_once()
 		item.append.assert_called_once_with("barcodes", {"barcode": "BAR-001X"})
 		mock_upsert_item_price.assert_called_once()
@@ -144,3 +199,51 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(result["data"]["item_code"], "TEST-COLA")
 		self.assertEqual(result["data"]["warehouse"], "Stores - RD")
 		self.assertEqual(result["data"]["qty"], 8)
+		self.assertEqual(result["data"]["nickname"], "冰可乐")
+
+	@patch("myapp.services.wholesale_service.run_idempotent")
+	def test_update_product_v2_uses_idempotent_runner(self, mock_run_idempotent):
+		mock_run_idempotent.return_value = {
+			"status": "success",
+			"data": {"item_code": "ITEM-001"},
+		}
+
+		result = update_product_v2(item_code="ITEM-001", nickname="新昵称", request_id="update-product-001")
+
+		self.assertEqual(result["data"]["item_code"], "ITEM-001")
+		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.wholesale_service._build_product_detail_payload")
+	@patch("myapp.services.wholesale_service._upsert_item_price")
+	@patch("myapp.services.wholesale_service._get_item_nickname_field")
+	@patch("myapp.services.wholesale_service.frappe.get_doc")
+	def test_update_product_v2_updates_basic_fields(
+		self,
+		mock_get_doc,
+		mock_get_item_nickname_field,
+		mock_upsert_item_price,
+		mock_build_product_detail_payload,
+	):
+		item = MagicMock()
+		item.name = "ITEM-001"
+		mock_get_doc.return_value = item
+		mock_get_item_nickname_field.return_value = "custom_nickname"
+		mock_build_product_detail_payload.return_value = {"item_code": "ITEM-001", "nickname": "新昵称"}
+
+		result = update_product_v2(
+			item_code="ITEM-001",
+			item_name="新名称",
+			description="新描述",
+			nickname="新昵称",
+			image="/files/new.png",
+			standard_rate=18,
+		)
+
+		self.assertEqual(item.item_name, "新名称")
+		self.assertEqual(item.description, "新描述")
+		self.assertEqual(item.custom_nickname, "新昵称")
+		self.assertEqual(item.image, "/files/new.png")
+		item.save.assert_called_once()
+		item.reload.assert_called_once()
+		mock_upsert_item_price.assert_called_once()
+		self.assertEqual(result["data"]["nickname"], "新昵称")

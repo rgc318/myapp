@@ -2,8 +2,10 @@ import frappe
 from frappe.utils import cint
 
 from myapp.services.wholesale_service import create_product_and_stock as create_product_and_stock_service
+from myapp.services.wholesale_service import get_product_detail_v2 as get_product_detail_v2_service
 from myapp.services.wholesale_service import search_product as search_product_service
 from myapp.services.wholesale_service import search_product_v2 as search_product_v2_service
+from myapp.services.wholesale_service import update_product_v2 as update_product_v2_service
 
 
 @frappe.whitelist()
@@ -60,3 +62,25 @@ def search_product_v2(
 		sort_order=sort_order,
 		in_stock_only=in_stock_only,
 	)
+
+
+@frappe.whitelist()
+def get_product_detail_v2(
+	item_code: str,
+	warehouse: str | None = None,
+	company: str | None = None,
+	price_list: str = "Standard Selling",
+	currency: str | None = None,
+):
+	return get_product_detail_v2_service(
+		item_code=item_code,
+		warehouse=warehouse,
+		company=company,
+		price_list=price_list,
+		currency=currency,
+	)
+
+
+@frappe.whitelist()
+def update_product_v2(item_code: str, **kwargs):
+	return update_product_v2_service(item_code=item_code, **kwargs)

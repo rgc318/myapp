@@ -3,6 +3,7 @@ import frappe
 from .orders_api import create_order as create_order_service
 from .orders_api import create_order_v2 as create_order_v2_service
 from .orders_api import create_sales_invoice as create_sales_invoice_service
+from .orders_api import cancel_order_v2 as cancel_order_v2_service
 from .orders_api import get_customer_sales_context as get_customer_sales_context_service
 from .orders_api import get_sales_order_detail as get_sales_order_detail_service
 from .orders_api import get_sales_order_status_summary as get_sales_order_status_summary_service
@@ -21,8 +22,10 @@ from .settlement_api import confirm_pending_document as confirm_pending_document
 from .settlement_api import process_sales_return as process_sales_return_service
 from .settlement_api import update_payment_status as update_payment_status_service
 from .wholesale_api import create_product_and_stock as create_product_and_stock_service
+from .wholesale_api import get_product_detail_v2 as get_product_detail_v2_service
 from .wholesale_api import search_product as search_product_service
 from .wholesale_api import search_product_v2 as search_product_v2_service
+from .wholesale_api import update_product_v2 as update_product_v2_service
 from myapp.utils.api_response import (
 	error_response,
 	map_exception_to_error,
@@ -100,6 +103,14 @@ def get_sales_order_status_summary(customer: str | None = None, company: str | N
 	return _handle_gateway_call(
 		lambda: get_sales_order_status_summary_service(customer=customer, company=company, limit=limit),
 		success_code="ORDER_SUMMARY_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def cancel_order_v2(order_name: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: cancel_order_v2_service(order_name=order_name, **kwargs),
+		success_code="ORDER_V2_CANCELLED",
 	)
 
 
@@ -249,6 +260,34 @@ def create_product_and_stock(item_name: str, warehouse: str | None = None, openi
 			**kwargs,
 		),
 		success_code="PRODUCT_CREATED",
+	)
+
+
+@frappe.whitelist()
+def get_product_detail_v2(
+	item_code: str,
+	warehouse: str | None = None,
+	company: str | None = None,
+	price_list: str = "Standard Selling",
+	currency: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: get_product_detail_v2_service(
+			item_code=item_code,
+			warehouse=warehouse,
+			company=company,
+			price_list=price_list,
+			currency=currency,
+		),
+		success_code="PRODUCT_DETAIL_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def update_product_v2(item_code: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: update_product_v2_service(item_code=item_code, **kwargs),
+		success_code="PRODUCT_UPDATED",
 	)
 
 
