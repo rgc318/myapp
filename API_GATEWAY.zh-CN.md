@@ -14,6 +14,8 @@
 - `myapp.api.gateway.get_customer_sales_context`
 - `myapp.api.gateway.get_sales_order_detail`
 - `myapp.api.gateway.get_sales_order_status_summary`
+- `myapp.api.gateway.get_delivery_note_detail_v2`
+- `myapp.api.gateway.get_sales_invoice_detail_v2`
 - `myapp.api.gateway.submit_delivery`
 - `myapp.api.gateway.create_sales_invoice`
 - `myapp.api.gateway.update_payment_status`
@@ -42,7 +44,7 @@
 
 ### 模块导航
 
-- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`get_product_detail_v2`、`update_product_v2`、`create_order`、`create_order_v2`、`get_customer_sales_context`、`get_sales_order_detail`、`get_sales_order_status_summary`、`submit_delivery`、`create_sales_invoice`、`update_payment_status`、`process_sales_return`
+- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`get_product_detail_v2`、`update_product_v2`、`create_order`、`create_order_v2`、`get_customer_sales_context`、`get_sales_order_detail`、`get_sales_order_status_summary`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`create_sales_invoice`、`update_payment_status`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
 - 通用辅助：`confirm_pending_document`
 
@@ -808,6 +810,95 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `outstanding_amount`
 - `modified`
 
+### get_delivery_note_detail_v2
+
+方法：
+
+- `myapp.api.gateway.get_delivery_note_detail_v2`
+
+参数：
+
+- `delivery_note_name: str`
+
+行为：
+
+- 返回发货单详情聚合数据
+- 适合移动端发货单详情页直接渲染
+- 返回来源销售订单与关联销售发票引用
+- 返回发货商品明细、客户快照与收货快照
+
+当前返回重点字段：
+
+- `delivery_note_name`
+- `document_status`
+- `customer.display_name`
+- `shipping.shipping_address_text`
+- `amounts.delivery_amount_estimate`
+- `fulfillment.total_qty`
+- `fulfillment.status`
+- `references.sales_orders`
+- `references.sales_invoices`
+- `items[].item_code`
+- `items[].item_name`
+- `items[].warehouse`
+- `items[].qty`
+- `items[].rate`
+- `items[].amount`
+- `items[].image`
+- `meta.company`
+- `meta.currency`
+- `meta.posting_date`
+- `meta.posting_time`
+- `meta.remarks`
+
+### get_sales_invoice_detail_v2
+
+方法：
+
+- `myapp.api.gateway.get_sales_invoice_detail_v2`
+
+参数：
+
+- `sales_invoice_name: str`
+
+行为：
+
+- 返回销售发票详情聚合数据
+- 适合移动端发票详情页直接渲染
+- 返回来源销售订单与来源发货单引用
+- 返回结算摘要、最新收款结果与商品明细
+
+当前返回重点字段：
+
+- `sales_invoice_name`
+- `document_status`
+- `customer.display_name`
+- `shipping.shipping_address_text`
+- `amounts.invoice_amount_estimate`
+- `amounts.receivable_amount`
+- `amounts.paid_amount`
+- `amounts.outstanding_amount`
+- `payment.status`
+- `payment.actual_paid_amount`
+- `payment.total_writeoff_amount`
+- `payment.latest_payment_entry`
+- `payment.latest_payment_invoice`
+- `payment.latest_unallocated_amount`
+- `payment.latest_writeoff_amount`
+- `references.sales_orders`
+- `references.delivery_notes`
+- `references.latest_payment_entry`
+- `items[].item_code`
+- `items[].qty`
+- `items[].rate`
+- `items[].amount`
+- `items[].image`
+- `meta.company`
+- `meta.currency`
+- `meta.posting_date`
+- `meta.due_date`
+- `meta.remarks`
+
 Frappe Desk / 前端调用：
 
 ```javascript
@@ -894,6 +985,7 @@ create_purchase_order(
 - `posting_time: str | None`
 - `set_posting_time: int | bool | None`
 - `remarks: str | None`
+- `force_delivery: int | bool | None = 0`
 
 行为：
 
@@ -902,6 +994,13 @@ create_purchase_order(
 - 支持在 `delivery_items` 中按 `sales_order_item` / `so_detail` 或 `item_code` 改写数量与价格
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的 `delivery_note`
 - 当源 `Sales Order` 已无可发货明细时，返回明确的校验错误
+- 默认会在提交前校验可用库存
+- 当 `force_delivery=1` 时，会跳过前置可用库存校验，并仅对当前发货涉及的物料临时打开 `allow_negative_stock` 以完成强制出货；提交结束后会恢复原值
+
+当前返回重点字段：
+
+- `delivery_note`
+- `force_delivery`
 
 ### create_sales_invoice
 

@@ -204,6 +204,39 @@ def _insert_and_submit(doc):
 	return doc
 
 
+def _insert_and_submit_with_temporary_negative_stock(doc):
+	item_codes = []
+	original_flags = {}
+
+	for item in doc.get("items") or []:
+		item_code = getattr(item, "item_code", None)
+		if not item_code or item_code in original_flags:
+			continue
+		original_flags[item_code] = cint(frappe.db.get_value("Item", item_code, "allow_negative_stock") or 0)
+		item_codes.append(item_code)
+
+	try:
+		for item_code in item_codes:
+			if not original_flags[item_code]:
+				frappe.db.set_value("Item", item_code, "allow_negative_stock", 1, update_modified=False)
+		if item_codes:
+			frappe.clear_cache()
+		doc.insert()
+		doc.submit()
+		return doc
+	finally:
+		for item_code in item_codes:
+			frappe.db.set_value(
+				"Item",
+				item_code,
+				"allow_negative_stock",
+				original_flags[item_code],
+				update_modified=False,
+			)
+		if item_codes:
+			frappe.clear_cache()
+
+
 def _ensure_target_has_items(doc, message: str):
 	if not doc.get("items"):
 		frappe.throw(message)
@@ -532,24 +565,7 @@ def _build_action_flags(fulfillment: dict, payment: dict, *, invoice_names: list
 
 
 def _serialize_order_items(order_items):
-	item_codes = []
-	for item in order_items or []:
-		item_code = getattr(item, "item_code", None)
-		if isinstance(item_code, str) and item_code and item_code not in item_codes:
-			item_codes.append(item_code)
-
-	item_image_map = {}
-	if item_codes:
-		for row in frappe.get_all(
-			"Item",
-			filters={"name": ["in", item_codes]},
-			fields=["name", "image"],
-			limit_page_length=len(item_codes),
-		):
-			item_name = getattr(row, "name", None)
-			if item_name:
-				item_image_map[item_name] = getattr(row, "image", None)
-
+	item_image_map = _get_item_image_map(order_items)
 	return [
 		{
 			"sales_order_item": getattr(item, "name", None),
@@ -565,6 +581,191 @@ def _serialize_order_items(order_items):
 		}
 		for item in order_items or []
 	]
+
+
+def _get_item_image_map(items):
+	item_codes = []
+	for item in items or []:
+		item_code = getattr(item, "item_code", None)
+		if isinstance(item_code, str) and item_code and item_code not in item_codes:
+			item_codes.append(item_code)
+
+	item_image_map = {}
+	if item_codes:
+		for row in frappe.get_all(
+			"Item",
+			filters={"name": ["in", item_codes]},
+			fields=["name", "image"],
+			limit_page_length=len(item_codes),
+		):
+			item_name = getattr(row, "name", None)
+			if item_name:
+				item_image_map[item_name] = getattr(row, "image", None)
+	return item_image_map
+
+
+def _serialize_delivery_note_items(delivery_items):
+	item_image_map = _get_item_image_map(delivery_items)
+	return [
+		{
+			"delivery_note_item": getattr(item, "name", None),
+			"item_code": getattr(item, "item_code", None),
+			"item_name": getattr(item, "item_name", None),
+			"uom": getattr(item, "uom", None),
+			"warehouse": getattr(item, "warehouse", None),
+			"qty": flt(getattr(item, "qty", 0) or 0),
+			"rate": flt(getattr(item, "rate", 0) or 0),
+			"amount": flt(getattr(item, "amount", 0) or 0),
+			"image": item_image_map.get(getattr(item, "item_code", None)),
+			"sales_order": getattr(item, "against_sales_order", None),
+			"sales_order_item": getattr(item, "so_detail", None),
+		}
+		for item in delivery_items or []
+	]
+
+
+def _serialize_sales_invoice_items(invoice_items):
+	item_image_map = _get_item_image_map(invoice_items)
+	return [
+		{
+			"sales_invoice_item": getattr(item, "name", None),
+			"item_code": getattr(item, "item_code", None),
+			"item_name": getattr(item, "item_name", None),
+			"uom": getattr(item, "uom", None),
+			"warehouse": getattr(item, "warehouse", None),
+			"qty": flt(getattr(item, "qty", 0) or 0),
+			"rate": flt(getattr(item, "rate", 0) or 0),
+			"amount": flt(getattr(item, "amount", 0) or 0),
+			"image": item_image_map.get(getattr(item, "item_code", None)),
+			"sales_order": getattr(item, "sales_order", None),
+			"sales_order_item": getattr(item, "so_detail", None),
+			"delivery_note": getattr(item, "delivery_note", None),
+			"delivery_note_item": getattr(item, "dn_detail", None),
+		}
+		for item in invoice_items or []
+	]
+
+
+def _build_customer_snapshot_for_doc(doc):
+	contact_doc = _get_doc_if_exists("Contact", doc.get("contact_person"))
+	address_doc = _get_doc_if_exists("Address", doc.get("shipping_address_name"))
+
+	contact_phone = _extract_first_non_empty(
+		doc.get("contact_mobile"),
+		doc.get("contact_phone"),
+		getattr(contact_doc, "mobile_no", None) if contact_doc else None,
+		getattr(contact_doc, "phone", None) if contact_doc else None,
+	)
+	contact_email = _extract_first_non_empty(
+		doc.get("contact_email"),
+		getattr(contact_doc, "email_id", None) if contact_doc else None,
+	)
+
+	return {
+		"name": doc.get("customer"),
+		"display_name": doc.get("customer_name") or doc.get("customer"),
+		"contact_person": doc.get("contact_person"),
+		"contact_display_name": _extract_first_non_empty(
+			getattr(contact_doc, "full_name", None) if contact_doc else None,
+			getattr(contact_doc, "first_name", None) if contact_doc else None,
+			doc.get("contact_display"),
+		),
+		"contact_phone": contact_phone,
+		"contact_email": contact_email,
+		"shipping_address_name": doc.get("shipping_address_name"),
+		"shipping_address_text": _extract_first_non_empty(
+			doc.get("address_display"),
+			getattr(address_doc, "address_display", None) if address_doc else None,
+			getattr(address_doc, "address_line1", None) if address_doc else None,
+		),
+	}
+
+
+def _build_shipping_snapshot_for_doc(doc):
+	address_doc = _get_doc_if_exists("Address", doc.get("shipping_address_name"))
+	contact_doc = _get_doc_if_exists("Contact", doc.get("contact_person"))
+
+	return {
+		"shipping_address_name": doc.get("shipping_address_name"),
+		"shipping_address_text": _extract_first_non_empty(
+			doc.get("address_display"),
+			getattr(address_doc, "address_display", None) if address_doc else None,
+			getattr(address_doc, "address_line1", None) if address_doc else None,
+		),
+		"address_line1": _extract_first_non_empty(
+			getattr(address_doc, "address_line1", None) if address_doc else None,
+		),
+		"address_line2": _extract_first_non_empty(
+			getattr(address_doc, "address_line2", None) if address_doc else None,
+		),
+		"city": _extract_first_non_empty(getattr(address_doc, "city", None) if address_doc else None),
+		"county": _extract_first_non_empty(getattr(address_doc, "county", None) if address_doc else None),
+		"state": _extract_first_non_empty(getattr(address_doc, "state", None) if address_doc else None),
+		"country": _extract_first_non_empty(getattr(address_doc, "country", None) if address_doc else None),
+		"pincode": _extract_first_non_empty(getattr(address_doc, "pincode", None) if address_doc else None),
+		"contact_person": doc.get("contact_person"),
+		"contact_display": _extract_first_non_empty(
+			doc.get("contact_display"),
+			getattr(contact_doc, "full_name", None) if contact_doc else None,
+			getattr(contact_doc, "first_name", None) if contact_doc else None,
+		),
+		"contact_phone": _extract_first_non_empty(
+			doc.get("contact_mobile"),
+			doc.get("contact_phone"),
+			getattr(contact_doc, "mobile_no", None) if contact_doc else None,
+			getattr(contact_doc, "phone", None) if contact_doc else None,
+		),
+		"contact_email": _extract_first_non_empty(
+			doc.get("contact_email"),
+			getattr(contact_doc, "email_id", None) if contact_doc else None,
+		),
+	}
+
+
+def _build_delivery_note_references(delivery_items):
+	sales_orders = []
+	for item in delivery_items or []:
+		order_name = getattr(item, "against_sales_order", None)
+		if order_name and order_name not in sales_orders:
+			sales_orders.append(order_name)
+
+	invoice_rows = frappe.get_all(
+		"Sales Invoice Item",
+		filters={
+			"dn_detail": ["in", [getattr(item, "name", None) for item in delivery_items or [] if getattr(item, "name", None)]],
+			"docstatus": 1,
+		},
+		fields=["parent"],
+		limit_page_length=100,
+	)
+	sales_invoices = []
+	for row in invoice_rows:
+		parent = getattr(row, "parent", None)
+		if parent and parent not in sales_invoices:
+			sales_invoices.append(parent)
+
+	return {
+		"sales_orders": sales_orders,
+		"sales_invoices": sales_invoices,
+	}
+
+
+def _build_sales_invoice_references(invoice_items):
+	sales_orders = []
+	delivery_notes = []
+	for item in invoice_items or []:
+		order_name = getattr(item, "sales_order", None)
+		if order_name and order_name not in sales_orders:
+			sales_orders.append(order_name)
+
+		delivery_note = getattr(item, "delivery_note", None)
+		if delivery_note and delivery_note not in delivery_notes:
+			delivery_notes.append(delivery_note)
+
+	return {
+		"sales_orders": sales_orders,
+		"delivery_notes": delivery_notes,
+	}
 
 
 def _document_status_label(docstatus: int):
@@ -980,6 +1181,108 @@ def get_sales_order_detail(order_name: str):
 		raise
 
 
+def get_delivery_note_detail(delivery_note_name: str):
+	if not delivery_note_name:
+		frappe.throw(_("delivery_note_name 不能为空。"))
+
+	try:
+		dn = frappe.get_doc("Delivery Note", delivery_note_name)
+		delivery_items = list(dn.get("items") or [])
+		references = _build_delivery_note_references(delivery_items)
+		total_qty = _sum_row_values(delivery_items, "qty")
+		total_amount = flt(dn.get("rounded_total") or dn.get("grand_total") or 0)
+
+		return {
+			"status": "success",
+			"data": {
+				"delivery_note_name": dn.name,
+				"document_status": _document_status_label(dn.docstatus),
+				"customer": _build_customer_snapshot_for_doc(dn),
+				"shipping": _build_shipping_snapshot_for_doc(dn),
+				"amounts": {
+					"delivery_amount_estimate": total_amount,
+				},
+				"fulfillment": {
+					"total_qty": total_qty,
+					"status": "shipped" if cint(dn.docstatus) == 1 else "draft",
+				},
+				"references": references,
+				"items": _serialize_delivery_note_items(delivery_items),
+				"meta": {
+					"company": dn.company,
+					"currency": dn.get("currency"),
+					"posting_date": dn.get("posting_date"),
+					"posting_time": dn.get("posting_time"),
+					"remarks": dn.get("remarks"),
+				},
+			},
+			"message": _("发货单 {0} 详情获取成功。").format(dn.name),
+		}
+	except frappe.DoesNotExistError:
+		raise
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("发货单详情获取失败"))
+		raise
+
+
+def get_sales_invoice_detail(sales_invoice_name: str):
+	if not sales_invoice_name:
+		frappe.throw(_("sales_invoice_name 不能为空。"))
+
+	try:
+		si = frappe.get_doc("Sales Invoice", sales_invoice_name)
+		invoice_items = list(si.get("items") or [])
+		references = _build_sales_invoice_references(invoice_items)
+		payment = _build_payment_summary([si])
+		latest_payment_entry = _get_latest_payment_entry_summary([si.name])
+		payment["actual_paid_amount"] = latest_payment_entry.get("total_actual_paid_amount")
+		payment["total_writeoff_amount"] = latest_payment_entry.get("total_writeoff_amount")
+		payment["latest_payment_entry"] = latest_payment_entry.get("payment_entry")
+		payment["latest_payment_invoice"] = latest_payment_entry.get("invoice_name")
+		payment["latest_unallocated_amount"] = latest_payment_entry.get("unallocated_amount")
+		payment["latest_writeoff_amount"] = latest_payment_entry.get("writeoff_amount")
+		payment["latest_actual_paid_amount"] = latest_payment_entry.get("actual_paid_amount")
+
+		return {
+			"status": "success",
+			"data": {
+				"sales_invoice_name": si.name,
+				"document_status": _document_status_label(si.docstatus),
+				"customer": _build_customer_snapshot_for_doc(si),
+				"shipping": _build_shipping_snapshot_for_doc(si),
+				"amounts": {
+					"invoice_amount_estimate": flt(si.get("rounded_total") or si.get("grand_total") or 0),
+					"receivable_amount": payment["receivable_amount"],
+					"paid_amount": payment["paid_amount"],
+					"outstanding_amount": payment["outstanding_amount"],
+				},
+				"payment": payment,
+				"references": {
+					**references,
+					"latest_payment_entry": latest_payment_entry.get("payment_entry"),
+				},
+				"items": _serialize_sales_invoice_items(invoice_items),
+				"meta": {
+					"company": si.company,
+					"currency": si.get("currency"),
+					"posting_date": si.get("posting_date"),
+					"due_date": si.get("due_date"),
+					"remarks": si.get("remarks"),
+				},
+			},
+			"message": _("销售发票 {0} 详情获取成功。").format(si.name),
+		}
+	except frappe.DoesNotExistError:
+		raise
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("销售发票详情获取失败"))
+		raise
+
+
 def get_sales_order_status_summary(customer: str | None = None, company: str | None = None, limit: int = 20):
 	limit = max(1, min(int(limit or 20), 100))
 	filters = {}
@@ -1350,6 +1653,7 @@ def submit_delivery(order_name: str, delivery_items: list[dict] | None = None, k
 	delivery_items = _coerce_json_value(delivery_items, [])
 	kwargs = _coerce_json_value(kwargs, {}) or {}
 	request_id = kwargs.get("request_id")
+	force_delivery = cint(kwargs.get("force_delivery"))
 
 	try:
 		def _submit_delivery():
@@ -1377,19 +1681,23 @@ def submit_delivery(order_name: str, delivery_items: list[dict] | None = None, k
 			if kwargs.get("remarks"):
 				dn.remarks = kwargs["remarks"]
 
-			_validate_stock_for_immediate_delivery(
-				[
-					{
-						"item_code": getattr(item, "item_code", None),
-						"warehouse": getattr(item, "warehouse", None),
-						"qty": flt(getattr(item, "qty", 0) or 0),
-					}
-					for item in dn.items or []
-				]
-			)
+			if not force_delivery:
+				_validate_stock_for_immediate_delivery(
+					[
+						{
+							"item_code": getattr(item, "item_code", None),
+							"warehouse": getattr(item, "warehouse", None),
+							"qty": flt(getattr(item, "qty", 0) or 0),
+						}
+						for item in dn.items or []
+					]
+				)
 
 			try:
-				_insert_and_submit(dn)
+				if force_delivery:
+					_insert_and_submit_with_temporary_negative_stock(dn)
+				else:
+					_insert_and_submit(dn)
 			except Exception:
 				dn_name = getattr(dn, "name", None)
 				if dn_name and frappe.db.exists("Delivery Note", dn_name):
@@ -1401,7 +1709,12 @@ def submit_delivery(order_name: str, delivery_items: list[dict] | None = None, k
 			return {
 				"status": "success",
 				"delivery_note": dn.name,
-				"message": _("发货单 {0} 已创建并提交。").format(dn.name),
+				"message": (
+					_("发货单 {0} 已强制创建并提交。").format(dn.name)
+					if force_delivery
+					else _("发货单 {0} 已创建并提交。").format(dn.name)
+				),
+				"force_delivery": bool(force_delivery),
 			}
 
 		return run_idempotent("submit_delivery", request_id, _submit_delivery)

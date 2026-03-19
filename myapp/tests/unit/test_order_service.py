@@ -9,8 +9,10 @@ from myapp.services.order_service import (
 	create_order_v2,
 	create_sales_invoice,
 	get_customer_sales_context,
+	get_delivery_note_detail,
 	get_sales_order_detail,
 	get_sales_order_status_summary,
+	get_sales_invoice_detail,
 	submit_delivery,
 	update_order_items_v2,
 	update_order_v2,
@@ -161,6 +163,162 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["total_actual_paid_amount"], 9046)
 		self.assertEqual(result["total_writeoff_amount"], 414)
 
+	@patch("myapp.services.order_service._serialize_delivery_note_items")
+	@patch("myapp.services.order_service._build_delivery_note_references")
+	@patch("myapp.services.order_service.frappe.get_doc")
+	def test_get_delivery_note_detail_returns_references_and_items(
+		self,
+		mock_get_doc,
+		mock_build_delivery_note_references,
+		mock_serialize_delivery_note_items,
+	):
+		delivery_note = frappe._dict(
+			{
+				"name": "MAT-DN-0001",
+				"docstatus": 1,
+				"customer": "Test Customer",
+				"customer_name": "测试客户",
+				"company": "rgc (Demo)",
+				"currency": "CNY",
+				"posting_date": "2026-03-20",
+				"posting_time": "10:30:00",
+				"remarks": "测试发货",
+				"contact_person": "CONT-001",
+				"contact_display": "张三",
+				"contact_phone": "13800138000",
+				"shipping_address_name": "ADDR-001",
+				"address_display": "上海市浦东新区测试路 88 号",
+				"items": [
+					frappe._dict(
+						{
+							"name": "DNI-0001",
+							"item_code": "SKU010",
+							"item_name": "Camera",
+							"uom": "Nos",
+							"warehouse": "Stores - RD",
+							"qty": 3,
+							"rate": 900,
+							"amount": 2700,
+							"against_sales_order": "SO-0001",
+							"so_detail": "SOI-0001",
+						}
+					)
+				],
+			}
+		)
+		mock_get_doc.return_value = delivery_note
+		mock_build_delivery_note_references.return_value = {
+			"sales_orders": ["SO-0001"],
+			"sales_invoices": ["ACC-SINV-0001"],
+		}
+		mock_serialize_delivery_note_items.return_value = [
+			{
+				"item_code": "SKU010",
+				"item_name": "Camera",
+				"qty": 3,
+				"rate": 900,
+				"amount": 2700,
+				"warehouse": "Stores - RD",
+				"uom": "Nos",
+				"image": "/files/test.png",
+			}
+		]
+
+		result = get_delivery_note_detail("MAT-DN-0001")
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["references"]["sales_orders"], ["SO-0001"])
+		self.assertEqual(result["data"]["references"]["sales_invoices"], ["ACC-SINV-0001"])
+		self.assertEqual(result["data"]["items"][0]["item_code"], "SKU010")
+		self.assertEqual(result["data"]["customer"]["contact_display_name"], "张三")
+
+	@patch("myapp.services.order_service._serialize_sales_invoice_items")
+	@patch("myapp.services.order_service._build_sales_invoice_references")
+	@patch("myapp.services.order_service._get_latest_payment_entry_summary")
+	@patch("myapp.services.order_service.frappe.get_doc")
+	def test_get_sales_invoice_detail_returns_payment_and_references(
+		self,
+		mock_get_doc,
+		mock_get_latest_payment_entry_summary,
+		mock_build_sales_invoice_references,
+		mock_serialize_sales_invoice_items,
+	):
+		sales_invoice = frappe._dict(
+			{
+				"name": "ACC-SINV-0001",
+				"docstatus": 1,
+				"customer": "Test Customer",
+				"customer_name": "测试客户",
+				"company": "rgc (Demo)",
+				"currency": "CNY",
+				"posting_date": "2026-03-20",
+				"due_date": "2026-03-27",
+				"remarks": "测试开票",
+				"rounded_total": 2700,
+				"grand_total": 2700,
+				"outstanding_amount": 0,
+				"contact_person": "CONT-001",
+				"contact_display": "张三",
+				"contact_mobile": "13800138000",
+				"customer_address": "ADDR-001",
+				"address_display": "上海市浦东新区测试路 88 号",
+				"items": [
+					frappe._dict(
+						{
+							"name": "SII-0001",
+							"item_code": "SKU010",
+							"item_name": "Camera",
+							"uom": "Nos",
+							"warehouse": "Stores - RD",
+							"qty": 3,
+							"rate": 900,
+							"amount": 2700,
+							"sales_order": "SO-0001",
+							"so_detail": "SOI-0001",
+							"delivery_note": "MAT-DN-0001",
+							"dn_detail": "DNI-0001",
+						}
+					)
+				],
+			}
+		)
+		mock_get_doc.return_value = sales_invoice
+		mock_build_sales_invoice_references.return_value = {
+			"sales_orders": ["SO-0001"],
+			"delivery_notes": ["MAT-DN-0001"],
+		}
+		mock_serialize_sales_invoice_items.return_value = [
+			{
+				"item_code": "SKU010",
+				"item_name": "Camera",
+				"qty": 3,
+				"rate": 900,
+				"amount": 2700,
+				"warehouse": "Stores - RD",
+				"uom": "Nos",
+				"image": "/files/test.png",
+			}
+		]
+		mock_get_latest_payment_entry_summary.return_value = {
+			"payment_entry": "ACC-PAY-0001",
+			"invoice_name": "ACC-SINV-0001",
+			"allocated_amount": 100,
+			"unallocated_amount": 20,
+			"writeoff_amount": 5,
+			"actual_paid_amount": 95,
+			"total_actual_paid_amount": 95,
+			"total_writeoff_amount": 5,
+		}
+
+		result = get_sales_invoice_detail("ACC-SINV-0001")
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["payment"]["actual_paid_amount"], 95)
+		self.assertEqual(result["data"]["payment"]["total_writeoff_amount"], 5)
+		self.assertEqual(result["data"]["references"]["sales_orders"], ["SO-0001"])
+		self.assertEqual(result["data"]["references"]["delivery_notes"], ["MAT-DN-0001"])
+		self.assertEqual(result["data"]["items"][0]["item_code"], "SKU010")
+
 	@patch("myapp.services.order_service.frappe.get_all")
 	def test_validate_stock_for_immediate_delivery_rejects_insufficient_stock(self, mock_get_all):
 		from myapp.services.order_service import _validate_stock_for_immediate_delivery
@@ -252,6 +410,23 @@ class TestOrderService(TestCase):
 		self.assertEqual(item.qty, 3)
 		self.assertEqual(item.rate, 16)
 		self.assertEqual(result["delivery_note"], "DN-0002")
+
+	@patch("erpnext.selling.doctype.sales_order.sales_order.make_delivery_note")
+	def test_submit_delivery_force_delivery_skips_stock_precheck(self, mock_make_delivery_note):
+		item = frappe._dict({"item_code": "ITEM-001", "warehouse": "Stores - RD", "qty": 2})
+		dn = frappe._dict({"items": [item], "name": "DN-0004"})
+		dn.get = lambda key: dn[key]
+		mock_make_delivery_note.return_value = dn
+
+		with patch("myapp.services.order_service._validate_stock_for_immediate_delivery") as mock_validate, patch(
+			"myapp.services.order_service._insert_and_submit_with_temporary_negative_stock"
+		) as mock_force_submit:
+			result = submit_delivery("SO-0001", kwargs={"force_delivery": 1})
+
+		mock_validate.assert_not_called()
+		mock_force_submit.assert_called_once_with(dn)
+		self.assertTrue(result["force_delivery"])
+		self.assertEqual(result["delivery_note"], "DN-0004")
 
 	@patch("erpnext.selling.doctype.sales_order.sales_order.make_delivery_note")
 	def test_submit_delivery_cleans_up_draft_delivery_note_when_submit_fails(self, mock_make_delivery_note):

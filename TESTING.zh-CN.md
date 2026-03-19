@@ -116,6 +116,8 @@ python3 -m unittest \
 - `get_customer_sales_context`
 - `get_sales_order_detail`
 - `get_sales_order_status_summary`
+- `get_delivery_note_detail_v2`
+- `get_sales_invoice_detail_v2`
 
 本轮已按“逐接口复测 -> 全量回归”重新执行一遍：
 
@@ -159,6 +161,8 @@ python3 -m unittest \
 - `update_payment_status` 全额收款成功路径
 - `update_payment_status` 少收并结清（writeoff）成功路径
 - `update_payment_status` 多收并生成未分配金额成功路径
+- `get_delivery_note_detail_v2` 成功路径
+- `get_sales_invoice_detail_v2` 成功路径
 - v2 轻链路 smoke test
 
 v2 轻链路内容：
@@ -186,6 +190,8 @@ v2 轻链路内容：
 - `myapp.api.gateway.get_customer_sales_context`
 - `myapp.api.gateway.get_sales_order_detail`
 - `myapp.api.gateway.get_sales_order_status_summary`
+- `myapp.api.gateway.get_delivery_note_detail_v2`
+- `myapp.api.gateway.get_sales_invoice_detail_v2`
 - `myapp.api.gateway.update_payment_status`
 
 当前补充说明：
@@ -195,11 +201,20 @@ v2 轻链路内容：
 - `update_payment_status` 本轮新增两条真实 HTTP 用例：
   - `test_update_payment_status_writeoff_success`
   - `test_update_payment_status_overpayment_success`
+- 本轮新增了发货单 / 发票详情聚合的定向服务测试与 gateway wrapper 测试：
+  - `test_get_delivery_note_detail_returns_references_and_items`
+  - `test_get_sales_invoice_detail_returns_payment_and_references`
+  - `test_get_delivery_note_detail_v2_passes_name_to_service`
+  - `test_get_sales_invoice_detail_v2_passes_name_to_service`
+- 本轮新增了强制出货的定向服务测试：
+  - `test_submit_delivery_force_delivery_skips_stock_precheck`
 - 当前已确认：
   - 全额收款：`test_update_payment_status_success` 通过
   - 幂等 replay：`test_update_payment_status_idempotent_replay` 通过
   - 少收并结清：`writeoff_amount` 返回正确，发票 `outstanding_amount = 0`
   - 多收：`unallocated_amount` 返回正确，发票 `outstanding_amount = 0`
+  - 发货单详情聚合：来源订单 / 关联发票 / 商品明细映射正确
+  - 发票详情聚合：来源订单 / 来源发货单 / 最新收款摘要映射正确
 
 ### 6.2 幂等结论
 

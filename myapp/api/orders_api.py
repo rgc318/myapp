@@ -4,8 +4,10 @@ from myapp.services.order_service import create_order as create_order_service
 from myapp.services.order_service import create_order_v2 as create_order_v2_service
 from myapp.services.order_service import create_sales_invoice as create_sales_invoice_service
 from myapp.services.order_service import cancel_order_v2 as cancel_order_v2_service
+from myapp.services.order_service import get_delivery_note_detail as get_delivery_note_detail_service
 from myapp.services.order_service import get_customer_sales_context as get_customer_sales_context_service
 from myapp.services.order_service import get_sales_order_detail as get_sales_order_detail_service
+from myapp.services.order_service import get_sales_invoice_detail as get_sales_invoice_detail_service
 from myapp.services.order_service import get_sales_order_status_summary as get_sales_order_status_summary_service
 from myapp.services.order_service import submit_delivery as submit_delivery_service
 from myapp.services.order_service import update_order_items_v2 as update_order_items_v2_service
@@ -54,6 +56,16 @@ def create_sales_invoice(source_name: str, invoice_items=None, kwargs=None, **ex
 @frappe.whitelist()
 def get_sales_order_detail(order_name: str):
 	return get_sales_order_detail_service(order_name=order_name)
+
+
+@frappe.whitelist()
+def get_delivery_note_detail(delivery_note_name: str):
+	return get_delivery_note_detail_service(delivery_note_name=delivery_note_name)
+
+
+@frappe.whitelist()
+def get_sales_invoice_detail(sales_invoice_name: str):
+	return get_sales_invoice_detail_service(sales_invoice_name=sales_invoice_name)
 
 
 @frappe.whitelist()

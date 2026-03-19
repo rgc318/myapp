@@ -11,8 +11,10 @@ from myapp.api.gateway import (
 	create_sales_invoice,
 	create_order,
 	create_purchase_order,
+	get_delivery_note_detail_v2,
 	get_product_detail_v2,
 	get_sales_order_detail,
+	get_sales_invoice_detail_v2,
 	get_sales_order_status_summary,
 	get_customer_sales_context,
 	process_purchase_return,
@@ -52,6 +54,8 @@ class TestGatewayWrappers(TestCase):
 			search_product_v2,
 			create_product_and_stock,
 			get_product_detail_v2,
+			get_delivery_note_detail_v2,
+			get_sales_invoice_detail_v2,
 			update_product_v2,
 			confirm_pending_document,
 			update_payment_status,
@@ -253,6 +257,30 @@ class TestGatewayWrappers(TestCase):
 			company=None,
 			price_list="Standard Selling",
 			currency=None,
+		)
+
+	@patch("myapp.api.gateway.get_delivery_note_detail_service")
+	def test_get_delivery_note_detail_v2_passes_name_to_service(self, mock_get_delivery_note_detail_service):
+		mock_get_delivery_note_detail_service.return_value = {
+			"status": "success",
+			"data": {"delivery_note_name": "DN-0001"},
+		}
+
+		get_delivery_note_detail_v2("DN-0001")
+
+		mock_get_delivery_note_detail_service.assert_called_once_with(delivery_note_name="DN-0001")
+
+	@patch("myapp.api.gateway.get_sales_invoice_detail_service")
+	def test_get_sales_invoice_detail_v2_passes_name_to_service(self, mock_get_sales_invoice_detail_service):
+		mock_get_sales_invoice_detail_service.return_value = {
+			"status": "success",
+			"data": {"sales_invoice_name": "ACC-SINV-0001"},
+		}
+
+		get_sales_invoice_detail_v2("ACC-SINV-0001")
+
+		mock_get_sales_invoice_detail_service.assert_called_once_with(
+			sales_invoice_name="ACC-SINV-0001"
 		)
 
 	@patch("myapp.api.gateway.update_product_v2_service")

@@ -4,8 +4,10 @@ from .orders_api import create_order as create_order_service
 from .orders_api import create_order_v2 as create_order_v2_service
 from .orders_api import create_sales_invoice as create_sales_invoice_service
 from .orders_api import cancel_order_v2 as cancel_order_v2_service
+from .orders_api import get_delivery_note_detail as get_delivery_note_detail_service
 from .orders_api import get_customer_sales_context as get_customer_sales_context_service
 from .orders_api import get_sales_order_detail as get_sales_order_detail_service
+from .orders_api import get_sales_invoice_detail as get_sales_invoice_detail_service
 from .orders_api import get_sales_order_status_summary as get_sales_order_status_summary_service
 from .orders_api import submit_delivery as submit_delivery_service
 from .orders_api import update_order_items_v2 as update_order_items_v2_service
@@ -95,6 +97,22 @@ def get_sales_order_detail(order_name: str):
 	return _handle_gateway_call(
 		lambda: get_sales_order_detail_service(order_name=order_name),
 		success_code="ORDER_DETAIL_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_delivery_note_detail_v2(delivery_note_name: str):
+	return _handle_gateway_call(
+		lambda: get_delivery_note_detail_service(delivery_note_name=delivery_note_name),
+		success_code="DELIVERY_NOTE_DETAIL_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_sales_invoice_detail_v2(sales_invoice_name: str):
+	return _handle_gateway_call(
+		lambda: get_sales_invoice_detail_service(sales_invoice_name=sales_invoice_name),
+		success_code="SALES_INVOICE_DETAIL_FETCHED",
 	)
 
 

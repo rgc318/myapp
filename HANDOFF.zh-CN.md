@@ -92,6 +92,9 @@
 
 - `submit_delivery` 已支持按明细行优先改写数量与价格
 - `create_sales_invoice` 已支持按明细行优先改写数量与价格
+- `submit_delivery` 已支持 `force_delivery`
+  - 正常路径仍先校验可用库存
+  - 强制出货路径会跳过前置库存校验，并仅对本次发货涉及的物料临时打开 `allow_negative_stock`
 - `process_sales_return` 已补成按明细行优先、`item_code` 兜底处理
 - `get_sales_order_detail` 的 `items` 已补充返回 `image`，用于移动端订单详情直接展示商品图片，避免前端逐行补查 `Item`
 - 商品已补正式昵称字段方案：`Item.custom_nickname`
@@ -120,6 +123,10 @@
   - `latest_unallocated_amount`
   - `latest_writeoff_amount`
   用于前端直接展示“实收金额 / 核销金额 / 额外收款”
+- 新增发货单 / 发票详情聚合接口：
+  - `get_delivery_note_detail_v2`
+  - `get_sales_invoice_detail_v2`
+  用于移动端直接展示来源订单、关联单据、商品明细与结算摘要
 - 当前本地联调站点已手工补齐 3 个客户的主联系人与主收货地址，便于验证 `get_customer_sales_context`：
   - `Palmer Productions Ltd.`
   - `West View Software Ltd.`
@@ -148,6 +155,13 @@
   - `test_update_payment_status_idempotent_replay`
   - `test_update_payment_status_writeoff_success`
   - `test_update_payment_status_overpayment_success`
+- 发货单 / 发票详情聚合已完成定向服务测试与 gateway wrapper 测试：
+  - `test_get_delivery_note_detail_returns_references_and_items`
+  - `test_get_sales_invoice_detail_returns_payment_and_references`
+  - `test_get_delivery_note_detail_v2_passes_name_to_service`
+  - `test_get_sales_invoice_detail_v2_passes_name_to_service`
+- 强制出货已完成定向服务测试：
+  - `test_submit_delivery_force_delivery_skips_stock_precheck`
 - 采购侧主链路已跑通，且已覆盖顺序幂等、不同数据和并发幂等
 - 采购部分收货、基于收货单的部分开票、基于收货单的部分退货已跑通
 - 当前测试已经基本覆盖两条主链路在现阶段最关键的使用场景
