@@ -2605,7 +2605,7 @@
   "test_update_order_v2_success": {
     "method": "myapp.api.gateway.get_sales_order_detail",
     "request": {
-      "order_name": "SAL-ORD-2026-00294"
+      "order_name": "SAL-ORD-2026-00301"
     },
     "http_status": 200,
     "response": {
@@ -2613,9 +2613,9 @@
         "ok": true,
         "status": "success",
         "code": "ORDER_DETAIL_FETCHED",
-        "message": "销售订单 SAL-ORD-2026-00294 详情获取成功。",
+        "message": "销售订单 SAL-ORD-2026-00301 详情获取成功。",
         "data": {
-          "order_name": "SAL-ORD-2026-00294",
+          "order_name": "SAL-ORD-2026-00301",
           "document_status": "submitted",
           "customer": {
             "name": "Palmer Productions Ltd.",
@@ -2679,7 +2679,7 @@
           },
           "items": [
             {
-              "sales_order_item": "g1aqodkq16",
+              "sales_order_item": "rhkmu5l40n",
               "item_code": "SKU010",
               "item_name": "Camera",
               "uom": "Nos",
@@ -2700,7 +2700,7 @@
             "currency": "CNY",
             "transaction_date": "2026-03-18",
             "delivery_date": "2026-03-25",
-            "remarks": null
+            "remarks": "updated via v2 http"
           }
         },
         "meta": {}

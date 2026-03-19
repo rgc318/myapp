@@ -100,6 +100,12 @@
 - 新增 `cancel_order_v2`，用于按 v2 语义作废销售订单，并统一屏蔽 ERPNext 原生取消动作细节
 - 新增 `update_order_v2`，用于按 v2 模型更新销售订单头信息、联系人快照、收货快照与交货日期
 - 新增 `update_order_items_v2`，用于按 v2 模型整体替换商品明细；对已提交且无下游单据的订单自动走 amendment 并返回新订单号
+- `get_sales_order_detail` 的业务动作与履约聚合已修正：
+  - `delivery.status` 不再固定返回 `unknown`
+  - 已存在销售发票时，`actions.can_create_sales_invoice` 不再继续返回 `true`
+  - 当前订单详情可直接返回下游业务单据引用：
+    - `references.delivery_notes`
+    - `references.sales_invoices`
 
 本次新增的幂等验证类型：
 
@@ -116,6 +122,9 @@
 - 销售侧 `update_order_v2` 与 `update_order_items_v2` 已完成真实 HTTP 验证
 - 销售侧 `cancel_order_v2` 已完成真实 HTTP 验证
 - 商品侧 `get_product_detail_v2` 与 `update_product_v2` 已完成真实 HTTP 验证
+- 销售订单详情聚合已按真实下游单据修正状态口径：
+  - 已发货订单返回 `delivery.status = shipped`
+  - 已开票订单不再暴露重复“开票”动作
 - 采购侧主链路已跑通，且已覆盖顺序幂等、不同数据和并发幂等
 - 采购部分收货、基于收货单的部分开票、基于收货单的部分退货已跑通
 - 当前测试已经基本覆盖两条主链路在现阶段最关键的使用场景

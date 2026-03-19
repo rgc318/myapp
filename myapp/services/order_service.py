@@ -5,6 +5,9 @@ from frappe.utils import cint, flt, nowdate
 from myapp.utils.idempotency import run_idempotent
 
 
+ORDER_REMARK_FIELD = "custom_order_remark"
+
+
 def _coerce_json_value(value, default):
 	if value in (None, ""):
 		return default
@@ -49,6 +52,35 @@ def _set_doc_field(doc, fieldname: str, value):
 	if not doc.meta.has_field(fieldname):
 		return
 	doc.set(fieldname, value)
+
+
+def _has_sales_order_field(fieldname: str) -> bool:
+	try:
+		return bool(frappe.get_meta("Sales Order").has_field(fieldname))
+	except Exception:
+		return False
+
+
+def _get_sales_order_remark_field() -> str | None:
+	if _has_sales_order_field(ORDER_REMARK_FIELD):
+		return ORDER_REMARK_FIELD
+	if _has_sales_order_field("remarks"):
+		return "remarks"
+	return None
+
+
+def _set_sales_order_remark(doc, value):
+	fieldname = _get_sales_order_remark_field()
+	if not fieldname:
+		return
+	doc.set(fieldname, value)
+
+
+def _get_sales_order_remark(doc):
+	fieldname = _get_sales_order_remark_field()
+	if not fieldname:
+		return None
+	return doc.get(fieldname)
 
 
 def _build_sales_order_item(item: dict, delivery_date: str, default_warehouse: str | None, company: str):
@@ -318,11 +350,40 @@ def _build_completion_summary(fulfillment: dict, payment: dict, *, docstatus: in
 	}
 
 
+def _build_delivery_summary(fulfillment: dict, *, delivery_note_names: list[str], docstatus: int):
+	if cint(docstatus) == 2:
+		return {
+			"status": "cancelled",
+			"delivered_at": None,
+			"delivery_confirmed_by": None,
+		}
+
+	if not delivery_note_names:
+		return {
+			"status": "pending",
+			"delivered_at": None,
+			"delivery_confirmed_by": None,
+		}
+
+	if fulfillment.get("is_fully_delivered"):
+		status = "shipped"
+	elif flt(fulfillment.get("delivered_qty")) > 0:
+		status = "partial"
+	else:
+		status = "pending"
+
+	return {
+		"status": status,
+		"delivered_at": None,
+		"delivery_confirmed_by": None,
+	}
+
+
 def _build_action_flags(fulfillment: dict, payment: dict, *, invoice_names: list[str], delivery_note_names: list[str], docstatus: int):
 	is_submitted = cint(docstatus) == 1
 	return {
 		"can_submit_delivery": is_submitted and not fulfillment.get("is_fully_delivered"),
-		"can_create_sales_invoice": is_submitted and not payment.get("is_fully_paid"),
+		"can_create_sales_invoice": is_submitted and not invoice_names and not payment.get("is_fully_paid"),
 		"can_record_payment": is_submitted and payment.get("outstanding_amount", 0) > 0,
 		"can_process_return": bool(is_submitted and (invoice_names or delivery_note_names)),
 	}
@@ -714,6 +775,11 @@ def get_sales_order_detail(order_name: str):
 		payment = _build_payment_summary(invoice_rows)
 		completion = _build_completion_summary(fulfillment, payment, docstatus=so.docstatus)
 		amount_estimate = flt(so.get("rounded_total") or so.get("grand_total") or 0)
+		delivery = _build_delivery_summary(
+			fulfillment,
+			delivery_note_names=delivery_note_names,
+			docstatus=so.docstatus,
+		)
 
 		return {
 			"status": "success",
@@ -729,11 +795,7 @@ def get_sales_order_detail(order_name: str):
 					"outstanding_amount": payment["outstanding_amount"],
 				},
 				"fulfillment": fulfillment,
-				"delivery": {
-					"status": "unknown",
-					"delivered_at": None,
-					"delivery_confirmed_by": None,
-				},
+				"delivery": delivery,
 				"payment": payment,
 				"completion": completion,
 				"actions": _build_action_flags(
@@ -753,7 +815,7 @@ def get_sales_order_detail(order_name: str):
 					"currency": so.get("currency"),
 					"transaction_date": so.get("transaction_date"),
 					"delivery_date": so.get("delivery_date"),
-					"remarks": so.get("remarks"),
+					"remarks": _get_sales_order_remark(so),
 				},
 			},
 			"message": _("销售订单 {0} 详情获取成功。").format(so.name),
@@ -857,7 +919,7 @@ def create_order(customer: str, items: list[dict], immediate: bool = False, **kw
 			if kwargs.get("po_no"):
 				so.po_no = kwargs["po_no"]
 			if kwargs.get("remarks"):
-				so.remarks = kwargs["remarks"]
+				_set_sales_order_remark(so, kwargs["remarks"])
 
 			order_items = []
 			for item in items:
@@ -922,7 +984,7 @@ def create_order_v2(customer: str, items: list[dict], immediate: bool = False, *
 			if kwargs.get("po_no"):
 				so.po_no = kwargs["po_no"]
 			if kwargs.get("remarks"):
-				so.remarks = kwargs["remarks"]
+				_set_sales_order_remark(so, kwargs["remarks"])
 
 			snapshot = _apply_sales_order_v2_snapshot(
 				so,
@@ -983,7 +1045,7 @@ def update_order_v2(order_name: str, **kwargs):
 			if kwargs.get("transaction_date") is not None:
 				so.transaction_date = kwargs.get("transaction_date") or None
 			if kwargs.get("remarks") is not None:
-				so.remarks = kwargs.get("remarks") or None
+				_set_sales_order_remark(so, kwargs.get("remarks") or None)
 			if kwargs.get("po_no") is not None and so.meta.has_field("po_no"):
 				so.po_no = kwargs.get("po_no") or None
 
@@ -1000,7 +1062,6 @@ def update_order_v2(order_name: str, **kwargs):
 				[
 					"transaction_date",
 					"delivery_date",
-					"remarks",
 					"po_no",
 					"contact_person",
 					"contact_display",
@@ -1010,7 +1071,7 @@ def update_order_v2(order_name: str, **kwargs):
 					"shipping_address_name",
 					"customer_address",
 					"address_display",
-				],
+				] + ([_get_sales_order_remark_field()] if _get_sales_order_remark_field() else []),
 			)
 
 			return {
@@ -1021,7 +1082,7 @@ def update_order_v2(order_name: str, **kwargs):
 				"meta": {
 					"transaction_date": so.get("transaction_date"),
 					"delivery_date": so.get("delivery_date"),
-					"remarks": so.get("remarks"),
+					"remarks": _get_sales_order_remark(so),
 				},
 			}
 

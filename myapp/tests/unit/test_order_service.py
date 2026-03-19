@@ -530,10 +530,12 @@ class TestOrderService(TestCase):
 
 		self.assertEqual(result["data"]["order_name"], "SO-0001")
 		self.assertEqual(result["data"]["fulfillment"]["status"], "partial")
+		self.assertEqual(result["data"]["delivery"]["status"], "partial")
 		self.assertEqual(result["data"]["payment"]["status"], "partial")
 		self.assertEqual(result["data"]["completion"]["status"], "open")
 		self.assertTrue(result["data"]["actions"]["can_submit_delivery"])
 		self.assertTrue(result["data"]["actions"]["can_record_payment"])
+		self.assertFalse(result["data"]["actions"]["can_create_sales_invoice"])
 		self.assertEqual(result["data"]["customer"]["contact_display_name"], "张三")
 		self.assertEqual(result["data"]["shipping"]["city"], "测试市")
 		self.assertEqual(result["data"]["items"][0]["image"], "/files/item-001.png")
