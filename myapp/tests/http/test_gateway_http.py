@@ -274,13 +274,25 @@ class GatewayHttpTestCase(TestCase):
 		self._assert_success(status_code, response, code="SALES_INVOICE_CREATED")
 		return payload, response
 
-	def _record_sales_payment(self, invoice_name: str, *, paid_amount: float | None = None, request_id: str | None = None):
+	def _record_sales_payment(
+		self,
+		invoice_name: str,
+		*,
+		paid_amount: float | None = None,
+		request_id: str | None = None,
+		settlement_mode: str | None = None,
+		writeoff_reason: str | None = None,
+	):
 		payload = {
 			"reference_doctype": "Sales Invoice",
 			"reference_name": invoice_name,
 			"paid_amount": paid_amount if paid_amount is not None else SALES_PAID_AMOUNT,
 			"request_id": request_id or self._unique_request_id("http-sales-payment"),
 		}
+		if settlement_mode is not None:
+			payload["settlement_mode"] = settlement_mode
+		if writeoff_reason is not None:
+			payload["writeoff_reason"] = writeoff_reason
 		status_code, response = self._post_method("myapp.api.gateway.update_payment_status", payload)
 		self._assert_success(status_code, response, code="PAYMENT_RECORDED")
 		return payload, response
@@ -1123,6 +1135,45 @@ class GatewayHttpTestCase(TestCase):
 			first_payload["message"]["data"]["payment_entry"],
 			second_payload["message"]["data"]["payment_entry"],
 		)
+
+	def test_update_payment_status_writeoff_success(self):
+		_order_request, order_payload = self._create_sales_order(price=1000)
+		order_name = order_payload["message"]["data"]["order"]
+		_invoice_request, invoice_payload = self._create_sales_invoice(order_name)
+		invoice_name = invoice_payload["message"]["data"]["sales_invoice"]
+
+		_request, payload = self._record_sales_payment(
+			invoice_name,
+			paid_amount=900,
+			settlement_mode="writeoff",
+			writeoff_reason="HTTP 测试优惠结清",
+		)
+
+		message_data = payload["message"]["data"]
+		self.assertEqual(message_data["settlement_mode"], "writeoff")
+		self.assertEqual(message_data["writeoff_amount"], 100.0)
+
+		invoice_doc = self._get_resource("Sales Invoice", invoice_name)
+		self.assertEqual(float(invoice_doc["outstanding_amount"]), 0.0)
+		self.assertEqual(invoice_doc["status"], "Paid")
+
+	def test_update_payment_status_overpayment_success(self):
+		_order_request, order_payload = self._create_sales_order(price=1000)
+		order_name = order_payload["message"]["data"]["order"]
+		_invoice_request, invoice_payload = self._create_sales_invoice(order_name)
+		invoice_name = invoice_payload["message"]["data"]["sales_invoice"]
+
+		_request, payload = self._record_sales_payment(
+			invoice_name,
+			paid_amount=1100,
+		)
+
+		message_data = payload["message"]["data"]
+		self.assertEqual(message_data["unallocated_amount"], 100.0)
+
+		invoice_doc = self._get_resource("Sales Invoice", invoice_name)
+		self.assertEqual(float(invoice_doc["outstanding_amount"]), 0.0)
+		self.assertEqual(invoice_doc["status"], "Paid")
 
 	def test_process_sales_return_success(self):
 		_order_request, order_payload = self._create_sales_order()

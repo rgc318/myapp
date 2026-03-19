@@ -13,6 +13,20 @@ def _coerce_json_value(value, default):
 	return value
 
 
+def _get_payment_entry_writeoff_defaults(company: str):
+	values = frappe.get_cached_value("Company", company, ["write_off_account", "cost_center"], as_dict=True)
+	write_off_account = values.get("write_off_account") if values else None
+	cost_center = values.get("cost_center") if values else None
+
+	if not write_off_account:
+		frappe.throw(_("公司 {0} 尚未配置 Write Off Account。").format(company))
+
+	return {
+		"account": write_off_account,
+		"cost_center": cost_center,
+	}
+
+
 def _build_item_override_map(items, *, detail_keys: tuple[str, ...]):
 	override_map = {}
 
@@ -109,20 +123,62 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 	if paid_amount <= 0:
 		frappe.throw(_("paid_amount 必须大于 0。"))
 
+	settlement_mode = (kwargs.get("settlement_mode") or "partial").strip().lower()
+	if settlement_mode not in {"partial", "writeoff"}:
+		frappe.throw(_("settlement_mode 只支持 partial 或 writeoff。"))
+
 	request_id = kwargs.get("request_id")
 
 	try:
 		def _update_payment_status():
-			pe = get_payment_entry(reference_doctype, reference_name, party_amount=paid_amount)
+			reference_outstanding = flt(frappe.db.get_value(reference_doctype, reference_name, "outstanding_amount"))
+			if reference_outstanding <= 0:
+				frappe.throw(_("单据 {0} 当前没有可核销的未收金额。").format(reference_name))
+
+			seed_amount = paid_amount
+			if settlement_mode == "writeoff":
+				if paid_amount > reference_outstanding:
+					frappe.throw(_("writeoff 模式下，paid_amount 不能大于当前未收金额。"))
+				seed_amount = reference_outstanding
+			elif paid_amount > reference_outstanding:
+				# ERPNext 标准 Payment Entry 支持未分配金额：
+				# 当前发票只按未收金额核销，超出部分挂为 unallocated amount。
+				seed_amount = reference_outstanding
+
+			pe = get_payment_entry(reference_doctype, reference_name, party_amount=seed_amount)
 			pe.mode_of_payment = kwargs.get("mode_of_payment") or pe.mode_of_payment or "Cash"
 			pe.reference_no = kwargs.get("reference_no") or _("移动端收款")
 			pe.reference_date = kwargs.get("reference_date") or nowdate()
+
+			writeoff_amount = 0
+			unallocated_amount = 0
+			if settlement_mode == "writeoff":
+				pe.paid_amount = paid_amount
+				pe.received_amount = paid_amount
+				pe.set_amounts()
+
+				if pe.difference_amount <= 0:
+					frappe.throw(_("当前无需执行差额核销。"))
+
+				writeoff_amount = flt(pe.difference_amount)
+				account_details = _get_payment_entry_writeoff_defaults(pe.company)
+				account_details["description"] = kwargs.get("writeoff_reason") or _("移动端优惠/抹零结清")
+				pe.set_gain_or_loss(account_details=account_details)
+			elif paid_amount > seed_amount:
+				pe.paid_amount = paid_amount
+				pe.received_amount = paid_amount
+				pe.set_amounts()
+				unallocated_amount = flt(pe.unallocated_amount)
+
 			pe.insert()
 			pe.submit()
 
 			return {
 				"status": "success",
 				"payment_entry": pe.name,
+				"settlement_mode": settlement_mode,
+				"writeoff_amount": writeoff_amount,
+				"unallocated_amount": unallocated_amount,
 				"message": _("成功为单据 {0} 录入收款 {1}。").format(reference_name, paid_amount),
 			}
 

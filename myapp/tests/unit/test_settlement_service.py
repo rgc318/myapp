@@ -1,3 +1,5 @@
+import sys
+from types import ModuleType
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
@@ -147,6 +149,79 @@ class TestSettlementService(TestCase):
 		pe.insert.assert_called_once()
 		pe.submit.assert_called_once()
 		self.assertEqual(result["payment_entry"], "ACC-PAY-0001")
+
+	def test_update_payment_status_supports_writeoff_settlement(self):
+		pe = MagicMock()
+		pe.name = "ACC-PAY-0002"
+		pe.mode_of_payment = None
+		pe.company = "rgc (Demo)"
+		pe.difference_amount = 100
+
+		fake_payment_entry_module = ModuleType("payment_entry")
+		fake_get_payment_entry = MagicMock(return_value=pe)
+		fake_payment_entry_module.get_payment_entry = fake_get_payment_entry
+
+		with patch.dict(
+			sys.modules,
+			{"erpnext.accounts.doctype.payment_entry.payment_entry": fake_payment_entry_module},
+		), patch.object(
+			frappe,
+			"db",
+			MagicMock(get_value=MagicMock(return_value=1000)),
+		), patch.object(
+			frappe,
+			"get_cached_value",
+			return_value={
+				"write_off_account": "Write Off - RD",
+				"cost_center": "Main - RD",
+			},
+		):
+			result = update_payment_status(
+				"Sales Invoice",
+				"SINV-0002",
+				900,
+				settlement_mode="writeoff",
+				writeoff_reason="临时优惠结清",
+				reference_date="2026-03-19",
+			)
+
+		fake_get_payment_entry.assert_called_once_with("Sales Invoice", "SINV-0002", party_amount=1000)
+		pe.set_amounts.assert_called_once()
+		pe.set_gain_or_loss.assert_called_once()
+		self.assertEqual(result["payment_entry"], "ACC-PAY-0002")
+		self.assertEqual(result["settlement_mode"], "writeoff")
+		self.assertEqual(result["writeoff_amount"], 100)
+
+	def test_update_payment_status_supports_unallocated_overpayment(self):
+		pe = MagicMock()
+		pe.name = "ACC-PAY-0003"
+		pe.mode_of_payment = None
+		pe.company = "rgc (Demo)"
+		pe.unallocated_amount = 100
+
+		fake_payment_entry_module = ModuleType("payment_entry")
+		fake_get_payment_entry = MagicMock(return_value=pe)
+		fake_payment_entry_module.get_payment_entry = fake_get_payment_entry
+
+		with patch.dict(
+			sys.modules,
+			{"erpnext.accounts.doctype.payment_entry.payment_entry": fake_payment_entry_module},
+		), patch.object(
+			frappe,
+			"db",
+			MagicMock(get_value=MagicMock(return_value=1000)),
+		):
+			result = update_payment_status(
+				"Sales Invoice",
+				"SINV-0003",
+				1100,
+				reference_date="2026-03-19",
+			)
+
+		fake_get_payment_entry.assert_called_once_with("Sales Invoice", "SINV-0003", party_amount=1000)
+		pe.set_amounts.assert_called_once()
+		self.assertEqual(result["payment_entry"], "ACC-PAY-0003")
+		self.assertEqual(result["unallocated_amount"], 100)
 
 	@patch("myapp.services.settlement_service.run_idempotent")
 	def test_update_payment_status_returns_cached_result_for_same_request_id(self, mock_run_idempotent):

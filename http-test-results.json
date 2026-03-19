@@ -1099,9 +1099,9 @@
     "method": "myapp.api.gateway.update_payment_status",
     "request": {
       "reference_doctype": "Sales Invoice",
-      "reference_name": "ACC-SINV-2026-00157",
+      "reference_name": "ACC-SINV-2026-00167",
       "paid_amount": 900.0,
-      "request_id": "http-chain-payment-1773825233491849513"
+      "request_id": "http-chain-payment-1773916134740815601"
     },
     "http_status": 200,
     "response": {
@@ -1109,9 +1109,12 @@
         "ok": true,
         "status": "success",
         "code": "PAYMENT_RECORDED",
-        "message": "成功为单据 ACC-SINV-2026-00157 录入收款 900.0。",
+        "message": "成功为单据 ACC-SINV-2026-00167 录入收款 900.0。",
         "data": {
-          "payment_entry": "ACC-PAY-2026-00065"
+          "payment_entry": "ACC-PAY-2026-00079",
+          "settlement_mode": "partial",
+          "writeoff_amount": 0,
+          "unallocated_amount": 0
         },
         "meta": {}
       }
