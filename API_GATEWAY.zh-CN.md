@@ -580,6 +580,8 @@ create_product_and_stock(
 - 聚合客户基本信息、默认联系人、默认地址
 - 返回最近销售订单中使用过的收货地址文本快照
 - 返回当前用户建议公司与建议仓库，便于移动端预填
+- `default_contact.phone` / `default_contact.email` 优先返回客户主联系人的主手机号与主邮箱
+- `default_address` 可能只包含结构化地址字段，不保证一定带 `address_display`
 
 返回重点字段：
 
@@ -588,6 +590,11 @@ create_product_and_stock(
 - `default_address`
 - `recent_addresses`
 - `suggestions`
+
+前端集成建议：
+
+- 前端不要只依赖 `default_address.address_display`
+- 若 `address_display` 为空，应使用 `address_line1/address_line2/city/state/country/pincode` 自行拼接展示文本
 
 适用场景：
 
@@ -726,7 +733,9 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 返回发货状态 `fulfillment`
 - 返回收款状态 `payment`
 - 返回完成状态 `completion`
-- 当前阶段 `delivery.status` 固定返回 `unknown`，等待后续送达确认能力接入
+- 当存在发货单时，`delivery.status` 会按真实履约结果聚合为 `shipped`
+- 当存在销售发票时，`actions.can_create_sales_invoice` 会自动变为 `false`
+- 当存在未结清销售发票时，`actions.can_record_payment` 会按真实应收状态返回
 
 适用场景：
 
@@ -750,6 +759,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `amounts.paid_amount`
 - `amounts.outstanding_amount`
 - `fulfillment.status`
+- `delivery.status`
 - `payment.status`
 - `completion.status`
 - `actions.can_submit_delivery`
@@ -757,11 +767,15 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `actions.can_record_payment`
 - `actions.can_process_return`
 - `items[].image`
+- `references.delivery_notes`
+- `references.sales_invoices`
+- `meta.remarks`
 
 补充说明：
 
 - `items` 当前会返回适合移动端 / 详情页直接渲染的商品摘要字段
 - 其中 `items[].image` 来自 `Item.image`，用于避免前端为订单详情逐行再次查询商品主数据
+- `remarks` 当前优先读取正式自定义字段 `Sales Order.custom_order_remark`；若站点尚未迁移，则回退兼容旧字段口径
 
 ### get_sales_order_status_summary
 
@@ -1017,11 +1031,24 @@ create_purchase_order(
 - `mode_of_payment: str | None`
 - `reference_no: str | None`
 - `reference_date: str | None`
+- `settlement_mode: str | None = "partial"`
+- `writeoff_reason: str | None`
 
 行为：
 
 - 基于引用单据创建并提交 `Payment Entry`
+- 支持标准全额收款
+- 支持部分收款，未收金额继续保留
+- 支持 `settlement_mode = "writeoff"` 的少收并结清场景，差额会按 Write Off Account 核销
+- 支持多收场景：当前发票按应收金额结清，超出部分作为 `unallocated_amount` 保留
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的 `payment_entry`
+
+当前返回重点字段：
+
+- `payment_entry`
+- `settlement_mode`
+- `writeoff_amount`
+- `unallocated_amount`
 
 HTTP 调用示例：
 
@@ -1052,6 +1079,23 @@ frappe.call({
   console.log(r.message.data.payment_entry);
 });
 ```
+
+补充说明：
+
+- `settlement_mode = "partial"`：保留未收金额，适用于部分收款
+- `settlement_mode = "writeoff"`：当 `paid_amount < outstanding_amount` 时，允许按差额核销后直接结清
+- 当 `paid_amount > outstanding_amount` 时，ERPNext 标准 `Payment Entry` 会将超出部分保留为 `unallocated_amount`
+
+订单详情聚合补充：
+
+- `get_sales_order_detail` 的 `payment` 当前还会返回：
+  - `actual_paid_amount`
+  - `total_writeoff_amount`
+  - `latest_payment_entry`
+  - `latest_payment_invoice`
+  - `latest_unallocated_amount`
+  - `latest_writeoff_amount`
+- 推荐前端优先直接读取这些语义化金额字段，而不是长期自行推导“实收金额 / 核销金额 / 额外收款”
 
 ### process_sales_return
 

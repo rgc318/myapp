@@ -1,6 +1,6 @@
 # 开发交接摘要
 
-更新时间：2026-03-17
+更新时间：2026-03-19
 
 ## 1. 当前已完成
 
@@ -106,6 +106,24 @@
   - 当前订单详情可直接返回下游业务单据引用：
     - `references.delivery_notes`
     - `references.sales_invoices`
+- 销售订单备注已补正式字段方案：`Sales Order.custom_order_remark`
+- `update_payment_status` 已扩展为完整结算分支：
+  - 全额收款
+  - 部分收款
+  - 少收并结清（`settlement_mode = writeoff`）
+  - 多收并保留未分配金额（`unallocated_amount`）
+- `get_sales_order_detail` 的 `payment` 聚合已补齐：
+  - `actual_paid_amount`
+  - `total_writeoff_amount`
+  - `latest_payment_entry`
+  - `latest_payment_invoice`
+  - `latest_unallocated_amount`
+  - `latest_writeoff_amount`
+  用于前端直接展示“实收金额 / 核销金额 / 额外收款”
+- 当前本地联调站点已手工补齐 3 个客户的主联系人与主收货地址，便于验证 `get_customer_sales_context`：
+  - `Palmer Productions Ltd.`
+  - `West View Software Ltd.`
+  - `Grant Plastics Ltd.`
 
 本次新增的幂等验证类型：
 
@@ -125,6 +143,11 @@
 - 销售订单详情聚合已按真实下游单据修正状态口径：
   - 已发货订单返回 `delivery.status = shipped`
   - 已开票订单不再暴露重复“开票”动作
+- 销售结算链路已完成真实 HTTP 验证：
+  - `test_update_payment_status_success`
+  - `test_update_payment_status_idempotent_replay`
+  - `test_update_payment_status_writeoff_success`
+  - `test_update_payment_status_overpayment_success`
 - 采购侧主链路已跑通，且已覆盖顺序幂等、不同数据和并发幂等
 - 采购部分收货、基于收货单的部分开票、基于收货单的部分退货已跑通
 - 当前测试已经基本覆盖两条主链路在现阶段最关键的使用场景

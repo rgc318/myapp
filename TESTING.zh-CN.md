@@ -153,9 +153,12 @@ python3 -m unittest \
 - `create_order_v2` 创建后详情接口可回读地址文本快照
 - `cancel_order_v2` 成功路径
 - `update_order_v2` 成功路径
-- `update_order_v2` 更新后详情接口可回读联系人 / 地址 / 交货日期
+- `update_order_v2` 更新后详情接口可回读联系人 / 地址 / 交货日期 / 备注
 - `update_order_items_v2` 成功路径
 - `update_order_items_v2` 在提交态订单上自动 amendment 并返回新订单号
+- `update_payment_status` 全额收款成功路径
+- `update_payment_status` 少收并结清（writeoff）成功路径
+- `update_payment_status` 多收并生成未分配金额成功路径
 - v2 轻链路 smoke test
 
 v2 轻链路内容：
@@ -183,11 +186,20 @@ v2 轻链路内容：
 - `myapp.api.gateway.get_customer_sales_context`
 - `myapp.api.gateway.get_sales_order_detail`
 - `myapp.api.gateway.get_sales_order_status_summary`
+- `myapp.api.gateway.update_payment_status`
 
 当前补充说明：
 
 - `cancel_order_v2` 的真实 HTTP 用例已加入测试文件
 - 最新复测结果：`test_cancel_order_v2_success` 已通过真实 HTTP 验证
+- `update_payment_status` 本轮新增两条真实 HTTP 用例：
+  - `test_update_payment_status_writeoff_success`
+  - `test_update_payment_status_overpayment_success`
+- 当前已确认：
+  - 全额收款：`test_update_payment_status_success` 通过
+  - 幂等 replay：`test_update_payment_status_idempotent_replay` 通过
+  - 少收并结清：`writeoff_amount` 返回正确，发票 `outstanding_amount = 0`
+  - 多收：`unallocated_amount` 返回正确，发票 `outstanding_amount = 0`
 
 ### 6.2 幂等结论
 
@@ -241,6 +253,10 @@ v2 轻链路内容：
 - 该全量结果包含 v2 文件直接定义的测试，以及测试模块中可被发现的既有 HTTP 测试类
 - 其中商品工作台、销售状态聚合、订单更新相关新增能力已全部通过
 - 本次重新复测后，8 个销售侧 v2 升级接口都已再次确认可用
+- 当前本地联调站点还手工补齐了 3 个客户的主联系人与收货地址，便于验证 `get_customer_sales_context` 与移动端自动带入逻辑：
+  - `Palmer Productions Ltd.`
+  - `West View Software Ltd.`
+  - `Grant Plastics Ltd.`
 
 ## 9. 当前仍建议后续补充的测试
 
@@ -252,6 +268,7 @@ v2 轻链路内容：
 - 默认仓库回退场景的更多环境验证
 - 商品编辑能力落地后的回归测试
 - `create_order_v2` 落地后的新业务模型链路测试
+- 客户联系人缺主电话、地址无 `address_display` 但有结构化地址字段等主数据变体测试
 
 ## 10. 测试文档维护建议
 

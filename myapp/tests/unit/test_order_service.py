@@ -124,6 +124,44 @@ class TestOrderService(TestCase):
 		self.assertTrue(result["is_fully_paid"])
 
 	@patch("myapp.services.order_service.frappe.get_all")
+	def test_get_latest_payment_entry_summary_returns_actual_paid_and_writeoff(self, mock_get_all):
+		from myapp.services.order_service import _get_latest_payment_entry_summary
+
+		mock_get_all.side_effect = [
+			[
+				frappe._dict(
+					{
+						"parent": "ACC-PAY-0001",
+						"reference_name": "ACC-SINV-0001",
+						"allocated_amount": 9460,
+						"modified": "2026-03-20 10:00:00",
+					}
+				)
+			],
+			[
+				frappe._dict(
+					{
+						"name": "ACC-PAY-0001",
+						"paid_amount": 9046,
+						"received_amount": 9046,
+						"unallocated_amount": 0,
+						"difference_amount": 414,
+						"modified": "2026-03-20 10:00:00",
+					}
+				)
+			],
+		]
+
+		result = _get_latest_payment_entry_summary(["ACC-SINV-0001"])
+
+		self.assertEqual(result["payment_entry"], "ACC-PAY-0001")
+		self.assertEqual(result["invoice_name"], "ACC-SINV-0001")
+		self.assertEqual(result["writeoff_amount"], 414)
+		self.assertEqual(result["actual_paid_amount"], 9046)
+		self.assertEqual(result["total_actual_paid_amount"], 9046)
+		self.assertEqual(result["total_writeoff_amount"], 414)
+
+	@patch("myapp.services.order_service.frappe.get_all")
 	def test_validate_stock_for_immediate_delivery_rejects_insufficient_stock(self, mock_get_all):
 		from myapp.services.order_service import _validate_stock_for_immediate_delivery
 
@@ -203,7 +241,9 @@ class TestOrderService(TestCase):
 		dn.get = lambda key: dn[key]
 		mock_make_delivery_note.return_value = dn
 
-		with patch("myapp.services.order_service._insert_and_submit"):
+		with patch("myapp.services.order_service._validate_stock_for_immediate_delivery"), patch(
+			"myapp.services.order_service._insert_and_submit"
+		):
 			result = submit_delivery(
 				"SO-0001",
 				delivery_items=[{"sales_order_item": "SOI-001", "qty": 3, "price": 16}],
@@ -212,6 +252,24 @@ class TestOrderService(TestCase):
 		self.assertEqual(item.qty, 3)
 		self.assertEqual(item.rate, 16)
 		self.assertEqual(result["delivery_note"], "DN-0002")
+
+	@patch("erpnext.selling.doctype.sales_order.sales_order.make_delivery_note")
+	def test_submit_delivery_cleans_up_draft_delivery_note_when_submit_fails(self, mock_make_delivery_note):
+		item = frappe._dict({"item_code": "ITEM-001", "warehouse": "Stores - RD", "qty": 2})
+		dn = frappe._dict({"items": [item], "name": "DN-0003"})
+		dn.get = lambda key: dn[key]
+		mock_make_delivery_note.return_value = dn
+
+		with patch("myapp.services.order_service._validate_stock_for_immediate_delivery"), patch(
+			"myapp.services.order_service._insert_and_submit",
+			side_effect=frappe.ValidationError("库存不足"),
+		), patch("myapp.services.order_service.frappe.db.exists", return_value=True), patch(
+			"myapp.services.order_service.frappe.db.get_value", return_value=0
+		), patch("myapp.services.order_service.frappe.delete_doc") as mock_delete_doc:
+			with self.assertRaisesRegex(frappe.ValidationError, "库存不足"):
+				submit_delivery("SO-0001")
+
+		mock_delete_doc.assert_called_once_with("Delivery Note", "DN-0003", ignore_permissions=True, force=1)
 
 	@patch("erpnext.selling.doctype.sales_order.sales_order.make_sales_invoice")
 	def test_create_sales_invoice_rejects_sales_order_without_billable_items(self, mock_make_sales_invoice):
@@ -523,6 +581,28 @@ class TestOrderService(TestCase):
 					}
 				)
 			],
+			[
+				frappe._dict(
+					{
+						"parent": "ACC-PAY-0001",
+						"reference_name": "SINV-0001",
+						"allocated_amount": 150,
+						"modified": "2026-03-20 10:00:00",
+					}
+				)
+			],
+			[
+				frappe._dict(
+					{
+						"name": "ACC-PAY-0001",
+						"paid_amount": 120,
+						"received_amount": 120,
+						"unallocated_amount": 0,
+						"difference_amount": 30,
+						"modified": "2026-03-20 10:00:00",
+					}
+				)
+			],
 			[frappe._dict({"name": "ITEM-001", "image": "/files/item-001.png"})],
 		]
 
@@ -536,6 +616,8 @@ class TestOrderService(TestCase):
 		self.assertTrue(result["data"]["actions"]["can_submit_delivery"])
 		self.assertTrue(result["data"]["actions"]["can_record_payment"])
 		self.assertFalse(result["data"]["actions"]["can_create_sales_invoice"])
+		self.assertEqual(result["data"]["payment"]["actual_paid_amount"], 120)
+		self.assertEqual(result["data"]["payment"]["total_writeoff_amount"], 30)
 		self.assertEqual(result["data"]["customer"]["contact_display_name"], "张三")
 		self.assertEqual(result["data"]["shipping"]["city"], "测试市")
 		self.assertEqual(result["data"]["items"][0]["image"], "/files/item-001.png")

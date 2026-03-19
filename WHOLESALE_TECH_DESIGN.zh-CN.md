@@ -129,6 +129,11 @@
 - 销售订单具备 v2 建单能力，可显式携带联系人与收货地址文本快照
 - 销售单创建前具备客户销售上下文聚合能力，可预填默认联系人、默认地址和建议仓库
 - 销售详情页与列表页具备统一聚合状态接口
+- 销售详情聚合已补齐更细的结算语义字段：
+  - `payment.actual_paid_amount`
+  - `payment.total_writeoff_amount`
+  - `payment.latest_unallocated_amount`
+  用于区分“实收金额 / 核销金额 / 额外收款”
 - 以上接口已完成逐接口复测与整份 v2 HTTP 回归
 
 当前仍未完成、应进入下一阶段的能力：
@@ -145,6 +150,14 @@
 - 为兼容未执行 patch / migrate 的旧站点，运行时仍保留 `description` 兜底逻辑
 - 商品图片继续沿用 ERPNext 标准字段 `Item.image`，不额外引入独立媒体模型
 - 站点升级时需执行 `bench migrate` 以落地 patch：`myapp.patches.add_item_nickname_field`
+
+客户主数据补充约束：
+
+- `get_customer_sales_context` 负责聚合默认联系人与默认地址
+- 移动端不应假设地址一定存在单独的 `address_display`
+- 更稳的集成方式是：
+  - 后端返回结构化地址字段
+  - 前端在 `address_display` 缺失时自行拼接展示文本
 
 ## 5. 业务流程设计
 
@@ -325,6 +338,7 @@
 - 更新联系电话
 - 更新收货地址文本快照
 - 更新交货日期
+- 更新订单备注
 - 使用 `request_id` 做顺序幂等
 - 更新后继续通过 `get_sales_order_detail` 回读新的联系人 / 地址 / 日期信息
 
@@ -345,7 +359,33 @@
 当前限制：
 
 - 若原订单已存在发货单或销售发票，下游已建立时不允许继续改商品明细
-- `remarks` 在当前标准 `Sales Order` 模型中仍不是稳定的聚合字段，当前前端应优先依赖联系人 / 地址 / 日期字段
+- 订单备注当前已通过正式自定义字段 `Sales Order.custom_order_remark` 落地；未迁移站点需先执行 `bench migrate`
+
+#### 6.1.6 订单详情状态聚合补强
+
+本轮已对 `get_sales_order_detail` 的聚合口径做补强：
+
+- 发货完成后，`delivery.status` 不再固定返回 `unknown`
+- 已存在销售发票时，不再继续暴露重复“开票”动作
+- 当前详情已返回：
+  - `references.delivery_notes`
+  - `references.sales_invoices`
+- `actions.can_submit_delivery` / `actions.can_create_sales_invoice` / `actions.can_record_payment`
+  会按真实下游单据和未收金额变化
+
+#### 6.1.7 收款结算分支补强
+
+当前 `update_payment_status` 已支持四种结算结果：
+
+- 全额收款：发票正常结清
+- 部分收款：保留剩余未收金额
+- 少收并结清：通过 `settlement_mode = "writeoff"` 按差额核销结清
+- 多收：当前发票按应收金额结清，超出部分保留为 `unallocated_amount`
+
+设计约束：
+
+- `writeoff` 仅适用于少收并直接结清
+- 多收不再强行分配到当前发票，而是复用 ERPNext 标准 `Payment Entry` 的未分配金额能力
 
 ### 6.2 模块 B：增强型商品搜索系统
 
