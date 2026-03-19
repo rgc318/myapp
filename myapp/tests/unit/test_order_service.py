@@ -232,6 +232,29 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"]["items"][0]["item_code"], "SKU010")
 		self.assertEqual(result["data"]["customer"]["contact_display_name"], "张三")
 
+	@patch("myapp.services.order_service.frappe.get_all")
+	def test_build_delivery_note_references_falls_back_to_sales_order_invoices(self, mock_get_all):
+		from myapp.services.order_service import _build_delivery_note_references
+
+		delivery_items = [
+			frappe._dict(
+				{
+					"name": "DNI-0001",
+					"against_sales_order": "SO-0001",
+				}
+			)
+		]
+
+		mock_get_all.side_effect = [
+			[],
+			[frappe._dict({"parent": "ACC-SINV-0009"})],
+		]
+
+		result = _build_delivery_note_references(delivery_items)
+
+		self.assertEqual(result["sales_orders"], ["SO-0001"])
+		self.assertEqual(result["sales_invoices"], ["ACC-SINV-0009"])
+
 	@patch("myapp.services.order_service._serialize_sales_invoice_items")
 	@patch("myapp.services.order_service._build_sales_invoice_references")
 	@patch("myapp.services.order_service._get_latest_payment_entry_summary")
@@ -318,6 +341,26 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"]["references"]["sales_orders"], ["SO-0001"])
 		self.assertEqual(result["data"]["references"]["delivery_notes"], ["MAT-DN-0001"])
 		self.assertEqual(result["data"]["items"][0]["item_code"], "SKU010")
+
+	@patch("myapp.services.order_service.frappe.get_all")
+	def test_build_sales_invoice_references_falls_back_to_sales_order_delivery_notes(self, mock_get_all):
+		from myapp.services.order_service import _build_sales_invoice_references
+
+		invoice_items = [
+			frappe._dict(
+				{
+					"sales_order": "SO-0001",
+					"delivery_note": None,
+				}
+			)
+		]
+
+		mock_get_all.return_value = [frappe._dict({"parent": "MAT-DN-0009"})]
+
+		result = _build_sales_invoice_references(invoice_items)
+
+		self.assertEqual(result["sales_orders"], ["SO-0001"])
+		self.assertEqual(result["delivery_notes"], ["MAT-DN-0009"])
 
 	@patch("myapp.services.order_service.frappe.get_all")
 	def test_validate_stock_for_immediate_delivery_rejects_insufficient_stock(self, mock_get_all):

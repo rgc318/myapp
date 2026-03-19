@@ -127,6 +127,10 @@
   - `get_delivery_note_detail_v2`
   - `get_sales_invoice_detail_v2`
   用于移动端直接展示来源订单、关联单据、商品明细与结算摘要
+- 发货单 / 发票详情聚合已补齐“按来源订单兜底关联”：
+  - 当销售发票不是直接基于 `Delivery Note` 生成，而是基于 `Sales Order` 生成时
+  - 发货单详情仍可通过来源订单兜底找到对应销售发票
+  - 发票详情也可通过来源订单兜底找到对应发货单
 - 当前本地联调站点已手工补齐 3 个客户的主联系人与主收货地址，便于验证 `get_customer_sales_context`：
   - `Palmer Productions Ltd.`
   - `West View Software Ltd.`
@@ -162,6 +166,9 @@
   - `test_get_sales_invoice_detail_v2_passes_name_to_service`
 - 强制出货已完成定向服务测试：
   - `test_submit_delivery_force_delivery_skips_stock_precheck`
+- 单据互相关联兜底已完成定向服务测试：
+  - `test_build_delivery_note_references_falls_back_to_sales_order_invoices`
+  - `test_build_sales_invoice_references_falls_back_to_sales_order_delivery_notes`
 - 采购侧主链路已跑通，且已覆盖顺序幂等、不同数据和并发幂等
 - 采购部分收货、基于收货单的部分开票、基于收货单的部分退货已跑通
 - 当前测试已经基本覆盖两条主链路在现阶段最关键的使用场景

@@ -208,6 +208,9 @@ v2 轻链路内容：
   - `test_get_sales_invoice_detail_v2_passes_name_to_service`
 - 本轮新增了强制出货的定向服务测试：
   - `test_submit_delivery_force_delivery_skips_stock_precheck`
+- 本轮新增了订单兜底关联测试：
+  - `test_build_delivery_note_references_falls_back_to_sales_order_invoices`
+  - `test_build_sales_invoice_references_falls_back_to_sales_order_delivery_notes`
 - 当前已确认：
   - 全额收款：`test_update_payment_status_success` 通过
   - 幂等 replay：`test_update_payment_status_idempotent_replay` 通过
@@ -215,6 +218,7 @@ v2 轻链路内容：
   - 多收：`unallocated_amount` 返回正确，发票 `outstanding_amount = 0`
   - 发货单详情聚合：来源订单 / 关联发票 / 商品明细映射正确
   - 发票详情聚合：来源订单 / 来源发货单 / 最新收款摘要映射正确
+  - 在“发票基于订单生成”的链路下，发货单与发票详情仍能通过来源订单互相兜底关联
 
 ### 6.2 幂等结论
 

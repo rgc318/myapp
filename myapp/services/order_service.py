@@ -729,15 +729,36 @@ def _build_delivery_note_references(delivery_items):
 		if order_name and order_name not in sales_orders:
 			sales_orders.append(order_name)
 
-	invoice_rows = frappe.get_all(
-		"Sales Invoice Item",
-		filters={
-			"dn_detail": ["in", [getattr(item, "name", None) for item in delivery_items or [] if getattr(item, "name", None)]],
-			"docstatus": 1,
-		},
-		fields=["parent"],
-		limit_page_length=100,
-	)
+	invoice_rows = []
+	delivery_item_names = [getattr(item, "name", None) for item in delivery_items or [] if getattr(item, "name", None)]
+	if delivery_item_names:
+		invoice_rows.extend(
+			frappe.get_all(
+				"Sales Invoice Item",
+				filters={
+					"dn_detail": ["in", delivery_item_names],
+					"docstatus": 1,
+				},
+				fields=["parent"],
+				limit_page_length=100,
+			)
+		)
+
+	# 兼容“先出货，再基于订单开票”的链路：这类发票明细通常只有 sales_order / so_detail，
+	# 不会回写 delivery_note / dn_detail，因此需要按来源订单兜底关联。
+	if sales_orders:
+		invoice_rows.extend(
+			frappe.get_all(
+				"Sales Invoice Item",
+				filters={
+					"sales_order": ["in", sales_orders],
+					"docstatus": 1,
+				},
+				fields=["parent"],
+				limit_page_length=100,
+			)
+		)
+
 	sales_invoices = []
 	for row in invoice_rows:
 		parent = getattr(row, "parent", None)
@@ -761,6 +782,23 @@ def _build_sales_invoice_references(invoice_items):
 		delivery_note = getattr(item, "delivery_note", None)
 		if delivery_note and delivery_note not in delivery_notes:
 			delivery_notes.append(delivery_note)
+
+	# 兼容“发票直接从订单生成”的链路：此时销售发票明细通常没有 delivery_note，
+	# 需要按来源订单兜底查找已存在的发货单。
+	if sales_orders:
+		delivery_note_rows = frappe.get_all(
+			"Delivery Note Item",
+			filters={
+				"against_sales_order": ["in", sales_orders],
+				"docstatus": 1,
+			},
+			fields=["parent"],
+			limit_page_length=100,
+		)
+		for row in delivery_note_rows:
+			parent = getattr(row, "parent", None)
+			if parent and parent not in delivery_notes:
+				delivery_notes.append(parent)
 
 	return {
 		"sales_orders": sales_orders,
