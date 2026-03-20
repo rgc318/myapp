@@ -1559,6 +1559,7 @@ def create_order_v2(customer: str, items: list[dict], immediate: bool = False, *
 	request_id = kwargs.get("request_id")
 	customer_info = kwargs.get("customer_info")
 	shipping_info = kwargs.get("shipping_info")
+	force_delivery = cint(kwargs.get("force_delivery"))
 
 	_validate_order_inputs(customer, items, company)
 
@@ -1591,7 +1592,7 @@ def create_order_v2(customer: str, items: list[dict], immediate: bool = False, *
 				order_items.append(order_item)
 				so.append("items", order_item)
 
-			if cint(immediate):
+			if cint(immediate) and not force_delivery:
 				_validate_stock_for_immediate_delivery(order_items)
 
 			_insert_and_submit(so)
@@ -1625,6 +1626,7 @@ def create_order_v2(customer: str, items: list[dict], immediate: bool = False, *
 					{
 						"delivery_note": dn["delivery_note"],
 						"sales_invoice": si["sales_invoice"],
+						"force_delivery": bool(dn.get("force_delivery")),
 						"message": _("订单 {0} 已按 v2 模型完成下单、发货和开票。").format(so.name),
 					}
 				)
@@ -1652,6 +1654,7 @@ def quick_create_order_v2(customer: str, items: list[dict], **kwargs):
 				"order": order_name,
 				"delivery_note": result.get("delivery_note"),
 				"sales_invoice": result.get("sales_invoice"),
+				"force_delivery": bool(result.get("force_delivery")),
 				"completed_steps": ["order", "delivery_note", "sales_invoice"],
 				"message": _("销售订单 {0} 已按快捷模式完成下单、发货和开票。").format(order_name),
 				"detail": detail,

@@ -807,6 +807,61 @@ class TestOrderService(TestCase):
 		mock_commit_context.assert_called_once()
 		self.assertIn("address_display", mock_commit_context.call_args.args[1])
 
+	@patch("myapp.services.order_service.run_idempotent")
+	@patch("myapp.services.order_service.nowdate")
+	@patch("myapp.services.order_service.submit_delivery")
+	@patch("myapp.services.order_service.create_sales_invoice")
+	@patch("myapp.services.order_service._validate_stock_for_immediate_delivery")
+	@patch("myapp.services.order_service._commit_sales_order_context_update")
+	@patch("myapp.services.order_service._insert_and_submit")
+	@patch("myapp.services.order_service._build_sales_order_item")
+	@patch("myapp.services.order_service._validate_order_inputs")
+	@patch("myapp.services.order_service.frappe.new_doc")
+	@patch("myapp.services.order_service.frappe.defaults.get_user_default")
+	def test_create_order_v2_force_delivery_skips_immediate_stock_precheck(
+		self,
+		mock_get_user_default,
+		mock_new_doc,
+		mock_validate_inputs,
+		mock_build_item,
+		mock_insert_and_submit,
+		mock_commit_context,
+		mock_validate_stock,
+		mock_create_sales_invoice,
+		mock_submit_delivery,
+		mock_nowdate,
+		mock_run_idempotent,
+	):
+		mock_nowdate.return_value = "2026-03-20"
+		mock_get_user_default.return_value = "Test Company"
+		so = frappe._dict({})
+		so.meta = MagicMock()
+		so.meta.has_field.return_value = True
+		so.set = lambda field, value: so.__setitem__(field, value)
+		so.get = lambda field, default=None: so[field] if field in so else default
+		so.append = lambda field, value: so.setdefault(field, []).append(frappe._dict(value))
+		so.name = "SO-NEW-002"
+		so.docstatus = 1
+		mock_new_doc.return_value = so
+		mock_build_item.return_value = {"item_code": "ITEM-001", "qty": 2, "warehouse": "Stores - TC"}
+		mock_commit_context.return_value = so
+		mock_submit_delivery.return_value = {"delivery_note": "DN-NEW-002", "force_delivery": True}
+		mock_create_sales_invoice.return_value = {"sales_invoice": "SINV-NEW-002"}
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
+
+		result = create_order_v2(
+			customer="Test Customer",
+			items=[{"item_code": "ITEM-001", "qty": 2, "warehouse": "Stores - TC"}],
+			company="Test Company",
+			immediate=1,
+			force_delivery=1,
+			request_id="create-v2-force-001",
+		)
+
+		mock_validate_stock.assert_not_called()
+		mock_submit_delivery.assert_called_once()
+		self.assertTrue(result["force_delivery"])
+
 	@patch("erpnext.selling.doctype.sales_order.sales_order.make_delivery_note")
 	@patch("myapp.services.order_service.run_idempotent")
 	@patch("myapp.services.order_service._apply_sales_order_context_to_target_doc")
@@ -1060,6 +1115,7 @@ class TestOrderService(TestCase):
 			"order": "SO-QUICK-0001",
 			"delivery_note": "DN-QUICK-0001",
 			"sales_invoice": "SINV-QUICK-0001",
+			"force_delivery": True,
 		}
 		mock_get_sales_order_detail.return_value = {
 			"data": {
@@ -1075,9 +1131,11 @@ class TestOrderService(TestCase):
 
 		mock_create_order_v2.assert_called_once()
 		self.assertTrue(mock_create_order_v2.call_args.kwargs["immediate"])
+		self.assertTrue(mock_create_order_v2.call_args.kwargs.get("company"))
 		self.assertEqual(result["order"], "SO-QUICK-0001")
 		self.assertEqual(result["delivery_note"], "DN-QUICK-0001")
 		self.assertEqual(result["sales_invoice"], "SINV-QUICK-0001")
+		self.assertTrue(result["force_delivery"])
 		self.assertEqual(result["completed_steps"], ["order", "delivery_note", "sales_invoice"])
 
 	@patch("myapp.services.settlement_service.cancel_payment_entry")

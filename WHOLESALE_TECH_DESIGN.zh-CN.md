@@ -1061,10 +1061,14 @@ Client
 - `quick_create_order_v2`
   - 语义：快捷开单
   - 本质：后端包装 `create_order_v2(immediate=1)`
+  - 现已支持可选的 `force_delivery=1`
+    - 用于“库存不足 -> 用户确认 -> 强制出货并继续开票”的快捷链路
+    - 不作为默认主路径暴露
   - 返回固定的快捷链路结果：
     - `order`
     - `delivery_note`
     - `sales_invoice`
+    - `force_delivery`
     - `completed_steps`
 
 - `quick_cancel_order_v2`

@@ -342,10 +342,20 @@ curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.create_o
   - 创建并提交 `Sales Order`
   - 自动创建并提交 `Delivery Note`
   - 自动创建并提交 `Sales Invoice`
+- 支持可选参数：
+  - `force_delivery: int | bool | None = 0`
+- 当 `force_delivery=1` 时：
+  - 快捷开单会跳过创建阶段的普通库存前置拦截
+  - 自动发货阶段会透传 `force_delivery=1` 给 `submit_delivery`
+  - 整体仍保持：
+    - 创建订单
+    - 自动发货
+    - 自动开票
 - 返回：
   - `order`
   - `delivery_note`
   - `sales_invoice`
+  - `force_delivery`
   - `completed_steps`
   - `detail`
 - 当前定位：
@@ -354,7 +364,10 @@ curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.create_o
 
 测试建议：
 
-- 快速开单前仍需确认所选仓库具备可用库存
+- 快速开单前仍建议优先确认所选仓库具备可用库存
+- 若前端在快捷开单时收到库存不足错误：
+  - 应先把它当成业务决策点
+  - 再由用户决定是否改为 `force_delivery=1`
 - 建议前端在成功后直接落到发票详情页
 - 若只想保留标准下单，不自动发货开票，请继续使用 `create_order_v2(immediate=0)`
 
