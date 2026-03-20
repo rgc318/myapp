@@ -3,7 +3,9 @@ import frappe
 from .orders_api import create_order as create_order_service
 from .orders_api import create_order_v2 as create_order_v2_service
 from .orders_api import create_sales_invoice as create_sales_invoice_service
+from .orders_api import cancel_delivery_note as cancel_delivery_note_service
 from .orders_api import cancel_order_v2 as cancel_order_v2_service
+from .orders_api import cancel_sales_invoice as cancel_sales_invoice_service
 from .orders_api import get_delivery_note_detail as get_delivery_note_detail_service
 from .orders_api import get_customer_sales_context as get_customer_sales_context_service
 from .orders_api import get_sales_order_detail as get_sales_order_detail_service
@@ -177,6 +179,22 @@ def create_sales_invoice(source_name: str, invoice_items=None, kwargs=None, **ex
 			kwargs=_merge_kwargs(kwargs, extra_kwargs),
 		),
 		success_code="SALES_INVOICE_CREATED",
+	)
+
+
+@frappe.whitelist()
+def cancel_delivery_note(delivery_note_name: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: cancel_delivery_note_service(delivery_note_name=delivery_note_name, **kwargs),
+		success_code="DELIVERY_NOTE_CANCELLED",
+	)
+
+
+@frappe.whitelist()
+def cancel_sales_invoice(sales_invoice_name: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: cancel_sales_invoice_service(sales_invoice_name=sales_invoice_name, **kwargs),
+		success_code="SALES_INVOICE_CANCELLED",
 	)
 
 

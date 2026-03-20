@@ -4,7 +4,9 @@ from unittest.mock import patch
 import frappe
 
 from myapp.api.gateway import (
+	cancel_delivery_note,
 	cancel_order_v2,
+	cancel_sales_invoice,
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
 	create_product_and_stock,
@@ -42,7 +44,9 @@ class TestGatewayWrappers(TestCase):
 			get_sales_order_detail,
 			get_sales_order_status_summary,
 			get_customer_sales_context,
+			cancel_delivery_note,
 			cancel_order_v2,
+			cancel_sales_invoice,
 			update_order_v2,
 			update_order_items_v2,
 			submit_delivery,
@@ -95,6 +99,34 @@ class TestGatewayWrappers(TestCase):
 			source_name="SO-0001",
 			invoice_items=None,
 			kwargs={"request_id": "si-001"},
+		)
+
+	@patch("myapp.api.gateway.cancel_delivery_note_service")
+	def test_cancel_delivery_note_passes_request_id_to_service(self, mock_cancel_delivery_note_service):
+		mock_cancel_delivery_note_service.return_value = {
+			"status": "success",
+			"delivery_note": "DN-0001",
+		}
+
+		cancel_delivery_note("DN-0001", request_id="dn-cancel-001")
+
+		mock_cancel_delivery_note_service.assert_called_once_with(
+			delivery_note_name="DN-0001",
+			request_id="dn-cancel-001",
+		)
+
+	@patch("myapp.api.gateway.cancel_sales_invoice_service")
+	def test_cancel_sales_invoice_passes_request_id_to_service(self, mock_cancel_sales_invoice_service):
+		mock_cancel_sales_invoice_service.return_value = {
+			"status": "success",
+			"sales_invoice": "SINV-0001",
+		}
+
+		cancel_sales_invoice("SINV-0001", request_id="si-cancel-001")
+
+		mock_cancel_sales_invoice_service.assert_called_once_with(
+			sales_invoice_name="SINV-0001",
+			request_id="si-cancel-001",
 		)
 
 	@patch("myapp.api.gateway.receive_purchase_order_service")

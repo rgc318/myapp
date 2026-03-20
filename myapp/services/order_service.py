@@ -564,6 +564,32 @@ def _build_action_flags(fulfillment: dict, payment: dict, *, invoice_names: list
 	}
 
 
+def _build_delivery_note_action_flags(*, docstatus: int, sales_invoices: list[str]):
+	is_submitted = cint(docstatus) == 1
+	can_cancel = is_submitted and not sales_invoices
+	return {
+		"can_cancel_delivery_note": can_cancel,
+		"cancel_delivery_note_hint": (
+			_("当前发货单已关联销售发票，请先作废销售发票，再回退发货单。")
+			if is_submitted and sales_invoices
+			else None
+		),
+	}
+
+
+def _build_sales_invoice_action_flags(*, docstatus: int, latest_payment_entry: str | None, paid_amount: float):
+	is_submitted = cint(docstatus) == 1
+	has_payment = bool(latest_payment_entry) or flt(paid_amount) > 0
+	return {
+		"can_cancel_sales_invoice": is_submitted,
+		"cancel_sales_invoice_hint": (
+			_("当前发票已经存在收款记录；若系统未启用作废时自动解绑收款，将需要先处理收款后才能作废。")
+			if is_submitted and has_payment
+			else None
+		),
+	}
+
+
 def _serialize_order_items(order_items):
 	item_image_map = _get_item_image_map(order_items)
 	return [
@@ -1296,6 +1322,10 @@ def get_delivery_note_detail(delivery_note_name: str):
 					"total_qty": total_qty,
 					"status": "shipped" if cint(dn.docstatus) == 1 else "draft",
 				},
+				"actions": _build_delivery_note_action_flags(
+					docstatus=dn.docstatus,
+					sales_invoices=references.get("sales_invoices", []),
+				),
 				"references": references,
 				"items": _serialize_delivery_note_items(delivery_items),
 				"meta": {
@@ -1349,6 +1379,11 @@ def get_sales_invoice_detail(sales_invoice_name: str):
 					"outstanding_amount": payment["outstanding_amount"],
 				},
 				"payment": payment,
+				"actions": _build_sales_invoice_action_flags(
+					docstatus=si.docstatus,
+					latest_payment_entry=latest_payment_entry.get("payment_entry"),
+					paid_amount=flt(payment.get("paid_amount") or 0),
+				),
 				"references": {
 					**references,
 					"latest_payment_entry": latest_payment_entry.get("payment_entry"),
@@ -1970,4 +2005,109 @@ def create_sales_invoice(source_name: str, invoice_items: list[dict] | None = No
 		raise
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), _("开票处理失败"))
+		raise
+
+
+def cancel_delivery_note(delivery_note_name: str, **kwargs):
+	request_id = kwargs.get("request_id")
+
+	if not delivery_note_name:
+		frappe.throw(_("delivery_note_name 不能为空。"))
+
+	try:
+		def _cancel_delivery_note():
+			dn = frappe.get_doc("Delivery Note", delivery_note_name)
+			references = _build_delivery_note_references(list(dn.get("items") or []))
+
+			if cint(dn.docstatus) == 2:
+				detail = get_delivery_note_detail(dn.name)
+				return {
+					"status": "success",
+					"delivery_note": dn.name,
+					"document_status": "cancelled",
+					"message": _("发货单 {0} 已处于作废状态。").format(dn.name),
+					"references": references,
+					"detail": detail.get("data", {}),
+				}
+
+			if cint(dn.docstatus) != 1:
+				frappe.throw(_("只有已提交的发货单才能作废。"))
+
+			submitted_invoices = list(references.get("sales_invoices") or [])
+			if submitted_invoices:
+				raise frappe.ValidationError(
+					_("发货单 {0} 已关联销售发票 {1}，请先作废销售发票，再回退发货单。").format(
+						dn.name,
+						"、".join(submitted_invoices),
+					)
+				)
+
+			dn.cancel()
+			detail = get_delivery_note_detail(dn.name)
+			return {
+				"status": "success",
+				"delivery_note": dn.name,
+				"document_status": "cancelled",
+				"message": _("发货单 {0} 已作废，库存与订单履约状态已自动回退。").format(dn.name),
+				"references": references,
+				"detail": detail.get("data", {}),
+			}
+
+		return run_idempotent("cancel_delivery_note", request_id, _cancel_delivery_note)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("发货单作废失败"))
+		raise
+
+
+def cancel_sales_invoice(sales_invoice_name: str, **kwargs):
+	request_id = kwargs.get("request_id")
+
+	if not sales_invoice_name:
+		frappe.throw(_("sales_invoice_name 不能为空。"))
+
+	try:
+		def _cancel_sales_invoice():
+			si = frappe.get_doc("Sales Invoice", sales_invoice_name)
+			references = _build_sales_invoice_references(list(si.get("items") or []))
+
+			if cint(si.docstatus) == 2:
+				detail = get_sales_invoice_detail(si.name)
+				return {
+					"status": "success",
+					"sales_invoice": si.name,
+					"document_status": "cancelled",
+					"message": _("销售发票 {0} 已处于作废状态。").format(si.name),
+					"references": references,
+					"detail": detail.get("data", {}),
+				}
+
+			if cint(si.docstatus) != 1:
+				frappe.throw(_("只有已提交的销售发票才能作废。"))
+
+			try:
+				si.cancel()
+			except frappe.LinkExistsError as exc:
+				raise frappe.ValidationError(
+					_("销售发票 {0} 已存在收款记录或其他关联单据，当前无法直接作废。请先处理收款或解除关联后再重试。").format(
+						si.name
+					)
+				) from exc
+
+			detail = get_sales_invoice_detail(si.name)
+			return {
+				"status": "success",
+				"sales_invoice": si.name,
+				"document_status": "cancelled",
+				"message": _("销售发票 {0} 已作废。").format(si.name),
+				"references": references,
+				"detail": detail.get("data", {}),
+			}
+
+		return run_idempotent("cancel_sales_invoice", request_id, _cancel_sales_invoice)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("销售发票作废失败"))
 		raise

@@ -4,7 +4,9 @@ from unittest.mock import MagicMock, patch
 import frappe
 
 from myapp.services.order_service import (
+	cancel_delivery_note,
 	cancel_order_v2,
+	cancel_sales_invoice,
 	create_order,
 	create_order_v2,
 	create_sales_invoice,
@@ -582,6 +584,83 @@ class TestOrderService(TestCase):
 
 		with self.assertRaises(frappe.ValidationError):
 			_ensure_sales_order_cancellable(so)
+
+	@patch("myapp.services.order_service.get_delivery_note_detail")
+	@patch("myapp.services.order_service.frappe.get_doc")
+	def test_cancel_delivery_note_cancels_submitted_note_without_invoice_links(
+		self,
+		mock_get_doc,
+		mock_get_delivery_note_detail,
+	):
+		dn = MagicMock()
+		dn.name = "DN-0001"
+		dn.docstatus = 1
+		dn.get.side_effect = lambda field, default=None: [] if field == "items" else default
+		mock_get_doc.return_value = dn
+		mock_get_delivery_note_detail.return_value = {
+			"data": {"delivery_note_name": "DN-0001", "document_status": "cancelled"}
+		}
+
+		result = cancel_delivery_note("DN-0001")
+
+		dn.cancel.assert_called_once_with()
+		self.assertEqual(result["delivery_note"], "DN-0001")
+		self.assertEqual(result["document_status"], "cancelled")
+
+	@patch("myapp.services.order_service.frappe.get_doc")
+	def test_cancel_delivery_note_rejects_linked_sales_invoice(self, mock_get_doc):
+		dn = MagicMock()
+		dn.name = "DN-0002"
+		dn.docstatus = 1
+		dn_item = frappe._dict({"name": "DNI-001", "against_sales_order": "SO-0001"})
+		dn.get.side_effect = lambda field, default=None: [dn_item] if field == "items" else default
+		mock_get_doc.return_value = dn
+
+		with patch(
+			"myapp.services.order_service.frappe.get_all",
+			side_effect=[
+				[frappe._dict({"parent": "SINV-0001"})],
+				[frappe._dict({"parent": "SINV-0001"})],
+			],
+		):
+			with self.assertRaises(frappe.ValidationError):
+				cancel_delivery_note("DN-0002")
+
+		dn.cancel.assert_not_called()
+
+	@patch("myapp.services.order_service.get_sales_invoice_detail")
+	@patch("myapp.services.order_service.frappe.get_doc")
+	def test_cancel_sales_invoice_cancels_submitted_invoice(
+		self,
+		mock_get_doc,
+		mock_get_sales_invoice_detail,
+	):
+		si = MagicMock()
+		si.name = "SINV-0001"
+		si.docstatus = 1
+		si.get.side_effect = lambda field, default=None: [] if field == "items" else default
+		mock_get_doc.return_value = si
+		mock_get_sales_invoice_detail.return_value = {
+			"data": {"sales_invoice_name": "SINV-0001", "document_status": "cancelled"}
+		}
+
+		result = cancel_sales_invoice("SINV-0001")
+
+		si.cancel.assert_called_once_with()
+		self.assertEqual(result["sales_invoice"], "SINV-0001")
+		self.assertEqual(result["document_status"], "cancelled")
+
+	@patch("myapp.services.order_service.frappe.get_doc")
+	def test_cancel_sales_invoice_maps_linked_payment_error(self, mock_get_doc):
+		si = MagicMock()
+		si.name = "SINV-0002"
+		si.docstatus = 1
+		si.get.side_effect = lambda field, default=None: [] if field == "items" else default
+		si.cancel.side_effect = frappe.LinkExistsError("linked payment")
+		mock_get_doc.return_value = si
+
+		with self.assertRaises(frappe.ValidationError):
+			cancel_sales_invoice("SINV-0002")
 
 	@patch("myapp.services.order_service.run_idempotent")
 	@patch("myapp.services.order_service._commit_sales_order_context_update")

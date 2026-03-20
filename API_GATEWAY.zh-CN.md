@@ -524,6 +524,70 @@ cancel_order_v2(
 )
 ```
 
+### cancel_delivery_note
+
+- `myapp.api.gateway.cancel_delivery_note`
+- 用途：按销售回退链路显式作废已提交的发货单
+
+请求参数：
+
+- `delivery_note_name`: 发货单号
+- `request_id`: 可选；用于幂等控制
+
+返回字段：
+
+- `delivery_note`: 被作废的发货单号
+- `document_status`: 固定返回 `cancelled`
+- `references.sales_orders`: 来源订单列表
+- `references.sales_invoices`: 当前仍关联的销售发票列表
+- `detail`: 作废后的发货单详情快照，结构与 `get_delivery_note_detail_v2` 保持一致
+
+行为说明：
+
+- 仅允许对已提交的发货单执行作废
+- 若当前发货单仍关联已提交销售发票，接口会主动拦截：
+  - 必须先作废销售发票，再回退发货单
+- 作废成功后：
+  - ERPNext 会自动回退库存
+  - 订单履约状态会重新回到可继续发货
+
+前端集成建议：
+
+- 发货单详情页应优先读取 `get_delivery_note_detail_v2.data.actions.can_cancel_delivery_note`
+- 若返回 `cancel_delivery_note_hint`，应直接按该文案提示用户当前回退顺序
+
+### cancel_sales_invoice
+
+- `myapp.api.gateway.cancel_sales_invoice`
+- 用途：按销售回退链路显式作废已提交的销售发票
+
+请求参数：
+
+- `sales_invoice_name`: 销售发票号
+- `request_id`: 可选；用于幂等控制
+
+返回字段：
+
+- `sales_invoice`: 被作废的销售发票号
+- `document_status`: 固定返回 `cancelled`
+- `references.sales_orders`: 来源订单列表
+- `references.delivery_notes`: 来源发货单列表
+- `detail`: 作废后的销售发票详情快照，结构与 `get_sales_invoice_detail_v2` 保持一致
+
+行为说明：
+
+- 仅允许对已提交的销售发票执行作废
+- 若 ERPNext 当前环境不允许“作废发票时自动解绑收款引用”：
+  - 已存在收款或其他关联单据时会返回业务错误
+- 若当前环境允许自动解绑：
+  - 已收款发票也可能被成功作废
+  - 该行为依赖站点设置，不应由前端硬编码假设
+
+前端集成建议：
+
+- 销售发票详情页应优先读取 `get_sales_invoice_detail_v2.data.actions.can_cancel_sales_invoice`
+- 若返回 `cancel_sales_invoice_hint`，应在按钮附近直接展示，提醒用户当前环境可能涉及收款解绑
+
 ### create_product_and_stock
 
 方法：

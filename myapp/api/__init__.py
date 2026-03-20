@@ -1,4 +1,4 @@
-from .orders_api import create_order, create_sales_invoice, submit_delivery
+from .orders_api import cancel_delivery_note, cancel_sales_invoice, create_order, create_sales_invoice, submit_delivery
 from .purchase_api import (
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
@@ -12,6 +12,8 @@ from .wholesale_api import search_product
 
 __all__ = [
 	"confirm_pending_document",
+	"cancel_delivery_note",
+	"cancel_sales_invoice",
 	"create_order",
 	"create_purchase_invoice",
 	"create_purchase_invoice_from_receipt",
