@@ -19,8 +19,11 @@
 - `myapp.api.gateway.get_delivery_note_detail_v2`
 - `myapp.api.gateway.get_sales_invoice_detail_v2`
 - `myapp.api.gateway.submit_delivery`
+- `myapp.api.gateway.cancel_delivery_note`
 - `myapp.api.gateway.create_sales_invoice`
+- `myapp.api.gateway.cancel_sales_invoice`
 - `myapp.api.gateway.update_payment_status`
+- `myapp.api.gateway.cancel_payment_entry`
 - `myapp.api.gateway.process_sales_return`
 
 - 采购与结算：
@@ -46,7 +49,7 @@
 
 ### 模块导航
 
-- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`get_product_detail_v2`、`update_product_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_customer_sales_context`、`get_sales_order_detail`、`get_sales_order_status_summary`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`create_sales_invoice`、`update_payment_status`、`process_sales_return`
+- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`get_product_detail_v2`、`update_product_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_customer_sales_context`、`get_sales_order_detail`、`get_sales_order_status_summary`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
 - 通用辅助：`confirm_pending_document`
 
