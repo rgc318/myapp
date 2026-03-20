@@ -5,6 +5,7 @@ import frappe
 
 from myapp.api.gateway import (
 	cancel_delivery_note,
+	cancel_payment_entry,
 	cancel_order_v2,
 	cancel_sales_invoice,
 	create_purchase_invoice,
@@ -45,6 +46,7 @@ class TestGatewayWrappers(TestCase):
 			get_sales_order_status_summary,
 			get_customer_sales_context,
 			cancel_delivery_note,
+			cancel_payment_entry,
 			cancel_order_v2,
 			cancel_sales_invoice,
 			update_order_v2,
@@ -127,6 +129,20 @@ class TestGatewayWrappers(TestCase):
 		mock_cancel_sales_invoice_service.assert_called_once_with(
 			sales_invoice_name="SINV-0001",
 			request_id="si-cancel-001",
+		)
+
+	@patch("myapp.api.gateway.cancel_payment_entry_service")
+	def test_cancel_payment_entry_passes_request_id_to_service(self, mock_cancel_payment_entry_service):
+		mock_cancel_payment_entry_service.return_value = {
+			"status": "success",
+			"payment_entry": "ACC-PAY-0001",
+		}
+
+		cancel_payment_entry("ACC-PAY-0001", request_id="pay-cancel-001")
+
+		mock_cancel_payment_entry_service.assert_called_once_with(
+			payment_entry_name="ACC-PAY-0001",
+			request_id="pay-cancel-001",
 		)
 
 	@patch("myapp.api.gateway.receive_purchase_order_service")

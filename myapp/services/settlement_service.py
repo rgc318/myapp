@@ -190,6 +190,55 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 		raise
 
 
+def cancel_payment_entry(payment_entry_name: str, **kwargs):
+	if not payment_entry_name:
+		frappe.throw(_("payment_entry_name 不能为空。"))
+
+	request_id = kwargs.get("request_id")
+
+	try:
+		def _cancel_payment_entry():
+			pe = frappe.get_doc("Payment Entry", payment_entry_name)
+			references = [
+				{
+					"reference_doctype": getattr(row, "reference_doctype", None),
+					"reference_name": getattr(row, "reference_name", None),
+					"allocated_amount": flt(getattr(row, "allocated_amount", 0) or 0),
+				}
+				for row in (pe.get("references") or [])
+				if getattr(row, "reference_name", None)
+			]
+
+			if cint(pe.docstatus) == 2:
+				return {
+					"status": "success",
+					"payment_entry": pe.name,
+					"document_status": "cancelled",
+					"references": references,
+					"message": _("收款单 {0} 已处于作废状态。").format(pe.name),
+				}
+
+			if cint(pe.docstatus) != 1:
+				frappe.throw(_("只有已提交的收款单才能作废。"))
+
+			pe.cancel()
+
+			return {
+				"status": "success",
+				"payment_entry": pe.name,
+				"document_status": "cancelled",
+				"references": references,
+				"message": _("收款单 {0} 已作废。").format(pe.name),
+			}
+
+		return run_idempotent("cancel_payment_entry", request_id, _cancel_payment_entry)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("收款单作废失败"))
+		raise
+
+
 def process_sales_return(source_doctype: str, source_name: str, return_items: list[dict] | None = None, **kwargs):
 	if not source_doctype or not source_name:
 		frappe.throw(_("source_doctype 和 source_name 不能为空。"))

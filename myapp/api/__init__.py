@@ -7,12 +7,13 @@ from .purchase_api import (
 	receive_purchase_order,
 	record_supplier_payment,
 )
-from .settlement_api import confirm_pending_document, process_sales_return, update_payment_status
+from .settlement_api import cancel_payment_entry, confirm_pending_document, process_sales_return, update_payment_status
 from .wholesale_api import search_product
 
 __all__ = [
 	"confirm_pending_document",
 	"cancel_delivery_note",
+	"cancel_payment_entry",
 	"cancel_sales_invoice",
 	"create_order",
 	"create_purchase_invoice",

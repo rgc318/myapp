@@ -1,5 +1,6 @@
 from .gateway import (
 	cancel_delivery_note,
+	cancel_payment_entry,
 	cancel_sales_invoice,
 	confirm_pending_document,
 	create_order,
@@ -20,6 +21,7 @@ from .gateway import (
 __all__ = [
 	"confirm_pending_document",
 	"cancel_delivery_note",
+	"cancel_payment_entry",
 	"cancel_sales_invoice",
 	"create_order",
 	"create_purchase_invoice",

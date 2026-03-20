@@ -23,6 +23,7 @@ from .purchase_api import process_purchase_return as process_purchase_return_ser
 from .purchase_api import receive_purchase_order as receive_purchase_order_service
 from .purchase_api import record_supplier_payment as record_supplier_payment_service
 from .settlement_api import confirm_pending_document as confirm_pending_document_service
+from .settlement_api import cancel_payment_entry as cancel_payment_entry_service
 from .settlement_api import process_sales_return as process_sales_return_service
 from .settlement_api import update_payment_status as update_payment_status_service
 from .wholesale_api import create_product_and_stock as create_product_and_stock_service
@@ -332,6 +333,14 @@ def confirm_pending_document(doctype: str, docname: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: confirm_pending_document_service(doctype=doctype, docname=docname, **kwargs),
 		success_code="DOCUMENT_CONFIRMED",
+	)
+
+
+@frappe.whitelist()
+def cancel_payment_entry(payment_entry_name: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: cancel_payment_entry_service(payment_entry_name=payment_entry_name, **kwargs),
+		success_code="PAYMENT_ENTRY_CANCELLED",
 	)
 
 

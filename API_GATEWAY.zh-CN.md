@@ -588,6 +588,38 @@ cancel_order_v2(
 - 销售发票详情页应优先读取 `get_sales_invoice_detail_v2.data.actions.can_cancel_sales_invoice`
 - 若返回 `cancel_sales_invoice_hint`，应在按钮附近直接展示，提醒用户当前环境可能涉及收款解绑
 
+### cancel_payment_entry
+
+- `myapp.api.gateway.cancel_payment_entry`
+- 用途：显式作废已提交的收款单，用于“收款回退 / 退款前置回退”场景
+
+请求参数：
+
+- `payment_entry_name`: 收款单号
+- `request_id`: 可选；用于幂等控制
+
+返回字段：
+
+- `payment_entry`: 被作废的收款单号
+- `document_status`: 固定返回 `cancelled`
+- `references`: 本次收款原本关联的引用单据列表
+  - `reference_doctype`
+  - `reference_name`
+  - `allocated_amount`
+
+行为说明：
+
+- 仅允许对已提交的 `Payment Entry` 执行作废
+- 作废后：
+  - 收款单 `docstatus` 会变为 `2`
+  - 被引用的销售发票会恢复未收金额
+- 若收款单已处于作废状态，接口按幂等成功返回当前状态
+
+适用边界：
+
+- 当前接口语义是“收款回退/作废收款单”，不是自动生成银行退款凭证
+- 若业务要求记录真实退款出账，后续仍建议补专门的“退款凭证/反向付款”流程
+
 ### create_product_and_stock
 
 方法：

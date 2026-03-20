@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import frappe
 
 from myapp.services.settlement_service import (
+	cancel_payment_entry,
 	confirm_pending_document,
 	process_sales_return,
 	update_payment_status,
@@ -247,4 +248,53 @@ class TestSettlementService(TestCase):
 		result = process_sales_return("Sales Invoice", "SINV-0001", request_id="ret-001")
 
 		self.assertEqual(result["return_document"], "SINV-RET-0099")
+		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.settlement_service.frappe.get_doc")
+	def test_cancel_payment_entry_cancels_submitted_payment(self, mock_get_doc):
+		pe = MagicMock()
+		pe.name = "ACC-PAY-0001"
+		pe.docstatus = 1
+		pe.get.return_value = [
+			frappe._dict(
+				{
+					"reference_doctype": "Sales Invoice",
+					"reference_name": "SINV-0001",
+					"allocated_amount": 120,
+				}
+			)
+		]
+		mock_get_doc.return_value = pe
+
+		result = cancel_payment_entry("ACC-PAY-0001")
+
+		pe.cancel.assert_called_once()
+		self.assertEqual(result["payment_entry"], "ACC-PAY-0001")
+		self.assertEqual(result["document_status"], "cancelled")
+		self.assertEqual(result["references"][0]["reference_name"], "SINV-0001")
+
+	@patch("myapp.services.settlement_service.frappe.get_doc")
+	def test_cancel_payment_entry_returns_idempotent_success_for_cancelled_doc(self, mock_get_doc):
+		pe = MagicMock()
+		pe.name = "ACC-PAY-0002"
+		pe.docstatus = 2
+		pe.get.return_value = []
+		mock_get_doc.return_value = pe
+
+		result = cancel_payment_entry("ACC-PAY-0002")
+
+		pe.cancel.assert_not_called()
+		self.assertEqual(result["document_status"], "cancelled")
+
+	@patch("myapp.services.settlement_service.run_idempotent")
+	def test_cancel_payment_entry_uses_idempotent_runner(self, mock_run_idempotent):
+		mock_run_idempotent.return_value = {
+			"status": "success",
+			"payment_entry": "ACC-PAY-0099",
+			"document_status": "cancelled",
+		}
+
+		result = cancel_payment_entry("ACC-PAY-0099", request_id="pay-cancel-001")
+
+		self.assertEqual(result["payment_entry"], "ACC-PAY-0099")
 		mock_run_idempotent.assert_called_once()
