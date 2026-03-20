@@ -1002,6 +1002,17 @@ create_purchase_order(
 - `delivery_note`
 - `force_delivery`
 
+前端集成建议：
+
+- 不建议把该接口直接绑定为订单详情页的“点一下立即落单”动作
+- 更推荐的交互是：
+  - 订单详情页 -> 发货确认页
+  - 由发货确认页在用户核对商品、客户与风险提示后再调用本接口
+- 当接口返回库存不足类错误时：
+  - 前端应优先展示明确风险提示
+  - 再由用户决定是否改为 `force_delivery=1`
+  - 不建议默认自动回退为强制出货
+
 ### create_sales_invoice
 
 方法：
@@ -1024,6 +1035,17 @@ create_purchase_order(
 - 支持在 `invoice_items` 中按 `sales_order_item` / `so_detail` 或 `item_code` 改写数量与价格
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的 `sales_invoice`
 - 当源 `Sales Order` 已无可开票明细时，返回明确的校验错误
+
+前端集成建议：
+
+- 不建议把该接口作为订单详情页中的静默直接执行动作
+- 更推荐：
+  - 订单详情页 -> 开票确认页
+  - 由确认页承接 `source_name`、`due_date`、`remarks` 等输入
+  - 用户确认后再调用本接口
+- 若销售发票详情页后续承接打印能力，建议：
+  - 详情页优先朝“预览化单据页”建设
+  - 打印预览入口优先放在发票详情页或发票预览页，而不是订单详情页
 
 ### receive_purchase_order
 
