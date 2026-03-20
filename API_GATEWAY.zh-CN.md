@@ -323,6 +323,10 @@ curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.create_o
 - 保留旧 `create_order` 的仓库归属、库存和即时出单校验逻辑
 - 支持在创建时显式传入客户联系人快照和收货信息快照
 - 当前会把可映射字段写入订单标准联系人 / 地址展示字段
+- 若仅传入 `shipping_address_text` 而未传 `shipping_address_name`
+  - 接口会把该地址视为“订单独立地址快照”
+  - 在订单提交后再次强制写回地址快照字段
+  - 避免标准生命周期再回填客户默认地址后覆盖订单真实地址
 - 同时在响应中返回原始 `snapshot`，便于移动端直接继续使用
 - 使用相同 `request_id` 重试时，直接返回第一次成功结果，不重复创建单据
 
@@ -336,6 +340,8 @@ curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.create_o
 
 - 当前 ERPNext 标准 `Sales Order` 字段对“客户联系人”和“收货联系人”并没有完全分离的原生承载模型
 - 因此 `create_order_v2` 第一版会优先保证地址文本快照和联系人展示信息可追溯
+- 当前约定下，移动端业务应优先把 `shipping_address_text` 理解为“订单地址快照主值”
+- `shipping_address_name` 仅在确实要绑定标准地址 Link 时才传入
 - 更细粒度的双联系人持久化，如果后续确认要做，建议配合自定义字段继续增强
 
 示例：
@@ -384,6 +390,9 @@ create_order_v2(
 - 适用于已提交但尚未取消的销售订单
 - 更新后返回新的 `snapshot`
 - 使用相同 `request_id` 重试时，直接返回第一次成功结果
+- 若本次更新仅传入 `shipping_address_text` 而不传 `shipping_address_name`
+  - 更新后会继续保持该订单的独立地址快照
+  - 不再自动退回客户默认地址
 
 当前说明：
 
@@ -450,6 +459,10 @@ update_order_v2(
   - 新订单号 `order`
   - 原订单号 `source_order`
   - 更新后的 `items`
+- 若因 amendment 生成了新订单
+  - 新订单会继承原订单当前的联系人与地址快照
+  - 包括独立的 `shipping_address_text`
+  - 不应因生成新单而回退到客户默认地址
 
 说明：
 

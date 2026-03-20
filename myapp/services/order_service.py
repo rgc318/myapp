@@ -1109,13 +1109,65 @@ def _save_sales_order_after_update(so):
 
 def _commit_sales_order_context_update(so, fieldnames: list[str]):
 	if cint(so.docstatus) == 1:
-		for fieldname in fieldnames:
-			if so.meta.has_field(fieldname):
-				so.db_set(fieldname, so.get(fieldname), update_modified=True)
-		so.reload()
-		return so
+		return _commit_submitted_doc_context_update(so, fieldnames)
 
 	return _save_sales_order_after_update(so)
+
+
+def _commit_submitted_doc_context_update(doc, fieldnames: list[str]):
+	for fieldname in fieldnames:
+		if doc.meta.has_field(fieldname):
+			doc.db_set(fieldname, doc.get(fieldname), update_modified=True)
+	doc.reload()
+	return doc
+
+
+def _get_snapshot_shipping_values(snapshot):
+	applied = (snapshot or {}).get("applied", {}) or {}
+	shipping = (snapshot or {}).get("shipping", {}) or {}
+	shipping_address_name = _extract_first_non_empty(
+		applied.get("shipping_address_name"),
+		shipping.get("shipping_address_name"),
+	)
+	shipping_address_text = _extract_first_non_empty(
+		applied.get("shipping_address_text"),
+		shipping.get("shipping_address_text"),
+	)
+	return shipping_address_name, shipping_address_text
+
+
+def _persist_independent_shipping_snapshot(doc, snapshot):
+	shipping_address_name, shipping_address_text = _get_snapshot_shipping_values(snapshot)
+
+	if not shipping_address_text or shipping_address_name:
+		return []
+
+	fieldnames = []
+	for fieldname in ["shipping_address_name", "customer_address"]:
+		if doc.meta.has_field(fieldname):
+			doc.set(fieldname, None)
+			fieldnames.append(fieldname)
+
+	for fieldname in ["address_display", "shipping_address"]:
+		if doc.meta.has_field(fieldname):
+			doc.set(fieldname, shipping_address_text)
+			fieldnames.append(fieldname)
+
+	return fieldnames
+
+
+def _apply_sales_order_context_to_target_doc(source_so, target_doc):
+	for fieldname in [
+		"contact_person",
+		"contact_display",
+		"contact_mobile",
+		"contact_phone",
+		"contact_email",
+		"shipping_address_name",
+		"customer_address",
+		"address_display",
+	]:
+		_set_doc_field(target_doc, fieldname, source_so.get(fieldname))
 
 
 def _prepare_sales_order_for_item_replacement(so):
@@ -1423,6 +1475,19 @@ def create_order(customer: str, items: list[dict], immediate: bool = False, **kw
 				_validate_stock_for_immediate_delivery(order_items)
 
 			_insert_and_submit(so)
+			_commit_sales_order_context_update(
+				so,
+				[
+					"contact_person",
+					"contact_display",
+					"contact_mobile",
+					"contact_phone",
+					"contact_email",
+					"shipping_address_name",
+					"customer_address",
+					"address_display",
+				],
+			)
 
 			result = {
 				"status": "success",
@@ -1495,6 +1560,21 @@ def create_order_v2(customer: str, items: list[dict], immediate: bool = False, *
 				_validate_stock_for_immediate_delivery(order_items)
 
 			_insert_and_submit(so)
+			shipping_fieldnames = _persist_independent_shipping_snapshot(so, snapshot)
+			_commit_sales_order_context_update(
+				so,
+				[
+					"contact_person",
+					"contact_display",
+					"contact_mobile",
+					"contact_phone",
+					"contact_email",
+					"shipping_address_name",
+					"customer_address",
+					"address_display",
+					"shipping_address",
+				] + shipping_fieldnames,
+			)
 
 			result = {
 				"status": "success",
@@ -1548,6 +1628,7 @@ def update_order_v2(order_name: str, **kwargs):
 				kwargs=kwargs,
 				overwrite=True,
 			)
+			shipping_fieldnames = _persist_independent_shipping_snapshot(so, snapshot)
 
 			_commit_sales_order_context_update(
 				so,
@@ -1563,7 +1644,10 @@ def update_order_v2(order_name: str, **kwargs):
 					"shipping_address_name",
 					"customer_address",
 					"address_display",
-				] + ([_get_sales_order_remark_field()] if _get_sales_order_remark_field() else []),
+					"shipping_address",
+				]
+				+ shipping_fieldnames
+				+ ([_get_sales_order_remark_field()] if _get_sales_order_remark_field() else []),
 			)
 
 			return {
@@ -1595,6 +1679,18 @@ def update_order_items_v2(order_name: str, items: list[dict], **kwargs):
 			so = _get_sales_order_doc_for_update(order_name)
 			_ensure_sales_order_items_editable(so)
 			target_so, source_order_name = _prepare_sales_order_for_item_replacement(so)
+			source_snapshot = {
+				"applied": {
+					"shipping_address_name": _extract_first_non_empty(
+						target_so.get("shipping_address_name"),
+						target_so.get("customer_address"),
+					),
+					"shipping_address_text": _extract_first_non_empty(
+						target_so.get("address_display"),
+						target_so.get("shipping_address"),
+					),
+				}
+			}
 
 			company = kwargs.get("company") or target_so.company
 			delivery_date = kwargs.get("delivery_date") or target_so.get("delivery_date") or nowdate()
@@ -1616,6 +1712,18 @@ def update_order_items_v2(order_name: str, items: list[dict], **kwargs):
 				target_so.delivery_date = kwargs.get("delivery_date") or None
 
 			_insert_and_submit(target_so)
+			shipping_fieldnames = _persist_independent_shipping_snapshot(target_so, source_snapshot)
+			if shipping_fieldnames:
+				_commit_sales_order_context_update(
+					target_so,
+					[
+						"shipping_address_name",
+						"customer_address",
+						"address_display",
+						"shipping_address",
+					]
+					+ shipping_fieldnames,
+				)
 
 			return {
 				"status": "success",
@@ -1695,8 +1803,22 @@ def submit_delivery(order_name: str, delivery_items: list[dict] | None = None, k
 
 	try:
 		def _submit_delivery():
+			so = frappe.get_doc("Sales Order", order_name)
 			dn = make_delivery_note(order_name, kwargs={"skip_item_mapping": 0})
 			_ensure_target_has_items(dn, _("销售订单 {0} 当前没有可发货的商品明细。").format(order_name))
+			_apply_sales_order_context_to_target_doc(so, dn)
+			source_snapshot = {
+				"applied": {
+					"shipping_address_name": _extract_first_non_empty(
+						so.get("shipping_address_name"),
+						so.get("customer_address"),
+					),
+					"shipping_address_text": _extract_first_non_empty(
+						so.get("address_display"),
+						so.get("shipping_address"),
+					),
+				}
+			}
 
 			if delivery_items:
 				item_overrides = _build_item_override_map(
@@ -1736,6 +1858,18 @@ def submit_delivery(order_name: str, delivery_items: list[dict] | None = None, k
 					_insert_and_submit_with_temporary_negative_stock(dn)
 				else:
 					_insert_and_submit(dn)
+				shipping_fieldnames = _persist_independent_shipping_snapshot(dn, source_snapshot)
+				if shipping_fieldnames:
+					_commit_submitted_doc_context_update(
+						dn,
+						[
+							"shipping_address_name",
+							"customer_address",
+							"address_display",
+							"shipping_address",
+						]
+						+ shipping_fieldnames,
+					)
 			except Exception:
 				dn_name = getattr(dn, "name", None)
 				if dn_name and frappe.db.exists("Delivery Note", dn_name):
@@ -1775,8 +1909,22 @@ def create_sales_invoice(source_name: str, invoice_items: list[dict] | None = No
 
 	try:
 		def _create_sales_invoice():
+			so = frappe.get_doc("Sales Order", source_name)
 			si = make_sales_invoice(source_name)
 			_ensure_target_has_items(si, _("销售订单 {0} 当前没有可开票的商品明细。").format(source_name))
+			_apply_sales_order_context_to_target_doc(so, si)
+			source_snapshot = {
+				"applied": {
+					"shipping_address_name": _extract_first_non_empty(
+						so.get("shipping_address_name"),
+						so.get("customer_address"),
+					),
+					"shipping_address_text": _extract_first_non_empty(
+						so.get("address_display"),
+						so.get("shipping_address"),
+					),
+				}
+			}
 
 			if invoice_items:
 				item_overrides = _build_item_override_map(
@@ -1798,6 +1946,18 @@ def create_sales_invoice(source_name: str, invoice_items: list[dict] | None = No
 				si.update_stock = cint(kwargs["update_stock"])
 
 			_insert_and_submit(si)
+			shipping_fieldnames = _persist_independent_shipping_snapshot(si, source_snapshot)
+			if shipping_fieldnames:
+				_commit_submitted_doc_context_update(
+					si,
+					[
+						"shipping_address_name",
+						"customer_address",
+						"address_display",
+						"shipping_address",
+					]
+					+ shipping_fieldnames,
+				)
 
 			return {
 				"status": "success",
