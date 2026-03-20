@@ -15,6 +15,8 @@ from myapp.services.order_service import (
 	get_sales_order_detail,
 	get_sales_order_status_summary,
 	get_sales_invoice_detail,
+	quick_cancel_order_v2,
+	quick_create_order_v2,
 	submit_delivery,
 	update_order_items_v2,
 	update_order_v2,
@@ -1049,3 +1051,87 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"][0]["order_name"], "SO-0001")
 		self.assertEqual(result["data"][0]["payment"]["status"], "partial")
 		self.assertEqual(result["meta"]["filters"]["customer"], "Test Customer")
+
+	@patch("myapp.services.order_service.get_sales_order_detail")
+	@patch("myapp.services.order_service.create_order_v2")
+	def test_quick_create_order_v2_wraps_immediate_flow(self, mock_create_order_v2, mock_get_sales_order_detail):
+		mock_create_order_v2.return_value = {
+			"status": "success",
+			"order": "SO-QUICK-0001",
+			"delivery_note": "DN-QUICK-0001",
+			"sales_invoice": "SINV-QUICK-0001",
+		}
+		mock_get_sales_order_detail.return_value = {
+			"data": {
+				"order_name": "SO-QUICK-0001",
+			}
+		}
+
+		result = quick_create_order_v2(
+			customer="Test Customer",
+			items=[{"item_code": "ITEM-001", "qty": 1, "warehouse": "Stores - TC"}],
+			company="Test Company",
+		)
+
+		mock_create_order_v2.assert_called_once()
+		self.assertTrue(mock_create_order_v2.call_args.kwargs["immediate"])
+		self.assertEqual(result["order"], "SO-QUICK-0001")
+		self.assertEqual(result["delivery_note"], "DN-QUICK-0001")
+		self.assertEqual(result["sales_invoice"], "SINV-QUICK-0001")
+		self.assertEqual(result["completed_steps"], ["order", "delivery_note", "sales_invoice"])
+
+	@patch("myapp.services.settlement_service.cancel_payment_entry")
+	@patch("myapp.services.order_service.cancel_delivery_note")
+	@patch("myapp.services.order_service.cancel_sales_invoice")
+	@patch("myapp.services.order_service.get_sales_order_detail")
+	@patch("myapp.services.order_service._collect_submitted_payment_entry_summaries")
+	@patch("myapp.services.order_service._collect_sales_order_reference_names")
+	@patch("myapp.services.order_service._get_sales_order_doc_for_update")
+	def test_quick_cancel_order_v2_rolls_back_in_safe_order(
+		self,
+		mock_get_sales_order_doc_for_update,
+		mock_collect_reference_names,
+		mock_collect_payment_entries,
+		mock_get_sales_order_detail,
+		mock_cancel_sales_invoice,
+		mock_cancel_delivery_note,
+		mock_cancel_payment_entry,
+	):
+		mock_get_sales_order_doc_for_update.return_value = frappe._dict({"name": "SO-0001"})
+		mock_collect_reference_names.return_value = (["DN-0001"], ["SINV-0001"])
+		mock_collect_payment_entries.return_value = [
+			{
+				"payment_entry": "PE-0001",
+				"references": [
+					{
+						"reference_doctype": "Sales Invoice",
+						"reference_name": "SINV-0001",
+						"allocated_amount": 100,
+					}
+				],
+			}
+		]
+		mock_cancel_payment_entry.return_value = {
+			"payment_entry": "PE-0001",
+		}
+		mock_cancel_sales_invoice.return_value = {
+			"sales_invoice": "SINV-0001",
+		}
+		mock_cancel_delivery_note.return_value = {
+			"delivery_note": "DN-0001",
+		}
+		mock_get_sales_order_detail.return_value = {
+			"data": {
+				"order_name": "SO-0001",
+			}
+		}
+
+		result = quick_cancel_order_v2(order_name="SO-0001")
+
+		mock_cancel_payment_entry.assert_called_once_with("PE-0001")
+		mock_cancel_sales_invoice.assert_called_once_with("SINV-0001")
+		mock_cancel_delivery_note.assert_called_once_with("DN-0001")
+		self.assertEqual(result["completed_steps"], ["payment_entry", "sales_invoice", "delivery_note"])
+		self.assertEqual(result["cancelled_payment_entries"], ["PE-0001"])
+		self.assertEqual(result["cancelled_sales_invoice"], "SINV-0001")
+		self.assertEqual(result["cancelled_delivery_note"], "DN-0001")

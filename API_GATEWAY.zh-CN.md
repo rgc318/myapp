@@ -10,6 +10,8 @@
 - `myapp.api.gateway.update_product_v2`
 - `myapp.api.gateway.create_order`
 - `myapp.api.gateway.create_order_v2`
+- `myapp.api.gateway.quick_create_order_v2`
+- `myapp.api.gateway.quick_cancel_order_v2`
 - `myapp.api.gateway.cancel_order_v2`
 - `myapp.api.gateway.get_customer_sales_context`
 - `myapp.api.gateway.get_sales_order_detail`
@@ -44,7 +46,7 @@
 
 ### 模块导航
 
-- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`get_product_detail_v2`、`update_product_v2`、`create_order`、`create_order_v2`、`get_customer_sales_context`、`get_sales_order_detail`、`get_sales_order_status_summary`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`create_sales_invoice`、`update_payment_status`、`process_sales_return`
+- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`get_product_detail_v2`、`update_product_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_customer_sales_context`、`get_sales_order_detail`、`get_sales_order_status_summary`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`create_sales_invoice`、`update_payment_status`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
 - 通用辅助：`confirm_pending_document`
 
@@ -318,6 +320,80 @@ curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.create_o
 - `shipping_address_text`
 
 行为：
+
+- `immediate=False` 时仅创建并提交 `Sales Order`
+- `immediate=True` 时继续联动创建并提交 `Delivery Note` 与 `Sales Invoice`
+- 适合作为“分步处理 / 联动处理”共用的底层下单接口
+
+### quick_create_order_v2
+
+方法：
+
+- `myapp.api.gateway.quick_create_order_v2`
+
+参数：
+
+- 与 `create_order_v2` 基本一致
+- 不需要显式传 `immediate`
+
+行为：
+
+- 后端固定按快捷模式执行：
+  - 创建并提交 `Sales Order`
+  - 自动创建并提交 `Delivery Note`
+  - 自动创建并提交 `Sales Invoice`
+- 返回：
+  - `order`
+  - `delivery_note`
+  - `sales_invoice`
+  - `completed_steps`
+  - `detail`
+- 当前定位：
+  - 这是面向前端“快速开单”按钮的独立聚合接口
+  - 用来避免前端自己拼 `create_order_v2(immediate=1)` 的流程语义
+
+测试建议：
+
+- 快速开单前仍需确认所选仓库具备可用库存
+- 建议前端在成功后直接落到发票详情页
+- 若只想保留标准下单，不自动发货开票，请继续使用 `create_order_v2(immediate=0)`
+
+### quick_cancel_order_v2
+
+方法：
+
+- `myapp.api.gateway.quick_cancel_order_v2`
+
+参数：
+
+- `order_name: str`
+- `rollback_payment: bool = True`
+- `request_id: str | None`
+
+行为：
+
+- 这是面向前端“快速作废 / 回退并修改”的独立聚合接口
+- 默认按安全顺序回退：
+  - 先作废 `Payment Entry`
+  - 再作废 `Sales Invoice`
+  - 再作废 `Delivery Note`
+- 返回：
+  - `cancelled_payment_entries`
+  - `cancelled_sales_invoice`
+  - `cancelled_delivery_note`
+  - `completed_steps`
+  - `detail`
+
+当前限制：
+
+- 先只支持标准快捷链路：
+  - 单订单
+  - 单发货单
+  - 单发票
+  - 单收款单
+- 若发现多张发票、多张发货单或一笔收款关联多张发票：
+  - 接口会明确拦截
+  - 提示改用分步回退流程
 
 - 创建并提交 `Sales Order`
 - 保留旧 `create_order` 的仓库归属、库存和即时出单校验逻辑

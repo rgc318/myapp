@@ -2,9 +2,11 @@ import frappe
 
 from .orders_api import create_order as create_order_service
 from .orders_api import create_order_v2 as create_order_v2_service
+from .orders_api import quick_create_order_v2 as quick_create_order_v2_service
 from .orders_api import create_sales_invoice as create_sales_invoice_service
 from .orders_api import cancel_delivery_note as cancel_delivery_note_service
 from .orders_api import cancel_order_v2 as cancel_order_v2_service
+from .orders_api import quick_cancel_order_v2 as quick_cancel_order_v2_service
 from .orders_api import cancel_sales_invoice as cancel_sales_invoice_service
 from .orders_api import get_delivery_note_detail as get_delivery_note_detail_service
 from .orders_api import get_customer_sales_context as get_customer_sales_context_service
@@ -88,6 +90,14 @@ def create_order_v2(customer: str, items, immediate: bool = False, **kwargs):
 
 
 @frappe.whitelist()
+def quick_create_order_v2(customer: str, items, **kwargs):
+	return _handle_gateway_call(
+		lambda: quick_create_order_v2_service(customer=customer, items=items, **kwargs),
+		success_code="ORDER_V2_QUICK_CREATED",
+	)
+
+
+@frappe.whitelist()
 def get_customer_sales_context(customer: str):
 	return _handle_gateway_call(
 		lambda: get_customer_sales_context_service(customer=customer),
@@ -132,6 +142,18 @@ def cancel_order_v2(order_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: cancel_order_v2_service(order_name=order_name, **kwargs),
 		success_code="ORDER_V2_CANCELLED",
+	)
+
+
+@frappe.whitelist()
+def quick_cancel_order_v2(order_name: str, rollback_payment: bool = True, **kwargs):
+	return _handle_gateway_call(
+		lambda: quick_cancel_order_v2_service(
+			order_name=order_name,
+			rollback_payment=rollback_payment,
+			**kwargs,
+		),
+		success_code="ORDER_V2_QUICK_CANCELLED",
 	)
 
 

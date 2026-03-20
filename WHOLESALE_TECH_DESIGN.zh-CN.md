@@ -1053,6 +1053,40 @@ Client
 | --- | --- | --- |
 | 快速下单 | 已实现 | 支持分步和联动模式 |
 | 钱货两清 | 已实现 | `immediate=1` 可联动发货和开票 |
+
+### 快捷接口收敛（2026-03-20）
+
+在完成真实验证后，销售快捷链路不再只依赖底层 `immediate` 参数，而是补充为两个独立聚合接口：
+
+- `quick_create_order_v2`
+  - 语义：快捷开单
+  - 本质：后端包装 `create_order_v2(immediate=1)`
+  - 返回固定的快捷链路结果：
+    - `order`
+    - `delivery_note`
+    - `sales_invoice`
+    - `completed_steps`
+
+- `quick_cancel_order_v2`
+  - 语义：快捷作废 / 回退并修改
+  - 本质：后端按安全顺序统一编排：
+    - `cancel_payment_entry`
+    - `cancel_sales_invoice`
+    - `cancel_delivery_note`
+  - 返回固定的快捷回退结果：
+    - `cancelled_payment_entries`
+    - `cancelled_sales_invoice`
+    - `cancelled_delivery_note`
+    - `completed_steps`
+
+这样做的目的不是替代分步接口，而是把：
+
+- `create_order_v2(immediate=1)`
+- `cancel_payment_entry`
+- `cancel_sales_invoice`
+- `cancel_delivery_note`
+
+这些底层动作收敛成稳定的“产品级快捷能力”，避免让前端自行拼装完整流程。
 | 多维商品搜索 | 已实现 | 支持编码、名称、条码 |
 | 库存看板 | 已实现 | 当前为总量视图 |
 | 多单位预览 | 已实现 | 返回 `all_uoms` |

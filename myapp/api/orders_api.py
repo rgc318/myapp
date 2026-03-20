@@ -2,6 +2,8 @@ import frappe
 
 from myapp.services.order_service import create_order as create_order_service
 from myapp.services.order_service import create_order_v2 as create_order_v2_service
+from myapp.services.order_service import quick_create_order_v2 as quick_create_order_v2_service
+from myapp.services.order_service import quick_cancel_order_v2 as quick_cancel_order_v2_service
 from myapp.services.order_service import create_sales_invoice as create_sales_invoice_service
 from myapp.services.order_service import cancel_delivery_note as cancel_delivery_note_service
 from myapp.services.order_service import cancel_order_v2 as cancel_order_v2_service
@@ -30,6 +32,11 @@ def create_order(customer: str, items, immediate: bool = False, **kwargs):
 @frappe.whitelist()
 def create_order_v2(customer: str, items, immediate: bool = False, **kwargs):
 	return create_order_v2_service(customer=customer, items=items, immediate=immediate, **kwargs)
+
+
+@frappe.whitelist()
+def quick_create_order_v2(customer: str, items, **kwargs):
+	return quick_create_order_v2_service(customer=customer, items=items, **kwargs)
 
 
 @frappe.whitelist()
@@ -88,6 +95,11 @@ def get_sales_order_status_summary(customer: str | None = None, company: str | N
 @frappe.whitelist()
 def cancel_order_v2(order_name: str, **kwargs):
 	return cancel_order_v2_service(order_name=order_name, **kwargs)
+
+
+@frappe.whitelist()
+def quick_cancel_order_v2(order_name: str, rollback_payment: bool = True, **kwargs):
+	return quick_cancel_order_v2_service(order_name=order_name, rollback_payment=rollback_payment, **kwargs)
 
 
 @frappe.whitelist()

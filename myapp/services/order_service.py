@@ -1639,6 +1639,32 @@ def create_order_v2(customer: str, items: list[dict], immediate: bool = False, *
 		raise
 
 
+def quick_create_order_v2(customer: str, items: list[dict], **kwargs):
+	request_id = kwargs.get("request_id")
+
+	try:
+		def _quick_create_order_v2():
+			result = create_order_v2(customer=customer, items=items, immediate=True, **kwargs)
+			order_name = result.get("order")
+			detail = get_sales_order_detail(order_name).get("data", {}) if order_name else {}
+			return {
+				"status": "success",
+				"order": order_name,
+				"delivery_note": result.get("delivery_note"),
+				"sales_invoice": result.get("sales_invoice"),
+				"completed_steps": ["order", "delivery_note", "sales_invoice"],
+				"message": _("销售订单 {0} 已按快捷模式完成下单、发货和开票。").format(order_name),
+				"detail": detail,
+			}
+
+		return run_idempotent("quick_create_order_v2", request_id, _quick_create_order_v2)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("快捷开单失败"))
+		raise
+
+
 def update_order_v2(order_name: str, **kwargs):
 	request_id = kwargs.get("request_id")
 	customer_info = kwargs.get("customer_info")
@@ -1822,6 +1848,142 @@ def cancel_order_v2(order_name: str, **kwargs):
 		raise
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), _("v2 订单作废失败"))
+		raise
+
+
+def _collect_submitted_payment_entry_summaries(invoice_names: list[str]):
+	if not invoice_names:
+		return []
+
+	reference_rows = frappe.get_all(
+		"Payment Entry Reference",
+		filters={"reference_doctype": "Sales Invoice", "reference_name": ["in", invoice_names]},
+		fields=["parent", "reference_name", "allocated_amount"],
+	)
+	parent_names = sorted({row.parent for row in reference_rows if getattr(row, "parent", None)})
+	if not parent_names:
+		return []
+
+	payment_entry_rows = frappe.get_all(
+		"Payment Entry",
+		filters={"name": ["in", parent_names], "docstatus": 1},
+		fields=["name", "modified"],
+		order_by="modified desc",
+	)
+	active_parent_names = [row.name for row in payment_entry_rows if getattr(row, "name", None)]
+	if not active_parent_names:
+		return []
+
+	all_reference_rows = frappe.get_all(
+		"Payment Entry Reference",
+		filters={"parent": ["in", active_parent_names]},
+		fields=["parent", "reference_doctype", "reference_name", "allocated_amount"],
+	)
+	reference_rows_by_parent = {}
+	for row in all_reference_rows:
+		parent = getattr(row, "parent", None)
+		if not parent:
+			continue
+		reference_rows_by_parent.setdefault(parent, []).append(row)
+
+	return [
+		{
+			"payment_entry": row.name,
+			"references": [
+				{
+					"reference_doctype": getattr(reference_row, "reference_doctype", None),
+					"reference_name": getattr(reference_row, "reference_name", None),
+					"allocated_amount": flt(getattr(reference_row, "allocated_amount", 0) or 0),
+				}
+				for reference_row in reference_rows_by_parent.get(row.name, [])
+			],
+		}
+		for row in payment_entry_rows
+	]
+
+
+def _ensure_single_quick_flow_reference(reference_names: list[str], *, label: str, order_name: str):
+	if len(reference_names) > 1:
+		frappe.throw(
+			_("销售订单 {0} 当前存在多张{1}，暂不支持快捷回退，请改用分步回退流程。").format(
+				order_name,
+				label,
+			)
+		)
+
+
+def quick_cancel_order_v2(order_name: str, rollback_payment: bool = True, **kwargs):
+	request_id = kwargs.get("request_id")
+
+	try:
+		def _quick_cancel_order_v2():
+			from myapp.services.settlement_service import cancel_payment_entry
+
+			_get_sales_order_doc_for_update(order_name)
+			delivery_note_names, invoice_names = _collect_sales_order_reference_names(order_name)
+			_ensure_single_quick_flow_reference(delivery_note_names, label=_("发货单"), order_name=order_name)
+			_ensure_single_quick_flow_reference(invoice_names, label=_("销售发票"), order_name=order_name)
+
+			payment_entries = _collect_submitted_payment_entry_summaries(invoice_names)
+			if len(payment_entries) > 1:
+				frappe.throw(
+					_("销售订单 {0} 当前存在多笔有效收款，暂不支持快捷回退，请改用分步回退流程。").format(
+						order_name
+					)
+				)
+
+			cancelled_payment_entries = []
+			completed_steps = []
+			for payment_entry in payment_entries:
+				references = payment_entry.get("references") or []
+				reference_names = {
+					row.get("reference_name")
+					for row in references
+					if row.get("reference_doctype") == "Sales Invoice" and row.get("reference_name")
+				}
+				if len(reference_names) > 1:
+					frappe.throw(
+						_("收款单 {0} 同时关联多张销售发票，暂不支持快捷回退，请改用分步回退流程。").format(
+							payment_entry.get("payment_entry")
+						)
+					)
+				if payment_entry.get("payment_entry") and not cint(rollback_payment):
+					frappe.throw(
+						_("销售订单 {0} 当前存在有效收款，快捷作废要求先回退收款。").format(order_name)
+					)
+				payment_result = cancel_payment_entry(payment_entry.get("payment_entry"))
+				cancelled_payment_entries.append(payment_result.get("payment_entry"))
+				completed_steps.append("payment_entry")
+
+			cancelled_invoice = None
+			if invoice_names:
+				invoice_result = cancel_sales_invoice(invoice_names[0])
+				cancelled_invoice = invoice_result.get("sales_invoice")
+				completed_steps.append("sales_invoice")
+
+			cancelled_delivery_note = None
+			if delivery_note_names:
+				delivery_result = cancel_delivery_note(delivery_note_names[0])
+				cancelled_delivery_note = delivery_result.get("delivery_note")
+				completed_steps.append("delivery_note")
+
+			detail = get_sales_order_detail(order_name).get("data", {})
+			return {
+				"status": "success",
+				"order": order_name,
+				"cancelled_payment_entries": cancelled_payment_entries,
+				"cancelled_sales_invoice": cancelled_invoice,
+				"cancelled_delivery_note": cancelled_delivery_note,
+				"completed_steps": completed_steps,
+				"message": _("销售订单 {0} 已按快捷回退模式撤销下游单据，可返回订单继续修改。").format(order_name),
+				"detail": detail,
+			}
+
+		return run_idempotent("quick_cancel_order_v2", request_id, _quick_cancel_order_v2)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("快捷回退失败"))
 		raise
 
 

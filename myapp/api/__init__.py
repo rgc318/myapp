@@ -1,4 +1,12 @@
-from .orders_api import cancel_delivery_note, cancel_sales_invoice, create_order, create_sales_invoice, submit_delivery
+from .orders_api import (
+	cancel_delivery_note,
+	cancel_sales_invoice,
+	create_order,
+	create_sales_invoice,
+	quick_cancel_order_v2,
+	quick_create_order_v2,
+	submit_delivery,
+)
 from .purchase_api import (
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
@@ -20,6 +28,8 @@ __all__ = [
 	"create_purchase_invoice_from_receipt",
 	"create_purchase_order",
 	"create_sales_invoice",
+	"quick_cancel_order_v2",
+	"quick_create_order_v2",
 	"process_purchase_return",
 	"process_sales_return",
 	"receive_purchase_order",
