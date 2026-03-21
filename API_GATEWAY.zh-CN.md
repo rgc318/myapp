@@ -856,6 +856,9 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 支持多字段搜索
 - 支持只看有库存商品
 - 支持仓库 / 公司口径库存过滤
+- `qty` 表示当前查询口径库存
+- `total_qty` 表示总库存汇总
+- `warehouse_stock_details` 返回各仓库存明细，便于前端按“商品优先 -> 查看库存详情 -> 按仓加入订单”继续演进
 - 返回更完整的商品摘要，包括 `description`、`creation`、`modified`
 - 当前 `nickname` 优先读取 `Item.custom_nickname`
 - 若站点尚未迁移出正式昵称字段，则仍会回退复用 `description` 作为兼容搜索口径
@@ -895,7 +898,9 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 当前返回重点包括：
   - 商品基础信息
   - 启停状态
-  - 基础库存
+  - 当前查询口径库存 `qty`
+  - 总库存 `total_qty`
+  - 分仓库存明细 `warehouse_stock_details`
   - 当前价格
   - 结构化价格摘要 `price_summary`
 - `price_summary` 当前重点字段：
@@ -943,6 +948,10 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 返回标准图片字段 `Item.image`
 - 返回正式昵称字段 `Item.custom_nickname`，未迁移站点回退到旧 `description` 兼容口径
 - 返回当前价格、库存、主条码与换算单位信息
+- 其中库存相关字段包括：
+  - `qty`
+  - `total_qty`
+  - `warehouse_stock_details`
 - 返回结构化价格摘要 `price_summary`
   - 便于前端同时展示：
     - 零售价
@@ -963,6 +972,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 商品详情页
 - 下单页回填旧草稿商品图片与摘要
 - 商品编辑前预加载
+- 商品搜索结果中的“查看库存详情”
 
 ### update_product_v2
 

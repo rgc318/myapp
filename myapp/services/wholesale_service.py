@@ -379,6 +379,59 @@ def _get_qty_map(item_codes: list[str], *, warehouse: str | None, company: str |
 	return {d.item_code: d.total_qty or 0 for d in inventory_data}
 
 
+def _get_warehouse_stock_detail_map(item_codes: list[str], *, company: str | None):
+	if not item_codes:
+		return {}
+
+	bin_dt = frappe.qb.DocType("Bin")
+	warehouse_dt = frappe.qb.DocType("Warehouse")
+	query = (
+		frappe.qb.from_(bin_dt)
+		.inner_join(warehouse_dt)
+		.on(bin_dt.warehouse == warehouse_dt.name)
+		.select(
+			bin_dt.item_code,
+			bin_dt.warehouse,
+			warehouse_dt.company,
+			Sum(bin_dt.actual_qty).as_("total_qty"),
+		)
+		.where(bin_dt.item_code.isin(item_codes))
+	)
+	if company:
+		query = query.where(warehouse_dt.company == company)
+
+	rows = query.groupby(bin_dt.item_code, bin_dt.warehouse, warehouse_dt.company).run(as_dict=True)
+	result = {}
+	for row in rows:
+		result.setdefault(row.item_code, []).append(
+			{
+				"warehouse": row.warehouse,
+				"company": row.company,
+				"qty": flt(row.total_qty or 0),
+			}
+		)
+
+	for item_code, details in result.items():
+		result[item_code] = sorted(
+			details,
+			key=lambda detail: (-flt(detail.get("qty") or 0), _normalize_text(detail.get("warehouse")).lower()),
+		)
+
+	return result
+
+
+def _resolve_stock_company_scope(warehouse: str | None, company: str | None):
+	normalized_company = _normalize_text(company) or None
+	if normalized_company:
+		return normalized_company
+
+	normalized_warehouse = _normalize_text(warehouse) or None
+	if not normalized_warehouse:
+		return None
+
+	return _resolve_company_from_warehouse(normalized_warehouse)
+
+
 def _sort_search_results(results: list[dict], *, sort_by: str, sort_order: str, item_code_order: list[str]):
 	reverse = sort_order == "desc"
 	order_index = {code: index for index, code in enumerate(item_code_order)}
@@ -454,7 +507,10 @@ def _build_product_detail_payload(
 	price_list: str = "Standard Selling",
 	currency: str | None = None,
 ):
+	stock_company = _resolve_stock_company_scope(warehouse, company)
 	qty_map = _get_qty_map([item.name], warehouse=warehouse, company=company)
+	total_qty_map = _get_qty_map([item.name], warehouse=None, company=stock_company)
+	warehouse_stock_map = _get_warehouse_stock_detail_map([item.name], company=stock_company)
 	price_map = _get_price_map([item.name], price_list=price_list, currency=currency)
 	selling_prices = _get_multi_price_map(
 		[item.name],
@@ -484,6 +540,8 @@ def _build_product_detail_payload(
 		"is_sales_item": cint(getattr(item, "is_sales_item", 0)),
 		"barcode": _get_primary_barcode(item.name),
 		"qty": flt(qty_map.get(item.name, 0)),
+		"total_qty": flt(total_qty_map.get(item.name, 0)),
+		"warehouse_stock_details": warehouse_stock_map.get(item.name, []),
 		"price": current_rate,
 		"price_list": price_list,
 		"currency": currency,
@@ -544,7 +602,10 @@ def list_products_v2(
 		sort_order=sort_order,
 	)
 	item_codes = [row.name for row in rows]
+	stock_company = _resolve_stock_company_scope(warehouse, company)
 	qty_map = _get_qty_map(item_codes, warehouse=warehouse, company=company)
+	total_qty_map = _get_qty_map(item_codes, warehouse=None, company=stock_company)
+	warehouse_stock_map = _get_warehouse_stock_detail_map(item_codes, company=stock_company)
 	current_price_map = _get_price_map(item_codes, price_list=price_list, currency=currency)
 	selling_price_map = _get_multi_price_map(item_codes, price_lists=selling_price_lists, currency=currency)
 	buying_price_map = _get_multi_price_map(item_codes, price_lists=buying_price_lists, currency=currency)
@@ -566,6 +627,8 @@ def list_products_v2(
 				"is_sales_item": cint(getattr(row, "is_sales_item", 0)),
 				"is_purchase_item": cint(getattr(row, "is_purchase_item", 0)),
 				"qty": flt(qty_map.get(row.name, 0) or 0),
+				"total_qty": flt(total_qty_map.get(row.name, 0) or 0),
+				"warehouse_stock_details": warehouse_stock_map.get(row.name, []),
 				"price": current_rate,
 				"price_list": price_list,
 				"standard_rate": flt(getattr(row, "standard_rate", 0) or 0),
@@ -745,7 +808,10 @@ def search_product_v2(
 	items_data = _get_item_data_map(item_codes)
 	price_map = _get_price_map(item_codes, price_list=price_list, currency=currency)
 	uom_map = _get_uom_map(item_codes)
+	stock_company = _resolve_stock_company_scope(warehouse, company)
 	qty_map = _get_qty_map(item_codes, warehouse=warehouse, company=company)
+	total_qty_map = _get_qty_map(item_codes, warehouse=None, company=stock_company)
+	warehouse_stock_map = _get_warehouse_stock_detail_map(item_codes, company=stock_company)
 	selling_price_map = _get_multi_price_map(
 		item_codes,
 		price_lists=list(DEFAULT_SELLING_PRICE_LISTS),
@@ -774,6 +840,8 @@ def search_product_v2(
 				"uom": item.stock_uom,
 				"all_uoms": uom_map.get(code, []),
 				"qty": qty,
+				"total_qty": flt(total_qty_map.get(code, 0) or 0),
+				"warehouse_stock_details": warehouse_stock_map.get(code, []),
 				"price": flt(price_map.get(code, 0) or 0),
 				"image": item.image,
 				"nickname": _extract_item_nickname(item),

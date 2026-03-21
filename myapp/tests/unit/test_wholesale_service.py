@@ -15,6 +15,7 @@ from myapp.services.wholesale_service import (
 
 
 class TestWholesaleService(TestCase):
+	@patch("myapp.services.wholesale_service._get_warehouse_stock_detail_map")
 	@patch("myapp.services.wholesale_service._get_multi_price_map")
 	@patch("myapp.services.wholesale_service._get_price_map")
 	@patch("myapp.services.wholesale_service._get_qty_map")
@@ -25,6 +26,7 @@ class TestWholesaleService(TestCase):
 		mock_get_qty_map,
 		mock_get_price_map,
 		mock_get_multi_price_map,
+		mock_get_warehouse_stock_detail_map,
 	):
 		mock_get_item_rows.return_value = [
 			frappe._dict(
@@ -48,7 +50,16 @@ class TestWholesaleService(TestCase):
 				}
 			)
 		]
-		mock_get_qty_map.return_value = {"ITEM-001": 9}
+		mock_get_qty_map.side_effect = [
+			{"ITEM-001": 9},
+			{"ITEM-001": 42},
+		]
+		mock_get_warehouse_stock_detail_map.return_value = {
+			"ITEM-001": [
+				{"warehouse": "Stores - RD", "company": "Test Company", "qty": 9},
+				{"warehouse": "Stores - TC", "company": "Test Company", "qty": 33},
+			]
+		}
 		mock_get_price_map.return_value = {"ITEM-001": 15}
 		mock_get_multi_price_map.side_effect = [
 			{
@@ -74,7 +85,10 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(result["data"][0]["wholesale_default_uom"], "Box")
 		self.assertEqual(result["data"][0]["retail_default_uom"], "Bottle")
 		self.assertEqual(result["data"][0]["valuation_rate"], 7.5)
+		self.assertEqual(result["data"][0]["total_qty"], 42)
+		self.assertEqual(len(result["data"][0]["warehouse_stock_details"]), 2)
 
+	@patch("myapp.services.wholesale_service._get_warehouse_stock_detail_map")
 	@patch("myapp.services.wholesale_service._get_primary_barcode")
 	@patch("myapp.services.wholesale_service._get_uom_map")
 	@patch("myapp.services.wholesale_service._get_multi_price_map")
@@ -91,6 +105,7 @@ class TestWholesaleService(TestCase):
 		mock_get_multi_price_map,
 		mock_get_uom_map,
 		mock_get_primary_barcode,
+		mock_get_warehouse_stock_detail_map,
 	):
 		mock_get_item_nickname_field.return_value = "custom_nickname"
 		mock_get_doc.return_value = frappe._dict(
@@ -110,7 +125,16 @@ class TestWholesaleService(TestCase):
 				"modified": "2026-03-18 11:00:00",
 			}
 		)
-		mock_get_qty_map.return_value = {"ITEM-001": 8}
+		mock_get_qty_map.side_effect = [
+			{"ITEM-001": 8},
+			{"ITEM-001": 21},
+		]
+		mock_get_warehouse_stock_detail_map.return_value = {
+			"ITEM-001": [
+				{"warehouse": "Stores - RD", "company": "Test Company", "qty": 8},
+				{"warehouse": "Stores - TC", "company": "Test Company", "qty": 13},
+			]
+		}
 		mock_get_price_map.return_value = {"ITEM-001": 15}
 		mock_get_multi_price_map.side_effect = [
 			{"ITEM-001": {"Wholesale": {"price_list": "Wholesale", "rate": 13, "currency": "CNY"}}},
@@ -119,7 +143,7 @@ class TestWholesaleService(TestCase):
 		mock_get_uom_map.return_value = {"ITEM-001": [{"uom": "Box", "conversion_factor": 12}]}
 		mock_get_primary_barcode.return_value = "BAR-001"
 
-		result = get_product_detail_v2("ITEM-001", warehouse="Stores - RD")
+		result = get_product_detail_v2("ITEM-001", warehouse="Stores - RD", company="Test Company")
 
 		self.assertEqual(result["data"]["item_code"], "ITEM-001")
 		self.assertEqual(result["data"]["nickname"], "冰可乐")
@@ -131,7 +155,10 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(result["data"]["price_summary"]["standard_buying_rate"], 8)
 		self.assertEqual(result["data"]["wholesale_default_uom"], "Box")
 		self.assertEqual(result["data"]["retail_default_uom"], "Bottle")
+		self.assertEqual(result["data"]["total_qty"], 21)
+		self.assertEqual(len(result["data"]["warehouse_stock_details"]), 2)
 
+	@patch("myapp.services.wholesale_service._get_warehouse_stock_detail_map")
 	@patch("myapp.services.wholesale_service._get_qty_map")
 	@patch("myapp.services.wholesale_service._get_multi_price_map")
 	@patch("myapp.services.wholesale_service._get_uom_map")
@@ -148,6 +175,7 @@ class TestWholesaleService(TestCase):
 		mock_get_uom_map,
 		mock_get_multi_price_map,
 		mock_get_qty_map,
+		mock_get_warehouse_stock_detail_map,
 	):
 		mock_get_item_nickname_field.return_value = "custom_nickname"
 		mock_search_item_codes.return_value = ["ITEM-001", "ITEM-002"]
@@ -193,7 +221,16 @@ class TestWholesaleService(TestCase):
 				"ITEM-002": {"Standard Buying": {"price_list": "Standard Buying", "rate": 18, "currency": "CNY"}},
 			},
 		]
-		mock_get_qty_map.return_value = {"ITEM-001": 0, "ITEM-002": 8}
+		mock_get_qty_map.side_effect = [
+			{"ITEM-001": 0, "ITEM-002": 8},
+			{"ITEM-001": 5, "ITEM-002": 12},
+		]
+		mock_get_warehouse_stock_detail_map.return_value = {
+			"ITEM-002": [
+				{"warehouse": "Stores - TC", "company": "Test Company", "qty": 8},
+				{"warehouse": "Stores - RD", "company": "Test Company", "qty": 4},
+			]
+		}
 
 		result = search_product_v2(
 			search_key="商品",
@@ -208,6 +245,8 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(result["data"][0]["nickname"], "昵称二")
 		self.assertEqual(result["data"][0]["retail_default_uom"], "Pair")
 		self.assertEqual(result["data"][0]["price_summary"]["wholesale_rate"], 22)
+		self.assertEqual(result["data"][0]["total_qty"], 12)
+		self.assertEqual(len(result["data"][0]["warehouse_stock_details"]), 2)
 		self.assertEqual(result["filters"]["sort_by"], "price")
 		self.assertTrue(result["filters"]["in_stock_only"])
 

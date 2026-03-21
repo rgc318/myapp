@@ -101,6 +101,10 @@
 - 新增 `get_product_detail_v2`，用于返回商品详情、图片、昵称、条码、库存、价格与换算单位
 - 新增 `update_product_v2`，用于更新商品名称、昵称、描述、图片、启停状态与标准售价
 - 新增 `list_products_v2`，用于返回商品工作台列表摘要、库存与多价格摘要
+- `search_product_v2`、`list_products_v2`、`get_product_detail_v2` 现已补充：
+  - 当前查询口径库存 `qty`
+  - 总库存 `total_qty`
+  - 分仓库存明细 `warehouse_stock_details`
 - 新增 `create_product_v2`，用于标准商品建档，不自动创建入库单
 - 新增 `disable_product_v2`，用于显式停用 / 启用商品
 - 新增 `cancel_order_v2`，用于按 v2 语义作废销售订单，并统一屏蔽 ERPNext 原生取消动作细节
@@ -207,6 +211,10 @@
 - 不建议将“商品默认优先仓库自动分配”作为主逻辑：
   - 可以有推荐仓库
   - 但最终分仓数量应允许人工决定
+- 2026-03-21 已完成真实站点验证：
+  - 商品 CRUD、昵称、图片、多价格、停用 / 启用均通过
+  - `search_product_v2 / list_products_v2 / get_product_detail_v2` 的 `total_qty / warehouse_stock_details` 返回通过
+  - 同一商品拆成两个仓库订单行后，订单、发货单、发票单均保持两条分仓行，且允许不同仓库保留不同价格
 - 销售订单详情聚合已按真实下游单据修正状态口径：
   - 已发货订单返回 `delivery.status = shipped`
   - 已开票订单不再暴露重复“开票”动作
