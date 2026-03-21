@@ -917,6 +917,15 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
   - `wholesale_default_uom`
   - `retail_default_uom`
   - `sales_profiles`
+  - `all_uoms`
+- 其中 `all_uoms` 当前不只是单位名列表
+  - 后端会尽量返回：
+    - `uom`
+    - `conversion_factor`
+  - 便于前端显示：
+    - 库存基准单位
+    - 批发 / 零售默认单位
+    - 现有单位换算提示
 - 其中：
   - 订单头后续只建议作为默认模式入口
   - 真正的默认单位与默认价格应继续按商品维度返回
@@ -952,6 +961,13 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
   - `qty`
   - `total_qty`
   - `warehouse_stock_details`
+- 返回 `all_uoms`
+  - 当前会尽量带出：
+    - `uom`
+    - `conversion_factor`
+  - 用于前端展示：
+    - 当前商品可用单位
+    - `1 箱 = 12 件` 这类换算提示
 - 返回结构化价格摘要 `price_summary`
   - 便于前端同时展示：
     - 零售价
@@ -1011,6 +1027,14 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `buying_prices` 支持补充 buying 类价格表
 - `warehouse_stock_qty` 有值时，按当前 `warehouse` 计算库存差额并生成正式库存调整单据，使该仓商品库存调整到目标值
 - 返回更新后的商品详情快照，便于前端直接回显
+- 当前明确不支持：
+  - 直接修改 `stock_uom`
+  - 直接维护 `Item.uoms / UOM Conversion Detail`
+  - 一次请求批量修改多个仓库库存
+- 当前更适合的前端交互是：
+  - 单次切换一个仓库
+  - 编辑该仓目标库存
+  - 保存后刷新详情
 
 ### create_product_v2
 
