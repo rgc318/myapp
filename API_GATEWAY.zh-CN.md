@@ -6,8 +6,11 @@
 - `myapp.api.gateway.search_product`
 - `myapp.api.gateway.search_product_v2`
 - `myapp.api.gateway.create_product_and_stock`
+- `myapp.api.gateway.create_product_v2`
 - `myapp.api.gateway.get_product_detail_v2`
+- `myapp.api.gateway.list_products_v2`
 - `myapp.api.gateway.update_product_v2`
+- `myapp.api.gateway.disable_product_v2`
 - `myapp.api.gateway.create_order`
 - `myapp.api.gateway.create_order_v2`
 - `myapp.api.gateway.quick_create_order_v2`
@@ -49,7 +52,7 @@
 
 ### 模块导航
 
-- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`get_product_detail_v2`、`update_product_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_customer_sales_context`、`get_sales_order_detail`、`get_sales_order_status_summary`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`process_sales_return`
+- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_customer_sales_context`、`get_sales_order_detail`、`get_sales_order_status_summary`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
 - 通用辅助：`confirm_pending_document`
 
@@ -864,6 +867,62 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 排序与筛选
 - 后续扫码、商品编辑、快速加单入口
 
+### list_products_v2
+
+方法：
+
+- `myapp.api.gateway.list_products_v2`
+
+参数：
+
+- `search_key: str | None`
+- `warehouse: str | None`
+- `company: str | None`
+- `limit: int = 20`
+- `start: int = 0`
+- `item_group: str | None`
+- `disabled: int | None`
+- `price_list: str = "Standard Selling"`
+- `currency: str | None`
+- `selling_price_lists: list[str] | json-string | csv-string | None`
+- `buying_price_lists: list[str] | json-string | csv-string | None`
+- `sort_by: str = "modified"`
+- `sort_order: str = "desc"`
+
+行为：
+
+- 返回商品列表工作台所需的基础摘要
+- 当前返回重点包括：
+  - 商品基础信息
+  - 启停状态
+  - 基础库存
+  - 当前价格
+  - 结构化价格摘要 `price_summary`
+- `price_summary` 当前重点字段：
+  - `current_rate`
+  - `standard_selling_rate`
+  - `wholesale_rate`
+  - `retail_rate`
+  - `standard_buying_rate`
+  - `valuation_rate`
+- 当前设计目标：
+  - 保持旧的 `price` 单值口径兼容
+  - 同时向商品工作台提供多价格体系摘要
+- 当前还会返回：
+  - `wholesale_default_uom`
+  - `retail_default_uom`
+  - `sales_profiles`
+- 其中：
+  - 订单头后续只建议作为默认模式入口
+  - 真正的默认单位与默认价格应继续按商品维度返回
+
+适用场景：
+
+- 商品列表页
+- 商品工作台
+- 商品启停管理
+- 后续采购 / 销售统一价格展示
+
 ### get_product_detail_v2
 
 方法：
@@ -884,6 +943,20 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 返回标准图片字段 `Item.image`
 - 返回正式昵称字段 `Item.custom_nickname`，未迁移站点回退到旧 `description` 兼容口径
 - 返回当前价格、库存、主条码与换算单位信息
+- 返回结构化价格摘要 `price_summary`
+  - 便于前端同时展示：
+    - 零售价
+    - 批发价
+    - 采购价
+    - 成本参考
+- 返回当前商品的模式默认单位：
+  - `wholesale_default_uom`
+  - `retail_default_uom`
+- 返回 `sales_profiles`
+  - 用于表达：
+    - `mode_code`
+    - `price_list`
+    - `default_uom`
 
 适用场景：
 
@@ -905,9 +978,13 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `description: str | None`
 - `image: str | None`
 - `disabled: bool | int | None`
+- `wholesale_default_uom: str | None`
+- `retail_default_uom: str | None`
 - `standard_rate: float | None`
 - `price_list: str = "Standard Selling"`
 - `currency: str | None = None`
+- `selling_prices: list[dict] | json-string | None`
+- `buying_prices: list[dict] | json-string | None`
 - `warehouse: str | None = None`
 - `company: str | None = None`
 - `request_id: str | None`
@@ -917,12 +994,109 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 更新商品基础信息
 - `nickname` 优先写入 `Item.custom_nickname`
 - `image` 写入标准字段 `Item.image`
+- `wholesale_default_uom` / `retail_default_uom` 当前用于保存商品在不同销售模式下的默认成交单位
 - `standard_rate` 有值时同步更新标准售价
+- `selling_prices` 支持补充 selling 类价格表
+- `buying_prices` 支持补充 buying 类价格表
 - 返回更新后的商品详情快照，便于前端直接回显
+
+### create_product_v2
+
+方法：
+
+- `myapp.api.gateway.create_product_v2`
+
+参数：
+
+- `item_name: str`
+- `item_code: str | None`
+- `stock_uom: str | None`
+- `uom: str | None`
+- `item_group: str | None`
+- `barcode: str | None`
+- `nickname: str | None`
+- `description: str | None`
+- `image: str | None`
+- `is_stock_item: bool | int | None`
+- `is_sales_item: bool | int | None`
+- `is_purchase_item: bool | int | None`
+- `disabled: bool | int | None`
+- `wholesale_default_uom: str | None`
+- `retail_default_uom: str | None`
+- `standard_rate: float | None`
+- `valuation_rate: float | None`
+- `price_list: str | None`
+- `currency: str | None`
+- `selling_prices: list[dict] | json-string | None`
+- `buying_prices: list[dict] | json-string | None`
+- `warehouse: str | None`
+- `company: str | None`
+- `request_id: str | None`
+
+行为：
+
+- 创建标准商品主数据
+- 不自动创建入库单
+- 适合作为正式商品建档接口
+- 若同时传入：
+  - `wholesale_default_uom`
+  - `retail_default_uom`
+  则会一并写入商品在批发 / 零售模式下的默认单位
+- 若同时传入：
+  - `standard_rate`
+  - `selling_prices`
+  - `buying_prices`
+  则会同步补齐对应 `Item Price`
+
+与 `create_product_and_stock` 的区别：
+
+- `create_product_v2`
+  - 只建商品
+- `create_product_and_stock`
+  - 建商品并补初始库存
+
+### disable_product_v2
+
+方法：
+
+- `myapp.api.gateway.disable_product_v2`
+
+参数：
+
+- `item_code: str`
+- `disabled: bool | int = 1`
+- `warehouse: str | None`
+- `company: str | None`
+- `price_list: str | None`
+- `currency: str | None`
+- `request_id: str | None`
+
+行为：
+
+- 用于显式停用或重新启用商品
+- 当前移动端与业务端建议优先使用：
+  - 停用商品
+  - 启用商品
+- 不建议把“物理删除商品”作为常规业务动作
 
 ### get_sales_order_detail
 
 方法：
+
+- 订单详情返回已扩展销售模式字段：
+  - `meta.default_sales_mode`
+  - `items[].sales_mode`
+- 用途：
+  - 为订单创建 / 编辑页提供“默认模式 + 行级模式”读取能力
+  - 不要求下游 `Delivery Note` / `Sales Invoice` 复制该语义
+
+说明：
+
+- `Delivery Note`
+  - 继续只关心最终 `uom / rate / qty`
+- `Sales Invoice`
+  - 继续只关心最终 `uom / rate / qty`
+- 因此销售模式语义当前仅在订单层维护，不在发货和开票结果页重复维护
 
 - `myapp.api.gateway.get_sales_order_detail`
 

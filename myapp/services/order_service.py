@@ -6,6 +6,8 @@ from myapp.utils.idempotency import run_idempotent
 
 
 ORDER_REMARK_FIELD = "custom_order_remark"
+ORDER_DEFAULT_SALES_MODE_FIELD = "custom_default_sales_mode"
+ORDER_ITEM_SALES_MODE_FIELD = "custom_sales_mode"
 
 
 def _coerce_json_value(value, default):
@@ -83,6 +85,34 @@ def _get_sales_order_remark(doc):
 	return doc.get(fieldname)
 
 
+def _has_sales_order_item_field(fieldname: str) -> bool:
+	try:
+		return bool(frappe.get_meta("Sales Order Item").has_field(fieldname))
+	except Exception:
+		return False
+
+
+def _get_order_default_sales_mode_field() -> str | None:
+	if _has_sales_order_field(ORDER_DEFAULT_SALES_MODE_FIELD):
+		return ORDER_DEFAULT_SALES_MODE_FIELD
+	return None
+
+
+def _get_order_item_sales_mode_field() -> str | None:
+	if _has_sales_order_item_field(ORDER_ITEM_SALES_MODE_FIELD):
+		return ORDER_ITEM_SALES_MODE_FIELD
+	return None
+
+
+def _normalize_sales_mode(value: str | None):
+	mode = (value or "").strip().lower()
+	if not mode:
+		return None
+	if mode not in {"wholesale", "retail"}:
+		frappe.throw(_("sales_mode 只支持 wholesale 或 retail。"))
+	return mode
+
+
 def _build_sales_order_item(item: dict, delivery_date: str, default_warehouse: str | None, company: str):
 	item_code = item.get("item_code")
 	qty = flt(item.get("qty"))
@@ -110,6 +140,10 @@ def _build_sales_order_item(item: dict, delivery_date: str, default_warehouse: s
 		row["uom"] = item["uom"]
 	if item.get("price") is not None:
 		row["rate"] = flt(item["price"])
+	sales_mode = _normalize_sales_mode(item.get("sales_mode"))
+	sales_mode_field = _get_order_item_sales_mode_field()
+	if sales_mode and sales_mode_field:
+		row[sales_mode_field] = sales_mode
 
 	return row
 
@@ -592,6 +626,7 @@ def _build_sales_invoice_action_flags(*, docstatus: int, latest_payment_entry: s
 
 def _serialize_order_items(order_items):
 	item_image_map = _get_item_image_map(order_items)
+	sales_mode_field = _get_order_item_sales_mode_field()
 	return [
 		{
 			"sales_order_item": getattr(item, "name", None),
@@ -603,6 +638,7 @@ def _serialize_order_items(order_items):
 			"delivered_qty": flt(getattr(item, "delivered_qty", 0) or 0),
 			"rate": flt(getattr(item, "rate", 0) or 0),
 			"amount": flt(getattr(item, "amount", 0) or 0),
+			"sales_mode": getattr(item, sales_mode_field, None) if sales_mode_field else None,
 			"image": item_image_map.get(getattr(item, "item_code", None)),
 		}
 		for item in order_items or []
@@ -1283,6 +1319,11 @@ def get_sales_order_detail(order_name: str):
 					"currency": so.get("currency"),
 					"transaction_date": so.get("transaction_date"),
 					"delivery_date": so.get("delivery_date"),
+					"default_sales_mode": (
+						so.get(_get_order_default_sales_mode_field())
+						if _get_order_default_sales_mode_field()
+						else None
+					),
 					"remarks": _get_sales_order_remark(so),
 				},
 			},
@@ -1566,6 +1607,8 @@ def create_order_v2(customer: str, items: list[dict], immediate: bool = False, *
 	try:
 		def _create_order_v2():
 			so = frappe.new_doc("Sales Order")
+			default_sales_mode = _normalize_sales_mode(kwargs.get("default_sales_mode"))
+			default_sales_mode_field = _get_order_default_sales_mode_field()
 			so.customer = customer
 			so.transaction_date = kwargs.get("transaction_date") or nowdate()
 			so.delivery_date = delivery_date
@@ -1576,6 +1619,8 @@ def create_order_v2(customer: str, items: list[dict], immediate: bool = False, *
 				so.selling_price_list = kwargs["selling_price_list"]
 			if kwargs.get("po_no"):
 				so.po_no = kwargs["po_no"]
+			if default_sales_mode and default_sales_mode_field:
+				so.set(default_sales_mode_field, default_sales_mode)
 			if kwargs.get("remarks"):
 				_set_sales_order_remark(so, kwargs["remarks"])
 
@@ -1609,7 +1654,9 @@ def create_order_v2(customer: str, items: list[dict], immediate: bool = False, *
 					"customer_address",
 					"address_display",
 					"shipping_address",
-				] + shipping_fieldnames,
+				]
+				+ shipping_fieldnames
+				+ ([default_sales_mode_field] if default_sales_mode_field else []),
 			)
 
 			result = {
@@ -1617,6 +1664,7 @@ def create_order_v2(customer: str, items: list[dict], immediate: bool = False, *
 				"order": so.name,
 				"message": _("销售订单 {0} 已按 v2 模型创建并提交。").format(so.name),
 				"snapshot": snapshot,
+				"default_sales_mode": default_sales_mode,
 			}
 
 			if cint(immediate):
@@ -1676,6 +1724,8 @@ def update_order_v2(order_name: str, **kwargs):
 	try:
 		def _update_order_v2():
 			so = _get_sales_order_doc_for_update(order_name)
+			default_sales_mode = _normalize_sales_mode(kwargs.get("default_sales_mode"))
+			default_sales_mode_field = _get_order_default_sales_mode_field()
 			if kwargs.get("delivery_date") is not None:
 				so.delivery_date = kwargs.get("delivery_date") or None
 			if kwargs.get("transaction_date") is not None:
@@ -1684,6 +1734,8 @@ def update_order_v2(order_name: str, **kwargs):
 				_set_sales_order_remark(so, kwargs.get("remarks") or None)
 			if kwargs.get("po_no") is not None and so.meta.has_field("po_no"):
 				so.po_no = kwargs.get("po_no") or None
+			if "default_sales_mode" in kwargs and default_sales_mode_field:
+				so.set(default_sales_mode_field, default_sales_mode)
 
 			snapshot = _apply_sales_order_v2_snapshot(
 				so,
@@ -1711,6 +1763,7 @@ def update_order_v2(order_name: str, **kwargs):
 					"shipping_address",
 				]
 				+ shipping_fieldnames
+				+ ([default_sales_mode_field] if default_sales_mode_field else [])
 				+ ([_get_sales_order_remark_field()] if _get_sales_order_remark_field() else []),
 			)
 
@@ -1722,6 +1775,11 @@ def update_order_v2(order_name: str, **kwargs):
 				"meta": {
 					"transaction_date": so.get("transaction_date"),
 					"delivery_date": so.get("delivery_date"),
+					"default_sales_mode": (
+						so.get(default_sales_mode_field)
+						if default_sales_mode_field
+						else None
+					),
 					"remarks": _get_sales_order_remark(so),
 				},
 			}

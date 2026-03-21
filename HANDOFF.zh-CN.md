@@ -100,6 +100,9 @@
 - 商品已补正式昵称字段方案：`Item.custom_nickname`
 - 新增 `get_product_detail_v2`，用于返回商品详情、图片、昵称、条码、库存、价格与换算单位
 - 新增 `update_product_v2`，用于更新商品名称、昵称、描述、图片、启停状态与标准售价
+- 新增 `list_products_v2`，用于返回商品工作台列表摘要、库存与多价格摘要
+- 新增 `create_product_v2`，用于标准商品建档，不自动创建入库单
+- 新增 `disable_product_v2`，用于显式停用 / 启用商品
 - 新增 `cancel_order_v2`，用于按 v2 语义作废销售订单，并统一屏蔽 ERPNext 原生取消动作细节
 - 新增 `update_order_v2`，用于按 v2 模型更新销售订单头信息、联系人快照、收货快照与交货日期
 - 新增 `update_order_items_v2`，用于按 v2 模型整体替换商品明细；对已提交且无下游单据的订单自动走 amendment 并返回新订单号
@@ -151,6 +154,50 @@
 - 销售侧 `update_order_v2` 与 `update_order_items_v2` 已完成真实 HTTP 验证
 - 销售侧 `cancel_order_v2` 已完成真实 HTTP 验证
 - 商品侧 `get_product_detail_v2` 与 `update_product_v2` 已完成真实 HTTP 验证
+- 商品模块第一阶段后端能力已形成：
+  - 列表
+  - 标准建档
+  - 详情
+  - 更新
+  - 停用
+- 商品模块第二阶段基础模型已开始落地：
+  - 商品详情 / 列表 / 搜索结果开始返回：
+    - `wholesale_default_uom`
+    - `retail_default_uom`
+    - `sales_profiles`
+  - 商品创建 / 更新已支持保存批发默认单位与零售默认单位
+  - 新增 patch：
+    - `myapp.patches.add_item_sales_mode_uom_fields`
+    - 用于在 `Item` 上补齐商品模式默认单位字段
+- 价格口径当前建议继续基于 ERPNext 原生：
+  - `Price List`
+  - `Item Price`
+  - `valuation_rate`
+- 当前约定：
+  - 零售价：`Retail`
+  - 批发价：`Wholesale`
+  - 采购价：`Standard Buying`
+  - 成本参考：`valuation_rate`
+- 当前新增约定：
+  - 订单头未来只保留默认销售模式入口
+  - 真正成交口径应逐步收敛到订单行：
+    - `sales_mode`
+    - `uom`
+    - `rate`
+  - 商品主数据只提供模式默认值，不应强制锁死整张订单
+- 该约定已进入真实后端模型，不再只是设计草案：
+  - `Sales Order.custom_default_sales_mode`
+  - `Sales Order Item.custom_sales_mode`
+- 已完成真实链路验证：
+  - 订单可同时包含批发行与零售行
+  - 订单详情可正确返回：
+    - `meta.default_sales_mode`
+    - 行级 `sales_mode / uom / rate`
+  - `Delivery Note` 与 `Sales Invoice` 不新增模式字段
+  - 下游单据仅保留最终：
+    - `uom`
+    - `rate`
+    - `qty`
 - 销售订单详情聚合已按真实下游单据修正状态口径：
   - 已发货订单返回 `delivery.status = shipped`
   - 已开票订单不再暴露重复“开票”动作

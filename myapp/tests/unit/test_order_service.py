@@ -666,9 +666,16 @@ class TestOrderService(TestCase):
 
 	@patch("myapp.services.order_service.run_idempotent")
 	@patch("myapp.services.order_service._commit_sales_order_context_update")
+	@patch("myapp.services.order_service._get_order_default_sales_mode_field")
+	@patch("myapp.services.order_service._get_sales_order_remark_field")
 	@patch("myapp.services.order_service._get_sales_order_doc_for_update")
 	def test_update_order_v2_updates_snapshot_and_meta(
-		self, mock_get_order, mock_commit_order, mock_run_idempotent
+		self,
+		mock_get_order,
+		mock_get_remark_field,
+		mock_get_default_sales_mode_field,
+		mock_commit_order,
+		mock_run_idempotent,
 	):
 		so = frappe._dict(
 			{
@@ -693,12 +700,15 @@ class TestOrderService(TestCase):
 		so.set = lambda field, value: so.__setitem__(field, value)
 		so.get = lambda field, default=None: so[field] if field in so else default
 		mock_get_order.return_value = so
+		mock_get_remark_field.return_value = "custom_order_remark"
+		mock_get_default_sales_mode_field.return_value = "custom_default_sales_mode"
 		mock_commit_order.return_value = so
 		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
 
 		result = update_order_v2(
 			order_name="SO-0002",
 			delivery_date="2026-03-20",
+			default_sales_mode="retail",
 			remarks="updated",
 			customer_info={"contact_display_name": "张三", "contact_phone": "13800138000"},
 			shipping_info={"receiver_name": "李四", "shipping_address_text": "上海市测试路 1 号"},
@@ -710,7 +720,8 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["snapshot"]["applied"]["contact_display"], "张三")
 		self.assertEqual(result["snapshot"]["applied"]["shipping_address_text"], "上海市测试路 1 号")
 		self.assertEqual(so.delivery_date, "2026-03-20")
-		self.assertEqual(so.remarks, "updated")
+		self.assertEqual(so.custom_default_sales_mode, "retail")
+		self.assertEqual(so.custom_order_remark, "updated")
 		mock_commit_order.assert_called_once()
 
 	@patch("myapp.services.order_service.run_idempotent")
@@ -767,6 +778,8 @@ class TestOrderService(TestCase):
 	@patch("myapp.services.order_service._commit_sales_order_context_update")
 	@patch("myapp.services.order_service._insert_and_submit")
 	@patch("myapp.services.order_service._build_sales_order_item")
+	@patch("myapp.services.order_service._get_order_default_sales_mode_field")
+	@patch("myapp.services.order_service._get_sales_order_remark_field")
 	@patch("myapp.services.order_service._validate_order_inputs")
 	@patch("myapp.services.order_service.frappe.new_doc")
 	@patch("myapp.services.order_service.frappe.defaults.get_user_default")
@@ -775,12 +788,16 @@ class TestOrderService(TestCase):
 		mock_get_user_default,
 		mock_new_doc,
 		mock_validate_inputs,
+		mock_get_remark_field,
+		mock_get_default_sales_mode_field,
 		mock_build_item,
 		mock_insert_and_submit,
 		mock_commit_context,
 		mock_run_idempotent,
 	):
 		mock_get_user_default.return_value = "Test Company"
+		mock_get_remark_field.return_value = "custom_order_remark"
+		mock_get_default_sales_mode_field.return_value = "custom_default_sales_mode"
 		so = frappe._dict({})
 		so.meta = MagicMock()
 		so.meta.has_field.return_value = True
@@ -790,7 +807,12 @@ class TestOrderService(TestCase):
 		so.name = "SO-NEW-001"
 		so.docstatus = 1
 		mock_new_doc.return_value = so
-		mock_build_item.return_value = {"item_code": "ITEM-001", "qty": 1, "warehouse": "Stores - TC"}
+		mock_build_item.return_value = {
+			"item_code": "ITEM-001",
+			"qty": 1,
+			"warehouse": "Stores - TC",
+			"custom_sales_mode": "wholesale",
+		}
 		mock_commit_context.return_value = so
 		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
 
@@ -798,14 +820,44 @@ class TestOrderService(TestCase):
 			customer="Test Customer",
 			items=[{"item_code": "ITEM-001", "qty": 1, "warehouse": "Stores - TC"}],
 			company="Test Company",
+			default_sales_mode="wholesale",
+			transaction_date="2026-03-20",
+			delivery_date="2026-03-20",
 			shipping_info={"shipping_address_text": "北京市朝阳区测试路 100 号"},
 			request_id="create-v2-001",
 		)
 
 		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["default_sales_mode"], "wholesale")
+		self.assertEqual(so.custom_default_sales_mode, "wholesale")
 		mock_insert_and_submit.assert_called_once_with(so)
 		mock_commit_context.assert_called_once()
 		self.assertIn("address_display", mock_commit_context.call_args.args[1])
+
+	def test_build_sales_order_item_includes_sales_mode(self):
+		from myapp.services.order_service import _build_sales_order_item
+
+		with patch("myapp.services.order_service._validate_warehouse_company"), patch(
+			"myapp.services.order_service._get_order_item_sales_mode_field",
+			return_value="custom_sales_mode",
+		):
+			row = _build_sales_order_item(
+				{
+					"item_code": "ITEM-001",
+					"qty": 2,
+					"warehouse": "Stores - TC",
+					"uom": "Case",
+					"price": 25,
+					"sales_mode": "wholesale",
+				},
+				"2026-03-20",
+				None,
+				"Test Company",
+			)
+
+		self.assertEqual(row["custom_sales_mode"], "wholesale")
+		self.assertEqual(row["uom"], "Case")
+		self.assertEqual(row["rate"], 25)
 
 	@patch("myapp.services.order_service.run_idempotent")
 	@patch("myapp.services.order_service.nowdate")

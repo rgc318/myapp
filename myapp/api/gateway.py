@@ -29,7 +29,10 @@ from .settlement_api import cancel_payment_entry as cancel_payment_entry_service
 from .settlement_api import process_sales_return as process_sales_return_service
 from .settlement_api import update_payment_status as update_payment_status_service
 from .wholesale_api import create_product_and_stock as create_product_and_stock_service
+from .wholesale_api import create_product_v2 as create_product_v2_service
+from .wholesale_api import disable_product_v2 as disable_product_v2_service
 from .wholesale_api import get_product_detail_v2 as get_product_detail_v2_service
+from .wholesale_api import list_products_v2 as list_products_v2_service
 from .wholesale_api import search_product as search_product_service
 from .wholesale_api import search_product_v2 as search_product_v2_service
 from .wholesale_api import update_product_v2 as update_product_v2_service
@@ -323,6 +326,50 @@ def create_product_and_stock(item_name: str, warehouse: str | None = None, openi
 
 
 @frappe.whitelist()
+def create_product_v2(item_name: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: create_product_v2_service(item_name=item_name, **kwargs),
+		success_code="PRODUCT_CREATED",
+	)
+
+
+@frappe.whitelist()
+def list_products_v2(
+	search_key: str | None = None,
+	warehouse: str | None = None,
+	company: str | None = None,
+	limit: int = 20,
+	start: int = 0,
+	item_group: str | None = None,
+	disabled: int | None = None,
+	price_list: str = "Standard Selling",
+	currency: str | None = None,
+	selling_price_lists=None,
+	buying_price_lists=None,
+	sort_by: str = "modified",
+	sort_order: str = "desc",
+):
+	return _handle_gateway_call(
+		lambda: list_products_v2_service(
+			search_key=search_key,
+			warehouse=warehouse,
+			company=company,
+			limit=limit,
+			start=start,
+			item_group=item_group,
+			disabled=disabled,
+			price_list=price_list,
+			currency=currency,
+			selling_price_lists=selling_price_lists,
+			buying_price_lists=buying_price_lists,
+			sort_by=sort_by,
+			sort_order=sort_order,
+		),
+		success_code="PRODUCTS_FETCHED",
+	)
+
+
+@frappe.whitelist()
 def get_product_detail_v2(
 	item_code: str,
 	warehouse: str | None = None,
@@ -346,6 +393,14 @@ def get_product_detail_v2(
 def update_product_v2(item_code: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: update_product_v2_service(item_code=item_code, **kwargs),
+		success_code="PRODUCT_UPDATED",
+	)
+
+
+@frappe.whitelist()
+def disable_product_v2(item_code: str, disabled: bool = True, **kwargs):
+	return _handle_gateway_call(
+		lambda: disable_product_v2_service(item_code=item_code, disabled=disabled, **kwargs),
 		success_code="PRODUCT_UPDATED",
 	)
 
