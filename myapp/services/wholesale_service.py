@@ -1082,6 +1082,43 @@ def _create_stock_entry(
 	return stock_entry
 
 
+def _create_stock_adjustment_entry(
+	item_code: str,
+	warehouse: str,
+	qty_delta: float,
+	company: str,
+	valuation_rate: float,
+	posting_date: str | None = None,
+):
+	if not qty_delta:
+		return None
+
+	stock_entry = frappe.new_doc("Stock Entry")
+	is_receipt = qty_delta > 0
+	stock_entry.stock_entry_type = "Material Receipt" if is_receipt else "Material Issue"
+	stock_entry.purpose = "Material Receipt" if is_receipt else "Material Issue"
+	stock_entry.company = company
+	if posting_date:
+		stock_entry.posting_date = posting_date
+
+	item_row = {
+		"item_code": item_code,
+		"qty": abs(qty_delta),
+		"basic_rate": valuation_rate,
+		"valuation_rate": valuation_rate,
+		"allow_zero_valuation_rate": 1,
+	}
+	if is_receipt:
+		item_row["t_warehouse"] = warehouse
+	else:
+		item_row["s_warehouse"] = warehouse
+
+	stock_entry.append("items", item_row)
+	stock_entry.insert()
+	stock_entry.submit()
+	return stock_entry
+
+
 def update_product_v2(
 	item_code: str,
 	**kwargs,
@@ -1133,6 +1170,33 @@ def update_product_v2(
 
 		item.save()
 
+		warehouse_stock_qty = kwargs.get("warehouse_stock_qty")
+		resolved_warehouse = _normalize_text(kwargs.get("warehouse")) or None
+		if warehouse_stock_qty not in (None, ""):
+			if not resolved_warehouse:
+				frappe.throw(_("调整库存时必须指定仓库。"))
+
+			target_qty = flt(warehouse_stock_qty)
+			current_qty = flt(_get_qty_map([item.name], warehouse=resolved_warehouse, company=None).get(item.name) or 0)
+			qty_delta = target_qty - current_qty
+			if qty_delta:
+				company = _resolve_company_from_warehouse(resolved_warehouse)
+				valuation_rate = flt(
+					kwargs.get("valuation_rate")
+					or kwargs.get("standard_rate")
+					or item.valuation_rate
+					or item.standard_rate
+					or 0
+				)
+				_create_stock_adjustment_entry(
+					item_code=item.name,
+					warehouse=resolved_warehouse,
+					qty_delta=qty_delta,
+					company=company,
+					valuation_rate=valuation_rate,
+					posting_date=kwargs.get("posting_date"),
+				)
+
 		standard_rate = kwargs.get("standard_rate")
 		price_list = _normalize_text(kwargs.get("price_list")) or "Standard Selling"
 		currency = _normalize_currency(kwargs.get("currency"))
@@ -1150,7 +1214,7 @@ def update_product_v2(
 			"status": "success",
 			"data": _build_product_detail_payload(
 				item,
-				warehouse=_normalize_text(kwargs.get("warehouse")) or None,
+				warehouse=resolved_warehouse,
 				company=_normalize_text(kwargs.get("company")) or None,
 				price_list=price_list,
 				currency=currency,

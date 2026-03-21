@@ -105,6 +105,10 @@
   - 当前查询口径库存 `qty`
   - 总库存 `total_qty`
   - 分仓库存明细 `warehouse_stock_details`
+- 商品详情编辑现已支持“调整当前仓库库存”
+  - 前端传 `warehouse + warehouse_stock_qty`
+  - 后端会先读取当前仓库存，再按差额创建正式库存调整单
+  - 不直接覆写 `Bin.actual_qty`
 - 新增 `create_product_v2`，用于标准商品建档，不自动创建入库单
 - 新增 `disable_product_v2`，用于显式停用 / 启用商品
 - 新增 `cancel_order_v2`，用于按 v2 语义作废销售订单，并统一屏蔽 ERPNext 原生取消动作细节

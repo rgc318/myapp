@@ -429,6 +429,9 @@ class TestWholesaleService(TestCase):
 
 	@patch("myapp.services.wholesale_service._build_product_detail_payload")
 	@patch("myapp.services.wholesale_service._upsert_item_price")
+	@patch("myapp.services.wholesale_service._create_stock_adjustment_entry")
+	@patch("myapp.services.wholesale_service._get_qty_map")
+	@patch("myapp.services.wholesale_service._resolve_company_from_warehouse")
 	@patch("myapp.services.wholesale_service._get_item_mode_default_uom_field")
 	@patch("myapp.services.wholesale_service._normalize_mode_default_uom")
 	@patch("myapp.services.wholesale_service._get_item_nickname_field")
@@ -439,11 +442,16 @@ class TestWholesaleService(TestCase):
 		mock_get_item_nickname_field,
 		mock_normalize_mode_default_uom,
 		mock_get_item_mode_default_uom_field,
+		mock_resolve_company_from_warehouse,
+		mock_get_qty_map,
+		mock_create_stock_adjustment_entry,
 		mock_upsert_item_price,
 		mock_build_product_detail_payload,
 	):
 		item = MagicMock()
 		item.name = "ITEM-001"
+		item.standard_rate = 18
+		item.valuation_rate = 9
 		mock_get_doc.return_value = item
 		mock_get_item_nickname_field.return_value = "custom_nickname"
 		mock_normalize_mode_default_uom.side_effect = ["Case", "Piece"]
@@ -451,6 +459,8 @@ class TestWholesaleService(TestCase):
 			"custom_wholesale_default_uom",
 			"custom_retail_default_uom",
 		]
+		mock_resolve_company_from_warehouse.return_value = "rgc (Demo)"
+		mock_get_qty_map.return_value = {"ITEM-001": 5}
 		mock_build_product_detail_payload.return_value = {"item_code": "ITEM-001", "nickname": "新昵称"}
 
 		result = update_product_v2(
@@ -462,6 +472,8 @@ class TestWholesaleService(TestCase):
 			wholesale_default_uom="Case",
 			retail_default_uom="Piece",
 			standard_rate=18,
+			warehouse="Stores - RD",
+			warehouse_stock_qty=12,
 		)
 
 		self.assertEqual(item.item_name, "新名称")
@@ -473,4 +485,12 @@ class TestWholesaleService(TestCase):
 		item.save.assert_called_once()
 		item.reload.assert_called_once()
 		mock_upsert_item_price.assert_called_once()
+		mock_create_stock_adjustment_entry.assert_called_once_with(
+			item_code="ITEM-001",
+			warehouse="Stores - RD",
+			qty_delta=7.0,
+			company="rgc (Demo)",
+			valuation_rate=18.0,
+			posting_date=None,
+		)
 		self.assertEqual(result["data"]["nickname"], "新昵称")

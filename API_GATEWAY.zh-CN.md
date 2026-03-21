@@ -996,6 +996,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `selling_prices: list[dict] | json-string | None`
 - `buying_prices: list[dict] | json-string | None`
 - `warehouse: str | None = None`
+- `warehouse_stock_qty: float | None = None`
 - `company: str | None = None`
 - `request_id: str | None`
 
@@ -1008,6 +1009,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `standard_rate` 有值时同步更新标准售价
 - `selling_prices` 支持补充 selling 类价格表
 - `buying_prices` 支持补充 buying 类价格表
+- `warehouse_stock_qty` 有值时，按当前 `warehouse` 计算库存差额并生成正式库存调整单据，使该仓商品库存调整到目标值
 - 返回更新后的商品详情快照，便于前端直接回显
 
 ### create_product_v2

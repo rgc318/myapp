@@ -345,6 +345,8 @@ class TestGatewayWrappers(TestCase):
 			description="新描述",
 			image="/files/new.png",
 			standard_rate=18,
+			warehouse="Stores - RD",
+			warehouse_stock_qty=25,
 		)
 
 		mock_update_product_v2_service.assert_called_once_with(
@@ -354,6 +356,8 @@ class TestGatewayWrappers(TestCase):
 			description="新描述",
 			image="/files/new.png",
 			standard_rate=18,
+			warehouse="Stores - RD",
+			warehouse_stock_qty=25,
 		)
 
 	@patch("myapp.api.gateway.get_sales_order_status_summary_service")
