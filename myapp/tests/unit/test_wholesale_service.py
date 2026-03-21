@@ -432,6 +432,8 @@ class TestWholesaleService(TestCase):
 	@patch("myapp.services.wholesale_service._create_stock_adjustment_entry")
 	@patch("myapp.services.wholesale_service._get_qty_map")
 	@patch("myapp.services.wholesale_service._resolve_company_from_warehouse")
+	@patch("myapp.services.wholesale_service._update_primary_barcode")
+	@patch("myapp.services.wholesale_service._resolve_default_item_group")
 	@patch("myapp.services.wholesale_service._get_item_mode_default_uom_field")
 	@patch("myapp.services.wholesale_service._normalize_mode_default_uom")
 	@patch("myapp.services.wholesale_service._get_item_nickname_field")
@@ -442,18 +444,21 @@ class TestWholesaleService(TestCase):
 		mock_get_item_nickname_field,
 		mock_normalize_mode_default_uom,
 		mock_get_item_mode_default_uom_field,
+		mock_resolve_default_item_group,
+		mock_update_primary_barcode,
 		mock_resolve_company_from_warehouse,
 		mock_get_qty_map,
 		mock_create_stock_adjustment_entry,
 		mock_upsert_item_price,
 		mock_build_product_detail_payload,
-	):
+	 ):
 		item = MagicMock()
 		item.name = "ITEM-001"
 		item.standard_rate = 18
 		item.valuation_rate = 9
 		mock_get_doc.return_value = item
 		mock_get_item_nickname_field.return_value = "custom_nickname"
+		mock_resolve_default_item_group.return_value = "饮料"
 		mock_normalize_mode_default_uom.side_effect = ["Case", "Piece"]
 		mock_get_item_mode_default_uom_field.side_effect = [
 			"custom_wholesale_default_uom",
@@ -466,6 +471,9 @@ class TestWholesaleService(TestCase):
 		result = update_product_v2(
 			item_code="ITEM-001",
 			item_name="新名称",
+			item_group="饮料",
+			brand="可口可乐",
+			barcode="BAR-NEW",
 			description="新描述",
 			nickname="新昵称",
 			image="/files/new.png",
@@ -477,11 +485,14 @@ class TestWholesaleService(TestCase):
 		)
 
 		self.assertEqual(item.item_name, "新名称")
+		self.assertEqual(item.item_group, "饮料")
+		self.assertEqual(item.brand, "可口可乐")
 		self.assertEqual(item.description, "新描述")
 		self.assertEqual(item.custom_nickname, "新昵称")
 		self.assertEqual(item.image, "/files/new.png")
 		self.assertEqual(item.custom_wholesale_default_uom, "Case")
 		self.assertEqual(item.custom_retail_default_uom, "Piece")
+		mock_update_primary_barcode.assert_called_once_with(item, "BAR-NEW")
 		item.save.assert_called_once()
 		item.reload.assert_called_once()
 		mock_upsert_item_price.assert_called_once()

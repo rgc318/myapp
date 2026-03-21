@@ -499,6 +499,24 @@ def _get_primary_barcode(item_code: str):
 	return frappe.db.get_value("Item Barcode", {"parent": item_code}, "barcode")
 
 
+def _update_primary_barcode(item, barcode: str | None):
+	if barcode is None:
+		return
+
+	normalized = _normalize_text(barcode)
+	if normalized:
+		existing_parent = frappe.db.get_value("Item Barcode", {"barcode": normalized}, "parent")
+		if existing_parent and existing_parent != item.name:
+			frappe.throw(_("条码 {0} 已存在。").format(normalized))
+
+	barcodes = list(getattr(item, "barcodes", []) or [])
+	if normalized:
+		if barcodes:
+			barcodes[0].barcode = normalized
+		else:
+			item.append("barcodes", {"barcode": normalized})
+
+
 def _build_product_detail_payload(
 	item,
 	*,
@@ -530,6 +548,7 @@ def _build_product_detail_payload(
 		"item_code": item.name,
 		"item_name": item.item_name,
 		"item_group": item.item_group,
+		"brand": getattr(item, "brand", None),
 		"stock_uom": item.stock_uom,
 		"uom": item.stock_uom,
 		"all_uoms": uom_map.get(item.name, []),
@@ -1137,6 +1156,14 @@ def update_product_v2(
 		if item_name is not None:
 			item.item_name = _normalize_text(item_name)
 
+		item_group = kwargs.get("item_group")
+		if item_group is not None:
+			item.item_group = _resolve_default_item_group(item_group)
+
+		brand = kwargs.get("brand")
+		if brand is not None:
+			item.brand = _normalize_text(brand)
+
 		description = kwargs.get("description")
 		if description is not None:
 			item.description = _normalize_text(description)
@@ -1147,6 +1174,8 @@ def update_product_v2(
 
 		if "disabled" in kwargs and kwargs.get("disabled") is not None:
 			item.disabled = cint(kwargs.get("disabled"))
+
+		_update_primary_barcode(item, kwargs.get("barcode"))
 
 		nickname = kwargs.get("nickname")
 		if nickname is not None:
@@ -1246,6 +1275,7 @@ def create_product_v2(
 		item.item_code = item_code
 		item.item_name = item_name
 		item.item_group = item_group
+		item.brand = _normalize_text(kwargs.get("brand"))
 		item.stock_uom = resolved_uom
 		item.is_stock_item = cint(kwargs.get("is_stock_item", 1))
 		item.is_sales_item = cint(kwargs.get("is_sales_item", 1))

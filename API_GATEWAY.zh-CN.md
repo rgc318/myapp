@@ -955,6 +955,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 
 - 返回商品详情摘要
 - 返回标准图片字段 `Item.image`
+- 返回商品分类 `item_group` 与品牌 `brand`
 - 返回正式昵称字段 `Item.custom_nickname`，未迁移站点回退到旧 `description` 兼容口径
 - 返回当前价格、库存、主条码与换算单位信息
 - 其中库存相关字段包括：
@@ -1000,6 +1001,9 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 
 - `item_code: str`
 - `item_name: str | None`
+- `item_group: str | None`
+- `brand: str | None`
+- `barcode: str | None`
 - `nickname: str | None`
 - `description: str | None`
 - `image: str | None`
@@ -1019,6 +1023,9 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 行为：
 
 - 更新商品基础信息
+- `item_group` 当前支持更新商品分类
+- `brand` 当前支持更新商品品牌
+- `barcode` 当前支持更新商品主条码
 - `nickname` 优先写入 `Item.custom_nickname`
 - `image` 写入标准字段 `Item.image`
 - `wholesale_default_uom` / `retail_default_uom` 当前用于保存商品在不同销售模式下的默认成交单位
@@ -1049,6 +1056,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `stock_uom: str | None`
 - `uom: str | None`
 - `item_group: str | None`
+- `brand: str | None`
 - `barcode: str | None`
 - `nickname: str | None`
 - `description: str | None`
@@ -1074,6 +1082,10 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 创建标准商品主数据
 - 不自动创建入库单
 - 适合作为正式商品建档接口
+- 当前也支持一并写入：
+  - 分类 `item_group`
+  - 品牌 `brand`
+  - 主条码 `barcode`
 - 若同时传入：
   - `wholesale_default_uom`
   - `retail_default_uom`

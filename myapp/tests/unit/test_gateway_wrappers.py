@@ -341,6 +341,9 @@ class TestGatewayWrappers(TestCase):
 		update_product_v2(
 			"ITEM-001",
 			item_name="新名称",
+			item_group="饮料",
+			brand="可口可乐",
+			barcode="BAR-001",
 			nickname="新昵称",
 			description="新描述",
 			image="/files/new.png",
@@ -352,6 +355,9 @@ class TestGatewayWrappers(TestCase):
 		mock_update_product_v2_service.assert_called_once_with(
 			item_code="ITEM-001",
 			item_name="新名称",
+			item_group="饮料",
+			brand="可口可乐",
+			barcode="BAR-001",
 			nickname="新昵称",
 			description="新描述",
 			image="/files/new.png",
