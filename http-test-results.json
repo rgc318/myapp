@@ -2818,7 +2818,7 @@
   "test_get_product_detail_v2_success": {
     "method": "myapp.api.gateway.get_product_detail_v2",
     "request": {
-      "item_code": "HTTP-V2-商品-1773827391489362847",
+      "item_code": "HTTP-V2-商品-1774131209956737130",
       "warehouse": "Stores - RD"
     },
     "http_status": 200,
@@ -2829,9 +2829,10 @@
         "code": "PRODUCT_DETAIL_FETCHED",
         "message": "",
         "data": {
-          "item_code": "HTTP-V2-商品-1773827391489362847",
-          "item_name": "HTTP-V2-商品-1773827391489362847",
+          "item_code": "HTTP-V2-商品-1774131209956737130",
+          "item_name": "HTTP-V2-商品-1774131209956737130",
           "item_group": "All Item Groups",
+          "brand": null,
           "stock_uom": "Nos",
           "uom": "Nos",
           "all_uoms": [
@@ -2841,19 +2842,60 @@
             }
           ],
           "image": "/files/test-product.png",
-          "nickname": "详情昵称 1773827391489361251",
+          "nickname": "详情昵称 1774131209956735532",
           "description": "HTTP v2 test product",
           "disabled": 0,
           "is_sales_item": 1,
-          "barcode": "HTTPV21489362847",
+          "barcode": "HTTPV29956737130",
           "qty": 1.0,
+          "total_qty": 1.0,
+          "warehouse_stock_details": [
+            {
+              "warehouse": "Stores - RD",
+              "company": "rgc (Demo)",
+              "qty": 1.0
+            }
+          ],
           "price": 16.0,
           "price_list": "Standard Selling",
           "currency": "CNY",
+          "standard_rate": 0.0,
+          "valuation_rate": 0.0,
+          "price_summary": {
+            "current_price_list": "Standard Selling",
+            "current_rate": 16.0,
+            "standard_selling_rate": 16.0,
+            "wholesale_rate": 0.0,
+            "retail_rate": 0.0,
+            "standard_buying_rate": 0.0,
+            "valuation_rate": 0.0,
+            "selling_prices": [
+              {
+                "price_list": "Standard Selling",
+                "rate": 16.0,
+                "currency": "CNY"
+              }
+            ],
+            "buying_prices": []
+          },
+          "wholesale_default_uom": null,
+          "retail_default_uom": null,
+          "sales_profiles": [
+            {
+              "mode_code": "wholesale",
+              "price_list": "Wholesale",
+              "default_uom": null
+            },
+            {
+              "mode_code": "retail",
+              "price_list": "Retail",
+              "default_uom": null
+            }
+          ],
           "warehouse": "Stores - RD",
           "company": null,
-          "creation": "2026-03-18 17:49:51.544929",
-          "modified": "2026-03-18 17:49:51.544929"
+          "creation": "2026-03-22 06:13:30.025387",
+          "modified": "2026-03-22 06:13:30.025387"
         },
         "meta": {}
       }
@@ -2862,7 +2904,7 @@
   "test_update_product_v2_success": {
     "method": "myapp.api.gateway.get_product_detail_v2",
     "request": {
-      "item_code": "HTTP-V2-更新商品-1773827391850743508",
+      "item_code": "HTTP-V2-更新商品-1774131210425622020",
       "warehouse": "Stores - RD"
     },
     "http_status": 200,
@@ -2873,9 +2915,10 @@
         "code": "PRODUCT_DETAIL_FETCHED",
         "message": "",
         "data": {
-          "item_code": "HTTP-V2-更新商品-1773827391850743508",
-          "item_name": "HTTP-V2-更新商品-1773827391850743508-已更新",
+          "item_code": "HTTP-V2-更新商品-1774131210425622020",
+          "item_name": "HTTP-V2-更新商品-1774131210425622020-已更新",
           "item_group": "All Item Groups",
+          "brand": null,
           "stock_uom": "Nos",
           "uom": "Nos",
           "all_uoms": [
@@ -2885,19 +2928,60 @@
             }
           ],
           "image": "/files/test-product.png",
-          "nickname": "更新昵称 1773827391932210324",
+          "nickname": "更新昵称 1774131210520534596",
           "description": "更新后的商品描述",
           "disabled": 0,
           "is_sales_item": 1,
-          "barcode": "HTTPV21850745484",
+          "barcode": "HTTPV20425623969",
           "qty": 1.0,
+          "total_qty": 1.0,
+          "warehouse_stock_details": [
+            {
+              "warehouse": "Stores - RD",
+              "company": "rgc (Demo)",
+              "qty": 1.0
+            }
+          ],
           "price": 19.0,
           "price_list": "Standard Selling",
           "currency": "CNY",
+          "standard_rate": 0.0,
+          "valuation_rate": 0.0,
+          "price_summary": {
+            "current_price_list": "Standard Selling",
+            "current_rate": 19.0,
+            "standard_selling_rate": 19.0,
+            "wholesale_rate": 0.0,
+            "retail_rate": 0.0,
+            "standard_buying_rate": 0.0,
+            "valuation_rate": 0.0,
+            "selling_prices": [
+              {
+                "price_list": "Standard Selling",
+                "rate": 19.0,
+                "currency": "CNY"
+              }
+            ],
+            "buying_prices": []
+          },
+          "wholesale_default_uom": null,
+          "retail_default_uom": null,
+          "sales_profiles": [
+            {
+              "mode_code": "wholesale",
+              "price_list": "Wholesale",
+              "default_uom": null
+            },
+            {
+              "mode_code": "retail",
+              "price_list": "Retail",
+              "default_uom": null
+            }
+          ],
           "warehouse": "Stores - RD",
           "company": null,
-          "creation": "2026-03-18 17:49:51.857785",
-          "modified": "2026-03-18 17:49:51.940324"
+          "creation": "2026-03-22 06:13:30.433594",
+          "modified": "2026-03-22 06:13:30.530026"
         },
         "meta": {}
       }
@@ -3012,6 +3096,84 @@
               "remarks": null
             }
           }
+        },
+        "meta": {}
+      }
+    }
+  },
+  "runTest": {
+    "method": "myapp.api.gateway.get_product_detail_v2",
+    "request": {
+      "item_code": "HTTP-UOM-1774131795980619759",
+      "warehouse": "Stores - RD"
+    },
+    "http_status": 200,
+    "response": {
+      "message": {
+        "ok": true,
+        "status": "success",
+        "code": "PRODUCT_DETAIL_FETCHED",
+        "message": "",
+        "data": {
+          "item_code": "HTTP-UOM-1774131795980619759",
+          "item_name": "HTTP-UOM-1774131795980619759",
+          "item_group": "All Item Groups",
+          "brand": "",
+          "stock_uom": "Nos",
+          "uom": "Nos",
+          "all_uoms": [
+            {
+              "uom": "Box",
+              "conversion_factor": 12.0
+            },
+            {
+              "uom": "Nos",
+              "conversion_factor": 1.0
+            }
+          ],
+          "image": null,
+          "nickname": null,
+          "description": null,
+          "disabled": 0,
+          "is_sales_item": 1,
+          "barcode": null,
+          "qty": 0.0,
+          "total_qty": 0.0,
+          "warehouse_stock_details": [],
+          "price": 0.0,
+          "price_list": "Standard Selling",
+          "currency": "CNY",
+          "standard_rate": 0.0,
+          "valuation_rate": 0.0,
+          "price_summary": {
+            "current_price_list": "Standard Selling",
+            "current_rate": 0.0,
+            "standard_selling_rate": 0.0,
+            "wholesale_rate": 0.0,
+            "retail_rate": 0.0,
+            "standard_buying_rate": 0.0,
+            "valuation_rate": 0.0,
+            "selling_prices": [],
+            "buying_prices": []
+          },
+          "wholesale_default_uom": null,
+          "retail_default_uom": null,
+          "sales_profiles": [
+            {
+              "mode_code": "wholesale",
+              "price_list": "Wholesale",
+              "default_uom": null
+            },
+            {
+              "mode_code": "retail",
+              "price_list": "Retail",
+              "default_uom": null
+            }
+          ],
+          "warehouse": "Stores - RD",
+          "company": null,
+          "creation": "2026-03-22 06:23:16.053424",
+          "modified": "2026-03-22 06:23:16.053424"
         },
         "meta": {}
       }
