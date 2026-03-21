@@ -927,6 +927,70 @@ def _coerce_price_entries(value):
 	return normalized
 
 
+def _coerce_uom_conversion_entries(value):
+	entries = _coerce_json_value(value, [])
+	normalized = []
+	seen = set()
+	for row in entries or []:
+		if not isinstance(row, dict):
+			continue
+		uom = _normalize_text(row.get("uom"))
+		conversion_factor = row.get("conversion_factor")
+		if not uom or uom in seen:
+			continue
+		if conversion_factor in (None, ""):
+			continue
+		factor = flt(conversion_factor)
+		if factor <= 0:
+			frappe.throw(_("单位 {0} 的换算系数必须大于 0。").format(uom))
+		seen.add(uom)
+		normalized.append(
+			{
+				"uom": _resolve_default_uom(uom),
+				"conversion_factor": factor,
+			}
+		)
+	return normalized
+
+
+def _apply_item_uom_updates(
+	*,
+	item,
+	stock_uom=None,
+	uom_conversions=None,
+):
+	resolved_stock_uom = None
+	if stock_uom is not None:
+		resolved_stock_uom = _resolve_default_uom(stock_uom)
+		item.stock_uom = resolved_stock_uom
+
+	parsed_conversions = None
+	if uom_conversions is not None:
+		parsed_conversions = _coerce_uom_conversion_entries(uom_conversions)
+
+	if resolved_stock_uom is None:
+		resolved_stock_uom = _resolve_default_uom(getattr(item, "stock_uom", None))
+
+	if parsed_conversions is None:
+		return
+
+	final_rows = [{"uom": resolved_stock_uom, "conversion_factor": 1}]
+	for row in parsed_conversions:
+		if row["uom"] == resolved_stock_uom:
+			continue
+		final_rows.append(row)
+
+	item.set("uoms", [])
+	for row in final_rows:
+		item.append(
+			"uoms",
+			{
+				"uom": row["uom"],
+				"conversion_factor": row["conversion_factor"],
+			},
+		)
+
+
 def _apply_item_price_updates(
 	*,
 	item_code: str,
@@ -1156,6 +1220,12 @@ def update_product_v2(
 		if item_name is not None:
 			item.item_name = _normalize_text(item_name)
 
+		_apply_item_uom_updates(
+			item=item,
+			stock_uom=(kwargs.get("stock_uom") or kwargs.get("uom")) if "stock_uom" in kwargs or "uom" in kwargs else None,
+			uom_conversions=kwargs.get("uom_conversions"),
+		)
+
 		item_group = kwargs.get("item_group")
 		if item_group is not None:
 			item.item_group = _resolve_default_item_group(item_group)
@@ -1298,6 +1368,11 @@ def create_product_v2(
 					fieldname,
 					_normalize_mode_default_uom(kwargs.get(f"{mode}_default_uom")),
 				)
+		_apply_item_uom_updates(
+			item=item,
+			stock_uom=resolved_uom,
+			uom_conversions=kwargs.get("uom_conversions"),
+		)
 		if kwargs.get("standard_rate") not in (None, ""):
 			item.standard_rate = flt(kwargs.get("standard_rate"))
 		if kwargs.get("valuation_rate") not in (None, ""):
@@ -1411,6 +1486,11 @@ def create_product_and_stock(
 					if item.description
 					else kwargs["nickname"]
 				)
+		_apply_item_uom_updates(
+			item=item,
+			stock_uom=resolved_uom,
+			uom_conversions=kwargs.get("uom_conversions"),
+		)
 		if barcode:
 			item.append("barcodes", {"barcode": barcode})
 		item.insert()

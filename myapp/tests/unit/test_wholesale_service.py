@@ -1,9 +1,10 @@
 from unittest import TestCase
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import frappe
 
 from myapp.services.wholesale_service import (
+	_apply_item_uom_updates,
 	create_product_v2,
 	create_product_and_stock,
 	disable_product_v2,
@@ -15,6 +16,27 @@ from myapp.services.wholesale_service import (
 
 
 class TestWholesaleService(TestCase):
+	@patch("myapp.services.wholesale_service._resolve_default_uom")
+	def test_apply_item_uom_updates_rebuilds_conversion_rows(self, mock_resolve_default_uom):
+		mock_resolve_default_uom.side_effect = lambda value=None: (value or "Nos").strip()
+		item = MagicMock()
+		item.stock_uom = "Nos"
+
+		_apply_item_uom_updates(
+			item=item,
+			stock_uom="Nos",
+			uom_conversions=[
+				{"uom": "Box", "conversion_factor": 12},
+				{"uom": "Nos", "conversion_factor": 1},
+			],
+		)
+
+		item.set.assert_called_once_with("uoms", [])
+		self.assertEqual(item.append.call_args_list, [
+			call("uoms", {"uom": "Nos", "conversion_factor": 1}),
+			call("uoms", {"uom": "Box", "conversion_factor": 12.0}),
+		])
+
 	@patch("myapp.services.wholesale_service._get_warehouse_stock_detail_map")
 	@patch("myapp.services.wholesale_service._get_multi_price_map")
 	@patch("myapp.services.wholesale_service._get_price_map")
@@ -432,6 +454,7 @@ class TestWholesaleService(TestCase):
 	@patch("myapp.services.wholesale_service._create_stock_adjustment_entry")
 	@patch("myapp.services.wholesale_service._get_qty_map")
 	@patch("myapp.services.wholesale_service._resolve_company_from_warehouse")
+	@patch("myapp.services.wholesale_service._apply_item_uom_updates")
 	@patch("myapp.services.wholesale_service._update_primary_barcode")
 	@patch("myapp.services.wholesale_service._resolve_default_item_group")
 	@patch("myapp.services.wholesale_service._get_item_mode_default_uom_field")
@@ -446,6 +469,7 @@ class TestWholesaleService(TestCase):
 		mock_get_item_mode_default_uom_field,
 		mock_resolve_default_item_group,
 		mock_update_primary_barcode,
+		mock_apply_item_uom_updates,
 		mock_resolve_company_from_warehouse,
 		mock_get_qty_map,
 		mock_create_stock_adjustment_entry,
@@ -490,6 +514,7 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(item.description, "新描述")
 		self.assertEqual(item.custom_nickname, "新昵称")
 		self.assertEqual(item.image, "/files/new.png")
+		mock_apply_item_uom_updates.assert_called_once()
 		self.assertEqual(item.custom_wholesale_default_uom, "Case")
 		self.assertEqual(item.custom_retail_default_uom, "Piece")
 		mock_update_primary_barcode.assert_called_once_with(item, "BAR-NEW")

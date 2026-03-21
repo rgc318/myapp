@@ -1004,6 +1004,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `item_group: str | None`
 - `brand: str | None`
 - `barcode: str | None`
+- `stock_uom: str | None`
+- `uom_conversions: list[dict] | json-string | None`
 - `nickname: str | None`
 - `description: str | None`
 - `image: str | None`
@@ -1026,6 +1028,11 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `item_group` 当前支持更新商品分类
 - `brand` 当前支持更新商品品牌
 - `barcode` 当前支持更新商品主条码
+- `stock_uom` 当前支持受控修改库存基准单位
+- `uom_conversions` 当前支持维护商品 `Item.uoms` 子表中的换算行
+  - 典型示例：
+    - `{"uom": "Box", "conversion_factor": 12}`
+  - 后端会自动保证库存基准单位行存在且系数为 `1`
 - `nickname` 优先写入 `Item.custom_nickname`
 - `image` 写入标准字段 `Item.image`
 - `wholesale_default_uom` / `retail_default_uom` 当前用于保存商品在不同销售模式下的默认成交单位
@@ -1034,9 +1041,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `buying_prices` 支持补充 buying 类价格表
 - `warehouse_stock_qty` 有值时，按当前 `warehouse` 计算库存差额并生成正式库存调整单据，使该仓商品库存调整到目标值
 - 返回更新后的商品详情快照，便于前端直接回显
-- 当前明确不支持：
-  - 直接修改 `stock_uom`
-  - 直接维护 `Item.uoms / UOM Conversion Detail`
+- 当前仍不支持：
   - 一次请求批量修改多个仓库库存
 - 当前更适合的前端交互是：
   - 单次切换一个仓库
@@ -1058,6 +1063,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `item_group: str | None`
 - `brand: str | None`
 - `barcode: str | None`
+- `uom_conversions: list[dict] | json-string | None`
 - `nickname: str | None`
 - `description: str | None`
 - `image: str | None`
@@ -1086,6 +1092,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
   - 分类 `item_group`
   - 品牌 `brand`
   - 主条码 `barcode`
+  - 库存基准单位 `stock_uom`
+  - 单位换算 `uom_conversions`
 - 若同时传入：
   - `wholesale_default_uom`
   - `retail_default_uom`
