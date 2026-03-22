@@ -4,6 +4,7 @@ from frappe.query_builder.functions import Sum
 from frappe.utils import cint, flt
 
 from myapp.utils.idempotency import run_idempotent
+from myapp.utils.uom import resolve_item_quantity_to_stock
 
 ITEM_NICKNAME_FIELD = "custom_nickname"
 WHOLESALE_DEFAULT_UOM_FIELD = "custom_wholesale_default_uom"
@@ -1275,7 +1276,12 @@ def update_product_v2(
 			if not resolved_warehouse:
 				frappe.throw(_("调整库存时必须指定仓库。"))
 
-			target_qty = flt(warehouse_stock_qty)
+			target_qty_context = resolve_item_quantity_to_stock(
+				item_code=item.name,
+				qty=warehouse_stock_qty,
+				uom=kwargs.get("warehouse_stock_uom"),
+			)
+			target_qty = flt(target_qty_context["stock_qty"])
 			current_qty = flt(_get_qty_map([item.name], warehouse=resolved_warehouse, company=None).get(item.name) or 0)
 			qty_delta = target_qty - current_qty
 			if qty_delta:
@@ -1457,8 +1463,8 @@ def create_product_and_stock(
 		resolved_uom = _resolve_default_uom(kwargs.get("stock_uom") or kwargs.get("uom"))
 		item_group = _resolve_default_item_group(kwargs.get("item_group"))
 		item_code = _build_item_code(item_name, kwargs.get("item_code"))
-		qty = flt(opening_qty or kwargs.get("qty") or 0)
-		if qty < 0:
+		input_qty = flt(opening_qty or kwargs.get("qty") or 0)
+		if input_qty < 0:
 			frappe.throw(_("初始入库数量不能为负数。"))
 
 		barcode = (kwargs.get("barcode") or "").strip()
@@ -1494,6 +1500,11 @@ def create_product_and_stock(
 		if barcode:
 			item.append("barcodes", {"barcode": barcode})
 		item.insert()
+		opening_qty_context = resolve_item_quantity_to_stock(
+			item_code=item.item_code,
+			qty=input_qty,
+			uom=kwargs.get("opening_uom"),
+		)
 
 		selling_price_list = (kwargs.get("selling_price_list") or "Standard Selling").strip()
 		currency = (kwargs.get("currency") or frappe.defaults.get_user_default("currency") or "").strip() or None
@@ -1509,7 +1520,7 @@ def create_product_and_stock(
 		stock_entry = _create_stock_entry(
 			item_code=item.item_code,
 			warehouse=resolved_warehouse,
-			qty=qty,
+			qty=opening_qty_context["stock_qty"],
 			company=company,
 			valuation_rate=flt(standard_rate or 0),
 			posting_date=kwargs.get("posting_date"),
@@ -1522,7 +1533,9 @@ def create_product_and_stock(
 				"item_code": item.item_code,
 				"item_name": item.item_name,
 				"uom": item.stock_uom,
-				"qty": qty,
+				"qty": opening_qty_context["stock_qty"],
+				"input_qty": opening_qty_context["qty"],
+				"input_uom": opening_qty_context["uom"],
 				"price": flt(standard_rate) if standard_rate not in (None, "") else 0,
 				"warehouse": resolved_warehouse,
 				"image": item.image,

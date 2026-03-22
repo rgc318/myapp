@@ -231,6 +231,16 @@ frappe.call({
 - `price` 可选
 - `delivery_date` 可选
 
+单位处理说明：
+
+- 明细仍按前端传入的 `qty + uom` 建模
+- 后端会根据商品 `stock_uom + uom_conversions` 自动补齐：
+  - `conversion_factor`
+  - `stock_qty`
+  - `stock_uom`
+- 若 `uom` 为空，则默认按商品库存基准单位处理
+- 若 `uom` 已传但商品未配置对应换算系数，接口会直接报错
+
 行为：
 
 - 创建并提交 `Sales Order`
@@ -727,6 +737,7 @@ cancel_order_v2(
 - `warehouse: str | None`
 - `default_warehouse: str | None`
 - `opening_qty: float = 0`
+- `opening_uom: str | None`
 - `stock_uom: str | None`
 - `standard_rate: float | None`
 - `barcode: str | None`
@@ -742,6 +753,7 @@ cancel_order_v2(
 - 创建正式 `Item`
 - `warehouse` 为空时优先使用 `default_warehouse`，再回退到当前用户默认仓库
 - `opening_qty > 0` 时自动创建一张 `Material Receipt` 入库
+- `opening_uom` 有值时，后端会先将 `opening_qty` 换算为商品库存基准单位后再入库
 - `standard_rate` 有值时自动补一条 `Standard Selling` 价格
 - `image` 写入标准字段 `Item.image`
 - `nickname` 优先写入自定义字段 `Item.custom_nickname`；若站点尚未完成迁移，则回退为旧的 `description` 兼容口径
@@ -1019,6 +1031,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `buying_prices: list[dict] | json-string | None`
 - `warehouse: str | None = None`
 - `warehouse_stock_qty: float | None = None`
+- `warehouse_stock_uom: str | None = None`
 - `company: str | None = None`
 - `request_id: str | None`
 
@@ -1040,6 +1053,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `selling_prices` 支持补充 selling 类价格表
 - `buying_prices` 支持补充 buying 类价格表
 - `warehouse_stock_qty` 有值时，按当前 `warehouse` 计算库存差额并生成正式库存调整单据，使该仓商品库存调整到目标值
+- `warehouse_stock_uom` 有值时，后端会先把目标库存换算到库存基准单位，再计算差额
 - 返回更新后的商品详情快照，便于前端直接回显
 - 当前仍不支持：
   - 一次请求批量修改多个仓库库存
@@ -1381,6 +1395,16 @@ frappe.call({
 - `uom` 可选
 - `price` 可选
 - `schedule_date` 可选
+
+单位处理说明：
+
+- 明细仍按前端传入的 `qty + uom` 建模
+- 后端会根据商品 `stock_uom + uom_conversions` 自动补齐：
+  - `conversion_factor`
+  - `stock_qty`
+  - `stock_uom`
+- 若 `uom` 为空，则默认按商品库存基准单位处理
+- 若 `uom` 已传但商品未配置对应换算系数，接口会直接报错
 
 行为：
 

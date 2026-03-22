@@ -3,6 +3,7 @@ from frappe import _
 from frappe.utils import cint, flt, nowdate
 
 from myapp.utils.idempotency import run_idempotent
+from myapp.utils.uom import resolve_item_quantity_to_stock
 
 
 def _coerce_json_value(value, default):
@@ -112,7 +113,13 @@ def _validate_warehouse_company(warehouse: str, company: str, item_code: str):
 		)
 
 
-def _build_purchase_order_item(item: dict, schedule_date: str, default_warehouse: str | None, company: str):
+def _build_purchase_order_item(
+	item: dict,
+	schedule_date: str,
+	default_warehouse: str | None,
+	company: str,
+	uom_context_map: dict[str, dict] | None = None,
+):
 	item_code = item.get("item_code")
 	qty = flt(item.get("qty"))
 	warehouse = item.get("warehouse") or default_warehouse
@@ -127,16 +134,24 @@ def _build_purchase_order_item(item: dict, schedule_date: str, default_warehouse
 		frappe.throw(_("商品 {0} 缺少仓库，请传入 warehouse 或 default_warehouse。").format(item_code))
 
 	_validate_warehouse_company(warehouse, company, item_code)
+	qty_context = resolve_item_quantity_to_stock(
+		item_code=item_code,
+		qty=qty,
+		uom=item.get("uom"),
+		uom_context_map=uom_context_map,
+	)
 
 	row = {
 		"item_code": item_code,
 		"qty": qty,
 		"warehouse": warehouse,
 		"schedule_date": item.get("schedule_date") or schedule_date,
+		"uom": qty_context["uom"],
+		"stock_uom": qty_context["stock_uom"],
+		"conversion_factor": qty_context["conversion_factor"],
+		"stock_qty": qty_context["stock_qty"],
 	}
 
-	if item.get("uom"):
-		row["uom"] = item["uom"]
 	if item.get("price") is not None:
 		row["rate"] = flt(item["price"])
 

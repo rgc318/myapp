@@ -452,6 +452,7 @@ class TestWholesaleService(TestCase):
 	@patch("myapp.services.wholesale_service._build_product_detail_payload")
 	@patch("myapp.services.wholesale_service._upsert_item_price")
 	@patch("myapp.services.wholesale_service._create_stock_adjustment_entry")
+	@patch("myapp.services.wholesale_service.resolve_item_quantity_to_stock")
 	@patch("myapp.services.wholesale_service._get_qty_map")
 	@patch("myapp.services.wholesale_service._resolve_company_from_warehouse")
 	@patch("myapp.services.wholesale_service._apply_item_uom_updates")
@@ -472,6 +473,7 @@ class TestWholesaleService(TestCase):
 		mock_apply_item_uom_updates,
 		mock_resolve_company_from_warehouse,
 		mock_get_qty_map,
+		mock_resolve_item_quantity_to_stock,
 		mock_create_stock_adjustment_entry,
 		mock_upsert_item_price,
 		mock_build_product_detail_payload,
@@ -490,6 +492,7 @@ class TestWholesaleService(TestCase):
 		]
 		mock_resolve_company_from_warehouse.return_value = "rgc (Demo)"
 		mock_get_qty_map.return_value = {"ITEM-001": 5}
+		mock_resolve_item_quantity_to_stock.return_value = {"stock_qty": 24}
 		mock_build_product_detail_payload.return_value = {"item_code": "ITEM-001", "nickname": "新昵称"}
 
 		result = update_product_v2(
@@ -506,6 +509,7 @@ class TestWholesaleService(TestCase):
 			standard_rate=18,
 			warehouse="Stores - RD",
 			warehouse_stock_qty=12,
+			warehouse_stock_uom="Case",
 		)
 
 		self.assertEqual(item.item_name, "新名称")
@@ -524,9 +528,76 @@ class TestWholesaleService(TestCase):
 		mock_create_stock_adjustment_entry.assert_called_once_with(
 			item_code="ITEM-001",
 			warehouse="Stores - RD",
-			qty_delta=7.0,
+			qty_delta=19.0,
 			company="rgc (Demo)",
 			valuation_rate=18.0,
 			posting_date=None,
 		)
 		self.assertEqual(result["data"]["nickname"], "新昵称")
+
+	@patch("myapp.services.wholesale_service._create_stock_entry")
+	@patch("myapp.services.wholesale_service.resolve_item_quantity_to_stock")
+	@patch("myapp.services.wholesale_service._upsert_item_price")
+	@patch("myapp.services.wholesale_service._apply_item_uom_updates")
+	@patch("myapp.services.wholesale_service._build_item_code")
+	@patch("myapp.services.wholesale_service._resolve_default_item_group")
+	@patch("myapp.services.wholesale_service._resolve_default_uom")
+	@patch("myapp.services.wholesale_service._resolve_company_from_warehouse")
+	@patch("myapp.services.wholesale_service._resolve_default_warehouse")
+	@patch("myapp.services.wholesale_service.frappe.defaults.get_user_default", return_value="CNY")
+	@patch("myapp.services.wholesale_service.frappe.new_doc")
+	def test_create_product_and_stock_converts_opening_qty_by_input_uom(
+		self,
+		mock_new_doc,
+		_mock_get_user_default,
+		mock_resolve_default_warehouse,
+		mock_resolve_company_from_warehouse,
+		mock_resolve_default_uom,
+		mock_resolve_default_item_group,
+		mock_build_item_code,
+		mock_apply_item_uom_updates,
+		mock_upsert_item_price,
+		mock_resolve_item_quantity_to_stock,
+		mock_create_stock_entry,
+	):
+		item = MagicMock()
+		item.item_code = "ITEM-001"
+		item.item_name = "测试可乐"
+		item.stock_uom = "Bottle"
+		item.image = None
+		item.description = None
+		item.insert = MagicMock()
+		mock_new_doc.return_value = item
+		mock_resolve_default_warehouse.return_value = "Stores - RD"
+		mock_resolve_company_from_warehouse.return_value = "rgc (Demo)"
+		mock_resolve_default_uom.return_value = "Bottle"
+		mock_resolve_default_item_group.return_value = "饮料"
+		mock_build_item_code.return_value = "ITEM-001"
+		mock_resolve_item_quantity_to_stock.return_value = {
+			"qty": 10,
+			"uom": "Case",
+			"stock_qty": 240,
+		}
+		stock_entry = MagicMock()
+		stock_entry.name = "MAT-STE-0002"
+		mock_create_stock_entry.return_value = stock_entry
+
+		result = create_product_and_stock(
+			item_name="测试可乐",
+			warehouse="Stores - RD",
+			opening_qty=10,
+			opening_uom="Case",
+			stock_uom="Bottle",
+		)
+
+		mock_create_stock_entry.assert_called_once_with(
+			item_code="ITEM-001",
+			warehouse="Stores - RD",
+			qty=240,
+			company="rgc (Demo)",
+			valuation_rate=0.0,
+			posting_date=None,
+		)
+		self.assertEqual(result["data"]["qty"], 240)
+		self.assertEqual(result["data"]["input_qty"], 10)
+		self.assertEqual(result["data"]["input_uom"], "Case")

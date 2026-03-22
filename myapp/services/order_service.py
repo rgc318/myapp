@@ -3,6 +3,7 @@ from frappe import _
 from frappe.utils import cint, flt, nowdate
 
 from myapp.utils.idempotency import run_idempotent
+from myapp.utils.uom import resolve_item_quantity_to_stock
 
 
 ORDER_REMARK_FIELD = "custom_order_remark"
@@ -113,7 +114,13 @@ def _normalize_sales_mode(value: str | None):
 	return mode
 
 
-def _build_sales_order_item(item: dict, delivery_date: str, default_warehouse: str | None, company: str):
+def _build_sales_order_item(
+	item: dict,
+	delivery_date: str,
+	default_warehouse: str | None,
+	company: str,
+	uom_context_map: dict[str, dict] | None = None,
+):
 	item_code = item.get("item_code")
 	qty = flt(item.get("qty"))
 	warehouse = item.get("warehouse") or default_warehouse
@@ -128,16 +135,25 @@ def _build_sales_order_item(item: dict, delivery_date: str, default_warehouse: s
 		frappe.throw(_("商品 {0} 缺少仓库，请传入 warehouse 或 default_warehouse。").format(item_code))
 
 	_validate_warehouse_company(warehouse, company, item_code)
+	qty_context = resolve_item_quantity_to_stock(
+		item_code=item_code,
+		qty=qty,
+		uom=item.get("uom"),
+		uom_context_map=uom_context_map,
+	)
 
 	row = {
 		"item_code": item_code,
 		"qty": qty,
 		"warehouse": warehouse,
 		"delivery_date": item.get("delivery_date") or delivery_date,
+		"uom": qty_context["uom"],
+		"stock_uom": qty_context["stock_uom"],
+		"conversion_factor": qty_context["conversion_factor"],
+		"stock_qty": qty_context["stock_qty"],
+		"qty_for_stock_validation": qty_context["stock_qty"],
 	}
 
-	if item.get("uom"):
-		row["uom"] = item["uom"]
 	if item.get("price") is not None:
 		row["rate"] = flt(item["price"])
 	sales_mode = _normalize_sales_mode(item.get("sales_mode"))
@@ -335,7 +351,8 @@ def _validate_stock_for_immediate_delivery(items: list[dict]):
 		reserved_qty = flt(bin_row.get("reserved_qty"))
 		available_qty = actual_qty - reserved_qty
 
-		if available_qty < flt(item["qty"]):
+		required_qty = flt(item.get("qty_for_stock_validation") or item["qty"])
+		if available_qty < required_qty:
 			frappe.throw(
 				_(
 					"商品 {0} 在仓库 {1} 的可用库存不足。当前库存 {2}，已预留 {3}，可用 {4}，本次需要 {5}。"
@@ -345,7 +362,7 @@ def _validate_stock_for_immediate_delivery(items: list[dict]):
 					actual_qty,
 					reserved_qty,
 					available_qty,
-					flt(item["qty"]),
+					required_qty,
 				)
 			)
 

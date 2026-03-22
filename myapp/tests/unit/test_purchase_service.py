@@ -28,6 +28,32 @@ class TestPurchaseService(TestCase):
 				"Test Company",
 			)
 
+	@patch("myapp.services.purchase_service.resolve_item_quantity_to_stock")
+	@patch("myapp.services.purchase_service._validate_warehouse_company")
+	def test_build_purchase_order_item_applies_conversion_context(self, mock_validate_warehouse, mock_resolve_qty):
+		from myapp.services.purchase_service import _build_purchase_order_item
+
+		mock_resolve_qty.return_value = {
+			"uom": "Case",
+			"stock_uom": "Bottle",
+			"conversion_factor": 24,
+			"stock_qty": 48,
+		}
+
+		row = _build_purchase_order_item(
+			{"item_code": "ITEM-001", "qty": 2, "warehouse": "Stores - TC", "uom": "Case", "price": 18},
+			"2026-03-11",
+			None,
+			"Test Company",
+		)
+
+		self.assertEqual(row["uom"], "Case")
+		self.assertEqual(row["stock_uom"], "Bottle")
+		self.assertEqual(row["conversion_factor"], 24)
+		self.assertEqual(row["stock_qty"], 48)
+		self.assertEqual(row["rate"], 18)
+		mock_validate_warehouse.assert_called_once()
+
 	@patch("myapp.services.purchase_service._insert_and_submit")
 	@patch("myapp.services.purchase_service.frappe.db.get_value")
 	@patch("myapp.services.purchase_service.frappe.new_doc")

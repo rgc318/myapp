@@ -838,6 +838,14 @@ class TestOrderService(TestCase):
 		from myapp.services.order_service import _build_sales_order_item
 
 		with patch("myapp.services.order_service._validate_warehouse_company"), patch(
+			"myapp.services.order_service.resolve_item_quantity_to_stock",
+			return_value={
+				"uom": "Case",
+				"stock_uom": "Bottle",
+				"conversion_factor": 24,
+				"stock_qty": 48,
+			},
+		), patch(
 			"myapp.services.order_service._get_order_item_sales_mode_field",
 			return_value="custom_sales_mode",
 		):
@@ -857,7 +865,30 @@ class TestOrderService(TestCase):
 
 		self.assertEqual(row["custom_sales_mode"], "wholesale")
 		self.assertEqual(row["uom"], "Case")
+		self.assertEqual(row["stock_uom"], "Bottle")
+		self.assertEqual(row["conversion_factor"], 24)
+		self.assertEqual(row["stock_qty"], 48)
+		self.assertEqual(row["qty_for_stock_validation"], 48)
 		self.assertEqual(row["rate"], 25)
+
+	@patch("myapp.services.order_service.frappe.throw", side_effect=frappe.ValidationError("本次需要 12.0"))
+	@patch("myapp.services.order_service.frappe.get_all")
+	def test_validate_stock_for_immediate_delivery_uses_stock_qty_when_present(self, mock_get_all, _mock_throw):
+		from myapp.services.order_service import _validate_stock_for_immediate_delivery
+
+		mock_get_all.return_value = [frappe._dict({"actual_qty": 10, "reserved_qty": 0})]
+
+		with self.assertRaisesRegex(frappe.ValidationError, "本次需要 12.0"):
+			_validate_stock_for_immediate_delivery(
+				[
+					{
+						"item_code": "ITEM-001",
+						"warehouse": "Stores - TC",
+						"qty": 1,
+						"qty_for_stock_validation": 12,
+					}
+				]
+			)
 
 	@patch("myapp.services.order_service.run_idempotent")
 	@patch("myapp.services.order_service.nowdate")
