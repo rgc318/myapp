@@ -104,6 +104,35 @@ python3 apps/myapp/myapp/tests/http/test_gateway_http.py \
 
 - `myapp/tests/http/`：HTTP 冒烟、链路、幂等、并发测试
 - `myapp/tests/unit/`：服务层与工具函数单元测试
+- `myapp/tests/integration/`：依赖真实站点上下文的服务链路回归测试
+
+当前新增的销售单位换算 / 库存结算回归测试：
+
+- `myapp/tests/integration/test_sales_uom_stock_chain.py`
+
+推荐在 backend 容器中运行：
+
+```bash
+docker exec frappe_docker-backend-1 bash -lc '
+  cd /home/frappe/frappe-bench &&
+  env/bin/python -m unittest apps.myapp.myapp.tests.integration.test_sales_uom_stock_chain
+'
+```
+
+这组回归主要覆盖：
+
+- 批发单位建单并发货
+- 零售单位建单并发货
+- 修改订单单位 / 数量后再发货
+- 批发单位库存不足时发货被拦截，且库存不变
+
+重点校验：
+
+- `Sales Order Item.stock_qty`
+- `Bin.actual_qty`
+- `Stock Ledger Entry.actual_qty`
+
+也就是说，它不只检查“订单里算得对”，还会检查“发货后真实库存是否按库存单位准确结算”。
 
 ### 服务验收
 

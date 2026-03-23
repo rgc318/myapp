@@ -1,6 +1,6 @@
 # 开发交接摘要
 
-更新时间：2026-03-19
+更新时间：2026-03-23
 
 ## 1. 当前已完成
 
@@ -251,6 +251,68 @@
 - 采购部分收货、基于收货单的部分开票、基于收货单的部分退货已跑通
 - 当前测试已经基本覆盖两条主链路在现阶段最关键的使用场景
 - 更复杂的边界测试可放在后续迭代补充
+
+## 2.2 2026-03-23 销售单位换算与库存链路补充
+
+本轮新增背景：
+
+- 在销售链路审查中，发现 `submit_delivery` 的库存预检存在单位口径风险
+- 创建订单 / 修改订单商品明细时，后端已能把 `qty + uom` 换算成：
+  - `conversion_factor`
+  - `stock_qty`
+  - `stock_uom`
+- 但发货前预检如果仍直接按业务数量 `qty` 校验，就可能在批发单位场景下少算库存需求
+
+本轮已完成的后端修正：
+
+- `myapp/services/order_service.py`
+  - `submit_delivery` 的库存预检已改为优先按库存口径校验
+  - 当前规则：
+    - 优先 `stock_qty`
+    - 若缺失则回退 `qty * conversion_factor`
+    - 最后才退回原始 `qty`
+
+本轮新增的回归测试：
+
+- `myapp/tests/unit/test_order_service.py`
+  - 新增定向单元测试，确认发货预检在存在 `stock_qty` 时按库存口径校验
+- `myapp/tests/integration/test_sales_uom_stock_chain.py`
+  - 新增真实站点上下文回归测试，覆盖：
+    - 批发单位建单并发货
+    - 零售单位建单并发货
+    - 修改订单单位 / 数量后再发货
+    - 批发单位库存不足拦截
+
+本轮真实链路验证结论：
+
+- 批发单位 `2 Box` 建单后，订单行正确换算为 `24 Nos`
+- 发货后：
+  - `Bin.actual_qty`
+  - `Stock Ledger Entry.actual_qty`
+  均按 `24 Nos` 扣减
+- 零售单位 `5 Nos` 建单后，发货按 `5 Nos` 扣减库存
+- 订单从 `1 Box` 改成 `7 Nos` 后，发货按更新后的 `7 Nos` 扣减库存
+- `11 Box` 对 `120 Nos` 库存发货时，会按 `132 Nos` 需求量被正确拦截，且库存不变
+
+本轮确认的实现细节：
+
+- `update_order_items_v2` 不是原单原地改行
+- 对已提交订单，会先作废原单，再生成 amendment 新单
+- 因此更新商品明细后，后续发货 / 开票 / 详情查询应使用返回的新订单号，而不是旧订单号
+
+测试与运行注意事项：
+
+- 在 backend 容器里跑 Python 测试时，不要误用系统 Python
+- 应使用：
+  - `/home/frappe/frappe-bench/env/bin/python`
+- 真实站点上下文回归推荐命令：
+
+```bash
+docker exec frappe_docker-backend-1 bash -lc '
+  cd /home/frappe/frappe-bench &&
+  env/bin/python -m unittest apps.myapp.myapp.tests.integration.test_sales_uom_stock_chain
+'
+```
 
 ## 3. 已新增或更新的重要文件
 

@@ -973,6 +973,57 @@ class TestOrderService(TestCase):
 		mock_insert_and_submit.assert_called_once_with(dn)
 		mock_validate_stock.assert_called_once()
 
+	@patch("erpnext.selling.doctype.sales_order.sales_order.make_delivery_note")
+	@patch("myapp.services.order_service.run_idempotent")
+	@patch("myapp.services.order_service._apply_sales_order_context_to_target_doc")
+	@patch("myapp.services.order_service._insert_and_submit")
+	@patch("myapp.services.order_service._validate_stock_for_immediate_delivery")
+	@patch("myapp.services.order_service.frappe.get_doc")
+	def test_submit_delivery_validates_stock_using_stock_qty_when_present(
+		self,
+		mock_get_doc,
+		mock_validate_stock,
+		mock_insert_and_submit,
+		mock_apply_context,
+		mock_run_idempotent,
+		mock_make_delivery_note,
+	):
+		so = frappe._dict({"name": "SO-0001", "address_display": "北京市朝阳区测试路 100 号"})
+		dn = frappe._dict(
+			{
+				"name": "DN-0001",
+				"items": [
+					frappe._dict(
+						{
+							"item_code": "ITEM-001",
+							"warehouse": "Stores - TC",
+							"qty": 2,
+							"stock_qty": 48,
+							"conversion_factor": 24,
+						}
+					)
+				],
+			}
+		)
+		mock_get_doc.return_value = so
+		mock_make_delivery_note.return_value = dn
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
+
+		submit_delivery("SO-0001")
+
+		mock_validate_stock.assert_called_once_with(
+			[
+				{
+					"item_code": "ITEM-001",
+					"warehouse": "Stores - TC",
+					"qty": 2.0,
+					"qty_for_stock_validation": 48.0,
+				}
+			]
+		)
+		mock_apply_context.assert_called_once_with(so, dn)
+		mock_insert_and_submit.assert_called_once_with(dn)
+
 	@patch("erpnext.selling.doctype.sales_order.sales_order.make_sales_invoice")
 	@patch("myapp.services.order_service.run_idempotent")
 	@patch("myapp.services.order_service._apply_sales_order_context_to_target_doc")

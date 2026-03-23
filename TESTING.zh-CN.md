@@ -22,6 +22,8 @@
   用于 HTTP 冒烟、链路、幂等、并发和接口结构验证
 - `myapp/tests/unit/`
   用于服务层和工具函数单元测试
+- `myapp/tests/integration/`
+  用于依赖真实站点上下文的服务链路回归验证
 
 当前重点 HTTP 文件：
 
@@ -53,6 +55,37 @@
 - 测试默认会打印响应，并写入 `http-test-results.json`
 - 可通过 `MYAPP_HTTP_PRINT_RESPONSES` 和 `MYAPP_HTTP_SAVE_RESPONSES` 控制是否打印或保存
 
+### 3.1 Docker 容器内运行 Python 测试的注意事项
+
+如果需要在 `frappe_docker-backend-1` 这类 backend 容器里执行 `myapp/tests/unit/` 下的 Python 单元测试，请注意：
+
+- 不要直接使用容器内的系统 Python，例如 `/usr/local/bin/python3`
+- 优先使用 bench 虚拟环境中的 Python：
+  - `/home/frappe/frappe-bench/env/bin/python`
+- 原因：
+  - 系统 Python 可能无法正确加载 bench 环境依赖
+  - 这会表现为：
+    - `ModuleNotFoundError: No module named 'frappe'`
+    - 或误判为缺少某些依赖包
+
+推荐检查方式：
+
+```bash
+docker exec frappe_docker-backend-1 bash -lc '
+  cd /home/frappe/frappe-bench &&
+  env/bin/python - << "PY"
+import importlib.util
+print("frappe:", importlib.util.find_spec("frappe"))
+print("orjson:", importlib.util.find_spec("orjson"))
+PY'
+```
+
+补充约定：
+
+- 若只是跑 HTTP 测试，仍优先在宿主机通过 `python3 -m unittest ...http...` 访问 `http://localhost:8080`
+- 若要跑服务层单元测试，优先在 bench 环境中执行，而不是在仓库根目录直接用宿主机 `python3` 导入 `frappe`
+- 即使已经进入 backend 容器，也不代表“系统 Python = bench Python”，两者不要混用
+
 ## 4. 推荐执行方式
 
 跑既有主链路：
@@ -74,12 +107,57 @@ python3 -m unittest \
   apps.myapp.myapp.tests.http.test_gateway_v2_http.GatewayV2HttpTestCase.test_create_product_and_stock_idempotent_replay
 ```
 
+跑销售单位换算与库存结算链路回归：
+
+```bash
+docker exec frappe_docker-backend-1 bash -lc '
+  cd /home/frappe/frappe-bench &&
+  env/bin/python -m unittest apps.myapp.myapp.tests.integration.test_sales_uom_stock_chain
+'
+```
+
 推荐顺序：
 
 1. 先跑单接口测试
 2. 再跑幂等与并发测试
 3. 最后跑链路 smoke test
 4. 需要全量回归时再跑整份文件
+
+### 4.1 容器内运行单元测试的建议
+
+若要在 backend 容器中执行服务层单元测试，推荐优先按 bench 环境运行，例如：
+
+```bash
+docker exec frappe_docker-backend-1 bash -lc '
+  cd /home/frappe/frappe-bench &&
+  env/bin/python -m unittest apps.myapp.myapp.tests.unit.test_order_service
+'
+```
+
+注意：
+
+- 这里的关键不是“是否在容器内”，而是“是否使用了 bench 虚拟环境中的 Python”
+- 若直接改用容器系统 Python，可能出现：
+  - 找不到 `frappe`
+  - 找不到 `orjson`
+  - 或因为未进入正确 bench 上下文而得到误导性报错
+
+当前新增了一组依赖真实站点上下文的销售链路回归：
+
+- [test_sales_uom_stock_chain.py](/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/tests/integration/test_sales_uom_stock_chain.py)
+
+这组测试的重点不是 HTTP 包装，而是确认真实业务单据在服务层执行后：
+
+- 销售订单行的 `qty + uom` 会被正确换算成 `stock_qty`
+- 发货时库存预检按库存口径拦截
+- `Bin.actual_qty` 与 `Stock Ledger Entry.actual_qty` 和订单换算结果保持一致
+
+当前覆盖 4 个场景：
+
+- 批发单位建单并发货
+- 零售单位建单并发货
+- 建单后修改单位与数量，再发货
+- 批发单位库存不足时发货被拦截，且库存不变
 
 ## 5. 当前已验证结果
 

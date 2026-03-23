@@ -367,6 +367,31 @@ def _validate_stock_for_immediate_delivery(items: list[dict]):
 			)
 
 
+def _build_stock_validation_payload_from_target_items(target_items):
+	rows = []
+
+	if callable(target_items):
+		target_items = target_items()
+
+	for item in target_items or []:
+		required_qty = flt(getattr(item, "stock_qty", 0) or 0)
+		if required_qty <= 0:
+			conversion_factor = flt(getattr(item, "conversion_factor", 0) or 0)
+			qty = flt(getattr(item, "qty", 0) or 0)
+			required_qty = flt(qty * conversion_factor) if conversion_factor > 0 else qty
+
+		rows.append(
+			{
+				"item_code": getattr(item, "item_code", None),
+				"warehouse": getattr(item, "warehouse", None),
+				"qty": flt(getattr(item, "qty", 0) or 0),
+				"qty_for_stock_validation": required_qty,
+			}
+		)
+
+	return rows
+
+
 def _sum_row_values(rows, fieldname: str):
 	return sum(flt(getattr(row, fieldname, 0) or 0) for row in rows or [])
 
@@ -2118,14 +2143,7 @@ def submit_delivery(order_name: str, delivery_items: list[dict] | None = None, k
 
 			if not force_delivery:
 				_validate_stock_for_immediate_delivery(
-					[
-						{
-							"item_code": getattr(item, "item_code", None),
-							"warehouse": getattr(item, "warehouse", None),
-							"qty": flt(getattr(item, "qty", 0) or 0),
-						}
-						for item in dn.items or []
-					]
+					_build_stock_validation_payload_from_target_items(dn.items)
 				)
 
 			try:
