@@ -644,3 +644,8 @@ docker exec frappe_docker-backend-1 bash -lc '
 - 若采购业务要求在收货或开票时直接改价，需先在 ERPNext `Buying Settings` 中关闭 `maintain_same_rate`
 - 当前环境的 `Selling Settings.maintain_same_sales_rate = 0`，因此销售侧允许在发货和开票阶段按实际成交情况改价
 - 目前宿主机侧建议优先执行 HTTP 测试；`tests/unit` 中直接依赖 `frappe` 的单元测试仍应在 devcontainer / bench 环境内执行
+- 2026-03-25 起，商品建档 / 更新时会额外校验：
+  - `wholesale_default_uom`
+  - `retail_default_uom`
+  - 以上默认成交单位必须能通过 `uom_conversions` 换算到 `stock_uom`
+  - 不再允许保存“默认成交单位已配置，但缺少到库存基准单位换算关系”的商品主数据

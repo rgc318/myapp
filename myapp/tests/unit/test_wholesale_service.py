@@ -5,6 +5,7 @@ import frappe
 
 from myapp.services.wholesale_service import (
 	_apply_item_uom_updates,
+	_validate_mode_default_uoms_against_stock_uom,
 	create_product_v2,
 	create_product_and_stock,
 	disable_product_v2,
@@ -16,6 +17,22 @@ from myapp.services.wholesale_service import (
 
 
 class TestWholesaleService(TestCase):
+	@patch("myapp.services.wholesale_service._resolve_default_uom")
+	@patch("myapp.services.wholesale_service.frappe.throw", side_effect=frappe.ValidationError)
+	def test_validate_mode_default_uoms_requires_conversion_mapping(self, _mock_throw, mock_resolve_default_uom):
+		mock_resolve_default_uom.side_effect = lambda value=None: (value or "Nos").strip()
+		item = frappe._dict(
+			{
+				"stock_uom": "Nos",
+				"custom_wholesale_default_uom": "Box",
+				"custom_retail_default_uom": "Nos",
+				"uoms": [{"uom": "Nos", "conversion_factor": 1}],
+			}
+		)
+
+		with self.assertRaises(frappe.ValidationError):
+			_validate_mode_default_uoms_against_stock_uom(item=item)
+
 	@patch("myapp.services.wholesale_service._resolve_default_uom")
 	def test_apply_item_uom_updates_rebuilds_conversion_rows(self, mock_resolve_default_uom):
 		mock_resolve_default_uom.side_effect = lambda value=None: (value or "Nos").strip()
@@ -389,8 +406,15 @@ class TestWholesaleService(TestCase):
 	@patch("myapp.services.wholesale_service._apply_item_price_updates")
 	@patch("myapp.services.wholesale_service._build_item_code")
 	@patch("myapp.services.wholesale_service._resolve_default_item_group")
-	@patch("myapp.services.wholesale_service._get_item_mode_default_uom_field")
+	@patch(
+		"myapp.services.wholesale_service._get_item_mode_default_uom_field",
+		side_effect=lambda mode: {
+			"wholesale": "custom_wholesale_default_uom",
+			"retail": "custom_retail_default_uom",
+		}.get(mode),
+	)
 	@patch("myapp.services.wholesale_service._normalize_mode_default_uom")
+	@patch("myapp.services.wholesale_service._validate_mode_default_uoms_against_stock_uom")
 	@patch("myapp.services.wholesale_service._resolve_default_uom")
 	@patch("myapp.services.wholesale_service._get_item_nickname_field")
 	@patch("myapp.services.wholesale_service.frappe.new_doc")
@@ -399,6 +423,7 @@ class TestWholesaleService(TestCase):
 		mock_new_doc,
 		mock_get_item_nickname_field,
 		mock_resolve_default_uom,
+		mock_validate_mode_default_uoms_against_stock_uom,
 		mock_normalize_mode_default_uom,
 		mock_get_item_mode_default_uom_field,
 		mock_resolve_default_item_group,
@@ -409,10 +434,6 @@ class TestWholesaleService(TestCase):
 		mock_get_item_nickname_field.return_value = "custom_nickname"
 		mock_resolve_default_uom.return_value = "Nos"
 		mock_normalize_mode_default_uom.side_effect = ["Box", "Bottle"]
-		mock_get_item_mode_default_uom_field.side_effect = [
-			"custom_wholesale_default_uom",
-			"custom_retail_default_uom",
-		]
 		mock_resolve_default_item_group.return_value = "All Item Groups"
 		mock_build_item_code.return_value = "ITEM-NEW"
 		item = MagicMock()
@@ -433,9 +454,54 @@ class TestWholesaleService(TestCase):
 		mock_new_doc.assert_called_once_with("Item")
 		self.assertEqual(item.custom_wholesale_default_uom, "Box")
 		self.assertEqual(item.custom_retail_default_uom, "Bottle")
+		mock_validate_mode_default_uoms_against_stock_uom.assert_called_once()
 		item.insert.assert_called_once()
 		mock_apply_item_price_updates.assert_called_once()
 		self.assertEqual(result["data"]["item_code"], "ITEM-NEW")
+
+	@patch("myapp.services.wholesale_service._build_item_code")
+	@patch("myapp.services.wholesale_service._resolve_default_item_group")
+	@patch(
+		"myapp.services.wholesale_service._get_item_mode_default_uom_field",
+		side_effect=lambda mode: {
+			"wholesale": "custom_wholesale_default_uom",
+			"retail": "custom_retail_default_uom",
+		}.get(mode),
+	)
+	@patch("myapp.services.wholesale_service._normalize_mode_default_uom")
+	@patch("myapp.services.wholesale_service._resolve_default_uom")
+	@patch("myapp.services.wholesale_service._get_item_nickname_field")
+	@patch("myapp.services.wholesale_service.frappe.new_doc")
+	@patch("myapp.services.wholesale_service.frappe.throw", side_effect=frappe.ValidationError)
+	def test_create_product_v2_rejects_mode_default_uom_without_conversion(
+		self,
+		_mock_throw,
+		mock_new_doc,
+		mock_get_item_nickname_field,
+		mock_resolve_default_uom,
+		mock_normalize_mode_default_uom,
+		mock_get_item_mode_default_uom_field,
+		mock_resolve_default_item_group,
+		mock_build_item_code,
+	):
+		mock_get_item_nickname_field.return_value = "custom_nickname"
+		mock_resolve_default_uom.side_effect = lambda value=None: (value or "Nos").strip()
+		mock_normalize_mode_default_uom.side_effect = ["Box", "Nos"]
+		mock_resolve_default_item_group.return_value = "All Item Groups"
+		mock_build_item_code.return_value = "ITEM-NEW"
+		item = MagicMock()
+		item.item_code = "ITEM-NEW"
+		item.item_name = "新商品"
+		mock_new_doc.return_value = item
+
+		with self.assertRaises(frappe.ValidationError):
+			create_product_v2(
+				item_name="新商品",
+				wholesale_default_uom="Box",
+				retail_default_uom="Nos",
+				uom_conversions=[{"uom": "Nos", "conversion_factor": 1}],
+				stock_uom="Nos",
+			)
 
 	@patch("myapp.services.wholesale_service.run_idempotent")
 	def test_disable_product_v2_uses_idempotent_runner(self, mock_run_idempotent):
@@ -456,9 +522,16 @@ class TestWholesaleService(TestCase):
 	@patch("myapp.services.wholesale_service._get_qty_map")
 	@patch("myapp.services.wholesale_service._resolve_company_from_warehouse")
 	@patch("myapp.services.wholesale_service._apply_item_uom_updates")
+	@patch("myapp.services.wholesale_service._validate_mode_default_uoms_against_stock_uom")
 	@patch("myapp.services.wholesale_service._update_primary_barcode")
 	@patch("myapp.services.wholesale_service._resolve_default_item_group")
-	@patch("myapp.services.wholesale_service._get_item_mode_default_uom_field")
+	@patch(
+		"myapp.services.wholesale_service._get_item_mode_default_uom_field",
+		side_effect=lambda mode: {
+			"wholesale": "custom_wholesale_default_uom",
+			"retail": "custom_retail_default_uom",
+		}.get(mode),
+	)
 	@patch("myapp.services.wholesale_service._normalize_mode_default_uom")
 	@patch("myapp.services.wholesale_service._get_item_nickname_field")
 	@patch("myapp.services.wholesale_service.frappe.get_doc")
@@ -470,6 +543,7 @@ class TestWholesaleService(TestCase):
 		mock_get_item_mode_default_uom_field,
 		mock_resolve_default_item_group,
 		mock_update_primary_barcode,
+		mock_validate_mode_default_uoms_against_stock_uom,
 		mock_apply_item_uom_updates,
 		mock_resolve_company_from_warehouse,
 		mock_get_qty_map,
@@ -486,10 +560,6 @@ class TestWholesaleService(TestCase):
 		mock_get_item_nickname_field.return_value = "custom_nickname"
 		mock_resolve_default_item_group.return_value = "饮料"
 		mock_normalize_mode_default_uom.side_effect = ["Case", "Piece"]
-		mock_get_item_mode_default_uom_field.side_effect = [
-			"custom_wholesale_default_uom",
-			"custom_retail_default_uom",
-		]
 		mock_resolve_company_from_warehouse.return_value = "rgc (Demo)"
 		mock_get_qty_map.return_value = {"ITEM-001": 5}
 		mock_resolve_item_quantity_to_stock.return_value = {"stock_qty": 24}
@@ -519,6 +589,7 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(item.custom_nickname, "新昵称")
 		self.assertEqual(item.image, "/files/new.png")
 		mock_apply_item_uom_updates.assert_called_once()
+		mock_validate_mode_default_uoms_against_stock_uom.assert_called_once()
 		self.assertEqual(item.custom_wholesale_default_uom, "Case")
 		self.assertEqual(item.custom_retail_default_uom, "Piece")
 		mock_update_primary_barcode.assert_called_once_with(item, "BAR-NEW")
@@ -534,6 +605,46 @@ class TestWholesaleService(TestCase):
 			posting_date=None,
 		)
 		self.assertEqual(result["data"]["nickname"], "新昵称")
+
+	@patch("myapp.services.wholesale_service._build_product_detail_payload")
+	@patch("myapp.services.wholesale_service._update_primary_barcode")
+	@patch("myapp.services.wholesale_service._resolve_default_item_group")
+	@patch("myapp.services.wholesale_service._get_item_mode_default_uom_field")
+	@patch("myapp.services.wholesale_service._normalize_mode_default_uom")
+	@patch("myapp.services.wholesale_service._apply_item_uom_updates")
+	@patch("myapp.services.wholesale_service._resolve_default_uom")
+	@patch("myapp.services.wholesale_service.frappe.get_doc")
+	@patch("myapp.services.wholesale_service.frappe.throw", side_effect=frappe.ValidationError)
+	def test_update_product_v2_rejects_mode_default_uom_without_conversion(
+		self,
+		_mock_throw,
+		mock_get_doc,
+		mock_resolve_default_uom,
+		mock_apply_item_uom_updates,
+		mock_normalize_mode_default_uom,
+		mock_get_item_mode_default_uom_field,
+		_mock_resolve_default_item_group,
+		_mock_update_primary_barcode,
+		_mock_build_product_detail_payload,
+	):
+		mock_resolve_default_uom.side_effect = lambda value=None: (value or "Nos").strip()
+		item = frappe._dict(
+			{
+				"name": "ITEM-001",
+				"stock_uom": "Nos",
+				"uoms": [{"uom": "Nos", "conversion_factor": 1}],
+			}
+		)
+		item.save = MagicMock()
+		mock_get_doc.return_value = item
+		mock_normalize_mode_default_uom.return_value = "Box"
+		mock_get_item_mode_default_uom_field.return_value = "custom_wholesale_default_uom"
+
+		with self.assertRaises(frappe.ValidationError):
+			update_product_v2(item_code="ITEM-001", wholesale_default_uom="Box")
+
+		mock_apply_item_uom_updates.assert_called_once()
+		item.save.assert_not_called()
 
 	@patch("myapp.services.wholesale_service._create_stock_entry")
 	@patch("myapp.services.wholesale_service.resolve_item_quantity_to_stock")

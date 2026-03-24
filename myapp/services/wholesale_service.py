@@ -124,7 +124,8 @@ def _extract_mode_default_uoms(item):
 	}
 	for mode in ("wholesale", "retail"):
 		fieldname = _get_item_mode_default_uom_field(mode) or fallback_fields[mode]
-		result[f"{mode}_default_uom"] = _normalize_text(getattr(item, fieldname, None)) or None
+		raw_value = getattr(item, fieldname, None)
+		result[f"{mode}_default_uom"] = _normalize_text(raw_value) if isinstance(raw_value, str) else None
 	return result
 
 
@@ -494,6 +495,65 @@ def _normalize_mode_default_uom(value):
 	if not normalized:
 		return None
 	return _resolve_default_uom(normalized)
+
+
+def _build_item_uom_conversion_map(*, item=None, stock_uom=None, uom_conversions=None):
+	resolved_stock_uom = _resolve_default_uom(stock_uom or getattr(item, "stock_uom", None))
+	conversion_map = {}
+	if resolved_stock_uom:
+		conversion_map[resolved_stock_uom] = 1.0
+
+	parsed_conversions = _coerce_uom_conversion_entries(uom_conversions) if uom_conversions is not None else None
+	if parsed_conversions is not None:
+		for row in parsed_conversions:
+			conversion_map[row["uom"]] = row["conversion_factor"]
+		return resolved_stock_uom, conversion_map
+
+	existing_rows = getattr(item, "uoms", None)
+	if isinstance(existing_rows, (list, tuple)):
+		for row in existing_rows:
+			uom = _normalize_text(getattr(row, "uom", None) if not isinstance(row, dict) else row.get("uom"))
+			if not uom:
+				continue
+			conversion_factor = (
+				getattr(row, "conversion_factor", None) if not isinstance(row, dict) else row.get("conversion_factor")
+			)
+			factor = flt(conversion_factor or 0)
+			if factor > 0:
+				conversion_map[_resolve_default_uom(uom)] = factor
+
+	return resolved_stock_uom, conversion_map
+
+
+def _validate_mode_default_uoms_against_stock_uom(*, item=None, stock_uom=None, uom_conversions=None, overrides=None):
+	resolved_stock_uom, conversion_map = _build_item_uom_conversion_map(
+		item=item,
+		stock_uom=stock_uom,
+		uom_conversions=uom_conversions,
+	)
+	if not resolved_stock_uom:
+		frappe.throw(_("商品缺少库存基准单位，请先补全 stock_uom。"))
+
+	default_uoms = _extract_mode_default_uoms(item) if item else {
+		"wholesale_default_uom": None,
+		"retail_default_uom": None,
+	}
+	for key, value in (overrides or {}).items():
+		if key in default_uoms:
+			default_uoms[key] = _normalize_mode_default_uom(value)
+
+	for mode_key, default_uom in default_uoms.items():
+		if not default_uom:
+			continue
+		if default_uom not in conversion_map:
+			label = _("批发默认单位") if mode_key == "wholesale_default_uom" else _("零售默认单位")
+			frappe.throw(
+				_("{0} {1} 未配置到库存基准单位 {2} 的换算关系，请先补全 uom_conversions。").format(
+					label,
+					default_uom,
+					resolved_stock_uom,
+				)
+			)
 
 
 def _get_primary_barcode(item_code: str):
@@ -1268,6 +1328,16 @@ def update_product_v2(
 			if fieldname:
 				setattr(item, fieldname, _normalize_mode_default_uom(retail_default_uom))
 
+		_validate_mode_default_uoms_against_stock_uom(
+			item=item,
+			stock_uom=(kwargs.get("stock_uom") or kwargs.get("uom")) if "stock_uom" in kwargs or "uom" in kwargs else None,
+			uom_conversions=kwargs.get("uom_conversions"),
+			overrides={
+				"wholesale_default_uom": kwargs.get("wholesale_default_uom"),
+				"retail_default_uom": kwargs.get("retail_default_uom"),
+			},
+		)
+
 		item.save()
 
 		warehouse_stock_qty = kwargs.get("warehouse_stock_qty")
@@ -1375,6 +1445,11 @@ def create_product_v2(
 					_normalize_mode_default_uom(kwargs.get(f"{mode}_default_uom")),
 				)
 		_apply_item_uom_updates(
+			item=item,
+			stock_uom=resolved_uom,
+			uom_conversions=kwargs.get("uom_conversions"),
+		)
+		_validate_mode_default_uoms_against_stock_uom(
 			item=item,
 			stock_uom=resolved_uom,
 			uom_conversions=kwargs.get("uom_conversions"),
@@ -1493,6 +1568,11 @@ def create_product_and_stock(
 					else kwargs["nickname"]
 				)
 		_apply_item_uom_updates(
+			item=item,
+			stock_uom=resolved_uom,
+			uom_conversions=kwargs.get("uom_conversions"),
+		)
+		_validate_mode_default_uoms_against_stock_uom(
 			item=item,
 			stock_uom=resolved_uom,
 			uom_conversions=kwargs.get("uom_conversions"),

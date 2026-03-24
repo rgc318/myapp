@@ -1049,6 +1049,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `nickname` 优先写入 `Item.custom_nickname`
 - `image` 写入标准字段 `Item.image`
 - `wholesale_default_uom` / `retail_default_uom` 当前用于保存商品在不同销售模式下的默认成交单位
+  - 2026-03-25 起，后端会校验这些默认成交单位必须能通过 `uom_conversions` 换算到 `stock_uom`
 - `standard_rate` 有值时同步更新标准售价
 - `selling_prices` 支持补充 selling 类价格表
 - `buying_prices` 支持补充 buying 类价格表
@@ -1112,6 +1113,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
   - `wholesale_default_uom`
   - `retail_default_uom`
   则会一并写入商品在批发 / 零售模式下的默认单位
+  - 且这些默认单位必须能换算到库存基准单位 `stock_uom`
 - 若同时传入：
   - `standard_rate`
   - `selling_prices`
