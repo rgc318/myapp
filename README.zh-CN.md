@@ -44,7 +44,7 @@ pre-commit install
 当前开发环境约定：
 
 - 项目以 VS Code devcontainer / Docker 中的 ERPNext 运行环境为主，不以宿主机 WSL 直接运行 Frappe 代码为准
-- 若需要做接口联调或冒烟测试，优先通过 HTTP 访问 `http://localhost:8080`
+- 若需要做接口联调或冒烟测试，优先通过 HTTP 访问宿主机 `http://localhost:8080`
 - 宿主机侧脚本请使用 `python3`，不要默认使用 `python`
 
 ### HTTP 测试
@@ -63,13 +63,16 @@ pre-commit install
 推荐步骤：
 
 1. 复制示例文件为 `.env.http-test`
-2. 填入 `http://localhost:8080` 以及测试账号密码或 API Token
+2. 填入测试地址以及测试账号密码或 API Token
+   - 宿主机执行时：`http://localhost:8080`
+   - backend 容器内直接执行时：`http://localhost:8000`
 3. 在仓库根目录执行 `python3 apps/myapp/myapp/tests/http/test_gateway_http.py`
 
 说明：
 
 - 测试文件会优先读取环境变量；如果未显式传入，也会自动尝试读取 `apps/myapp/.env.http-test`
-- 默认地址是 `http://localhost:8080`
+- 宿主机默认地址是 `http://localhost:8080`
+- backend 容器内直接执行时，应改用 `http://localhost:8000`
 - 不要改成 `127.0.0.1`，保持与当前 devcontainer 约定一致
 - 建议优先使用 API Token，而不是长期使用管理员密码
 - 当前 HTTP 测试已覆盖所有 `myapp.api.gateway.*` 接口的基础可达性 / 鉴权后响应结构
@@ -82,8 +85,8 @@ pre-commit install
 - 若多接口联调需要串联参数，可直接从结果文件中读取上一个接口返回值
 - 当前主链路测试已改为“单个测试自建前置数据”，不再依赖固定执行顺序或历史结果文件
 - 已重新验证单个方法、销售链路、采购链路、幂等/并发和整份文件全量执行
-- `python3 apps/myapp/myapp/tests/http/test_gateway_http.py` 当前全量结果为 `Ran 47 tests ... OK`
-- `python3 -m unittest apps.myapp.myapp.tests.http.test_gateway_v2_http` 当前全量结果为 `Ran 110 tests in 22.280s ... OK`
+- `python3 -m unittest apps.myapp.myapp.tests.http.test_gateway_http` 当前最新全量结果为 `Ran 49 tests in 33.298s ... OK`
+- `python3 -m unittest apps.myapp.myapp.tests.http.test_gateway_v2_http` 当前最新全量结果为 `Ran 119 tests in 55.746s ... OK`
 
 更完整的当前覆盖范围、权限要求和本轮测试结论，请参见 `TESTING.zh-CN.md`。
 

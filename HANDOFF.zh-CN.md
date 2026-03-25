@@ -636,7 +636,8 @@ docker exec frappe_docker-backend-1 bash -lc '
 ## 10. 注意事项
 
 - 宿主机执行 HTTP 测试时，应使用 `python3`，不要使用 `python`
-- 测试目标地址按当前约定使用 `http://localhost:8080`
+- 宿主机侧测试目标地址按当前约定使用 `http://localhost:8080`
+- backend 容器内直接执行 HTTP 测试时，应显式改用 `http://localhost:8000`
 - 测试文件会直接打印接口返回值，同时将完整响应写入 `http-test-results.json`
 - `http-test-results.json` 中保存的是完整响应体，后续链路测试会从该文件中读取上一步结果
 - 日志中若出现 `422`，需要先区分这是预期校验失败还是主链路失败；例如探测不存在供应商时返回 `422` 属于正常现象
@@ -649,3 +650,11 @@ docker exec frappe_docker-backend-1 bash -lc '
   - `retail_default_uom`
   - 以上默认成交单位必须能通过 `uom_conversions` 换算到 `stock_uom`
   - 不再允许保存“默认成交单位已配置，但缺少到库存基准单位换算关系”的商品主数据
+- 2026-03-25 本轮回归结论：
+  - 新增规则定向测试已通过
+  - 经典 HTTP 全链路结果：
+    - `Ran 49 tests in 33.298s ... OK`
+  - v2 HTTP 全链路结果：
+    - `Ran 119 tests in 55.746s ... OK`
+  - 当前没有证据表明本轮新增商品单位校验影响销售主链路
+  - `tests/integration/test_sales_uom_stock_chain.py` 在当前环境下仍可能遭遇 `tabSeries` 锁冲突，该问题属于站点命名序列竞争，不作为本轮业务回归失败结论

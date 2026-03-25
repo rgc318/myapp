@@ -1,12 +1,12 @@
 # 测试说明
 
-更新时间：2026-03-17
+更新时间：2026-03-25
 
 ## 1. 测试原则
 
 当前项目以 VS Code devcontainer / Docker 中运行的 ERPNext 环境作为开发与验收基准。
 
-对 `myapp.api.gateway.*` 这类对外接口，优先使用宿主机通过 HTTP 访问 `http://localhost:8080` 的方式测试，不以 WSL 宿主机直接导入 Frappe 服务层作为主验收方式。
+对 `myapp.api.gateway.*` 这类对外接口，优先使用 HTTP 方式测试，不以 WSL 宿主机直接导入 Frappe 服务层作为主验收方式。
 
 推荐原因：
 
@@ -45,13 +45,17 @@
 1. 确保 devcontainer / Docker 中的 ERPNext 正在运行。
 2. 复制 `.env.http-test.example` 为 `.env.http-test`。
 3. 配置以下内容：
-   - `MYAPP_HTTP_BASE_URL=http://localhost:8080`
+   - 宿主机执行 HTTP 测试时：
+     - `MYAPP_HTTP_BASE_URL=http://localhost:8080`
+   - backend 容器内直接执行 HTTP 测试时：
+     - `MYAPP_HTTP_BASE_URL=http://localhost:8000`
    - 测试账号密码或 API Token
 4. 宿主机执行测试时使用 `python3`，不要默认使用 `python`。
 
 补充说明：
 
-- 当前约定使用 `http://localhost:8080`，不要随意改成 `127.0.0.1`
+- 宿主机侧当前约定使用 `http://localhost:8080`，不要随意改成 `127.0.0.1`
+- backend 容器内若直接跑 HTTP 测试，应改用 `http://localhost:8000`
 - 测试默认会打印响应，并写入 `http-test-results.json`
 - 可通过 `MYAPP_HTTP_PRINT_RESPONSES` 和 `MYAPP_HTTP_SAVE_RESPONSES` 控制是否打印或保存
 
@@ -83,6 +87,8 @@ PY'
 补充约定：
 
 - 若只是跑 HTTP 测试，仍优先在宿主机通过 `python3 -m unittest ...http...` 访问 `http://localhost:8080`
+- 若已进入 backend 容器并直接执行 HTTP 测试，请显式传入：
+  - `MYAPP_HTTP_BASE_URL=http://localhost:8000`
 - 若要跑服务层单元测试，优先在 bench 环境中执行，而不是在仓库根目录直接用宿主机 `python3` 导入 `frappe`
 - 即使已经进入 backend 容器，也不代表“系统 Python = bench Python”，两者不要混用
 
@@ -238,6 +244,49 @@ docker exec frappe_docker-backend-1 bash -lc '
 - `update_order_items_v2` 在提交态订单上自动 amendment 并返回新订单号
 - `update_payment_status` 全额收款成功路径
 - `update_payment_status` 少收并结清（writeoff）成功路径
+
+### 5.3 2026-03-25 最新回归结论
+
+本轮在 backend 容器 bench 环境内重新执行了以下测试：
+
+- `env/bin/python -m unittest apps.myapp.myapp.tests.unit.test_wholesale_service`
+  - 定向结论：
+    - 新增的“默认成交单位必须能换算到库存基准单位”规则已验证通过
+    - 当前适合作为本轮结论依据的定向用例为 `6` 条，结果 `OK`
+- `MYAPP_HTTP_BASE_URL=http://localhost:8000 env/bin/python -m unittest apps.myapp.myapp.tests.http.test_gateway_http`
+  - 全量结果：
+    - `Ran 49 tests in 33.298s`
+    - `OK`
+- `MYAPP_HTTP_BASE_URL=http://localhost:8000 env/bin/python -m unittest apps.myapp.myapp.tests.http.test_gateway_v2_http`
+  - 全量结果：
+    - `Ran 119 tests in 55.746s`
+    - `OK`
+
+本轮明确确认：
+
+- 新增后端校验已生效：
+  - `wholesale_default_uom`
+  - `retail_default_uom`
+  - 以上默认成交单位必须能通过 `uom_conversions` 换算到 `stock_uom`
+- 经典销售主链路未受影响：
+  - 下单
+  - 发货
+  - 开票
+  - 收款
+  - 退货
+- v2 销售链路未受影响：
+  - `create_order_v2`
+  - `update_order_v2`
+  - `update_order_items_v2`
+  - `cancel_order_v2`
+  - `get_sales_order_detail`
+  - `get_sales_order_status_summary`
+
+补充说明：
+
+- `tests/integration/test_sales_uom_stock_chain.py` 本轮再次执行时，仍可能在当前环境触发 `tabSeries` 锁冲突
+- 该问题表现为 `QueryDeadlockError`，属于当前站点命名序列竞争，不是业务断言失败
+- 因此本轮“是否影响核心逻辑”的最终判断，优先依据上述 `49 OK` 与 `119 OK` 的 HTTP 全链路结果
 - `update_payment_status` 多收并生成未分配金额成功路径
 - `get_delivery_note_detail_v2` 成功路径
 - `get_sales_invoice_detail_v2` 成功路径
