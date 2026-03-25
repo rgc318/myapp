@@ -1,3 +1,4 @@
+from .customer_service import create_customer_v2, disable_customer_v2, get_customer_detail_v2, list_customers_v2, update_customer_v2
 from .order_service import (
 	cancel_delivery_note,
 	cancel_sales_invoice,
@@ -23,11 +24,15 @@ __all__ = [
 	"cancel_delivery_note",
 	"cancel_payment_entry",
 	"cancel_sales_invoice",
+	"create_customer_v2",
 	"create_order",
 	"create_purchase_invoice",
 	"create_purchase_invoice_from_receipt",
 	"create_purchase_order",
 	"create_sales_invoice",
+	"disable_customer_v2",
+	"get_customer_detail_v2",
+	"list_customers_v2",
 	"quick_cancel_order_v2",
 	"quick_create_order_v2",
 	"process_purchase_return",
@@ -37,4 +42,5 @@ __all__ = [
 	"search_product",
 	"submit_delivery",
 	"update_payment_status",
+	"update_customer_v2",
 ]

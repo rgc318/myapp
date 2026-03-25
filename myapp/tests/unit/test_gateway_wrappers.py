@@ -8,18 +8,22 @@ from myapp.api.gateway import (
 	cancel_payment_entry,
 	cancel_order_v2,
 	cancel_sales_invoice,
+	create_customer_v2,
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
 	create_product_and_stock,
 	create_sales_invoice,
 	create_order,
 	create_purchase_order,
+	disable_customer_v2,
+	get_customer_detail_v2,
 	get_delivery_note_detail_v2,
 	get_product_detail_v2,
 	get_sales_order_detail,
 	get_sales_invoice_detail_v2,
 	get_sales_order_status_summary,
 	get_customer_sales_context,
+	list_customers_v2,
 	process_purchase_return,
 	process_sales_return,
 	receive_purchase_order,
@@ -27,6 +31,7 @@ from myapp.api.gateway import (
 	search_product_v2,
 	test_remote_debug,
 	update_payment_status,
+	update_customer_v2,
 	update_product_v2,
 	update_order_items_v2,
 	update_order_v2,
@@ -49,6 +54,7 @@ class TestGatewayWrappers(TestCase):
 			cancel_payment_entry,
 			cancel_order_v2,
 			cancel_sales_invoice,
+			create_customer_v2,
 			update_order_v2,
 			update_order_items_v2,
 			submit_delivery,
@@ -60,9 +66,12 @@ class TestGatewayWrappers(TestCase):
 			search_product_v2,
 			create_product_and_stock,
 			get_product_detail_v2,
+			get_customer_detail_v2,
 			get_delivery_note_detail_v2,
 			get_sales_invoice_detail_v2,
 			update_product_v2,
+			list_customers_v2,
+			disable_customer_v2,
 			confirm_pending_document,
 			update_payment_status,
 			record_supplier_payment,
@@ -305,6 +314,82 @@ class TestGatewayWrappers(TestCase):
 			company=None,
 			price_list="Standard Selling",
 			currency=None,
+		)
+
+	@patch("myapp.api.gateway.list_customers_v2_service")
+	def test_list_customers_v2_passes_filters_to_service(self, mock_list_customers_v2_service):
+		mock_list_customers_v2_service.return_value = {"status": "success", "data": []}
+
+		list_customers_v2(search_key="Palmer", customer_group="Retail", disabled=0, limit=10, start=5)
+
+		mock_list_customers_v2_service.assert_called_once_with(
+			search_key="Palmer",
+			customer_group="Retail",
+			disabled=0,
+			limit=10,
+			start=5,
+			sort_by="modified",
+			sort_order="desc",
+		)
+
+	@patch("myapp.api.gateway.get_customer_detail_v2_service")
+	def test_get_customer_detail_v2_passes_customer_to_service(self, mock_get_customer_detail_v2_service):
+		mock_get_customer_detail_v2_service.return_value = {
+			"status": "success",
+			"data": {"name": "CUST-0001"},
+		}
+
+		get_customer_detail_v2("CUST-0001")
+
+		mock_get_customer_detail_v2_service.assert_called_once_with(customer="CUST-0001")
+
+	@patch("myapp.api.gateway.create_customer_v2_service")
+	def test_create_customer_v2_passes_payload_to_service(self, mock_create_customer_v2_service):
+		mock_create_customer_v2_service.return_value = {
+			"status": "success",
+			"data": {"name": "CUST-0001"},
+		}
+
+		create_customer_v2(
+			customer_name="Palmer Productions Ltd.",
+			default_contact={"display_name": "张三"},
+			request_id="cust-create-001",
+		)
+
+		mock_create_customer_v2_service.assert_called_once_with(
+			customer_name="Palmer Productions Ltd.",
+			default_contact={"display_name": "张三"},
+			request_id="cust-create-001",
+		)
+
+	@patch("myapp.api.gateway.update_customer_v2_service")
+	def test_update_customer_v2_passes_payload_to_service(self, mock_update_customer_v2_service):
+		mock_update_customer_v2_service.return_value = {
+			"status": "success",
+			"data": {"name": "CUST-0001"},
+		}
+
+		update_customer_v2("CUST-0001", customer_name="新客户", request_id="cust-update-001")
+
+		mock_update_customer_v2_service.assert_called_once_with(
+			customer="CUST-0001",
+			customer_name="新客户",
+			request_id="cust-update-001",
+		)
+
+	@patch("myapp.api.gateway.disable_customer_v2_service")
+	def test_disable_customer_v2_passes_disabled_flag_to_service(self, mock_disable_customer_v2_service):
+		mock_disable_customer_v2_service.return_value = {
+			"status": "success",
+			"data": {"name": "CUST-0001"},
+		}
+
+		disable_customer_v2("CUST-0001", disabled=True, request_id="cust-disable-001")
+
+		mock_disable_customer_v2_service.assert_called_once_with(
+			customer="CUST-0001",
+			disabled=True,
+			request_id="cust-disable-001",
 		)
 
 	@patch("myapp.api.gateway.get_delivery_note_detail_service")

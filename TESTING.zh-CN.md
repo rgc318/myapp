@@ -390,8 +390,11 @@ v2 轻链路内容：
 - 新增的 3 个 `create_order_v2` 用例：`OK`
 - 新增的 2 个订单更新 v2 用例：`OK`
 - 新增的 1 个 `get_customer_sales_context` 用例：`OK`
+- 新增的 5 个客户模块服务层用例：`OK`
+- 新增的 5 个客户模块网关包装用例：`OK`
 - 单接口复测结果：`Ran 1 test in 0.165s ... OK`
 - 最新一次定向订单更新测试结果：`Ran 2 tests in 0.494s ... OK`
+- 最新一次客户模块定向单测结果：`Ran 34 tests in 0.013s ... OK`
 - 最新一次 `test_gateway_v2_http.py` 全量执行结果：`Ran 112 tests in 22.138s ... OK`
 
 说明：

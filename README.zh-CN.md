@@ -157,12 +157,14 @@ docker exec frappe_docker-backend-1 bash -lc '
 
 服务实现模块：
 
+- `myapp.services.customer_service`
 - `myapp.services.order_service`
 - `myapp.services.settlement_service`
 - `myapp.services.wholesale_service`
 
 已验证模块：
 
+- `myapp.services.customer_service`
 - `myapp.api.gateway`
 - `myapp.services.order_service`
 - `myapp.services.settlement_service`
@@ -170,6 +172,11 @@ docker exec frappe_docker-backend-1 bash -lc '
 
 已验证方法：
 
+- `list_customers_v2`
+- `get_customer_detail_v2`
+- `create_customer_v2`
+- `update_customer_v2`
+- `disable_customer_v2`
 - `create_order`
 - `submit_delivery`
 - `create_sales_invoice`

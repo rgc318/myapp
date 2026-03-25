@@ -17,6 +17,11 @@
 - `myapp.api.gateway.quick_cancel_order_v2`
 - `myapp.api.gateway.cancel_order_v2`
 - `myapp.api.gateway.get_customer_sales_context`
+- `myapp.api.gateway.list_customers_v2`
+- `myapp.api.gateway.get_customer_detail_v2`
+- `myapp.api.gateway.create_customer_v2`
+- `myapp.api.gateway.update_customer_v2`
+- `myapp.api.gateway.disable_customer_v2`
 - `myapp.api.gateway.get_sales_order_detail`
 - `myapp.api.gateway.get_sales_order_status_summary`
 - `myapp.api.gateway.get_delivery_note_detail_v2`
@@ -52,7 +57,7 @@
 
 ### 模块导航
 
-- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_customer_sales_context`、`get_sales_order_detail`、`get_sales_order_status_summary`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`process_sales_return`
+- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
 - 通用辅助：`confirm_pending_document`
 
@@ -827,6 +832,116 @@ from myapp.api.gateway import get_customer_sales_context
 
 get_customer_sales_context(customer="Palmer Productions Ltd.")
 ```
+
+### list_customers_v2
+
+方法：
+
+- `myapp.api.gateway.list_customers_v2`
+
+参数：
+
+- `search_key: str | None`
+- `customer_group: str | None`
+- `disabled: int | None`
+- `limit: int = 20`
+- `start: int = 0`
+- `sort_by: str = "modified"`
+- `sort_order: str = "desc"`
+
+行为：
+
+- 返回客户主数据列表
+- 聚合默认联系人与默认地址摘要，便于移动端直接展示
+- 支持按客户名称 / 编码 / 手机 / 邮箱模糊搜索
+
+返回重点字段：
+
+- `name`
+- `display_name`
+- `customer_group`
+- `default_price_list`
+- `disabled`
+- `default_contact`
+- `default_address`
+
+适用场景：
+
+- 客户管理列表页
+- 销售开单时选择客户并预览默认信息
+
+### get_customer_detail_v2
+
+方法：
+
+- `myapp.api.gateway.get_customer_detail_v2`
+
+参数：
+
+- `customer: str`
+
+行为：
+
+- 返回单个客户完整详情
+- 聚合默认联系人、默认地址、最近销售订单使用过的收货地址
+
+### create_customer_v2
+
+方法：
+
+- `myapp.api.gateway.create_customer_v2`
+
+参数：
+
+- `customer_name: str`
+- `customer_type: str | None`
+- `customer_group: str | None`
+- `territory: str | None`
+- `default_currency: str | None`
+- `default_price_list: str | None`
+- `remarks: str | None`
+- `default_contact: dict | json-string | None`
+- `default_address: dict | json-string | None`
+- `disabled: bool | int = False`
+
+行为：
+
+- 创建客户主数据
+- 可同时创建并绑定默认联系人、默认地址
+- 返回创建后的客户详情快照
+
+### update_customer_v2
+
+方法：
+
+- `myapp.api.gateway.update_customer_v2`
+
+参数：
+
+- `customer: str`
+- 其余字段同 `create_customer_v2`
+
+行为：
+
+- 更新客户主数据
+- 可同时更新默认联系人、默认地址
+- 不改订单地址快照，只影响后续开单默认建议值
+
+### disable_customer_v2
+
+方法：
+
+- `myapp.api.gateway.disable_customer_v2`
+
+参数：
+
+- `customer: str`
+- `disabled: bool = True`
+
+行为：
+
+- 停用或重新启用客户
+- 用于客户主数据维护，不回溯修改历史单据
 
 ### search_product_v2
 
