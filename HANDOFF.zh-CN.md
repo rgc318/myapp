@@ -188,6 +188,45 @@
 - 销售侧按 `sales_invoice_item` 发起退货的真实 HTTP 验证已跑通
 - 销售侧 `update_order_v2` 与 `update_order_items_v2` 已完成真实 HTTP 验证
 - 销售侧 `cancel_order_v2` 已完成真实 HTTP 验证
+
+## 2026-03-26 单位管理后端补齐
+
+本轮已补齐单位管理后端第一阶段接口：
+
+- `list_uoms_v2`
+- `get_uom_detail_v2`
+- `create_uom_v2`
+- `update_uom_v2`
+- `disable_uom_v2`
+- `delete_uom_v2`
+
+设计原则：
+
+- 单位模块只维护 `UOM` 主数据本身
+- 商品换算关系仍继续维护在 `Item.uoms / UOM Conversion Detail`
+- 单位删除与关键规则修改必须带引用保护，不能当成无保护的普通 CRUD
+
+当前能力边界：
+
+- 已支持单位列表、详情、新增、更新、停用、删除
+- 详情已返回 `usage_summary`，便于前端提示“该单位是否已被系统引用”
+- 当前不支持直接改名；如需新名称，建议创建新单位
+- 当前若单位已被引用，则不允许直接修改 `must_be_whole_number`
+- 当前若单位已被引用，则不允许直接删除，建议改为停用
+
+本轮真实站点 CRUD 验证已通过两组临时单位数据：
+
+- 创建
+- 列表查询（含模糊搜索）
+- 详情查询
+- 更新
+- 停用 / 启用
+- 删除
+
+当前结论：
+
+- 单位管理后端 CRUD 已完成并通过单测与真实站点验证
+- 本轮还顺手修正了 `list_uoms_v2` 在真实站点里的模糊搜索问题
 - 商品侧 `get_product_detail_v2` 与 `update_product_v2` 已完成真实 HTTP 验证
 - 商品模块第一阶段后端能力已形成：
   - 列表

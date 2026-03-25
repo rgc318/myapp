@@ -938,6 +938,129 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `customer: str`
 - `disabled: bool = True`
 
+### list_uoms_v2
+
+方法：
+
+- `myapp.api.gateway.list_uoms_v2`
+
+参数：
+
+- `search_key: str | None`
+- `enabled: int | None`
+- `must_be_whole_number: int | None`
+- `limit: int = 20`
+- `start: int = 0`
+- `sort_by: str = "modified"`
+- `sort_order: str = "desc"`
+
+行为：
+
+- 返回单位主数据列表
+- 支持按单位名称 / 符号 / 描述模糊搜索
+- 支持按启停状态、是否必须整数筛选
+
+返回重点字段：
+
+- `name`
+- `uom_name`
+- `symbol`
+- `enabled`
+- `must_be_whole_number`
+- `description`
+
+适用场景：
+
+- 单位管理列表页
+- 商品单位选择器的单位主数据来源
+
+### get_uom_detail_v2
+
+方法：
+
+- `myapp.api.gateway.get_uom_detail_v2`
+
+参数：
+
+- `uom: str`
+
+行为：
+
+- 返回单个单位详情
+- 附带当前引用摘要 `usage_summary`
+- 便于前端判断该单位是否已经被商品、换算或单据引用
+
+### create_uom_v2
+
+方法：
+
+- `myapp.api.gateway.create_uom_v2`
+
+参数：
+
+- `uom_name: str`
+- `symbol: str | None`
+- `description: str | None`
+- `enabled: bool | int = True`
+- `must_be_whole_number: bool | int = False`
+
+行为：
+
+- 创建单位主数据
+- 当前不支持创建后立即改名；若需要新名称，请新建新单位
+
+### update_uom_v2
+
+方法：
+
+- `myapp.api.gateway.update_uom_v2`
+
+参数：
+
+- `uom: str`
+- `symbol: str | None`
+- `description: str | None`
+- `enabled: bool | int | None`
+- `must_be_whole_number: bool | int | None`
+
+行为：
+
+- 更新单位展示属性与启停状态
+- 当前不支持直接改名
+- 若该单位已被系统引用，则不允许直接修改 `must_be_whole_number`
+
+### disable_uom_v2
+
+方法：
+
+- `myapp.api.gateway.disable_uom_v2`
+
+参数：
+
+- `uom: str`
+- `disabled: bool = True`
+
+行为：
+
+- 停用或重新启用单位
+- 停用后可避免新业务继续选择该单位，但不会改写历史记录
+
+### delete_uom_v2
+
+方法：
+
+- `myapp.api.gateway.delete_uom_v2`
+
+参数：
+
+- `uom: str`
+
+行为：
+
+- 删除未被引用的单位
+- 若已被 `Item.stock_uom`、`Item.uoms`、单据或系统设置等 Link 字段引用，则会直接拦截
+- 对已被引用的单位，建议走停用而不是删除
+
 行为：
 
 - 停用或重新启用客户

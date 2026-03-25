@@ -4,6 +4,11 @@ from .customers_api import create_customer_v2 as create_customer_v2_service
 from .customers_api import disable_customer_v2 as disable_customer_v2_service
 from .customers_api import get_customer_detail_v2 as get_customer_detail_v2_service
 from .customers_api import list_customers_v2 as list_customers_v2_service
+from .uoms_api import create_uom_v2 as create_uom_v2_service
+from .uoms_api import delete_uom_v2 as delete_uom_v2_service
+from .uoms_api import disable_uom_v2 as disable_uom_v2_service
+from .uoms_api import get_uom_detail_v2 as get_uom_detail_v2_service
+from .uoms_api import list_uoms_v2 as list_uoms_v2_service
 from .orders_api import create_order as create_order_service
 from .orders_api import create_order_v2 as create_order_v2_service
 from .orders_api import quick_create_order_v2 as quick_create_order_v2_service
@@ -41,6 +46,7 @@ from .wholesale_api import search_product as search_product_service
 from .wholesale_api import search_product_v2 as search_product_v2_service
 from .wholesale_api import update_product_v2 as update_product_v2_service
 from .customers_api import update_customer_v2 as update_customer_v2_service
+from .uoms_api import update_uom_v2 as update_uom_v2_service
 from myapp.utils.api_response import (
 	error_response,
 	map_exception_to_error,
@@ -166,6 +172,70 @@ def disable_customer_v2(customer: str, disabled: bool = True, **kwargs):
 	return _handle_gateway_call(
 		lambda: disable_customer_v2_service(customer=customer, disabled=disabled, **kwargs),
 		success_code="CUSTOMER_DISABLED",
+	)
+
+
+@frappe.whitelist()
+def list_uoms_v2(
+	search_key: str | None = None,
+	enabled: int | None = None,
+	must_be_whole_number: int | None = None,
+	limit: int = 20,
+	start: int = 0,
+	sort_by: str = "modified",
+	sort_order: str = "desc",
+):
+	return _handle_gateway_call(
+		lambda: list_uoms_v2_service(
+			search_key=search_key,
+			enabled=enabled,
+			must_be_whole_number=must_be_whole_number,
+			limit=limit,
+			start=start,
+			sort_by=sort_by,
+			sort_order=sort_order,
+		),
+		success_code="UOM_LIST_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_uom_detail_v2(uom: str):
+	return _handle_gateway_call(
+		lambda: get_uom_detail_v2_service(uom=uom),
+		success_code="UOM_DETAIL_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def create_uom_v2(uom_name: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: create_uom_v2_service(uom_name=uom_name, **kwargs),
+		success_code="UOM_CREATED",
+	)
+
+
+@frappe.whitelist()
+def update_uom_v2(uom: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: update_uom_v2_service(uom=uom, **kwargs),
+		success_code="UOM_UPDATED",
+	)
+
+
+@frappe.whitelist()
+def disable_uom_v2(uom: str, disabled: bool = True, **kwargs):
+	return _handle_gateway_call(
+		lambda: disable_uom_v2_service(uom=uom, disabled=disabled, **kwargs),
+		success_code="UOM_DISABLED",
+	)
+
+
+@frappe.whitelist()
+def delete_uom_v2(uom: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: delete_uom_v2_service(uom=uom, **kwargs),
+		success_code="UOM_DELETED",
 	)
 
 

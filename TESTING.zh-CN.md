@@ -292,6 +292,40 @@ docker exec frappe_docker-backend-1 bash -lc '
 - `get_sales_invoice_detail_v2` 成功路径
 - v2 轻链路 smoke test
 
+### 5.4 2026-03-26 单位管理后端回归结论
+
+本轮在 backend 容器 bench 环境内新增执行了以下测试：
+
+- `env/bin/python -m unittest apps.myapp.myapp.tests.unit.test_uom_service apps.myapp.myapp.tests.unit.test_gateway_wrappers`
+  - 全量结果：
+    - `Ran 44 tests in 0.015s`
+    - `OK`
+
+另外还在真实站点中使用两组临时单位数据执行了完整 CRUD 验证：
+
+- 创建单位
+- 模糊搜索列表
+- 查询详情
+- 更新展示字段
+- 停用 / 启用
+- 删除未引用单位
+
+本轮明确确认：
+
+- `list_uoms_v2`
+- `get_uom_detail_v2`
+- `create_uom_v2`
+- `update_uom_v2`
+- `disable_uom_v2`
+- `delete_uom_v2`
+
+以上接口当前均已通过验证。
+
+补充说明：
+
+- 删除保护与“已被引用单位不可直接修改整数规则”的逻辑，当前以单元测试为主要验证方式
+- 真实站点 CRUD 验证使用的是未被引用的临时单位，因此删除成功属于预期行为
+
 v2 轻链路内容：
 
 - 建商品并入库

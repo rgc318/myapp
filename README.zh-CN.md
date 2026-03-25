@@ -165,9 +165,31 @@ docker exec frappe_docker-backend-1 bash -lc '
 已验证模块：
 
 - `myapp.services.customer_service`
+- `myapp.services.uom_service`
 - `myapp.api.gateway`
 - `myapp.services.order_service`
 - `myapp.services.settlement_service`
+
+当前新增的主数据模块：
+
+- 客户管理后端：
+  - `list_customers_v2`
+  - `get_customer_detail_v2`
+  - `create_customer_v2`
+  - `update_customer_v2`
+  - `disable_customer_v2`
+- 单位管理后端：
+  - `list_uoms_v2`
+  - `get_uom_detail_v2`
+  - `create_uom_v2`
+  - `update_uom_v2`
+  - `disable_uom_v2`
+  - `delete_uom_v2`
+
+其中单位管理当前补充了两条保护规则：
+
+- 已被引用的单位不允许直接删除，建议走停用
+- 已被引用的单位不允许直接修改 `must_be_whole_number`
 - `myapp.services.wholesale_service`
 
 已验证方法：

@@ -13,9 +13,12 @@ from myapp.api.gateway import (
 	create_purchase_invoice_from_receipt,
 	create_product_and_stock,
 	create_sales_invoice,
+	create_uom_v2,
 	create_order,
 	create_purchase_order,
+	delete_uom_v2,
 	disable_customer_v2,
+	disable_uom_v2,
 	get_customer_detail_v2,
 	get_delivery_note_detail_v2,
 	get_product_detail_v2,
@@ -23,7 +26,9 @@ from myapp.api.gateway import (
 	get_sales_invoice_detail_v2,
 	get_sales_order_status_summary,
 	get_customer_sales_context,
+	get_uom_detail_v2,
 	list_customers_v2,
+	list_uoms_v2,
 	process_purchase_return,
 	process_sales_return,
 	receive_purchase_order,
@@ -33,6 +38,7 @@ from myapp.api.gateway import (
 	update_payment_status,
 	update_customer_v2,
 	update_product_v2,
+	update_uom_v2,
 	update_order_items_v2,
 	update_order_v2,
 	record_supplier_payment,
@@ -55,6 +61,7 @@ class TestGatewayWrappers(TestCase):
 			cancel_order_v2,
 			cancel_sales_invoice,
 			create_customer_v2,
+			create_uom_v2,
 			update_order_v2,
 			update_order_items_v2,
 			submit_delivery,
@@ -71,7 +78,11 @@ class TestGatewayWrappers(TestCase):
 			get_sales_invoice_detail_v2,
 			update_product_v2,
 			list_customers_v2,
+			list_uoms_v2,
 			disable_customer_v2,
+			disable_uom_v2,
+			delete_uom_v2,
+			get_uom_detail_v2,
 			confirm_pending_document,
 			update_payment_status,
 			record_supplier_payment,
@@ -390,6 +401,89 @@ class TestGatewayWrappers(TestCase):
 			customer="CUST-0001",
 			disabled=True,
 			request_id="cust-disable-001",
+		)
+
+	@patch("myapp.api.gateway.list_uoms_v2_service")
+	def test_list_uoms_v2_passes_filters_to_service(self, mock_list_uoms_v2_service):
+		mock_list_uoms_v2_service.return_value = {"status": "success", "data": []}
+
+		list_uoms_v2(search_key="Box", enabled=1, must_be_whole_number=1, limit=10, start=5)
+
+		mock_list_uoms_v2_service.assert_called_once_with(
+			search_key="Box",
+			enabled=1,
+			must_be_whole_number=1,
+			limit=10,
+			start=5,
+			sort_by="modified",
+			sort_order="desc",
+		)
+
+	@patch("myapp.api.gateway.get_uom_detail_v2_service")
+	def test_get_uom_detail_v2_passes_uom_to_service(self, mock_get_uom_detail_v2_service):
+		mock_get_uom_detail_v2_service.return_value = {"status": "success", "data": {"name": "Box"}}
+
+		get_uom_detail_v2("Box")
+
+		mock_get_uom_detail_v2_service.assert_called_once_with(uom="Box")
+
+	@patch("myapp.api.gateway.create_uom_v2_service")
+	def test_create_uom_v2_passes_payload_to_service(self, mock_create_uom_v2_service):
+		mock_create_uom_v2_service.return_value = {"status": "success", "data": {"name": "Box"}}
+
+		create_uom_v2(
+			uom_name="Box",
+			symbol="箱",
+			must_be_whole_number=1,
+			request_id="uom-create-001",
+		)
+
+		mock_create_uom_v2_service.assert_called_once_with(
+			uom_name="Box",
+			symbol="箱",
+			must_be_whole_number=1,
+			request_id="uom-create-001",
+		)
+
+	@patch("myapp.api.gateway.update_uom_v2_service")
+	def test_update_uom_v2_passes_payload_to_service(self, mock_update_uom_v2_service):
+		mock_update_uom_v2_service.return_value = {"status": "success", "data": {"name": "Box"}}
+
+		update_uom_v2(
+			"Box",
+			description="整箱",
+			enabled=0,
+			request_id="uom-update-001",
+		)
+
+		mock_update_uom_v2_service.assert_called_once_with(
+			uom="Box",
+			description="整箱",
+			enabled=0,
+			request_id="uom-update-001",
+		)
+
+	@patch("myapp.api.gateway.disable_uom_v2_service")
+	def test_disable_uom_v2_passes_disabled_flag_to_service(self, mock_disable_uom_v2_service):
+		mock_disable_uom_v2_service.return_value = {"status": "success", "data": {"name": "Box"}}
+
+		disable_uom_v2("Box", disabled=True, request_id="uom-disable-001")
+
+		mock_disable_uom_v2_service.assert_called_once_with(
+			uom="Box",
+			disabled=True,
+			request_id="uom-disable-001",
+		)
+
+	@patch("myapp.api.gateway.delete_uom_v2_service")
+	def test_delete_uom_v2_passes_request_id_to_service(self, mock_delete_uom_v2_service):
+		mock_delete_uom_v2_service.return_value = {"status": "success", "data": {"name": "Box"}}
+
+		delete_uom_v2("Box", request_id="uom-delete-001")
+
+		mock_delete_uom_v2_service.assert_called_once_with(
+			uom="Box",
+			request_id="uom-delete-001",
 		)
 
 	@patch("myapp.api.gateway.get_delivery_note_detail_service")
