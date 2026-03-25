@@ -192,7 +192,7 @@ class TestCustomerService(TestCase):
 
 		self.assertEqual(result["status"], "success")
 		self.assertEqual(customer_doc.customer_name, "新客户")
-		customer_doc.save.assert_called_once()
+		self.assertEqual(customer_doc.save.call_count, 2)
 		mock_upsert_primary_contact.assert_called_once()
 		mock_upsert_primary_address.assert_called_once()
 

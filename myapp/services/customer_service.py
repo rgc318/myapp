@@ -120,18 +120,20 @@ def _upsert_primary_contact(customer_doc, payload: dict):
 
 	contact.first_name = payload.get("first_name") or payload.get("display_name") or customer_doc.customer_name or customer_doc.name
 	contact.last_name = payload.get("last_name")
-	contact.mobile_no = payload.get("phone")
-	contact.phone = payload.get("phone")
-	contact.email_id = payload.get("email")
+	contact.company_name = customer_doc.customer_name or customer_doc.name
 	contact.is_primary_contact = 1
 	_ensure_customer_link(contact, customer_doc.name)
+	contact.set("phone_nos", [])
+	contact.set("email_ids", [])
+	if payload.get("phone"):
+		contact.add_phone(payload.get("phone"), is_primary_mobile_no=True)
+	if payload.get("email"):
+		contact.add_email(payload.get("email"), is_primary=True)
 
 	if is_new:
 		contact.insert()
 	else:
 		contact.save()
-
-	customer_doc.customer_primary_contact = contact.name
 	return contact
 
 
@@ -163,8 +165,6 @@ def _upsert_primary_address(customer_doc, payload: dict):
 		address.insert()
 	else:
 		address.save()
-
-	customer_doc.customer_primary_address = address.name
 	return address
 
 
@@ -324,6 +324,11 @@ def create_customer_v2(customer_name: str, **kwargs):
 
 		contact_doc = _upsert_primary_contact(customer, _normalize_contact_payload(kwargs.get("default_contact"), kwargs))
 		address_doc = _upsert_primary_address(customer, _normalize_address_payload(kwargs.get("default_address"), kwargs))
+		customer.reload()
+		if contact_doc:
+			customer.customer_primary_contact = contact_doc.name
+		if address_doc:
+			customer.customer_primary_address = address_doc.name
 		customer.save()
 		customer.reload()
 
@@ -365,11 +370,18 @@ def update_customer_v2(customer: str, **kwargs):
 			customer_doc.disabled = cint(kwargs.get("disabled"))
 		if kwargs.get("remarks") is not None:
 			customer_doc.customer_details = kwargs.get("remarks")
+		customer_doc.save()
+		customer_doc.reload()
 
 		contact_payload = _normalize_contact_payload(kwargs.get("default_contact"), kwargs)
 		address_payload = _normalize_address_payload(kwargs.get("default_address"), kwargs)
 		contact_doc = _upsert_primary_contact(customer_doc, contact_payload)
 		address_doc = _upsert_primary_address(customer_doc, address_payload)
+		customer_doc.reload()
+		if contact_doc:
+			customer_doc.customer_primary_contact = contact_doc.name
+		if address_doc:
+			customer_doc.customer_primary_address = address_doc.name
 		customer_doc.save()
 		customer_doc.reload()
 
