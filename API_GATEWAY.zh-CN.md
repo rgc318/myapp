@@ -59,6 +59,8 @@
 
 - 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
+- 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`
+- 采购更新与作废：`update_purchase_order_v2`、`update_purchase_order_items_v2`、`cancel_purchase_order_v2`、`cancel_purchase_receipt_v2`、`cancel_purchase_invoice_v2`、`cancel_supplier_payment`
 - 通用辅助：`confirm_pending_document`
 
 ### 统一成功响应格式
@@ -1981,6 +1983,253 @@ frappe.call({
 - 创建并提交映射后的采购退货单据
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的退货结果
 
+### get_purchase_order_detail_v2
+
+方法：
+
+- `myapp.api.gateway.get_purchase_order_detail_v2`
+
+参数：
+
+- `order_name: str`
+
+行为：
+
+- 返回采购订单详情聚合数据，供移动端详情页直接渲染
+- 返回供应商快照、金额摘要、收货状态、付款状态、商品明细与下游单据引用
+- 返回当前订单是否还能继续收货、开票、编辑或作废的动作标记
+
+当前返回重点字段：
+
+- `purchase_order_name`
+- `document_status`
+- `supplier.display_name`
+- `amounts.grand_total`
+- `amounts.received_amount_estimate`
+- `amounts.invoiced_amount_estimate`
+- `receiving.status`
+- `payment.status`
+- `actions.can_receive`
+- `actions.can_create_invoice`
+- `actions.can_update`
+- `actions.can_cancel`
+- `references.purchase_receipts`
+- `references.purchase_invoices`
+- `items[].item_code`
+- `items[].qty`
+- `items[].received_qty`
+- `items[].rate`
+- `items[].amount`
+- `meta.company`
+- `meta.currency`
+- `meta.transaction_date`
+- `meta.schedule_date`
+
+### get_purchase_order_status_summary
+
+方法：
+
+- `myapp.api.gateway.get_purchase_order_status_summary`
+
+参数：
+
+- `supplier: str | None`
+- `company: str | None`
+- `limit: int | None = 20`
+
+行为：
+
+- 返回采购订单列表页可直接使用的状态摘要
+- 每条记录都基于详情聚合口径构造，避免前端自己推导“已收货 / 已开票 / 已付款 / 是否完成”
+
+### get_purchase_receipt_detail_v2
+
+方法：
+
+- `myapp.api.gateway.get_purchase_receipt_detail_v2`
+
+参数：
+
+- `receipt_name: str`
+
+行为：
+
+- 返回采购收货单详情聚合数据
+- 返回来源采购单、关联采购发票、供应商快照、地址快照和商品明细
+- 适合收货详情页、退货确认页直接渲染
+
+### get_purchase_invoice_detail_v2
+
+方法：
+
+- `myapp.api.gateway.get_purchase_invoice_detail_v2`
+
+参数：
+
+- `invoice_name: str`
+
+行为：
+
+- 返回采购发票详情聚合数据
+- 返回来源采购单 / 收货单引用、付款摘要、最新付款结果与商品明细
+- 适合发票详情页、付款确认页直接渲染
+
+### get_supplier_purchase_context
+
+方法：
+
+- `myapp.api.gateway.get_supplier_purchase_context`
+
+参数：
+
+- `supplier: str`
+
+行为：
+
+- 返回采购建单所需的供应商默认上下文
+- 包含供应商摘要、默认联系人、默认地址、最近使用地址及建议默认仓库
+- 用于移动端创建采购单时预填信息
+
+### list_suppliers_v2
+
+方法：
+
+- `myapp.api.gateway.list_suppliers_v2`
+
+参数：
+
+- `search_key: str | None`
+- `supplier_group: str | None`
+- `disabled: int | bool | None`
+- `limit: int | None = 20`
+- `start: int | None = 0`
+- `sort_by: str | None = "modified"`
+- `sort_order: str | None = "desc"`
+
+行为：
+
+- 返回供应商列表摘要
+- 支持模糊搜索、分组筛选、启停状态筛选和分页
+- 每条记录包含默认联系人、默认地址和最近采购摘要
+
+### get_supplier_detail_v2
+
+方法：
+
+- `myapp.api.gateway.get_supplier_detail_v2`
+
+参数：
+
+- `supplier: str`
+
+行为：
+
+- 返回供应商详情聚合数据
+- 包含默认联系人、默认地址、最近采购地址和基础主数据摘要
+
+### update_purchase_order_v2
+
+方法：
+
+- `myapp.api.gateway.update_purchase_order_v2`
+
+参数：
+
+- `order_name: str`
+- 其余更新字段通过顶层参数传入，例如：
+  - `schedule_date`
+  - `remarks`
+  - `supplier_ref`
+  - `request_id`
+
+行为：
+
+- 按 v2 语义更新采购订单头信息
+- 适用于采购订单编辑页保存头部字段
+- 当使用相同 `request_id` 重试时，直接返回第一次成功结果
+
+### update_purchase_order_items_v2
+
+方法：
+
+- `myapp.api.gateway.update_purchase_order_items_v2`
+
+参数：
+
+- `order_name: str`
+- `items: list[dict] | json-string`
+- `request_id: str | None`
+
+行为：
+
+- 按 v2 语义整体替换采购订单商品明细
+- 适用于采购订单编辑页保存商品区
+- 当使用相同 `request_id` 重试时，直接返回第一次成功结果
+
+### cancel_purchase_order_v2
+
+方法：
+
+- `myapp.api.gateway.cancel_purchase_order_v2`
+
+参数：
+
+- `order_name: str`
+- `request_id: str | None`
+
+行为：
+
+- 统一封装采购订单作废动作
+- 返回统一成功码与作废后的单据状态
+
+### cancel_purchase_receipt_v2
+
+方法：
+
+- `myapp.api.gateway.cancel_purchase_receipt_v2`
+
+参数：
+
+- `receipt_name: str`
+- `request_id: str | None`
+
+行为：
+
+- 统一封装采购收货单作废动作
+- 返回统一成功码与作废后的单据状态
+
+### cancel_purchase_invoice_v2
+
+方法：
+
+- `myapp.api.gateway.cancel_purchase_invoice_v2`
+
+参数：
+
+- `invoice_name: str`
+- `request_id: str | None`
+
+行为：
+
+- 统一封装采购发票作废动作
+- 返回统一成功码与作废后的单据状态
+
+### cancel_supplier_payment
+
+方法：
+
+- `myapp.api.gateway.cancel_supplier_payment`
+
+参数：
+
+- `payment_entry_name: str`
+- `request_id: str | None`
+
+行为：
+
+- 统一封装供应商付款单作废动作
+- 与销售结算侧保持一致的错误包装与返回结构
+
 ### 已验证样例数据
 
 - `customer="Palmer Productions Ltd."`
@@ -1996,6 +2245,7 @@ frappe.call({
 - 采购侧若要在收货或开票阶段直接改价，需要关闭 ERPNext `Buying Settings.maintain_same_rate`
 - 采购侧若请求中包含 `price` 改写且 `maintain_same_rate` 重新启用，网关会主动返回明确业务错误
 - 当前环境的 `Selling Settings.maintain_same_sales_rate = 0`，销售侧允许在发货和开票阶段按实际成交结果改价
+- 采购列表页、详情页、收货详情页和发票详情页优先使用采购聚合接口，不建议前端自行拼装 `Purchase Order / Purchase Receipt / Purchase Invoice / Payment Entry` 状态
 
 ### 附录：联调中实际会用到的官方接口
 

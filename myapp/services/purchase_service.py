@@ -2,6 +2,18 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, nowdate
 
+from myapp.services.order_service import (
+	_build_payment_summary,
+	_document_status_label,
+	_extract_first_non_empty,
+	_get_default_warehouse_for_context,
+	_get_doc_if_exists,
+	_get_linked_parent_names,
+	_serialize_address_doc,
+	_serialize_contact_doc,
+	_sum_row_values,
+)
+from myapp.services.settlement_service import cancel_payment_entry
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.uom import resolve_item_quantity_to_stock
 
@@ -18,6 +30,1158 @@ def _insert_and_submit(doc):
 	doc.insert()
 	doc.submit()
 	return doc
+
+
+def _normalize_text(value: str | None):
+	return (value or "").strip()
+
+
+def _normalize_limit(limit: int | None):
+	return max(1, min(int(limit or 20), 100))
+
+
+def _normalize_start(start: int | None):
+	return max(0, int(start or 0))
+
+
+def _normalize_disabled(value):
+	if value in (None, ""):
+		return None
+	return cint(value)
+
+
+def _normalize_sort(sort_by: str | None, sort_order: str | None):
+	allowed_sort_by = {"modified", "creation", "supplier_name", "name"}
+	allowed_sort_order = {"asc", "desc"}
+	resolved_sort_by = _normalize_text(sort_by) or "modified"
+	resolved_sort_order = (_normalize_text(sort_order) or "desc").lower()
+	if resolved_sort_by not in allowed_sort_by:
+		resolved_sort_by = "modified"
+	if resolved_sort_order not in allowed_sort_order:
+		resolved_sort_order = "desc"
+	return resolved_sort_by, resolved_sort_order
+
+
+def _safe_doc_field(doctype: str, fieldname: str) -> bool:
+	try:
+		return bool(frappe.get_meta(doctype).has_field(fieldname))
+	except Exception:
+		return False
+
+
+def _build_supplier_snapshot_for_doc(doc):
+	contact_doc = _get_doc_if_exists("Contact", doc.get("contact_person"))
+	address_doc = _get_doc_if_exists("Address", doc.get("supplier_address"))
+
+	return {
+		"name": doc.get("supplier"),
+		"display_name": doc.get("supplier_name") or doc.get("supplier"),
+		"contact_person": doc.get("contact_person"),
+		"contact_display_name": _extract_first_non_empty(
+			doc.get("contact_display"),
+			getattr(contact_doc, "full_name", None) if contact_doc else None,
+			getattr(contact_doc, "first_name", None) if contact_doc else None,
+		),
+		"contact_phone": _extract_first_non_empty(
+			doc.get("contact_mobile"),
+			doc.get("contact_phone"),
+			getattr(contact_doc, "mobile_no", None) if contact_doc else None,
+			getattr(contact_doc, "phone", None) if contact_doc else None,
+		),
+		"contact_email": _extract_first_non_empty(
+			doc.get("contact_email"),
+			getattr(contact_doc, "email_id", None) if contact_doc else None,
+		),
+		"supplier_address_name": doc.get("supplier_address"),
+		"supplier_address_text": _extract_first_non_empty(
+			doc.get("address_display"),
+			getattr(address_doc, "address_display", None) if address_doc else None,
+			getattr(address_doc, "address_line1", None) if address_doc else None,
+		),
+	}
+
+
+def _build_supplier_address_snapshot_for_doc(doc):
+	address_doc = _get_doc_if_exists("Address", doc.get("supplier_address"))
+	contact_doc = _get_doc_if_exists("Contact", doc.get("contact_person"))
+
+	return {
+		"supplier_address_name": doc.get("supplier_address"),
+		"supplier_address_text": _extract_first_non_empty(
+			doc.get("address_display"),
+			getattr(address_doc, "address_display", None) if address_doc else None,
+			getattr(address_doc, "address_line1", None) if address_doc else None,
+		),
+		"address_line1": _extract_first_non_empty(
+			getattr(address_doc, "address_line1", None) if address_doc else None,
+		),
+		"address_line2": _extract_first_non_empty(
+			getattr(address_doc, "address_line2", None) if address_doc else None,
+		),
+		"city": _extract_first_non_empty(getattr(address_doc, "city", None) if address_doc else None),
+		"county": _extract_first_non_empty(getattr(address_doc, "county", None) if address_doc else None),
+		"state": _extract_first_non_empty(getattr(address_doc, "state", None) if address_doc else None),
+		"country": _extract_first_non_empty(getattr(address_doc, "country", None) if address_doc else None),
+		"pincode": _extract_first_non_empty(getattr(address_doc, "pincode", None) if address_doc else None),
+		"contact_person": doc.get("contact_person"),
+		"contact_display": _extract_first_non_empty(
+			doc.get("contact_display"),
+			getattr(contact_doc, "full_name", None) if contact_doc else None,
+			getattr(contact_doc, "first_name", None) if contact_doc else None,
+		),
+		"contact_phone": _extract_first_non_empty(
+			doc.get("contact_mobile"),
+			doc.get("contact_phone"),
+			getattr(contact_doc, "mobile_no", None) if contact_doc else None,
+			getattr(contact_doc, "phone", None) if contact_doc else None,
+		),
+		"contact_email": _extract_first_non_empty(
+			doc.get("contact_email"),
+			getattr(contact_doc, "email_id", None) if contact_doc else None,
+		),
+	}
+
+
+def _build_purchase_receiving_summary(order_items):
+	total_qty = _sum_row_values(order_items, "qty")
+	received_qty = _sum_row_values(order_items, "received_qty")
+	remaining_qty = max(total_qty - received_qty, 0)
+
+	if received_qty <= 0:
+		status = "pending"
+	elif received_qty < total_qty:
+		status = "partial"
+	else:
+		status = "received"
+
+	return {
+		"total_qty": total_qty,
+		"received_qty": received_qty,
+		"remaining_qty": remaining_qty,
+		"status": status,
+		"is_fully_received": total_qty > 0 and remaining_qty <= 0,
+	}
+
+
+def _build_purchase_completion_summary(receiving: dict, payment: dict, *, docstatus: int):
+	if cint(docstatus) == 2:
+		return {"status": "closed", "is_completed": False}
+
+	is_completed = bool(receiving.get("is_fully_received") and payment.get("is_fully_paid"))
+	return {
+		"status": "completed" if is_completed else "open",
+		"is_completed": is_completed,
+	}
+
+
+def _build_purchase_order_action_flags(receiving: dict, payment: dict, *, invoice_names: list[str], receipt_names: list[str], docstatus: int):
+	is_submitted = cint(docstatus) == 1
+	return {
+		"can_receive_purchase_order": is_submitted and not receiving.get("is_fully_received"),
+		"can_create_purchase_invoice": is_submitted and not payment.get("is_fully_paid"),
+		"can_record_supplier_payment": is_submitted and payment.get("outstanding_amount", 0) > 0,
+		"can_process_purchase_return": bool(is_submitted and (invoice_names or receipt_names)),
+	}
+
+
+def _build_purchase_receipt_action_flags(*, docstatus: int, purchase_invoices: list[str]):
+	is_submitted = cint(docstatus) == 1
+	can_cancel = is_submitted and not purchase_invoices
+	return {
+		"can_cancel_purchase_receipt": can_cancel,
+		"cancel_purchase_receipt_hint": (
+			_("当前收货单已关联采购发票，请先作废采购发票，再回退收货单。")
+			if is_submitted and purchase_invoices
+			else None
+		),
+	}
+
+
+def _build_purchase_invoice_action_flags(*, docstatus: int, latest_payment_entry: str | None, paid_amount: float):
+	is_submitted = cint(docstatus) == 1
+	has_payment = bool(latest_payment_entry) or flt(paid_amount) > 0
+	return {
+		"can_cancel_purchase_invoice": is_submitted,
+		"cancel_purchase_invoice_hint": (
+			_("当前采购发票已经存在付款记录；若系统未启用作废时自动解绑付款，将需要先处理付款后才能作废。")
+			if is_submitted and has_payment
+			else None
+		),
+	}
+
+
+def _serialize_purchase_order_items(order_items):
+	return [
+		{
+			"purchase_order_item": getattr(item, "name", None),
+			"item_code": getattr(item, "item_code", None),
+			"item_name": getattr(item, "item_name", None),
+			"uom": getattr(item, "uom", None),
+			"warehouse": getattr(item, "warehouse", None),
+			"qty": flt(getattr(item, "qty", 0) or 0),
+			"received_qty": flt(getattr(item, "received_qty", 0) or 0),
+			"billed_amt": flt(getattr(item, "billed_amt", 0) or 0),
+			"rate": flt(getattr(item, "rate", 0) or 0),
+			"amount": flt(getattr(item, "amount", 0) or 0),
+			"schedule_date": getattr(item, "schedule_date", None),
+		}
+		for item in order_items or []
+	]
+
+
+def _serialize_purchase_receipt_items(receipt_items):
+	return [
+		{
+			"purchase_receipt_item": getattr(item, "name", None),
+			"item_code": getattr(item, "item_code", None),
+			"item_name": getattr(item, "item_name", None),
+			"uom": getattr(item, "uom", None),
+			"warehouse": getattr(item, "warehouse", None),
+			"qty": flt(getattr(item, "qty", 0) or 0),
+			"rate": flt(getattr(item, "rate", 0) or 0),
+			"amount": flt(getattr(item, "amount", 0) or 0),
+			"purchase_order": getattr(item, "purchase_order", None),
+			"purchase_order_item": getattr(item, "purchase_order_item", None),
+		}
+		for item in receipt_items or []
+	]
+
+
+def _serialize_purchase_invoice_items(invoice_items):
+	return [
+		{
+			"purchase_invoice_item": getattr(item, "name", None),
+			"item_code": getattr(item, "item_code", None),
+			"item_name": getattr(item, "item_name", None),
+			"uom": getattr(item, "uom", None),
+			"warehouse": getattr(item, "warehouse", None),
+			"qty": flt(getattr(item, "qty", 0) or 0),
+			"rate": flt(getattr(item, "rate", 0) or 0),
+			"amount": flt(getattr(item, "amount", 0) or 0),
+			"purchase_order": getattr(item, "purchase_order", None),
+			"purchase_order_item": getattr(item, "po_detail", None),
+			"purchase_receipt": getattr(item, "purchase_receipt", None),
+			"purchase_receipt_item": getattr(item, "pr_detail", None),
+		}
+		for item in invoice_items or []
+	]
+
+
+def _collect_purchase_order_reference_names(order_name: str):
+	receipt_rows = frappe.get_all(
+		"Purchase Receipt Item",
+		filters={"purchase_order": order_name, "docstatus": 1},
+		fields=["parent"],
+	)
+	receipt_names = sorted({row.parent for row in receipt_rows if getattr(row, "parent", None)})
+
+	invoice_rows = frappe.get_all(
+		"Purchase Invoice Item",
+		filters={"purchase_order": order_name, "docstatus": 1},
+		fields=["parent"],
+	)
+	invoice_names = sorted({row.parent for row in invoice_rows if getattr(row, "parent", None)})
+	return receipt_names, invoice_names
+
+
+def _load_purchase_invoice_rows(invoice_names: list[str]):
+	if not invoice_names:
+		return []
+
+	return frappe.get_all(
+		"Purchase Invoice",
+		filters={"name": ["in", invoice_names], "docstatus": 1, "is_return": 0},
+		fields=["name", "grand_total", "rounded_total", "base_rounded_total", "outstanding_amount"],
+	)
+
+
+def _get_latest_purchase_payment_entry_summary(invoice_names: list[str]):
+	if not invoice_names:
+		return {
+			"payment_entry": None,
+			"invoice_name": None,
+			"allocated_amount": 0,
+			"unallocated_amount": 0,
+			"writeoff_amount": 0,
+			"actual_paid_amount": 0,
+			"total_actual_paid_amount": 0,
+			"total_writeoff_amount": 0,
+		}
+
+	reference_rows = frappe.get_all(
+		"Payment Entry Reference",
+		filters={
+			"reference_doctype": "Purchase Invoice",
+			"reference_name": ["in", invoice_names],
+			"parenttype": "Payment Entry",
+			"parentfield": "references",
+		},
+		fields=["parent", "reference_name", "allocated_amount", "modified"],
+		order_by="modified desc",
+		limit_page_length=50,
+	)
+	if not reference_rows:
+		return {
+			"payment_entry": None,
+			"invoice_name": None,
+			"allocated_amount": 0,
+			"unallocated_amount": 0,
+			"writeoff_amount": 0,
+			"actual_paid_amount": 0,
+			"total_actual_paid_amount": 0,
+			"total_writeoff_amount": 0,
+		}
+
+	parent_names = []
+	for row in reference_rows:
+		parent = getattr(row, "parent", None)
+		if parent and parent not in parent_names:
+			parent_names.append(parent)
+
+	payment_entry_rows = frappe.get_all(
+		"Payment Entry",
+		filters={"name": ["in", parent_names], "docstatus": 1},
+		fields=["name", "paid_amount", "received_amount", "unallocated_amount", "difference_amount", "modified"],
+		order_by="modified desc",
+		limit_page_length=len(parent_names),
+	)
+	if not payment_entry_rows:
+		return {
+			"payment_entry": None,
+			"invoice_name": None,
+			"allocated_amount": 0,
+			"unallocated_amount": 0,
+			"writeoff_amount": 0,
+			"actual_paid_amount": 0,
+			"total_actual_paid_amount": 0,
+			"total_writeoff_amount": 0,
+		}
+
+	payment_entry_map = {getattr(row, "name", None): row for row in payment_entry_rows}
+	total_allocated_by_parent = {}
+	for row in reference_rows:
+		parent = getattr(row, "parent", None)
+		if not parent:
+			continue
+		total_allocated_by_parent[parent] = total_allocated_by_parent.get(parent, 0) + flt(
+			getattr(row, "allocated_amount", 0) or 0
+		)
+
+	total_actual_paid_amount = 0
+	total_writeoff_amount = 0
+	for row in reference_rows:
+		parent = getattr(row, "parent", None)
+		payment_entry = payment_entry_map.get(parent)
+		if not payment_entry:
+			continue
+		allocated_amount = flt(getattr(row, "allocated_amount", 0) or 0)
+		parent_total_allocated = flt(total_allocated_by_parent.get(parent, 0) or 0)
+		parent_paid_amount = flt(
+			getattr(payment_entry, "paid_amount", None)
+			or getattr(payment_entry, "received_amount", None)
+			or 0
+		)
+		parent_effective_paid_amount = min(parent_paid_amount, parent_total_allocated)
+		attributed_actual_paid = (
+			parent_effective_paid_amount * allocated_amount / parent_total_allocated
+			if parent_total_allocated > 0
+			else 0
+		)
+		attributed_writeoff = max(allocated_amount - attributed_actual_paid, 0)
+		total_writeoff_amount += attributed_writeoff
+		total_actual_paid_amount += max(attributed_actual_paid, 0)
+
+	latest_payment_entry = payment_entry_rows[0]
+	latest_payment_entry_name = getattr(latest_payment_entry, "name", None)
+	latest_reference = next(
+		(row for row in reference_rows if getattr(row, "parent", None) == latest_payment_entry_name),
+		None,
+	)
+	allocated_amount = flt(getattr(latest_reference, "allocated_amount", 0) or 0)
+	paid_amount = flt(
+		getattr(latest_payment_entry, "paid_amount", None)
+		or getattr(latest_payment_entry, "received_amount", None)
+		or 0
+	)
+	unallocated_amount = flt(getattr(latest_payment_entry, "unallocated_amount", 0) or 0)
+	parent_total_allocated = flt(total_allocated_by_parent.get(latest_payment_entry_name, 0) or 0)
+	parent_effective_paid_amount = min(paid_amount, parent_total_allocated)
+	actual_paid_amount = (
+		parent_effective_paid_amount * allocated_amount / parent_total_allocated
+		if parent_total_allocated > 0
+		else 0
+	)
+	writeoff_amount = max(allocated_amount - actual_paid_amount, 0)
+
+	return {
+		"payment_entry": latest_payment_entry_name,
+		"invoice_name": getattr(latest_reference, "reference_name", None) if latest_reference else None,
+		"allocated_amount": allocated_amount,
+		"unallocated_amount": unallocated_amount,
+		"writeoff_amount": writeoff_amount,
+		"actual_paid_amount": actual_paid_amount,
+		"total_actual_paid_amount": total_actual_paid_amount,
+		"total_writeoff_amount": total_writeoff_amount,
+	}
+
+
+def _build_purchase_receipt_references(receipt_name: str, receipt_items):
+	purchase_orders = []
+	for item in receipt_items or []:
+		order_name = getattr(item, "purchase_order", None)
+		if order_name and order_name not in purchase_orders:
+			purchase_orders.append(order_name)
+
+	invoice_rows = frappe.get_all(
+		"Purchase Invoice Item",
+		filters={
+			"purchase_receipt": receipt_name,
+			"docstatus": 1,
+		},
+		fields=["parent"],
+		limit_page_length=100,
+	)
+	purchase_invoices = []
+	for row in invoice_rows:
+		parent = getattr(row, "parent", None)
+		if parent and parent not in purchase_invoices:
+			purchase_invoices.append(parent)
+
+	return {
+		"purchase_orders": purchase_orders,
+		"purchase_invoices": purchase_invoices,
+	}
+
+
+def _build_purchase_invoice_references(invoice_items):
+	purchase_orders = []
+	purchase_receipts = []
+	for item in invoice_items or []:
+		order_name = getattr(item, "purchase_order", None)
+		if order_name and order_name not in purchase_orders:
+			purchase_orders.append(order_name)
+
+		receipt_name = getattr(item, "purchase_receipt", None)
+		if receipt_name and receipt_name not in purchase_receipts:
+			purchase_receipts.append(receipt_name)
+
+	return {
+		"purchase_orders": purchase_orders,
+		"purchase_receipts": purchase_receipts,
+	}
+
+
+def get_purchase_order_detail_v2(order_name: str):
+	if not order_name:
+		frappe.throw(_("order_name 不能为空。"))
+
+	try:
+		po = frappe.get_doc("Purchase Order", order_name)
+		order_items = list(po.get("items") or [])
+		receipt_names, invoice_names = _collect_purchase_order_reference_names(order_name)
+		invoice_rows = _load_purchase_invoice_rows(invoice_names)
+
+		receiving = _build_purchase_receiving_summary(order_items)
+		payment = _build_payment_summary(invoice_rows)
+		latest_payment_entry = _get_latest_purchase_payment_entry_summary(invoice_names)
+		payment["actual_paid_amount"] = latest_payment_entry.get("total_actual_paid_amount")
+		payment["total_writeoff_amount"] = latest_payment_entry.get("total_writeoff_amount")
+		payment["latest_payment_entry"] = latest_payment_entry.get("payment_entry")
+		payment["latest_payment_invoice"] = latest_payment_entry.get("invoice_name")
+		payment["latest_unallocated_amount"] = latest_payment_entry.get("unallocated_amount")
+		payment["latest_writeoff_amount"] = latest_payment_entry.get("writeoff_amount")
+		payment["latest_actual_paid_amount"] = latest_payment_entry.get("actual_paid_amount")
+		completion = _build_purchase_completion_summary(receiving, payment, docstatus=po.docstatus)
+
+		return {
+			"status": "success",
+			"data": {
+				"purchase_order_name": po.name,
+				"document_status": _document_status_label(po.docstatus),
+				"supplier": _build_supplier_snapshot_for_doc(po),
+				"address": _build_supplier_address_snapshot_for_doc(po),
+				"amounts": {
+					"order_amount_estimate": flt(po.get("rounded_total") or po.get("grand_total") or 0),
+					"receivable_amount": payment["receivable_amount"],
+					"paid_amount": payment["paid_amount"],
+					"outstanding_amount": payment["outstanding_amount"],
+				},
+				"receiving": receiving,
+				"payment": payment,
+				"completion": completion,
+				"actions": _build_purchase_order_action_flags(
+					receiving,
+					payment,
+					invoice_names=invoice_names,
+					receipt_names=receipt_names,
+					docstatus=po.docstatus,
+				),
+				"items": _serialize_purchase_order_items(order_items),
+				"references": {
+					"purchase_receipts": receipt_names,
+					"purchase_invoices": invoice_names,
+					"latest_payment_entry": latest_payment_entry.get("payment_entry"),
+				},
+				"meta": {
+					"company": po.company,
+					"currency": po.get("currency"),
+					"transaction_date": po.get("transaction_date"),
+					"schedule_date": po.get("schedule_date"),
+					"remarks": po.get("remarks"),
+					"supplier_ref": po.get("supplier_ref"),
+				},
+			},
+			"message": _("采购订单 {0} 详情获取成功。").format(po.name),
+		}
+	except frappe.DoesNotExistError:
+		raise
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("采购订单详情获取失败"))
+		raise
+
+
+def get_purchase_receipt_detail_v2(receipt_name: str):
+	if not receipt_name:
+		frappe.throw(_("receipt_name 不能为空。"))
+
+	try:
+		pr = frappe.get_doc("Purchase Receipt", receipt_name)
+		receipt_items = list(pr.get("items") or [])
+		references = _build_purchase_receipt_references(receipt_name, receipt_items)
+		total_qty = _sum_row_values(receipt_items, "qty")
+
+		return {
+			"status": "success",
+			"data": {
+				"purchase_receipt_name": pr.name,
+				"document_status": _document_status_label(pr.docstatus),
+				"supplier": _build_supplier_snapshot_for_doc(pr),
+				"address": _build_supplier_address_snapshot_for_doc(pr),
+				"amounts": {
+					"receipt_amount_estimate": flt(pr.get("rounded_total") or pr.get("grand_total") or 0),
+				},
+				"receiving": {
+					"total_qty": total_qty,
+					"status": "received" if cint(pr.docstatus) == 1 else "draft",
+				},
+				"actions": _build_purchase_receipt_action_flags(
+					docstatus=pr.docstatus,
+					purchase_invoices=references.get("purchase_invoices", []),
+				),
+				"references": references,
+				"items": _serialize_purchase_receipt_items(receipt_items),
+				"meta": {
+					"company": pr.company,
+					"currency": pr.get("currency"),
+					"posting_date": pr.get("posting_date"),
+					"posting_time": pr.get("posting_time"),
+					"remarks": pr.get("remarks"),
+				},
+			},
+			"message": _("采购收货单 {0} 详情获取成功。").format(pr.name),
+		}
+	except frappe.DoesNotExistError:
+		raise
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("采购收货单详情获取失败"))
+		raise
+
+
+def get_purchase_invoice_detail_v2(invoice_name: str):
+	if not invoice_name:
+		frappe.throw(_("invoice_name 不能为空。"))
+
+	try:
+		pi = frappe.get_doc("Purchase Invoice", invoice_name)
+		invoice_items = list(pi.get("items") or [])
+		references = _build_purchase_invoice_references(invoice_items)
+		payment = _build_payment_summary([pi])
+		latest_payment_entry = _get_latest_purchase_payment_entry_summary([pi.name])
+		payment["actual_paid_amount"] = latest_payment_entry.get("total_actual_paid_amount")
+		payment["total_writeoff_amount"] = latest_payment_entry.get("total_writeoff_amount")
+		payment["latest_payment_entry"] = latest_payment_entry.get("payment_entry")
+		payment["latest_payment_invoice"] = latest_payment_entry.get("invoice_name")
+		payment["latest_unallocated_amount"] = latest_payment_entry.get("unallocated_amount")
+		payment["latest_writeoff_amount"] = latest_payment_entry.get("writeoff_amount")
+		payment["latest_actual_paid_amount"] = latest_payment_entry.get("actual_paid_amount")
+
+		return {
+			"status": "success",
+			"data": {
+				"purchase_invoice_name": pi.name,
+				"document_status": _document_status_label(pi.docstatus),
+				"supplier": _build_supplier_snapshot_for_doc(pi),
+				"address": _build_supplier_address_snapshot_for_doc(pi),
+				"amounts": {
+					"invoice_amount_estimate": flt(pi.get("rounded_total") or pi.get("grand_total") or 0),
+					"receivable_amount": payment["receivable_amount"],
+					"paid_amount": payment["paid_amount"],
+					"outstanding_amount": payment["outstanding_amount"],
+				},
+				"payment": payment,
+				"actions": _build_purchase_invoice_action_flags(
+					docstatus=pi.docstatus,
+					latest_payment_entry=latest_payment_entry.get("payment_entry"),
+					paid_amount=flt(payment.get("paid_amount") or 0),
+				),
+				"references": {
+					**references,
+					"latest_payment_entry": latest_payment_entry.get("payment_entry"),
+				},
+				"items": _serialize_purchase_invoice_items(invoice_items),
+				"meta": {
+					"company": pi.company,
+					"currency": pi.get("currency"),
+					"posting_date": pi.get("posting_date"),
+					"due_date": pi.get("due_date"),
+					"remarks": pi.get("remarks"),
+				},
+			},
+			"message": _("采购发票 {0} 详情获取成功。").format(pi.name),
+		}
+	except frappe.DoesNotExistError:
+		raise
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("采购发票详情获取失败"))
+		raise
+
+
+def get_purchase_order_status_summary(supplier: str | None = None, company: str | None = None, limit: int = 20):
+	limit = max(1, min(int(limit or 20), 100))
+	filters = {}
+	if supplier:
+		filters["supplier"] = supplier
+	if company:
+		filters["company"] = company
+
+	try:
+		order_rows = frappe.get_all(
+			"Purchase Order",
+			filters=filters,
+			fields=[
+				"name",
+				"supplier",
+				"supplier_name",
+				"transaction_date",
+				"company",
+				"docstatus",
+				"rounded_total",
+				"grand_total",
+				"modified",
+			],
+			order_by="modified desc",
+			limit_page_length=limit,
+		)
+
+		summaries = []
+		for row in order_rows:
+			detail = get_purchase_order_detail_v2(row.name)
+			data = detail.get("data", {})
+			summaries.append(
+				{
+					"purchase_order_name": row.name,
+					"supplier_name": row.supplier_name or row.supplier,
+					"supplier": row.supplier,
+					"company": row.company,
+					"transaction_date": row.transaction_date,
+					"document_status": _document_status_label(row.docstatus),
+					"order_amount_estimate": flt(row.rounded_total or row.grand_total or 0),
+					"receiving": data.get("receiving", {}),
+					"payment": data.get("payment", {}),
+					"completion": data.get("completion", {}),
+					"outstanding_amount": flt(data.get("payment", {}).get("outstanding_amount", 0) or 0),
+					"modified": row.modified,
+				}
+			)
+
+		return {
+			"status": "success",
+			"data": summaries,
+			"meta": {
+				"filters": {
+					"supplier": supplier,
+					"company": company,
+					"limit": limit,
+				}
+			},
+			"message": _("采购订单状态摘要获取成功。"),
+		}
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("采购订单状态摘要获取失败"))
+		raise
+
+
+def _get_recent_purchase_order_addresses(supplier: str, limit: int = 5):
+	rows = frappe.get_all(
+		"Purchase Order",
+		filters={"supplier": supplier, "docstatus": 1},
+		fields=["supplier_address", "address_display"],
+		order_by="modified desc",
+		limit_page_length=max(limit * 3, 10),
+	)
+
+	seen = set()
+	result = []
+	for row in rows:
+		address_name = _extract_first_non_empty(getattr(row, "supplier_address", None))
+		address_text = _extract_first_non_empty(getattr(row, "address_display", None))
+		key = address_name or address_text
+		if not key or key in seen:
+			continue
+		seen.add(key)
+		result.append({"name": address_name, "address_display": address_text})
+		if len(result) >= limit:
+			break
+	return result
+
+
+def _build_supplier_payload(supplier_doc, *, include_recent_addresses: bool = False):
+	default_contact = _serialize_contact_doc(
+		_get_doc_if_exists("Contact", getattr(supplier_doc, "supplier_primary_contact", None))
+	)
+	default_address = _serialize_address_doc(
+		_get_doc_if_exists("Address", getattr(supplier_doc, "supplier_primary_address", None))
+	)
+	data = {
+		"name": supplier_doc.name,
+		"display_name": getattr(supplier_doc, "supplier_name", None) or supplier_doc.name,
+		"supplier_name": getattr(supplier_doc, "supplier_name", None) or supplier_doc.name,
+		"supplier_type": getattr(supplier_doc, "supplier_type", None),
+		"supplier_group": getattr(supplier_doc, "supplier_group", None),
+		"default_currency": getattr(supplier_doc, "default_currency", None),
+		"disabled": cint(getattr(supplier_doc, "disabled", 0)),
+		"default_contact": default_contact,
+		"default_address": default_address,
+		"modified": getattr(supplier_doc, "modified", None),
+		"creation": getattr(supplier_doc, "creation", None),
+	}
+	if include_recent_addresses:
+		data["recent_addresses"] = _get_recent_purchase_order_addresses(supplier_doc.name, limit=5)
+	return data
+
+
+def get_supplier_purchase_context(supplier: str):
+	supplier = _normalize_text(supplier)
+	if not supplier:
+		frappe.throw(_("supplier 不能为空。"))
+
+	supplier_doc = frappe.get_doc("Supplier", supplier)
+	default_contact_name = _extract_first_non_empty(getattr(supplier_doc, "supplier_primary_contact", None))
+	default_address_name = _extract_first_non_empty(getattr(supplier_doc, "supplier_primary_address", None))
+
+	contact_names = [default_contact_name] if default_contact_name else []
+	for name in _get_linked_parent_names(supplier, parenttype="Contact", limit=5):
+		if name not in contact_names:
+			contact_names.append(name)
+
+	address_names = [default_address_name] if default_address_name else []
+	for name in _get_linked_parent_names(supplier, parenttype="Address", limit=5):
+		if name not in address_names:
+			address_names.append(name)
+
+	default_contact = _serialize_contact_doc(_get_doc_if_exists("Contact", contact_names[0] if contact_names else None))
+	default_address = _serialize_address_doc(_get_doc_if_exists("Address", address_names[0] if address_names else None))
+	company = _extract_first_non_empty(frappe.defaults.get_user_default("company"))
+	warehouse = _get_default_warehouse_for_context(company)
+
+	return {
+		"status": "success",
+		"message": _("供应商 {0} 采购上下文获取成功。").format(
+			getattr(supplier_doc, "supplier_name", None) or supplier_doc.name
+		),
+		"data": {
+			"supplier": {
+				"name": supplier_doc.name,
+				"display_name": getattr(supplier_doc, "supplier_name", None) or supplier_doc.name,
+				"supplier_group": getattr(supplier_doc, "supplier_group", None),
+				"supplier_type": getattr(supplier_doc, "supplier_type", None),
+				"default_currency": getattr(supplier_doc, "default_currency", None),
+			},
+			"default_contact": default_contact,
+			"default_address": default_address,
+			"recent_addresses": _get_recent_purchase_order_addresses(supplier_doc.name, limit=5),
+			"suggestions": {
+				"company": company,
+				"warehouse": warehouse,
+				"currency": getattr(supplier_doc, "default_currency", None),
+			},
+		},
+	}
+
+
+def list_suppliers_v2(
+	search_key: str | None = None,
+	supplier_group: str | None = None,
+	disabled: int | None = None,
+	limit: int = 20,
+	start: int = 0,
+	sort_by: str = "modified",
+	sort_order: str = "desc",
+):
+	limit = _normalize_limit(limit)
+	start = _normalize_start(start)
+	sort_by, sort_order = _normalize_sort(sort_by, sort_order)
+
+	filters = {}
+	if _normalize_text(supplier_group):
+		filters["supplier_group"] = _normalize_text(supplier_group)
+	if _normalize_disabled(disabled) is not None and _safe_doc_field("Supplier", "disabled"):
+		filters["disabled"] = _normalize_disabled(disabled)
+
+	search_key = _normalize_text(search_key)
+	or_filters = None
+	if search_key:
+		or_filters = {
+			"name": ["like", f"%{search_key}%"],
+			"supplier_name": ["like", f"%{search_key}%"],
+		}
+
+	fields = ["name", "supplier_name", "supplier_type", "supplier_group", "modified", "creation"]
+	for optional_field in ["default_currency", "disabled", "supplier_primary_contact", "supplier_primary_address"]:
+		if _safe_doc_field("Supplier", optional_field):
+			fields.append(optional_field)
+
+	rows = frappe.get_all(
+		"Supplier",
+		filters=filters,
+		or_filters=or_filters,
+		fields=fields,
+		order_by=f"{sort_by} {sort_order}",
+		start=start,
+		limit_page_length=limit,
+	)
+	total_count = len(
+		frappe.get_all(
+			"Supplier",
+			filters=filters,
+			or_filters=or_filters,
+			pluck="name",
+			limit_page_length=0,
+		)
+	)
+
+	return {
+		"status": "success",
+		"message": _("供应商列表获取成功。"),
+		"data": [_build_supplier_payload(row) for row in rows],
+		"meta": {
+			"total": total_count,
+			"start": start,
+			"limit": limit,
+			"has_more": start + len(rows) < total_count,
+		},
+	}
+
+
+def get_supplier_detail_v2(supplier: str):
+	supplier = _normalize_text(supplier)
+	if not supplier:
+		frappe.throw(_("supplier 不能为空。"))
+
+	supplier_doc = frappe.get_doc("Supplier", supplier)
+	return {
+		"status": "success",
+		"message": _("供应商 {0} 详情获取成功。").format(
+			getattr(supplier_doc, "supplier_name", None) or supplier_doc.name
+		),
+		"data": _build_supplier_payload(supplier_doc, include_recent_addresses=True),
+	}
+
+
+def _get_purchase_order_doc_for_update(order_name: str, *, allow_cancelled: bool = False):
+	if not order_name:
+		frappe.throw(_("order_name 不能为空。"))
+
+	po = frappe.get_doc("Purchase Order", order_name)
+	if cint(po.docstatus) == 2 and not allow_cancelled:
+		frappe.throw(_("已取消的采购订单不允许继续修改。"))
+	return po
+
+
+def _ensure_purchase_order_cancellable(po):
+	if cint(po.docstatus) == 2:
+		return
+	if cint(po.docstatus) != 1:
+		frappe.throw(_("只有已提交的采购订单才允许作废。"))
+
+	receipt_names, invoice_names = _collect_purchase_order_reference_names(po.name)
+	if receipt_names or invoice_names:
+		frappe.throw(_("采购订单 {0} 已存在收货或开票记录，当前不允许作废。").format(po.name))
+
+
+def _ensure_purchase_order_items_editable(po):
+	if cint(po.docstatus) == 2:
+		frappe.throw(_("已取消的采购订单不允许修改商品明细。"))
+
+	receipt_names, invoice_names = _collect_purchase_order_reference_names(po.name)
+	if receipt_names or invoice_names:
+		frappe.throw(_("采购订单 {0} 已存在收货或开票记录，当前不允许修改商品明细。").format(po.name))
+
+	receiving = _build_purchase_receiving_summary(list(po.get("items") or []))
+	if receiving.get("received_qty", 0) > 0:
+		frappe.throw(_("采购订单 {0} 已存在收货记录，当前不允许修改商品明细。").format(po.name))
+
+
+def _prepare_purchase_order_for_item_replacement(po):
+	if cint(po.docstatus) != 1:
+		return po, po.name
+
+	original_name = po.name
+	po.cancel()
+	amended = frappe.copy_doc(po)
+	amended.amended_from = original_name
+	amended.docstatus = 0
+	amended.name = None
+	return amended, original_name
+
+
+def update_purchase_order_v2(order_name: str, **kwargs):
+	request_id = kwargs.get("request_id")
+
+	try:
+		def _update_purchase_order_v2():
+			po = _get_purchase_order_doc_for_update(order_name)
+			if kwargs.get("transaction_date") is not None:
+				po.transaction_date = kwargs.get("transaction_date") or None
+			if kwargs.get("schedule_date") is not None:
+				po.schedule_date = kwargs.get("schedule_date") or None
+			if kwargs.get("remarks") is not None:
+				po.remarks = kwargs.get("remarks") or None
+			if kwargs.get("supplier_ref") is not None and po.meta.has_field("supplier_ref"):
+				po.supplier_ref = kwargs.get("supplier_ref") or None
+
+			if cint(po.docstatus) == 1:
+				po.db_set("transaction_date", po.get("transaction_date"), update_modified=True)
+				po.db_set("schedule_date", po.get("schedule_date"), update_modified=True)
+				if po.meta.has_field("remarks"):
+					po.db_set("remarks", po.get("remarks"), update_modified=True)
+				if po.meta.has_field("supplier_ref"):
+					po.db_set("supplier_ref", po.get("supplier_ref"), update_modified=True)
+				po.reload()
+			else:
+				po.save()
+				po.reload()
+
+			return {
+				"status": "success",
+				"purchase_order": po.name,
+				"message": _("采购订单 {0} 已按 v2 模型更新。").format(po.name),
+				"meta": {
+					"transaction_date": po.get("transaction_date"),
+					"schedule_date": po.get("schedule_date"),
+					"remarks": po.get("remarks"),
+					"supplier_ref": po.get("supplier_ref"),
+				},
+			}
+
+		return run_idempotent("update_purchase_order_v2", request_id, _update_purchase_order_v2)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("v2 采购订单更新失败"))
+		raise
+
+
+def update_purchase_order_items_v2(order_name: str, items, **kwargs):
+	items = _coerce_json_value(items, [])
+	request_id = kwargs.get("request_id")
+
+	try:
+		def _update_purchase_order_items_v2():
+			po = _get_purchase_order_doc_for_update(order_name)
+			_ensure_purchase_order_items_editable(po)
+			target_po, source_order_name = _prepare_purchase_order_for_item_replacement(po)
+
+			company = kwargs.get("company") or target_po.company
+			schedule_date = kwargs.get("schedule_date") or target_po.get("schedule_date") or nowdate()
+			default_warehouse = kwargs.get("default_warehouse")
+
+			if not items:
+				frappe.throw(_("无法将采购订单更新为空商品明细。"))
+
+			normalized_items = [
+				_build_purchase_order_item(item, schedule_date, default_warehouse, company)
+				for item in items
+			]
+
+			target_po.set("items", [])
+			for row in normalized_items:
+				target_po.append("items", row)
+
+			if kwargs.get("schedule_date") is not None:
+				target_po.schedule_date = kwargs.get("schedule_date") or None
+
+			_insert_and_submit(target_po)
+
+			return {
+				"status": "success",
+				"purchase_order": target_po.name,
+				"source_purchase_order": source_order_name,
+				"message": _("采购订单 {0} 商品明细已按 v2 模型更新。").format(target_po.name),
+				"items": _serialize_purchase_order_items(list(target_po.get("items") or [])),
+				"meta": {
+					"schedule_date": target_po.get("schedule_date"),
+					"company": target_po.company,
+				},
+			}
+
+		return run_idempotent("update_purchase_order_items_v2", request_id, _update_purchase_order_items_v2)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("v2 采购订单商品明细更新失败"))
+		raise
+
+
+def cancel_purchase_order_v2(order_name: str, **kwargs):
+	request_id = kwargs.get("request_id")
+
+	try:
+		def _cancel_purchase_order_v2():
+			po = _get_purchase_order_doc_for_update(order_name, allow_cancelled=True)
+			receipt_names, invoice_names = _collect_purchase_order_reference_names(po.name)
+
+			if cint(po.docstatus) == 2:
+				detail = get_purchase_order_detail_v2(po.name)
+				return {
+					"status": "success",
+					"purchase_order": po.name,
+					"document_status": "cancelled",
+					"message": _("采购订单 {0} 已处于作废状态。").format(po.name),
+					"references": {
+						"purchase_receipts": receipt_names,
+						"purchase_invoices": invoice_names,
+					},
+					"detail": detail.get("data", {}),
+				}
+
+			_ensure_purchase_order_cancellable(po)
+			po.cancel()
+			detail = get_purchase_order_detail_v2(po.name)
+			return {
+				"status": "success",
+				"purchase_order": po.name,
+				"document_status": "cancelled",
+				"message": _("采购订单 {0} 已按 v2 模型作废。").format(po.name),
+				"references": {
+					"purchase_receipts": receipt_names,
+					"purchase_invoices": invoice_names,
+				},
+				"detail": detail.get("data", {}),
+			}
+
+		return run_idempotent("cancel_purchase_order_v2", request_id, _cancel_purchase_order_v2)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("v2 采购订单作废失败"))
+		raise
+
+
+def cancel_purchase_receipt_v2(receipt_name: str, **kwargs):
+	request_id = kwargs.get("request_id")
+
+	try:
+		def _cancel_purchase_receipt_v2():
+			pr = frappe.get_doc("Purchase Receipt", receipt_name)
+			references = _build_purchase_receipt_references(receipt_name, list(pr.get("items") or []))
+
+			if cint(pr.docstatus) == 2:
+				detail = get_purchase_receipt_detail_v2(pr.name)
+				return {
+					"status": "success",
+					"purchase_receipt": pr.name,
+					"document_status": "cancelled",
+					"references": references,
+					"message": _("采购收货单 {0} 已处于作废状态。").format(pr.name),
+					"detail": detail.get("data", {}),
+				}
+
+			if cint(pr.docstatus) != 1:
+				frappe.throw(_("只有已提交的采购收货单才能作废。"))
+			if references.get("purchase_invoices"):
+				frappe.throw(_("当前采购收货单已关联采购发票，请先作废采购发票，再回退收货单。"))
+
+			pr.cancel()
+			detail = get_purchase_receipt_detail_v2(pr.name)
+			return {
+				"status": "success",
+				"purchase_receipt": pr.name,
+				"document_status": "cancelled",
+				"references": references,
+				"message": _("采购收货单 {0} 已作废。").format(pr.name),
+				"detail": detail.get("data", {}),
+			}
+
+		return run_idempotent("cancel_purchase_receipt_v2", request_id, _cancel_purchase_receipt_v2)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("采购收货单作废失败"))
+		raise
+
+
+def cancel_purchase_invoice_v2(invoice_name: str, **kwargs):
+	request_id = kwargs.get("request_id")
+
+	try:
+		def _cancel_purchase_invoice_v2():
+			pi = frappe.get_doc("Purchase Invoice", invoice_name)
+			detail_before = get_purchase_invoice_detail_v2(pi.name).get("data", {})
+
+			if cint(pi.docstatus) == 2:
+				return {
+					"status": "success",
+					"purchase_invoice": pi.name,
+					"document_status": "cancelled",
+					"references": detail_before.get("references", {}),
+					"message": _("采购发票 {0} 已处于作废状态。").format(pi.name),
+					"detail": detail_before,
+				}
+
+			if cint(pi.docstatus) != 1:
+				frappe.throw(_("只有已提交的采购发票才能作废。"))
+
+			pi.cancel()
+			detail = get_purchase_invoice_detail_v2(pi.name)
+			return {
+				"status": "success",
+				"purchase_invoice": pi.name,
+				"document_status": "cancelled",
+				"references": detail_before.get("references", {}),
+				"message": _("采购发票 {0} 已作废。").format(pi.name),
+				"detail": detail.get("data", {}),
+			}
+
+		return run_idempotent("cancel_purchase_invoice_v2", request_id, _cancel_purchase_invoice_v2)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("采购发票作废失败"))
+		raise
+
+
+def cancel_supplier_payment(payment_entry_name: str, **kwargs):
+	result = cancel_payment_entry(payment_entry_name, **kwargs)
+	return {
+		"status": result.get("status"),
+		"payment_entry": result.get("payment_entry"),
+		"document_status": result.get("document_status"),
+		"references": result.get("references", []),
+		"message": (
+			_("供应商付款单 {0} 已作废。").format(result.get("payment_entry"))
+			if result.get("document_status") == "cancelled"
+			else result.get("message")
+		),
+	}
 
 
 def _ensure_target_has_items(doc, message: str):

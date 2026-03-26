@@ -27,12 +27,31 @@ from .orders_api import update_order_items_v2 as update_order_items_v2_service
 from .orders_api import update_order_v2 as update_order_v2_service
 from .purchase_api import create_purchase_invoice as create_purchase_invoice_service
 from .purchase_api import (
+	cancel_purchase_invoice_v2 as cancel_purchase_invoice_v2_service,
+)
+from .purchase_api import (
+	cancel_purchase_order_v2 as cancel_purchase_order_v2_service,
+)
+from .purchase_api import (
+	cancel_purchase_receipt_v2 as cancel_purchase_receipt_v2_service,
+)
+from .purchase_api import cancel_supplier_payment as cancel_supplier_payment_service
+from .purchase_api import (
 	create_purchase_invoice_from_receipt as create_purchase_invoice_from_receipt_service,
 )
 from .purchase_api import create_purchase_order as create_purchase_order_service
+from .purchase_api import get_purchase_invoice_detail_v2 as get_purchase_invoice_detail_v2_service
+from .purchase_api import get_purchase_order_detail_v2 as get_purchase_order_detail_v2_service
+from .purchase_api import get_purchase_order_status_summary as get_purchase_order_status_summary_service
+from .purchase_api import get_purchase_receipt_detail_v2 as get_purchase_receipt_detail_v2_service
+from .purchase_api import get_supplier_detail_v2 as get_supplier_detail_v2_service
+from .purchase_api import get_supplier_purchase_context as get_supplier_purchase_context_service
+from .purchase_api import list_suppliers_v2 as list_suppliers_v2_service
 from .purchase_api import process_purchase_return as process_purchase_return_service
 from .purchase_api import receive_purchase_order as receive_purchase_order_service
 from .purchase_api import record_supplier_payment as record_supplier_payment_service
+from .purchase_api import update_purchase_order_items_v2 as update_purchase_order_items_v2_service
+from .purchase_api import update_purchase_order_v2 as update_purchase_order_v2_service
 from .settlement_api import confirm_pending_document as confirm_pending_document_service
 from .settlement_api import cancel_payment_entry as cancel_payment_entry_service
 from .settlement_api import process_sales_return as process_sales_return_service
@@ -312,6 +331,126 @@ def create_purchase_order(supplier: str, items, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_purchase_order_service(supplier=supplier, items=items, **kwargs),
 		success_code="PURCHASE_ORDER_CREATED",
+	)
+
+
+@frappe.whitelist()
+def get_purchase_order_detail_v2(order_name: str):
+	return _handle_gateway_call(
+		lambda: get_purchase_order_detail_v2_service(order_name=order_name),
+		success_code="PURCHASE_ORDER_DETAIL_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_purchase_order_status_summary(supplier: str | None = None, company: str | None = None, limit: int = 20):
+	return _handle_gateway_call(
+		lambda: get_purchase_order_status_summary_service(supplier=supplier, company=company, limit=limit),
+		success_code="PURCHASE_ORDER_STATUS_SUMMARY_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_purchase_receipt_detail_v2(receipt_name: str):
+	return _handle_gateway_call(
+		lambda: get_purchase_receipt_detail_v2_service(receipt_name=receipt_name),
+		success_code="PURCHASE_RECEIPT_DETAIL_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_purchase_invoice_detail_v2(invoice_name: str):
+	return _handle_gateway_call(
+		lambda: get_purchase_invoice_detail_v2_service(invoice_name=invoice_name),
+		success_code="PURCHASE_INVOICE_DETAIL_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_supplier_purchase_context(supplier: str):
+	return _handle_gateway_call(
+		lambda: get_supplier_purchase_context_service(supplier=supplier),
+		success_code="SUPPLIER_PURCHASE_CONTEXT_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def list_suppliers_v2(
+	search_key: str | None = None,
+	supplier_group: str | None = None,
+	disabled: int | None = None,
+	limit: int = 20,
+	start: int = 0,
+	sort_by: str = "modified",
+	sort_order: str = "desc",
+):
+	return _handle_gateway_call(
+		lambda: list_suppliers_v2_service(
+			search_key=search_key,
+			supplier_group=supplier_group,
+			disabled=disabled,
+			limit=limit,
+			start=start,
+			sort_by=sort_by,
+			sort_order=sort_order,
+		),
+		success_code="SUPPLIER_LIST_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_supplier_detail_v2(supplier: str):
+	return _handle_gateway_call(
+		lambda: get_supplier_detail_v2_service(supplier=supplier),
+		success_code="SUPPLIER_DETAIL_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def update_purchase_order_v2(order_name: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: update_purchase_order_v2_service(order_name=order_name, **kwargs),
+		success_code="PURCHASE_ORDER_UPDATED",
+	)
+
+
+@frappe.whitelist()
+def update_purchase_order_items_v2(order_name: str, items, **kwargs):
+	return _handle_gateway_call(
+		lambda: update_purchase_order_items_v2_service(order_name=order_name, items=items, **kwargs),
+		success_code="PURCHASE_ORDER_ITEMS_UPDATED",
+	)
+
+
+@frappe.whitelist()
+def cancel_purchase_order_v2(order_name: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: cancel_purchase_order_v2_service(order_name=order_name, **kwargs),
+		success_code="PURCHASE_ORDER_CANCELLED",
+	)
+
+
+@frappe.whitelist()
+def cancel_purchase_receipt_v2(receipt_name: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: cancel_purchase_receipt_v2_service(receipt_name=receipt_name, **kwargs),
+		success_code="PURCHASE_RECEIPT_CANCELLED",
+	)
+
+
+@frappe.whitelist()
+def cancel_purchase_invoice_v2(invoice_name: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: cancel_purchase_invoice_v2_service(invoice_name=invoice_name, **kwargs),
+		success_code="PURCHASE_INVOICE_CANCELLED",
+	)
+
+
+@frappe.whitelist()
+def cancel_supplier_payment(payment_entry_name: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: cancel_supplier_payment_service(payment_entry_name=payment_entry_name, **kwargs),
+		success_code="SUPPLIER_PAYMENT_CANCELLED",
 	)
 
 

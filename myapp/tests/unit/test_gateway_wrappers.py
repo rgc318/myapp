@@ -6,11 +6,19 @@ import frappe
 from myapp.api.gateway import (
 	cancel_delivery_note,
 	cancel_payment_entry,
+	cancel_purchase_invoice_v2,
+	cancel_purchase_order_v2,
+	cancel_purchase_receipt_v2,
 	cancel_order_v2,
 	cancel_sales_invoice,
+	cancel_supplier_payment,
 	create_customer_v2,
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
+	get_purchase_invoice_detail_v2,
+	get_purchase_order_detail_v2,
+	get_purchase_order_status_summary,
+	get_purchase_receipt_detail_v2,
 	create_product_and_stock,
 	create_sales_invoice,
 	create_uom_v2,
@@ -26,8 +34,11 @@ from myapp.api.gateway import (
 	get_sales_invoice_detail_v2,
 	get_sales_order_status_summary,
 	get_customer_sales_context,
+	get_supplier_detail_v2,
+	get_supplier_purchase_context,
 	get_uom_detail_v2,
 	list_customers_v2,
+	list_suppliers_v2,
 	list_uoms_v2,
 	process_purchase_return,
 	process_sales_return,
@@ -36,6 +47,8 @@ from myapp.api.gateway import (
 	search_product_v2,
 	test_remote_debug,
 	update_payment_status,
+	update_purchase_order_items_v2,
+	update_purchase_order_v2,
 	update_customer_v2,
 	update_product_v2,
 	update_uom_v2,
@@ -53,13 +66,22 @@ class TestGatewayWrappers(TestCase):
 			test_remote_debug,
 			create_order,
 			create_purchase_order,
+			get_purchase_order_detail_v2,
+			get_purchase_order_status_summary,
+			get_purchase_receipt_detail_v2,
+			get_purchase_invoice_detail_v2,
 			get_sales_order_detail,
 			get_sales_order_status_summary,
 			get_customer_sales_context,
+			get_supplier_purchase_context,
 			cancel_delivery_note,
 			cancel_payment_entry,
+			cancel_purchase_invoice_v2,
+			cancel_purchase_order_v2,
+			cancel_purchase_receipt_v2,
 			cancel_order_v2,
 			cancel_sales_invoice,
+			cancel_supplier_payment,
 			create_customer_v2,
 			create_uom_v2,
 			update_order_v2,
@@ -74,10 +96,12 @@ class TestGatewayWrappers(TestCase):
 			create_product_and_stock,
 			get_product_detail_v2,
 			get_customer_detail_v2,
+			get_supplier_detail_v2,
 			get_delivery_note_detail_v2,
 			get_sales_invoice_detail_v2,
 			update_product_v2,
 			list_customers_v2,
+			list_suppliers_v2,
 			list_uoms_v2,
 			disable_customer_v2,
 			disable_uom_v2,
@@ -85,6 +109,8 @@ class TestGatewayWrappers(TestCase):
 			get_uom_detail_v2,
 			confirm_pending_document,
 			update_payment_status,
+			update_purchase_order_v2,
+			update_purchase_order_items_v2,
 			record_supplier_payment,
 			process_sales_return,
 			process_purchase_return,
@@ -180,6 +206,150 @@ class TestGatewayWrappers(TestCase):
 			order_name="PO-0001",
 			receipt_items=None,
 			kwargs={"request_id": "pr-001"},
+		)
+
+	@patch("myapp.api.gateway.get_purchase_order_detail_v2_service")
+	def test_get_purchase_order_detail_v2_passes_name_to_service(self, mock_get_purchase_order_detail_v2_service):
+		mock_get_purchase_order_detail_v2_service.return_value = {
+			"status": "success",
+			"data": {"purchase_order_name": "PO-0001"},
+		}
+
+		get_purchase_order_detail_v2("PO-0001")
+
+		mock_get_purchase_order_detail_v2_service.assert_called_once_with(order_name="PO-0001")
+
+	@patch("myapp.api.gateway.get_purchase_order_status_summary_service")
+	def test_get_purchase_order_status_summary_passes_filters_to_service(
+		self, mock_get_purchase_order_status_summary_service
+	):
+		mock_get_purchase_order_status_summary_service.return_value = {"status": "success", "data": []}
+
+		get_purchase_order_status_summary(supplier="SUP-001", company="Test Company", limit=5)
+
+		mock_get_purchase_order_status_summary_service.assert_called_once_with(
+			supplier="SUP-001",
+			company="Test Company",
+			limit=5,
+		)
+
+	@patch("myapp.api.gateway.get_purchase_receipt_detail_v2_service")
+	def test_get_purchase_receipt_detail_v2_passes_name_to_service(self, mock_get_purchase_receipt_detail_v2_service):
+		mock_get_purchase_receipt_detail_v2_service.return_value = {
+			"status": "success",
+			"data": {"purchase_receipt_name": "PR-0001"},
+		}
+
+		get_purchase_receipt_detail_v2("PR-0001")
+
+		mock_get_purchase_receipt_detail_v2_service.assert_called_once_with(receipt_name="PR-0001")
+
+	@patch("myapp.api.gateway.get_purchase_invoice_detail_v2_service")
+	def test_get_purchase_invoice_detail_v2_passes_name_to_service(self, mock_get_purchase_invoice_detail_v2_service):
+		mock_get_purchase_invoice_detail_v2_service.return_value = {
+			"status": "success",
+			"data": {"purchase_invoice_name": "PINV-0001"},
+		}
+
+		get_purchase_invoice_detail_v2("PINV-0001")
+
+		mock_get_purchase_invoice_detail_v2_service.assert_called_once_with(invoice_name="PINV-0001")
+
+	@patch("myapp.api.gateway.get_supplier_purchase_context_service")
+	def test_get_supplier_purchase_context_passes_supplier_to_service(self, mock_get_supplier_purchase_context_service):
+		mock_get_supplier_purchase_context_service.return_value = {
+			"status": "success",
+			"data": {"supplier": {"name": "SUP-001"}},
+		}
+
+		get_supplier_purchase_context("SUP-001")
+
+		mock_get_supplier_purchase_context_service.assert_called_once_with(supplier="SUP-001")
+
+	@patch("myapp.api.gateway.list_suppliers_v2_service")
+	def test_list_suppliers_v2_passes_filters_to_service(self, mock_list_suppliers_v2_service):
+		mock_list_suppliers_v2_service.return_value = {"status": "success", "data": []}
+
+		list_suppliers_v2(search_key="MA", supplier_group="Raw", disabled=0, limit=10, start=5)
+
+		mock_list_suppliers_v2_service.assert_called_once_with(
+			search_key="MA",
+			supplier_group="Raw",
+			disabled=0,
+			limit=10,
+			start=5,
+			sort_by="modified",
+			sort_order="desc",
+		)
+
+	@patch("myapp.api.gateway.get_supplier_detail_v2_service")
+	def test_get_supplier_detail_v2_passes_supplier_to_service(self, mock_get_supplier_detail_v2_service):
+		mock_get_supplier_detail_v2_service.return_value = {
+			"status": "success",
+			"data": {"name": "SUP-001"},
+		}
+
+		get_supplier_detail_v2("SUP-001")
+
+		mock_get_supplier_detail_v2_service.assert_called_once_with(supplier="SUP-001")
+
+	@patch("myapp.api.gateway.update_purchase_order_v2_service")
+	def test_update_purchase_order_v2_passes_payload_to_service(self, mock_update_purchase_order_v2_service):
+		mock_update_purchase_order_v2_service.return_value = {"status": "success", "purchase_order": "PO-0001"}
+
+		update_purchase_order_v2("PO-0001", schedule_date="2026-03-27", request_id="po-update-001")
+
+		mock_update_purchase_order_v2_service.assert_called_once_with(
+			order_name="PO-0001",
+			schedule_date="2026-03-27",
+			request_id="po-update-001",
+		)
+
+	@patch("myapp.api.gateway.update_purchase_order_items_v2_service")
+	def test_update_purchase_order_items_v2_passes_payload_to_service(self, mock_update_purchase_order_items_v2_service):
+		mock_update_purchase_order_items_v2_service.return_value = {"status": "success", "purchase_order": "PO-0002"}
+
+		update_purchase_order_items_v2("PO-0001", items=[{"item_code": "ITEM-001", "qty": 2}], request_id="po-items-001")
+
+		mock_update_purchase_order_items_v2_service.assert_called_once_with(
+			order_name="PO-0001",
+			items=[{"item_code": "ITEM-001", "qty": 2}],
+			request_id="po-items-001",
+		)
+
+	@patch("myapp.api.gateway.cancel_purchase_order_v2_service")
+	def test_cancel_purchase_order_v2_passes_request_id_to_service(self, mock_cancel_purchase_order_v2_service):
+		mock_cancel_purchase_order_v2_service.return_value = {"status": "success", "purchase_order": "PO-0001"}
+
+		cancel_purchase_order_v2("PO-0001", request_id="po-cancel-001")
+
+		mock_cancel_purchase_order_v2_service.assert_called_once_with(order_name="PO-0001", request_id="po-cancel-001")
+
+	@patch("myapp.api.gateway.cancel_purchase_receipt_v2_service")
+	def test_cancel_purchase_receipt_v2_passes_request_id_to_service(self, mock_cancel_purchase_receipt_v2_service):
+		mock_cancel_purchase_receipt_v2_service.return_value = {"status": "success", "purchase_receipt": "PR-0001"}
+
+		cancel_purchase_receipt_v2("PR-0001", request_id="pr-cancel-001")
+
+		mock_cancel_purchase_receipt_v2_service.assert_called_once_with(receipt_name="PR-0001", request_id="pr-cancel-001")
+
+	@patch("myapp.api.gateway.cancel_purchase_invoice_v2_service")
+	def test_cancel_purchase_invoice_v2_passes_request_id_to_service(self, mock_cancel_purchase_invoice_v2_service):
+		mock_cancel_purchase_invoice_v2_service.return_value = {"status": "success", "purchase_invoice": "PINV-0001"}
+
+		cancel_purchase_invoice_v2("PINV-0001", request_id="pi-cancel-001")
+
+		mock_cancel_purchase_invoice_v2_service.assert_called_once_with(invoice_name="PINV-0001", request_id="pi-cancel-001")
+
+	@patch("myapp.api.gateway.cancel_supplier_payment_service")
+	def test_cancel_supplier_payment_passes_request_id_to_service(self, mock_cancel_supplier_payment_service):
+		mock_cancel_supplier_payment_service.return_value = {"status": "success", "payment_entry": "PAY-0001"}
+
+		cancel_supplier_payment("PAY-0001", request_id="pay-cancel-001")
+
+		mock_cancel_supplier_payment_service.assert_called_once_with(
+			payment_entry_name="PAY-0001",
+			request_id="pay-cancel-001",
 		)
 
 	@patch("myapp.api.gateway.create_purchase_invoice_service")

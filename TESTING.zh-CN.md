@@ -1,6 +1,6 @@
 # 测试说明
 
-更新时间：2026-03-25
+更新时间：2026-03-26
 
 ## 1. 测试原则
 
@@ -184,6 +184,42 @@ docker exec frappe_docker-backend-1 bash -lc '
 - 部分收货
 - 基于收货单的部分开票
 - 基于收货单的部分退货
+
+### 5.1.1 2026-03-26 采购补充回归
+
+本轮围绕采购模块新增接口与既有链路做了三层验证：
+
+- 采购聚合接口与网关包装定向单测
+- 采购服务层与网关包装整组单测
+- 采购真实 HTTP 主链路重复执行回归
+
+当前结果：
+
+- `env/bin/python -m unittest apps.myapp.myapp.tests.unit.test_purchase_service apps.myapp.myapp.tests.unit.test_gateway_wrappers`
+  - `Ran 74 tests`
+  - `OK`
+- 采购新增接口定向单测
+  - `Ran 54 tests`
+  - `OK`
+- 采购 HTTP 主链路定向用例
+  - 单轮 `Ran 23 tests`
+  - 连续重跑 `2` 轮，均为 `OK`
+
+本轮采购 HTTP 覆盖重点：
+
+- 创建采购订单
+- 采购收货
+- 采购开票
+- 基于收货单开票
+- 供应商付款
+- 采购退货
+- 顺序幂等 replay
+- 同一 `request_id` 不同数据
+- 不同 `request_id` 不同数据
+- 部分收货
+- 基于收货单的部分开票
+- 基于收货单的部分退货
+- 并发条件下同一 `request_id` 仅生成一张采购单
 
 ### 5.2 本轮 v2 HTTP 测试
 

@@ -299,17 +299,31 @@ Client
 - 先更新 `Purchase Order` 价格
 - 再继续执行收货与开票
 - 现阶段最关键的幂等风险点已完成验证
-- 从 `Purchase Receipt` 直接生成采购发票的独立封装，仍然是后续优先事项
+- `create_purchase_invoice_from_receipt` 已完成独立封装并通过真实 HTTP 验证
 
 ## 7. 建议接口清单
 
-建议新增以下网关接口：
+当前已实现的采购侧网关接口：
 
 - `myapp.api.gateway.create_purchase_order`
 - `myapp.api.gateway.receive_purchase_order`
 - `myapp.api.gateway.create_purchase_invoice`
+- `myapp.api.gateway.create_purchase_invoice_from_receipt`
 - `myapp.api.gateway.record_supplier_payment`
 - `myapp.api.gateway.process_purchase_return`
+- `myapp.api.gateway.get_purchase_order_detail_v2`
+- `myapp.api.gateway.get_purchase_order_status_summary`
+- `myapp.api.gateway.get_purchase_receipt_detail_v2`
+- `myapp.api.gateway.get_purchase_invoice_detail_v2`
+- `myapp.api.gateway.get_supplier_purchase_context`
+- `myapp.api.gateway.list_suppliers_v2`
+- `myapp.api.gateway.get_supplier_detail_v2`
+- `myapp.api.gateway.update_purchase_order_v2`
+- `myapp.api.gateway.update_purchase_order_items_v2`
+- `myapp.api.gateway.cancel_purchase_order_v2`
+- `myapp.api.gateway.cancel_purchase_receipt_v2`
+- `myapp.api.gateway.cancel_purchase_invoice_v2`
+- `myapp.api.gateway.cancel_supplier_payment`
 
 建议保持现有三层结构：
 
@@ -349,14 +363,20 @@ Client
   - `myapp.utils.api_response`
   - `myapp.utils.idempotency`
 
-建议的函数原型：
+当前已落地的核心函数原型：
 
 ```python
 def create_purchase_order(supplier: str, items, **kwargs): ...
 def receive_purchase_order(order_name: str, receipt_items=None, **kwargs): ...
 def create_purchase_invoice(source_name: str, invoice_items=None, **kwargs): ...
+def create_purchase_invoice_from_receipt(receipt_name: str, invoice_items=None, **kwargs): ...
 def record_supplier_payment(reference_name: str, paid_amount: float, **kwargs): ...
 def process_purchase_return(source_doctype: str, source_name: str, return_items=None, **kwargs): ...
+def get_purchase_order_detail_v2(order_name: str): ...
+def get_purchase_order_status_summary(...): ...
+def get_purchase_receipt_detail_v2(receipt_name: str): ...
+def get_purchase_invoice_detail_v2(invoice_name: str): ...
+def get_supplier_purchase_context(supplier: str): ...
 ```
 
 ## 10. 第一阶段开发顺序
@@ -378,7 +398,7 @@ def process_purchase_return(source_doctype: str, source_name: str, return_items=
 
 ## 11. 当前结论
 
-当前 `myapp` 已完成销售侧第一版网关封装，但采购侧仍是空白。下一阶段最合适的新增方向是采购与进货模块，且可以在不推翻现有结构的前提下平滑扩展：
+当前 `myapp` 已完成销售侧与采购侧第一版网关封装，采购主链路、采购聚合读取层和供应商上下文层均已落地。下一阶段最合适的新增方向是继续围绕移动端采购页面补细节，而不是再从零建设采购基础网关：
 
 - 复用现有三层结构
 - 复用统一响应和幂等工具

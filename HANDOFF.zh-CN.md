@@ -37,6 +37,22 @@
 
 以上采购接口均已支持 `request_id` 幂等。
 
+已实现并可用于采购前端的聚合 / 主数据 / 编辑能力：
+
+- `get_purchase_order_detail_v2`
+- `get_purchase_order_status_summary`
+- `get_purchase_receipt_detail_v2`
+- `get_purchase_invoice_detail_v2`
+- `get_supplier_purchase_context`
+- `list_suppliers_v2`
+- `get_supplier_detail_v2`
+- `update_purchase_order_v2`
+- `update_purchase_order_items_v2`
+- `cancel_purchase_order_v2`
+- `cancel_purchase_receipt_v2`
+- `cancel_purchase_invoice_v2`
+- `cancel_supplier_payment`
+
 ## 2. 本轮已验证结果
 
 在 devcontainer / ERPNext 运行环境中，已通过 Postman `v3` 集合完成以下验证：
@@ -188,6 +204,9 @@
 - 销售侧按 `sales_invoice_item` 发起退货的真实 HTTP 验证已跑通
 - 销售侧 `update_order_v2` 与 `update_order_items_v2` 已完成真实 HTTP 验证
 - 销售侧 `cancel_order_v2` 已完成真实 HTTP 验证
+- 采购侧新增聚合接口与供应商接口已完成定向单测验证
+- 采购侧旧单测历史问题已收敛，当前 `test_purchase_service + test_gateway_wrappers` 已可全量通过
+- 采购侧 HTTP 主链路已连续重跑两轮，当前未发现波动或幂等异常
 
 ## 2026-03-26 单位管理后端补齐
 

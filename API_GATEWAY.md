@@ -17,6 +17,19 @@ Recommended custom API entry points:
 - `myapp.api.gateway.create_purchase_invoice_from_receipt`
 - `myapp.api.gateway.record_supplier_payment`
 - `myapp.api.gateway.process_purchase_return`
+- `myapp.api.gateway.get_purchase_order_detail_v2`
+- `myapp.api.gateway.get_purchase_order_status_summary`
+- `myapp.api.gateway.get_purchase_receipt_detail_v2`
+- `myapp.api.gateway.get_purchase_invoice_detail_v2`
+- `myapp.api.gateway.get_supplier_purchase_context`
+- `myapp.api.gateway.list_suppliers_v2`
+- `myapp.api.gateway.get_supplier_detail_v2`
+- `myapp.api.gateway.update_purchase_order_v2`
+- `myapp.api.gateway.update_purchase_order_items_v2`
+- `myapp.api.gateway.cancel_purchase_order_v2`
+- `myapp.api.gateway.cancel_purchase_receipt_v2`
+- `myapp.api.gateway.cancel_purchase_invoice_v2`
+- `myapp.api.gateway.cancel_supplier_payment`
 
 - Shared utilities:
 - `myapp.api.gateway.confirm_pending_document`
@@ -34,7 +47,7 @@ This document only covers custom APIs from this app. ERPNext / Frappe native API
 ### Module Navigation
 
 - Sales and product: `search_product`, `create_order`, `submit_delivery`, `create_sales_invoice`, `update_payment_status`, `process_sales_return`
-- Purchase and settlement: `create_purchase_order`, `receive_purchase_order`, `create_purchase_invoice`, `create_purchase_invoice_from_receipt`, `record_supplier_payment`, `process_purchase_return`
+- Purchase and settlement: `create_purchase_order`, `receive_purchase_order`, `create_purchase_invoice`, `create_purchase_invoice_from_receipt`, `record_supplier_payment`, `process_purchase_return`, `get_purchase_order_detail_v2`, `get_purchase_order_status_summary`, `get_purchase_receipt_detail_v2`, `get_purchase_invoice_detail_v2`, `get_supplier_purchase_context`, `list_suppliers_v2`, `get_supplier_detail_v2`, `update_purchase_order_v2`, `update_purchase_order_items_v2`, `cancel_purchase_order_v2`, `cancel_purchase_receipt_v2`, `cancel_purchase_invoice_v2`, `cancel_supplier_payment`
 - Shared utilities: `confirm_pending_document`
 
 ### Unified Success Response
@@ -647,6 +660,248 @@ Behavior:
 - Creates and submits the mapped purchase return document.
 - When the same `request_id` is retried, returns the first successful return result.
 
+### get_purchase_order_detail_v2
+
+Method:
+
+- `myapp.api.gateway.get_purchase_order_detail_v2`
+
+Arguments:
+
+- `order_name: str`
+
+Behavior:
+
+- Returns aggregated purchase order detail data for mobile detail pages.
+- Returns supplier snapshot, amount summary, receiving status, payment status, line items, and downstream references.
+- Returns action flags indicating whether the order can still be received, invoiced, updated, or cancelled.
+
+Current key response fields:
+
+- `purchase_order_name`
+- `document_status`
+- `supplier.display_name`
+- `amounts.grand_total`
+- `amounts.received_amount_estimate`
+- `amounts.invoiced_amount_estimate`
+- `receiving.status`
+- `payment.status`
+- `actions.can_receive`
+- `actions.can_create_invoice`
+- `actions.can_update`
+- `actions.can_cancel`
+- `references.purchase_receipts`
+- `references.purchase_invoices`
+- `items[].item_code`
+- `items[].qty`
+- `items[].received_qty`
+- `items[].rate`
+- `items[].amount`
+- `meta.company`
+- `meta.currency`
+- `meta.transaction_date`
+- `meta.schedule_date`
+
+### get_purchase_order_status_summary
+
+Method:
+
+- `myapp.api.gateway.get_purchase_order_status_summary`
+
+Arguments:
+
+- `supplier: str | None`
+- `company: str | None`
+- `limit: int | None = 20`
+
+Behavior:
+
+- Returns list-friendly purchase order status summaries.
+- Each record is derived from the same aggregated detail semantics so the frontend does not need to infer received / invoiced / paid / completed states by itself.
+
+### get_purchase_receipt_detail_v2
+
+Method:
+
+- `myapp.api.gateway.get_purchase_receipt_detail_v2`
+
+Arguments:
+
+- `receipt_name: str`
+
+Behavior:
+
+- Returns aggregated purchase receipt detail data.
+- Returns source purchase orders, related purchase invoices, supplier snapshot, address snapshot, and item rows.
+- Suitable for receipt detail pages and return confirmation pages.
+
+### get_purchase_invoice_detail_v2
+
+Method:
+
+- `myapp.api.gateway.get_purchase_invoice_detail_v2`
+
+Arguments:
+
+- `invoice_name: str`
+
+Behavior:
+
+- Returns aggregated purchase invoice detail data.
+- Returns source purchase order / receipt references, payment summary, latest payment result, and item rows.
+- Suitable for invoice detail pages and supplier payment confirmation pages.
+
+### get_supplier_purchase_context
+
+Method:
+
+- `myapp.api.gateway.get_supplier_purchase_context`
+
+Arguments:
+
+- `supplier: str`
+
+Behavior:
+
+- Returns supplier defaults and purchase context for order creation.
+- Includes supplier summary, default contact, default address, recently used addresses, and suggested default warehouse.
+
+### list_suppliers_v2
+
+Method:
+
+- `myapp.api.gateway.list_suppliers_v2`
+
+Arguments:
+
+- `search_key: str | None`
+- `supplier_group: str | None`
+- `disabled: int | bool | None`
+- `limit: int | None = 20`
+- `start: int | None = 0`
+- `sort_by: str | None = "modified"`
+- `sort_order: str | None = "desc"`
+
+Behavior:
+
+- Returns supplier list summaries.
+- Supports fuzzy search, supplier group filtering, enabled / disabled filtering, and pagination.
+- Each row includes default contact, default address, and recent purchase summary.
+
+### get_supplier_detail_v2
+
+Method:
+
+- `myapp.api.gateway.get_supplier_detail_v2`
+
+Arguments:
+
+- `supplier: str`
+
+Behavior:
+
+- Returns aggregated supplier detail data.
+- Includes default contact, default address, recent purchase addresses, and core master-data summary.
+
+### update_purchase_order_v2
+
+Method:
+
+- `myapp.api.gateway.update_purchase_order_v2`
+
+Arguments:
+
+- `order_name: str`
+- Additional update fields are passed as top-level args, for example:
+  - `schedule_date`
+  - `remarks`
+  - `supplier_ref`
+  - `request_id`
+
+Behavior:
+
+- Updates purchase order header fields using the v2 semantics.
+- Intended for purchase order edit pages.
+- When the same `request_id` is retried, returns the first successful result.
+
+### update_purchase_order_items_v2
+
+Method:
+
+- `myapp.api.gateway.update_purchase_order_items_v2`
+
+Arguments:
+
+- `order_name: str`
+- `items: list[dict] | json-string`
+- `request_id: str | None`
+
+Behavior:
+
+- Replaces purchase order line items using the v2 semantics.
+- Intended for editing the item section of a purchase order.
+- When the same `request_id` is retried, returns the first successful result.
+
+### cancel_purchase_order_v2
+
+Method:
+
+- `myapp.api.gateway.cancel_purchase_order_v2`
+
+Arguments:
+
+- `order_name: str`
+- `request_id: str | None`
+
+Behavior:
+
+- Wraps purchase order cancellation with unified success codes and status output.
+
+### cancel_purchase_receipt_v2
+
+Method:
+
+- `myapp.api.gateway.cancel_purchase_receipt_v2`
+
+Arguments:
+
+- `receipt_name: str`
+- `request_id: str | None`
+
+Behavior:
+
+- Wraps purchase receipt cancellation with unified success codes and status output.
+
+### cancel_purchase_invoice_v2
+
+Method:
+
+- `myapp.api.gateway.cancel_purchase_invoice_v2`
+
+Arguments:
+
+- `invoice_name: str`
+- `request_id: str | None`
+
+Behavior:
+
+- Wraps purchase invoice cancellation with unified success codes and status output.
+
+### cancel_supplier_payment
+
+Method:
+
+- `myapp.api.gateway.cancel_supplier_payment`
+
+Arguments:
+
+- `payment_entry_name: str`
+- `request_id: str | None`
+
+Behavior:
+
+- Wraps supplier payment cancellation using the same response and error conventions as the settlement gateway.
+
 Example:
 
 ```python
@@ -672,6 +927,7 @@ process_sales_return(
 - If no `Bin` exists for an `item_code + warehouse` pair, immediate delivery is blocked.
 - Purchase-side direct price overrides during receipt or invoicing require ERPNext `Buying Settings.maintain_same_rate` to be disabled.
 - In the current environment, `Selling Settings.maintain_same_sales_rate = 0`, so sales price overrides during delivery and invoicing are allowed.
+- For purchase list/detail/receipt/invoice pages, prefer the aggregated purchase APIs instead of manually stitching `Purchase Order / Purchase Receipt / Purchase Invoice / Payment Entry` state in the frontend.
 
 ### Appendix: Official APIs Used in Integration
 

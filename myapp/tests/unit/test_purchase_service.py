@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
@@ -7,6 +8,13 @@ from myapp.services.purchase_service import (
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
 	create_purchase_order,
+	get_supplier_detail_v2,
+	get_supplier_purchase_context,
+	get_purchase_invoice_detail_v2,
+	get_purchase_order_detail_v2,
+	get_purchase_order_status_summary,
+	get_purchase_receipt_detail_v2,
+	list_suppliers_v2,
 	process_purchase_return,
 	receive_purchase_order,
 	record_supplier_payment,
@@ -14,11 +22,12 @@ from myapp.services.purchase_service import (
 
 
 class TestPurchaseService(TestCase):
-	@patch("myapp.services.purchase_service.frappe.db.get_value")
-	def test_build_purchase_order_item_rejects_cross_company_warehouse(self, mock_get_value):
+	@patch(
+		"myapp.services.purchase_service._validate_warehouse_company",
+		side_effect=frappe.ValidationError("cross-company"),
+	)
+	def test_build_purchase_order_item_rejects_cross_company_warehouse(self, mock_validate_warehouse):
 		from myapp.services.purchase_service import _build_purchase_order_item
-
-		mock_get_value.return_value = "Other Company"
 
 		with self.assertRaises(frappe.ValidationError):
 			_build_purchase_order_item(
@@ -27,6 +36,7 @@ class TestPurchaseService(TestCase):
 				None,
 				"Test Company",
 			)
+		mock_validate_warehouse.assert_called_once_with("Stores - OC", "Test Company", "ITEM-001")
 
 	@patch("myapp.services.purchase_service.resolve_item_quantity_to_stock")
 	@patch("myapp.services.purchase_service._validate_warehouse_company")
@@ -54,18 +64,19 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(row["rate"], 18)
 		mock_validate_warehouse.assert_called_once()
 
+	@patch("myapp.services.purchase_service._build_purchase_order_item")
 	@patch("myapp.services.purchase_service._insert_and_submit")
-	@patch("myapp.services.purchase_service.frappe.db.get_value")
 	@patch("myapp.services.purchase_service.frappe.new_doc")
+	@patch("myapp.services.purchase_service.nowdate", return_value="2026-03-26")
 	@patch("myapp.services.purchase_service.frappe.defaults.get_user_default")
 	def test_create_purchase_order_builds_and_submits_document(
-		self, mock_get_user_default, mock_new_doc, mock_get_value, mock_insert_and_submit
+		self, mock_get_user_default, mock_nowdate, mock_new_doc, mock_insert_and_submit, mock_build_purchase_order_item
 	):
 		mock_get_user_default.return_value = "Test Company"
-		mock_get_value.return_value = "Test Company"
 		po = MagicMock()
 		po.name = "PO-0001"
 		mock_new_doc.return_value = po
+		mock_build_purchase_order_item.return_value = {"item_code": "ITEM-001", "qty": 2, "warehouse": "Stores - TC"}
 
 		result = create_purchase_order(
 			supplier="Test Supplier",
@@ -77,23 +88,37 @@ class TestPurchaseService(TestCase):
 		mock_insert_and_submit.assert_called_once_with(po)
 		po.append.assert_called_once()
 
-	def test_create_purchase_order_rejects_empty_items(self):
+	@patch("myapp.services.purchase_service.nowdate", return_value="2026-03-26")
+	@patch(
+		"myapp.services.purchase_service.frappe.throw",
+		side_effect=frappe.ValidationError("无法创建空采购订单，请至少选择一个商品。"),
+	)
+	def test_create_purchase_order_rejects_empty_items(self, mock_throw, mock_nowdate):
 		with self.assertRaises(frappe.ValidationError):
 			create_purchase_order(supplier="Test Supplier", items=[], company="Test Company")
+		mock_throw.assert_called_once()
 
+	@patch(
+		"myapp.services.purchase_service.frappe.throw",
+		side_effect=frappe.ValidationError("采购订单 PO-0001 当前没有可收货的商品明细。"),
+	)
 	@patch("erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_receipt")
-	def test_receive_purchase_order_rejects_order_without_receivable_items(self, mock_make_purchase_receipt):
-		pr = frappe._dict({"items": []})
+	def test_receive_purchase_order_rejects_order_without_receivable_items(self, mock_make_purchase_receipt, mock_throw):
+		pr = SimpleNamespace(items=[], get=lambda key, default=None: [] if key == "items" else default)
 		mock_make_purchase_receipt.return_value = pr
 
 		with self.assertRaisesRegex(frappe.ValidationError, "没有可收货的商品明细"):
 			receive_purchase_order("PO-0001")
 
+	@patch("myapp.services.purchase_service._validate_purchase_rate_override_allowed")
 	@patch("erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_receipt")
-	def test_receive_purchase_order_updates_qty_and_price(self, mock_make_purchase_receipt):
-		item = frappe._dict({"item_code": "ITEM-001", "purchase_order_item": "POI-001", "qty": 1, "rate": 10})
-		pr = frappe._dict({"items": [item], "name": "MAT-PRE-0001"})
-		pr.get = lambda key: pr[key]
+	def test_receive_purchase_order_updates_qty_and_price(self, mock_make_purchase_receipt, mock_validate_rate_override):
+		item = SimpleNamespace(item_code="ITEM-001", purchase_order_item="POI-001", qty=1, rate=10)
+		pr = SimpleNamespace(
+			items=[item],
+			name="MAT-PRE-0001",
+			get=lambda key, default=None: [item] if key == "items" else getattr(pr, key, default),
+		)
 		mock_make_purchase_receipt.return_value = pr
 
 		with patch("myapp.services.purchase_service._insert_and_submit"):
@@ -106,37 +131,65 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(item.rate, 18)
 		self.assertEqual(result["purchase_receipt"], "MAT-PRE-0001")
 
-	@patch("myapp.services.purchase_service.frappe.db.get_single_value", return_value=1)
-	def test_receive_purchase_order_rejects_price_override_when_maintain_same_rate_enabled(self, mock_get_single):
+	@patch(
+		"myapp.services.purchase_service._validate_purchase_rate_override_allowed",
+		side_effect=frappe.ValidationError("maintain_same_rate"),
+	)
+	@patch("erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_receipt")
+	def test_receive_purchase_order_rejects_price_override_when_maintain_same_rate_enabled(
+		self, mock_make_purchase_receipt, mock_validate_rate_override
+	):
+		item = SimpleNamespace(item_code="ITEM-001", purchase_order_item="POI-001", qty=1, rate=10)
+		pr = SimpleNamespace(
+			items=[item],
+			name="MAT-PRE-0001",
+			get=lambda key, default=None: [item] if key == "items" else getattr(pr, key, default),
+		)
+		mock_make_purchase_receipt.return_value = pr
+
 		with self.assertRaisesRegex(frappe.ValidationError, "maintain_same_rate"):
 			receive_purchase_order(
 				"PO-0001",
 				receipt_items=[{"item_code": "ITEM-001", "qty": 1, "price": 18}],
 			)
 
+	@patch(
+		"myapp.services.purchase_service.frappe.throw",
+		side_effect=frappe.ValidationError("采购订单 PO-0001 当前没有可开票的商品明细。"),
+	)
 	@patch("erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_invoice")
-	def test_create_purchase_invoice_rejects_order_without_billable_items(self, mock_make_purchase_invoice):
-		pi = frappe._dict({"items": []})
+	def test_create_purchase_invoice_rejects_order_without_billable_items(self, mock_make_purchase_invoice, mock_throw):
+		pi = SimpleNamespace(items=[], get=lambda key, default=None: [] if key == "items" else default)
 		mock_make_purchase_invoice.return_value = pi
 
 		with self.assertRaisesRegex(frappe.ValidationError, "没有可开票的商品明细"):
 			create_purchase_invoice("PO-0001")
 
+	@patch(
+		"myapp.services.purchase_service.frappe.throw",
+		side_effect=frappe.ValidationError("采购收货单 MAT-PRE-0001 当前没有可开票的商品明细。"),
+	)
 	@patch("erpnext.stock.doctype.purchase_receipt.purchase_receipt.make_purchase_invoice")
 	def test_create_purchase_invoice_from_receipt_rejects_receipt_without_billable_items(
-		self, mock_make_purchase_invoice
+		self, mock_make_purchase_invoice, mock_throw
 	):
-		pi = frappe._dict({"items": []})
+		pi = SimpleNamespace(items=[], get=lambda key, default=None: [] if key == "items" else default)
 		mock_make_purchase_invoice.return_value = pi
 
 		with self.assertRaisesRegex(frappe.ValidationError, "没有可开票的商品明细"):
 			create_purchase_invoice_from_receipt("MAT-PRE-0001")
 
+	@patch("myapp.services.purchase_service._validate_purchase_rate_override_allowed")
 	@patch("erpnext.stock.doctype.purchase_receipt.purchase_receipt.make_purchase_invoice")
-	def test_create_purchase_invoice_from_receipt_updates_qty_and_price(self, mock_make_purchase_invoice):
-		item = frappe._dict({"item_code": "ITEM-001", "pr_detail": "PRI-001", "qty": 1, "rate": 10})
-		pi = frappe._dict({"items": [item], "name": "PINV-0002"})
-		pi.get = lambda key: pi[key]
+	def test_create_purchase_invoice_from_receipt_updates_qty_and_price(
+		self, mock_make_purchase_invoice, mock_validate_rate_override
+	):
+		item = SimpleNamespace(item_code="ITEM-001", pr_detail="PRI-001", qty=1, rate=10)
+		pi = SimpleNamespace(
+			items=[item],
+			name="PINV-0002",
+			get=lambda key, default=None: [item] if key == "items" else getattr(pi, key, default),
+		)
 		mock_make_purchase_invoice.return_value = pi
 
 		with patch("myapp.services.purchase_service._insert_and_submit"):
@@ -149,18 +202,31 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(item.rate, 16)
 		self.assertEqual(result["purchase_invoice"], "PINV-0002")
 
-	@patch("myapp.services.purchase_service.frappe.db.get_single_value", return_value=1)
+	@patch(
+		"myapp.services.purchase_service._validate_purchase_rate_override_allowed",
+		side_effect=frappe.ValidationError("maintain_same_rate"),
+	)
+	@patch("erpnext.stock.doctype.purchase_receipt.purchase_receipt.make_purchase_invoice")
 	def test_create_purchase_invoice_from_receipt_rejects_price_override_when_maintain_same_rate_enabled(
-		self, mock_get_single
+		self, mock_make_purchase_invoice, mock_validate_rate_override
 	):
+		item = SimpleNamespace(item_code="ITEM-001", pr_detail="PRI-001", qty=1, rate=10)
+		pi = SimpleNamespace(
+			items=[item],
+			name="PINV-0002",
+			get=lambda key, default=None: [item] if key == "items" else getattr(pi, key, default),
+		)
+		mock_make_purchase_invoice.return_value = pi
+
 		with self.assertRaisesRegex(frappe.ValidationError, "maintain_same_rate"):
 			create_purchase_invoice_from_receipt(
 				"MAT-PRE-0001",
 				invoice_items=[{"item_code": "ITEM-001", "qty": 1, "price": 16}],
 			)
 
+	@patch("myapp.services.purchase_service.nowdate", return_value="2026-03-26")
 	@patch("erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry")
-	def test_record_supplier_payment_creates_payment_entry(self, mock_get_payment_entry):
+	def test_record_supplier_payment_creates_payment_entry(self, mock_get_payment_entry, mock_nowdate):
 		pe = MagicMock()
 		pe.name = "ACC-PAY-0001"
 		pe.mode_of_payment = None
@@ -191,18 +257,15 @@ class TestPurchaseService(TestCase):
 
 	@patch("erpnext.controllers.sales_and_purchase_return.make_return_doc")
 	def test_process_purchase_return_updates_qty_by_receipt_detail(self, mock_make_return_doc):
-		item = frappe._dict(
-			{
-				"item_code": "ITEM-001",
-				"purchase_receipt_item": "PRI-001",
-				"pr_detail": "PRI-001",
-				"qty": -3,
-			}
+		item = SimpleNamespace(item_code="ITEM-001", purchase_receipt_item="PRI-001", pr_detail="PRI-001", qty=-3)
+		return_doc = SimpleNamespace(
+			items=[item],
+			name="MAT-PRE-RET-0002",
+			doctype="Purchase Receipt",
+			insert=MagicMock(),
+			submit=MagicMock(),
 		)
-		return_doc = frappe._dict({"items": [item], "name": "MAT-PRE-RET-0002", "doctype": "Purchase Receipt"})
-		return_doc.get = lambda key: return_doc[key]
-		return_doc.insert = MagicMock()
-		return_doc.submit = MagicMock()
+		return_doc.get = lambda key, default=None: getattr(return_doc, key, default)
 		mock_make_return_doc.return_value = return_doc
 
 		result = process_purchase_return(
@@ -216,18 +279,15 @@ class TestPurchaseService(TestCase):
 
 	@patch("erpnext.controllers.sales_and_purchase_return.make_return_doc")
 	def test_process_purchase_return_updates_qty_by_invoice_detail(self, mock_make_return_doc):
-		item = frappe._dict(
-			{
-				"item_code": "ITEM-001",
-				"purchase_invoice_item": "PII-001",
-				"pi_detail": "PII-001",
-				"qty": -3,
-			}
+		item = SimpleNamespace(item_code="ITEM-001", purchase_invoice_item="PII-001", pi_detail="PII-001", qty=-3)
+		return_doc = SimpleNamespace(
+			items=[item],
+			name="ACC-PINV-RET-0002",
+			doctype="Purchase Invoice",
+			insert=MagicMock(),
+			submit=MagicMock(),
 		)
-		return_doc = frappe._dict({"items": [item], "name": "ACC-PINV-RET-0002", "doctype": "Purchase Invoice"})
-		return_doc.get = lambda key: return_doc[key]
-		return_doc.insert = MagicMock()
-		return_doc.submit = MagicMock()
+		return_doc.get = lambda key, default=None: getattr(return_doc, key, default)
 		mock_make_return_doc.return_value = return_doc
 
 		result = process_purchase_return(
@@ -287,3 +347,268 @@ class TestPurchaseService(TestCase):
 
 		self.assertEqual(result["return_document"], "PINV-RET-0099")
 		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.purchase_service._get_latest_purchase_payment_entry_summary")
+	@patch("myapp.services.purchase_service._load_purchase_invoice_rows")
+	@patch("myapp.services.purchase_service._collect_purchase_order_reference_names")
+	@patch("myapp.services.purchase_service.frappe.get_doc")
+	def test_get_purchase_order_detail_v2_returns_aggregated_data(
+		self,
+		mock_get_doc,
+		mock_collect_refs,
+		mock_load_invoices,
+		mock_latest_payment,
+	):
+		po = frappe._dict(
+			{
+				"name": "PO-0001",
+				"docstatus": 1,
+				"supplier": "SUP-001",
+				"supplier_name": "MA Inc.",
+				"company": "Test Company",
+				"currency": "CNY",
+				"transaction_date": "2026-03-26",
+				"schedule_date": "2026-03-27",
+				"rounded_total": 300,
+				"grand_total": 300,
+				"remarks": "test",
+				"items": [
+					frappe._dict({"name": "POI-001", "item_code": "ITEM-001", "qty": 10, "received_qty": 4, "rate": 30, "amount": 300}),
+				],
+			}
+		)
+		mock_get_doc.return_value = po
+		mock_collect_refs.return_value = (["PR-0001"], ["PINV-0001"])
+		mock_load_invoices.return_value = [frappe._dict({"name": "PINV-0001", "rounded_total": 300, "outstanding_amount": 120})]
+		mock_latest_payment.return_value = {
+			"payment_entry": "PAY-0001",
+			"invoice_name": "PINV-0001",
+			"unallocated_amount": 0,
+			"writeoff_amount": 0,
+			"actual_paid_amount": 180,
+			"total_actual_paid_amount": 180,
+			"total_writeoff_amount": 0,
+		}
+
+		result = get_purchase_order_detail_v2("PO-0001")
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["purchase_order_name"], "PO-0001")
+		self.assertEqual(result["data"]["receiving"]["status"], "partial")
+		self.assertEqual(result["data"]["references"]["purchase_receipts"], ["PR-0001"])
+
+	@patch("myapp.services.purchase_service._build_purchase_receipt_references")
+	@patch("myapp.services.purchase_service.frappe.get_doc")
+	def test_get_purchase_receipt_detail_v2_returns_detail(self, mock_get_doc, mock_build_references):
+		pr = frappe._dict(
+			{
+				"name": "PR-0001",
+				"docstatus": 1,
+				"supplier": "SUP-001",
+				"supplier_name": "MA Inc.",
+				"company": "Test Company",
+				"currency": "CNY",
+				"posting_date": "2026-03-26",
+				"posting_time": "10:00:00",
+				"grand_total": 200,
+				"items": [frappe._dict({"name": "PRI-001", "item_code": "ITEM-001", "qty": 2, "rate": 100, "amount": 200})],
+			}
+		)
+		mock_get_doc.return_value = pr
+		mock_build_references.return_value = {"purchase_orders": ["PO-0001"], "purchase_invoices": ["PINV-0001"]}
+
+		result = get_purchase_receipt_detail_v2("PR-0001")
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["purchase_receipt_name"], "PR-0001")
+		self.assertEqual(result["data"]["references"]["purchase_orders"], ["PO-0001"])
+
+	@patch("myapp.services.purchase_service._get_latest_purchase_payment_entry_summary")
+	@patch("myapp.services.purchase_service.frappe.get_doc")
+	def test_get_purchase_invoice_detail_v2_returns_detail(self, mock_get_doc, mock_latest_payment):
+		pi = frappe._dict(
+			{
+				"name": "PINV-0001",
+				"docstatus": 1,
+				"supplier": "SUP-001",
+				"supplier_name": "MA Inc.",
+				"company": "Test Company",
+				"currency": "CNY",
+				"posting_date": "2026-03-26",
+				"due_date": "2026-03-30",
+				"rounded_total": 200,
+				"outstanding_amount": 50,
+				"items": [frappe._dict({"name": "PII-001", "item_code": "ITEM-001", "qty": 2, "rate": 100, "amount": 200})],
+			}
+		)
+		mock_get_doc.return_value = pi
+		mock_latest_payment.return_value = {
+			"payment_entry": "PAY-0001",
+			"invoice_name": "PINV-0001",
+			"unallocated_amount": 0,
+			"writeoff_amount": 0,
+			"actual_paid_amount": 150,
+			"total_actual_paid_amount": 150,
+			"total_writeoff_amount": 0,
+		}
+
+		result = get_purchase_invoice_detail_v2("PINV-0001")
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["purchase_invoice_name"], "PINV-0001")
+		self.assertEqual(result["data"]["payment"]["outstanding_amount"], 50)
+
+	@patch("myapp.services.purchase_service.get_purchase_order_detail_v2")
+	@patch("myapp.services.purchase_service.frappe.get_all")
+	def test_get_purchase_order_status_summary_uses_detail_payload(self, mock_get_all, mock_get_detail):
+		mock_get_all.return_value = [
+			frappe._dict(
+				{
+					"name": "PO-0001",
+					"supplier": "SUP-001",
+					"supplier_name": "MA Inc.",
+					"transaction_date": "2026-03-26",
+					"company": "Test Company",
+					"docstatus": 1,
+					"rounded_total": 300,
+					"grand_total": 300,
+					"modified": "2026-03-26 10:00:00",
+				}
+			)
+		]
+		mock_get_detail.return_value = {
+			"data": {
+				"receiving": {"status": "partial"},
+				"payment": {"outstanding_amount": 120},
+				"completion": {"status": "open"},
+			}
+		}
+
+		result = get_purchase_order_status_summary(supplier="SUP-001", company="Test Company", limit=5)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"][0]["purchase_order_name"], "PO-0001")
+		self.assertEqual(result["data"][0]["receiving"]["status"], "partial")
+
+	@patch("myapp.services.purchase_service._get_recent_purchase_order_addresses")
+	@patch("myapp.services.purchase_service._serialize_address_doc")
+	@patch("myapp.services.purchase_service._serialize_contact_doc")
+	@patch("myapp.services.purchase_service._get_doc_if_exists")
+	@patch("myapp.services.purchase_service.frappe.get_doc")
+	def test_get_supplier_detail_v2_includes_recent_addresses(
+		self,
+		mock_get_doc,
+		mock_get_doc_if_exists,
+		mock_serialize_contact_doc,
+		mock_serialize_address_doc,
+		mock_recent_addresses,
+	):
+		mock_get_doc.return_value = frappe._dict(
+			{
+				"name": "SUP-001",
+				"supplier_name": "MA Inc.",
+				"supplier_type": "Company",
+				"supplier_group": "Raw",
+				"default_currency": "CNY",
+				"disabled": 0,
+				"supplier_primary_contact": "CONT-001",
+				"supplier_primary_address": "ADDR-001",
+			}
+		)
+		mock_get_doc_if_exists.side_effect = [
+			frappe._dict({"name": "CONT-001"}),
+			frappe._dict({"name": "ADDR-001"}),
+		]
+		mock_serialize_contact_doc.return_value = {"name": "CONT-001", "display_name": "张三"}
+		mock_serialize_address_doc.return_value = {"name": "ADDR-001", "address_line1": "测试路 100 号"}
+		mock_recent_addresses.return_value = [{"name": "ADDR-001", "address_display": "测试地址"}]
+
+		result = get_supplier_detail_v2("SUP-001")
+
+		self.assertEqual(result["data"]["name"], "SUP-001")
+		self.assertEqual(result["data"]["recent_addresses"][0]["name"], "ADDR-001")
+
+	@patch("myapp.services.purchase_service._get_recent_purchase_order_addresses")
+	@patch("myapp.services.purchase_service._serialize_address_doc")
+	@patch("myapp.services.purchase_service._serialize_contact_doc")
+	@patch("myapp.services.purchase_service._get_linked_parent_names")
+	@patch("myapp.services.purchase_service._get_doc_if_exists")
+	@patch("myapp.services.purchase_service._get_default_warehouse_for_context")
+	@patch("myapp.services.purchase_service.frappe.defaults.get_user_default")
+	@patch("myapp.services.purchase_service.frappe.get_doc")
+	def test_get_supplier_purchase_context_returns_defaults(
+		self,
+		mock_get_doc,
+		mock_user_default,
+		mock_default_warehouse,
+		mock_get_doc_if_exists,
+		mock_get_linked_parent_names,
+		mock_serialize_contact_doc,
+		mock_serialize_address_doc,
+		mock_recent_addresses,
+	):
+		mock_get_doc.return_value = frappe._dict(
+			{
+				"name": "SUP-001",
+				"supplier_name": "MA Inc.",
+				"supplier_group": "Raw",
+				"supplier_type": "Company",
+				"default_currency": "CNY",
+				"supplier_primary_contact": "CONT-001",
+				"supplier_primary_address": "ADDR-001",
+			}
+		)
+		mock_user_default.return_value = "Test Company"
+		mock_default_warehouse.return_value = "Stores - TC"
+		mock_get_linked_parent_names.return_value = []
+		mock_get_doc_if_exists.side_effect = [frappe._dict({"name": "CONT-001"}), frappe._dict({"name": "ADDR-001"})]
+		mock_serialize_contact_doc.return_value = {"name": "CONT-001", "display_name": "张三"}
+		mock_serialize_address_doc.return_value = {"name": "ADDR-001", "address_line1": "测试路 100 号"}
+		mock_recent_addresses.return_value = []
+
+		result = get_supplier_purchase_context("SUP-001")
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["suggestions"]["warehouse"], "Stores - TC")
+		self.assertEqual(result["data"]["supplier"]["name"], "SUP-001")
+
+	@patch("myapp.services.purchase_service._serialize_address_doc")
+	@patch("myapp.services.purchase_service._serialize_contact_doc")
+	@patch("myapp.services.purchase_service._get_doc_if_exists")
+	@patch("myapp.services.purchase_service.frappe.get_all")
+	def test_list_suppliers_v2_returns_summaries_with_meta(
+		self,
+		mock_get_all,
+		mock_get_doc_if_exists,
+		mock_serialize_contact_doc,
+		mock_serialize_address_doc,
+	):
+		mock_get_all.side_effect = [
+			[
+				frappe._dict(
+					{
+						"name": "SUP-001",
+						"supplier_name": "MA Inc.",
+						"supplier_type": "Company",
+						"supplier_group": "Raw",
+						"default_currency": "CNY",
+						"disabled": 0,
+						"modified": "2026-03-26 10:00:00",
+						"creation": "2026-03-20 10:00:00",
+						"supplier_primary_contact": "CONT-001",
+						"supplier_primary_address": "ADDR-001",
+					}
+				)
+			],
+			["SUP-001", "SUP-002"],
+		]
+		mock_get_doc_if_exists.side_effect = [frappe._dict({"name": "CONT-001"}), frappe._dict({"name": "ADDR-001"})]
+		mock_serialize_contact_doc.return_value = {"name": "CONT-001", "display_name": "张三"}
+		mock_serialize_address_doc.return_value = {"name": "ADDR-001", "address_line1": "测试路 100 号"}
+
+		result = list_suppliers_v2(search_key="MA", limit=20, start=0)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(len(result["data"]), 1)
+		self.assertEqual(result["data"][0]["name"], "SUP-001")
+		self.assertEqual(result["meta"]["total"], 2)
