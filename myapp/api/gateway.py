@@ -40,6 +40,7 @@ from .purchase_api import (
 	create_purchase_invoice_from_receipt as create_purchase_invoice_from_receipt_service,
 )
 from .purchase_api import create_purchase_order as create_purchase_order_service
+from .purchase_api import get_purchase_company_context as get_purchase_company_context_service
 from .purchase_api import get_purchase_invoice_detail_v2 as get_purchase_invoice_detail_v2_service
 from .purchase_api import get_purchase_order_detail_v2 as get_purchase_order_detail_v2_service
 from .purchase_api import get_purchase_order_status_summary as get_purchase_order_status_summary_service
@@ -335,6 +336,14 @@ def create_purchase_order(supplier: str, items, **kwargs):
 
 
 @frappe.whitelist()
+def get_purchase_company_context(company: str | None = None):
+	return _handle_gateway_call(
+		lambda: get_purchase_company_context_service(company=company),
+		success_code="PURCHASE_COMPANY_CONTEXT_FETCHED",
+	)
+
+
+@frappe.whitelist()
 def get_purchase_order_detail_v2(order_name: str):
 	return _handle_gateway_call(
 		lambda: get_purchase_order_detail_v2_service(order_name=order_name),
@@ -367,9 +376,9 @@ def get_purchase_invoice_detail_v2(invoice_name: str):
 
 
 @frappe.whitelist()
-def get_supplier_purchase_context(supplier: str):
+def get_supplier_purchase_context(supplier: str, company: str | None = None):
 	return _handle_gateway_call(
-		lambda: get_supplier_purchase_context_service(supplier=supplier),
+		lambda: get_supplier_purchase_context_service(supplier=supplier, company=company),
 		success_code="SUPPLIER_PURCHASE_CONTEXT_FETCHED",
 	)
 

@@ -6,7 +6,6 @@ from myapp.services.order_service import (
 	_build_payment_summary,
 	_document_status_label,
 	_extract_first_non_empty,
-	_get_default_warehouse_for_context,
 	_get_doc_if_exists,
 	_get_linked_parent_names,
 	_serialize_address_doc,
@@ -99,6 +98,20 @@ def _build_supplier_snapshot_for_doc(doc):
 			getattr(address_doc, "address_line1", None) if address_doc else None,
 		),
 	}
+
+
+def _get_purchase_default_warehouse_for_company(company: str | None):
+	company = _normalize_text(company)
+	if not company:
+		return None
+
+	user_warehouse = _extract_first_non_empty(frappe.defaults.get_user_default("warehouse"))
+	if user_warehouse:
+		warehouse_company = frappe.db.get_value("Warehouse", user_warehouse, "company")
+		if warehouse_company == company:
+			return user_warehouse
+
+	return frappe.db.get_value("Warehouse", {"company": company, "is_group": 0}, "name")
 
 
 def _build_supplier_address_snapshot_for_doc(doc):
@@ -768,7 +781,21 @@ def _build_supplier_payload(supplier_doc, *, include_recent_addresses: bool = Fa
 	return data
 
 
-def get_supplier_purchase_context(supplier: str):
+def get_purchase_company_context(company: str | None = None):
+	resolved_company = _normalize_text(company) or _extract_first_non_empty(frappe.defaults.get_user_default("company"))
+	warehouse = _get_purchase_default_warehouse_for_company(resolved_company)
+
+	return {
+		"status": "success",
+		"message": _("采购公司上下文获取成功。"),
+		"data": {
+			"company": resolved_company,
+			"warehouse": warehouse,
+		},
+	}
+
+
+def get_supplier_purchase_context(supplier: str, company: str | None = None):
 	supplier = _normalize_text(supplier)
 	if not supplier:
 		frappe.throw(_("supplier 不能为空。"))
@@ -789,8 +816,8 @@ def get_supplier_purchase_context(supplier: str):
 
 	default_contact = _serialize_contact_doc(_get_doc_if_exists("Contact", contact_names[0] if contact_names else None))
 	default_address = _serialize_address_doc(_get_doc_if_exists("Address", address_names[0] if address_names else None))
-	company = _extract_first_non_empty(frappe.defaults.get_user_default("company"))
-	warehouse = _get_default_warehouse_for_context(company)
+	resolved_company = _normalize_text(company) or _extract_first_non_empty(frappe.defaults.get_user_default("company"))
+	warehouse = _get_purchase_default_warehouse_for_company(resolved_company)
 
 	return {
 		"status": "success",
@@ -809,7 +836,7 @@ def get_supplier_purchase_context(supplier: str):
 			"default_address": default_address,
 			"recent_addresses": _get_recent_purchase_order_addresses(supplier_doc.name, limit=5),
 			"suggestions": {
-				"company": company,
+				"company": resolved_company,
 				"warehouse": warehouse,
 				"currency": getattr(supplier_doc, "default_currency", None),
 			},

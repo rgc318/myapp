@@ -1,4 +1,5 @@
 import frappe
+from frappe.utils import cint
 
 from myapp.services.purchase_service import create_purchase_invoice as create_purchase_invoice_service
 from myapp.services.purchase_service import (
@@ -15,6 +16,7 @@ from myapp.services.purchase_service import (
 	create_purchase_invoice_from_receipt as create_purchase_invoice_from_receipt_service,
 )
 from myapp.services.purchase_service import create_purchase_order as create_purchase_order_service
+from myapp.services.purchase_service import get_purchase_company_context as get_purchase_company_context_service
 from myapp.services.purchase_service import get_purchase_invoice_detail_v2 as get_purchase_invoice_detail_v2_service
 from myapp.services.purchase_service import get_purchase_order_detail_v2 as get_purchase_order_detail_v2_service
 from myapp.services.purchase_service import (
@@ -43,6 +45,11 @@ def create_purchase_order(supplier: str, items, **kwargs):
 
 
 @frappe.whitelist()
+def get_purchase_company_context(company: str | None = None):
+	return get_purchase_company_context_service(company=company)
+
+
+@frappe.whitelist()
 def get_purchase_order_detail_v2(order_name: str):
 	return get_purchase_order_detail_v2_service(order_name=order_name)
 
@@ -63,8 +70,8 @@ def get_purchase_invoice_detail_v2(invoice_name: str):
 
 
 @frappe.whitelist()
-def get_supplier_purchase_context(supplier: str):
-	return get_supplier_purchase_context_service(supplier=supplier)
+def get_supplier_purchase_context(supplier: str, company: str | None = None):
+	return get_supplier_purchase_context_service(supplier=supplier, company=company)
 
 
 @frappe.whitelist()

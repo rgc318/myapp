@@ -590,6 +590,8 @@ def _build_product_detail_payload(
 	qty_map = _get_qty_map([item.name], warehouse=warehouse, company=company)
 	total_qty_map = _get_qty_map([item.name], warehouse=None, company=stock_company)
 	warehouse_stock_map = _get_warehouse_stock_detail_map([item.name], company=stock_company)
+	global_total_qty_map = _get_qty_map([item.name], warehouse=None, company=None)
+	global_warehouse_stock_map = _get_warehouse_stock_detail_map([item.name], company=None)
 	price_map = _get_price_map([item.name], price_list=price_list, currency=currency)
 	selling_prices = _get_multi_price_map(
 		[item.name],
@@ -622,6 +624,8 @@ def _build_product_detail_payload(
 		"qty": flt(qty_map.get(item.name, 0)),
 		"total_qty": flt(total_qty_map.get(item.name, 0)),
 		"warehouse_stock_details": warehouse_stock_map.get(item.name, []),
+		"global_total_qty": flt(global_total_qty_map.get(item.name, 0)),
+		"global_warehouse_stock_details": global_warehouse_stock_map.get(item.name, []),
 		"price": current_rate,
 		"price_list": price_list,
 		"currency": currency,
@@ -686,6 +690,8 @@ def list_products_v2(
 	qty_map = _get_qty_map(item_codes, warehouse=warehouse, company=company)
 	total_qty_map = _get_qty_map(item_codes, warehouse=None, company=stock_company)
 	warehouse_stock_map = _get_warehouse_stock_detail_map(item_codes, company=stock_company)
+	global_total_qty_map = _get_qty_map(item_codes, warehouse=None, company=None)
+	global_warehouse_stock_map = _get_warehouse_stock_detail_map(item_codes, company=None)
 	current_price_map = _get_price_map(item_codes, price_list=price_list, currency=currency)
 	selling_price_map = _get_multi_price_map(item_codes, price_lists=selling_price_lists, currency=currency)
 	buying_price_map = _get_multi_price_map(item_codes, price_lists=buying_price_lists, currency=currency)
@@ -709,6 +715,8 @@ def list_products_v2(
 				"qty": flt(qty_map.get(row.name, 0) or 0),
 				"total_qty": flt(total_qty_map.get(row.name, 0) or 0),
 				"warehouse_stock_details": warehouse_stock_map.get(row.name, []),
+				"global_total_qty": flt(global_total_qty_map.get(row.name, 0) or 0),
+				"global_warehouse_stock_details": global_warehouse_stock_map.get(row.name, []),
 				"price": current_rate,
 				"price_list": price_list,
 				"standard_rate": flt(getattr(row, "standard_rate", 0) or 0),
@@ -892,6 +900,8 @@ def search_product_v2(
 	qty_map = _get_qty_map(item_codes, warehouse=warehouse, company=company)
 	total_qty_map = _get_qty_map(item_codes, warehouse=None, company=stock_company)
 	warehouse_stock_map = _get_warehouse_stock_detail_map(item_codes, company=stock_company)
+	global_total_qty_map = _get_qty_map(item_codes, warehouse=None, company=None)
+	global_warehouse_stock_map = _get_warehouse_stock_detail_map(item_codes, company=None)
 	selling_price_map = _get_multi_price_map(
 		item_codes,
 		price_lists=list(DEFAULT_SELLING_PRICE_LISTS),
@@ -922,6 +932,8 @@ def search_product_v2(
 				"qty": qty,
 				"total_qty": flt(total_qty_map.get(code, 0) or 0),
 				"warehouse_stock_details": warehouse_stock_map.get(code, []),
+				"global_total_qty": flt(global_total_qty_map.get(code, 0) or 0),
+				"global_warehouse_stock_details": global_warehouse_stock_map.get(code, []),
 				"price": flt(price_map.get(code, 0) or 0),
 				"image": item.image,
 				"nickname": _extract_item_nickname(item),
