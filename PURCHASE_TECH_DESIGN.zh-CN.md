@@ -149,7 +149,11 @@ Client
   - 每个商品独立切换目标入库仓
   - 采购行级仓库管理
 - 采购行真正的仓库拆分、修改与校验，仍应在采购单页内完成
-- 后端当前已补充采购公司上下文读取能力，用于按当前公司返回默认仓
+- 后端当前已补充采购公司上下文读取能力：
+  - 服务入口：`get_purchase_company_context(company)`
+  - 网关入口：`myapp.api.gateway.get_purchase_company_context`
+  - 语义：按当前公司返回采购默认仓
+  - 不负责返回供应商建议仓；供应商建议仍由 `get_supplier_purchase_context` 提供
 
 #### 6.1.3 关键校验
 
