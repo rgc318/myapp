@@ -200,8 +200,10 @@ def _build_purchase_order_action_flags(receiving: dict, payment: dict, *, invoic
 def _build_purchase_receipt_action_flags(*, docstatus: int, purchase_invoices: list[str]):
 	is_submitted = cint(docstatus) == 1
 	can_cancel = is_submitted and not purchase_invoices
+	can_create_invoice = is_submitted and not purchase_invoices
 	return {
 		"can_cancel_purchase_receipt": can_cancel,
+		"can_create_purchase_invoice": can_create_invoice,
 		"cancel_purchase_receipt_hint": (
 			_("当前收货单已关联采购发票，请先作废采购发票，再回退收货单。")
 			if is_submitted and purchase_invoices

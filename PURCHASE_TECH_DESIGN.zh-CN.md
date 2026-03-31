@@ -370,6 +370,78 @@ Client
 - `api`：薄转发层
 - `services`：采购业务逻辑
 
+### 7.1 `get_purchase_order_detail_v2` 字段语义对照
+
+采购订单详情聚合当前混合了三类口径：
+
+- 订单口径：采购订单自身金额与基础信息
+- 收货口径：采购收货推进情况
+- 发票 / 付款口径：基于已生成采购发票和付款单的应付结算状态
+
+移动端消费时应明确区分，避免把“订单金额”和“已开票应付金额”混用。
+
+| 返回路径 | 当前语义 | 主要来源 | 前端建议展示 |
+| --- | --- | --- | --- |
+| `purchase_order_name` | 采购订单号 | `Purchase Order.name` | 订单主标题 / 单号 |
+| `document_status` | 单据状态：`draft/submitted/cancelled` | `Purchase Order.docstatus` | 单据状态 |
+| `amounts.order_amount_estimate` | 订单理论金额 | `Purchase Order.rounded_total/grand_total` | `订单金额` / `预计采购金额` |
+| `amounts.receivable_amount` | 已开票口径的应付金额汇总，不是订单理论金额 | 已关联 `Purchase Invoice` 聚合 | 不建议直接显示为“订单应付”；更适合标记为“已开票应付” |
+| `amounts.paid_amount` | 已付款汇总 | 已关联 `Payment Entry` 聚合 | 已付款 |
+| `amounts.outstanding_amount` | 已开票但未付金额 | 已关联 `Purchase Invoice` 的 `outstanding_amount` 汇总 | 待付款 / 未结清金额 |
+| `receiving.total_qty` | 订单总采购数量 | `Purchase Order Item.qty` 汇总 | 总数量 |
+| `receiving.received_qty` | 累计已收数量 | `Purchase Order Item.received_qty` 汇总 | 已收数量 |
+| `receiving.remaining_qty` | 待收数量 | `total_qty - received_qty` | 待收数量 |
+| `receiving.status` | 收货状态：`pending/partial/received` 等 | 收货汇总规则 | 收货状态 |
+| `payment.status` | 付款状态，按已开票应付口径推导 | 发票 + 付款聚合 | 付款状态 |
+| `completion.status` | 订单完成状态，综合收货 / 付款 / 单据状态 | 完成状态规则 | 完成状态 |
+| `actions.can_receive_purchase_order` | 是否还能继续收货 | 提交状态 + 收货完成度 | “继续收货”按钮 |
+| `actions.can_create_purchase_invoice` | 是否还能继续开票 | 提交状态 + 付款/开票完成度 | “继续开票”按钮 |
+| `actions.can_record_supplier_payment` | 是否允许录入供应商付款 | `outstanding_amount > 0` | “去付款”按钮 |
+| `actions.can_process_purchase_return` | 是否允许做采购退货 | 当前订单 / 下游单据状态 | “采购退货”按钮 |
+| `references.purchase_receipts` | 已关联采购收货单列表 | 来源引用聚合 | 下游单据引用 |
+| `references.purchase_invoices` | 已关联采购发票列表 | 来源引用聚合 | 下游单据引用 |
+| `items[].qty` | 订单行数量 | `Purchase Order Item.qty` | 明细数量 |
+| `items[].received_qty` | 订单行累计已收数量 | `Purchase Order Item.received_qty` | 明细已收数量 |
+| `items[].rate` | 订单行采购单价 | `Purchase Order Item.rate` | 明细单价 |
+| `items[].amount` | 订单行金额 | `Purchase Order Item.amount` | 明细金额 / 小计 |
+| `items[].warehouse` | 订单行当前入库仓 | `Purchase Order Item.warehouse` | 明细仓库 |
+| `meta.company` | 订单所属公司 | `Purchase Order.company` | 公司 |
+| `meta.transaction_date` | 下单日期 | `Purchase Order.transaction_date` | 下单日期 |
+| `meta.schedule_date` | 计划到货日期 | `Purchase Order.schedule_date` | 计划到货 |
+
+当前前端页面建议遵守以下展示规则：
+
+- `订单金额` 只使用 `amounts.order_amount_estimate`
+- `收货状态 / 待收数量` 只使用 `receiving.*`
+- `付款状态 / 待付款金额` 只使用 `payment.*` 或 `amounts.outstanding_amount`
+- 不要把 `amounts.receivable_amount` 直接文案化成“订单总价”或“采购总额”
+- 若页面需要同时展示订单口径与发票口径，应明确区分：
+  - `订单金额`
+  - `已开票应付`
+  - `已付款`
+  - `待付款`
+
+### 7.2 `get_purchase_receipt_detail_v2` 动作字段补充
+
+为避免移动端仅凭单据状态做按钮判断，采购收货单详情聚合建议以前置动作字段为主，而不是自行推断：
+
+- `actions.can_cancel_purchase_receipt`
+  - 含义：当前收货单是否允许作废
+  - 典型限制：已有关联采购发票时不可直接作废
+- `actions.cancel_purchase_receipt_hint`
+  - 含义：当不可作废时的后端提示
+  - 前端建议：直接展示该提示，不要写死本地文案
+- `actions.can_create_purchase_invoice`
+  - 含义：当前收货单是否还能继续开票
+  - 典型口径：已提交且尚无关联采购发票时为 `true`
+
+前端展示建议：
+
+- `继续开票` 按钮优先读取 `actions.can_create_purchase_invoice`
+- `作废收货单` 按钮优先读取 `actions.can_cancel_purchase_receipt`
+- 当 `can_cancel_purchase_receipt = false` 时，应在回退区域展示 `cancel_purchase_receipt_hint`
+- 若页面存在链路回退操作，建议按“先回退发票，再回退收货”的顺序引导，避免用户在不可作废状态下反复尝试
+
 ## 8. 与 ERPNext 原生能力的映射关系
 
 当前仓库中的 ERPNext 原生入口可直接复用：
