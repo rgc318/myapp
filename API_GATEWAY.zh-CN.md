@@ -36,11 +36,13 @@
 
 - 采购与结算：
 - `myapp.api.gateway.create_purchase_order`
+- `myapp.api.gateway.quick_create_purchase_order_v2`（规划中）
 - `myapp.api.gateway.receive_purchase_order`
 - `myapp.api.gateway.create_purchase_invoice`
 - `myapp.api.gateway.create_purchase_invoice_from_receipt`
 - `myapp.api.gateway.record_supplier_payment`
 - `myapp.api.gateway.process_purchase_return`
+- `myapp.api.gateway.quick_cancel_purchase_order_v2`（规划中）
 
 - 通用辅助：
 - `myapp.api.gateway.confirm_pending_document`
@@ -59,6 +61,7 @@
 
 - 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
+- 采购快捷链路（规划中）：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
 - 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`
 - 采购更新与作废：`update_purchase_order_v2`、`update_purchase_order_items_v2`、`cancel_purchase_order_v2`、`cancel_purchase_receipt_v2`、`cancel_purchase_invoice_v2`、`cancel_supplier_payment`
 - 通用辅助：`confirm_pending_document`
@@ -237,6 +240,69 @@ frappe.call({
 - `uom` 可选
 - `price` 可选
 - `delivery_date` 可选
+
+### quick_create_purchase_order_v2（规划中）
+
+方法：
+
+- `myapp.api.gateway.quick_create_purchase_order_v2`
+
+目标：
+
+- 一次调用完成采购主链路的快捷编排能力
+- 与销售侧 `quick_create_order_v2` 保持同类语义
+
+建议参数：
+
+- `supplier: str`
+- `items: list[dict] | json-string`
+- `request_id: str | None`
+- `immediate_receive: bool = False`
+- `immediate_invoice: bool = False`
+- `immediate_payment: bool = False`
+- `payment_payload: dict | None`（当 `immediate_payment=True` 时生效）
+
+建议返回：
+
+- `purchase_order`
+- `purchase_receipt`（可为空）
+- `purchase_invoice`（可为空）
+- `payment_entry`（可为空）
+- `completed_steps: list[str]`
+- `detail`
+
+### quick_cancel_purchase_order_v2（规划中）
+
+方法：
+
+- `myapp.api.gateway.quick_cancel_purchase_order_v2`
+
+目标：
+
+- 一次调用按安全逆序回退采购链路
+- 与销售侧 `quick_cancel_order_v2` 保持同类语义
+
+建议参数：
+
+- `order_name: str`
+- `rollback_payment: bool = True`
+- `request_id: str | None`
+
+建议回退顺序：
+
+1. `Payment Entry`
+2. `Purchase Invoice`
+3. `Purchase Receipt`
+4. `Purchase Order`
+
+建议返回：
+
+- `order`
+- `cancelled_payment_entries`
+- `cancelled_purchase_invoice`
+- `cancelled_purchase_receipt`
+- `completed_steps: list[str]`
+- `detail`
 
 单位处理说明：
 
