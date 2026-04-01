@@ -483,6 +483,124 @@ class TestPurchaseService(TestCase):
 
 		mock_run_idempotent.assert_called_once()
 
+	@patch("myapp.services.purchase_service.run_idempotent", side_effect=lambda namespace, request_id, callback: callback())
+	@patch("myapp.services.purchase_service.get_purchase_order_detail_v2")
+	@patch("myapp.services.purchase_service.cancel_purchase_receipt_v2")
+	@patch("myapp.services.purchase_service.cancel_purchase_invoice_v2")
+	@patch("myapp.services.purchase_service.cancel_supplier_payment")
+	@patch("myapp.services.purchase_service._collect_submitted_supplier_payment_entry_summaries")
+	@patch("myapp.services.purchase_service._collect_purchase_order_reference_names")
+	@patch("myapp.services.purchase_service._get_purchase_order_doc_for_update")
+	def test_quick_cancel_purchase_order_v2_recovers_after_invoice_cancel_failure(
+		self,
+		mock_get_purchase_order_doc_for_update,
+		mock_collect_purchase_refs,
+		mock_collect_payments,
+		mock_cancel_supplier_payment,
+		mock_cancel_purchase_invoice,
+		mock_cancel_purchase_receipt,
+		mock_get_purchase_order_detail,
+		mock_run_idempotent,
+	):
+		mock_get_purchase_order_doc_for_update.return_value = frappe._dict({"name": "PO-0001"})
+		mock_collect_purchase_refs.return_value = (["PR-0001"], ["PINV-0001"])
+		mock_collect_payments.side_effect = [
+			[
+				{
+					"payment_entry": "PAY-0001",
+					"references": [
+						{
+							"reference_doctype": "Purchase Invoice",
+							"reference_name": "PINV-0001",
+						}
+					],
+				}
+			],
+			[],
+		]
+		mock_cancel_supplier_payment.return_value = {"status": "success", "payment_entry": "PAY-0001"}
+		mock_cancel_purchase_invoice.side_effect = [
+			frappe.ValidationError("invoice-cancel-failed"),
+			{"status": "success", "purchase_invoice": "PINV-0001"},
+		]
+		mock_cancel_purchase_receipt.return_value = {"status": "success", "purchase_receipt": "PR-0001"}
+		mock_get_purchase_order_detail.return_value = {"status": "success", "data": {"purchase_order_name": "PO-0001"}}
+
+		with self.assertRaisesRegex(frappe.ValidationError, "invoice-cancel-failed"):
+			quick_cancel_purchase_order_v2("PO-0001", request_id="quick-cancel-recovery-a")
+
+		result = quick_cancel_purchase_order_v2("PO-0001", request_id="quick-cancel-recovery-b")
+
+		self.assertEqual(result["cancelled_payment_entries"], [])
+		self.assertEqual(result["cancelled_purchase_invoice"], "PINV-0001")
+		self.assertEqual(result["cancelled_purchase_receipt"], "PR-0001")
+		self.assertEqual(result["completed_steps"], ["purchase_invoice", "purchase_receipt"])
+		mock_cancel_supplier_payment.assert_called_once_with("PAY-0001")
+		self.assertEqual(mock_cancel_purchase_invoice.call_count, 2)
+		mock_cancel_purchase_receipt.assert_called_once_with("PR-0001", request_id="quick-cancel-recovery-b")
+		self.assertEqual(mock_run_idempotent.call_count, 2)
+
+	@patch("myapp.services.purchase_service.run_idempotent", side_effect=lambda namespace, request_id, callback: callback())
+	@patch("myapp.services.purchase_service.get_purchase_order_detail_v2")
+	@patch("myapp.services.purchase_service.cancel_purchase_receipt_v2")
+	@patch("myapp.services.purchase_service.cancel_purchase_invoice_v2")
+	@patch("myapp.services.purchase_service.cancel_supplier_payment")
+	@patch("myapp.services.purchase_service._collect_submitted_supplier_payment_entry_summaries")
+	@patch("myapp.services.purchase_service._collect_purchase_order_reference_names")
+	@patch("myapp.services.purchase_service._get_purchase_order_doc_for_update")
+	def test_quick_cancel_purchase_order_v2_recovers_after_receipt_cancel_failure(
+		self,
+		mock_get_purchase_order_doc_for_update,
+		mock_collect_purchase_refs,
+		mock_collect_payments,
+		mock_cancel_supplier_payment,
+		mock_cancel_purchase_invoice,
+		mock_cancel_purchase_receipt,
+		mock_get_purchase_order_detail,
+		mock_run_idempotent,
+	):
+		mock_get_purchase_order_doc_for_update.return_value = frappe._dict({"name": "PO-0001"})
+		mock_collect_purchase_refs.side_effect = [
+			(["PR-0001"], ["PINV-0001"]),
+			(["PR-0001"], []),
+		]
+		mock_collect_payments.side_effect = [
+			[
+				{
+					"payment_entry": "PAY-0001",
+					"references": [
+						{
+							"reference_doctype": "Purchase Invoice",
+							"reference_name": "PINV-0001",
+						}
+					],
+				}
+			],
+			[],
+		]
+		mock_cancel_supplier_payment.return_value = {"status": "success", "payment_entry": "PAY-0001"}
+		mock_cancel_purchase_invoice.return_value = {"status": "success", "purchase_invoice": "PINV-0001"}
+		mock_cancel_purchase_receipt.side_effect = [
+			frappe.ValidationError("receipt-cancel-failed"),
+			{"status": "success", "purchase_receipt": "PR-0001"},
+		]
+		mock_get_purchase_order_detail.return_value = {"status": "success", "data": {"purchase_order_name": "PO-0001"}}
+
+		with self.assertRaisesRegex(frappe.ValidationError, "receipt-cancel-failed"):
+			quick_cancel_purchase_order_v2("PO-0001", request_id="quick-cancel-recovery-c")
+
+		result = quick_cancel_purchase_order_v2("PO-0001", request_id="quick-cancel-recovery-d")
+
+		self.assertEqual(result["cancelled_payment_entries"], [])
+		self.assertIsNone(result["cancelled_purchase_invoice"])
+		self.assertEqual(result["cancelled_purchase_receipt"], "PR-0001")
+		self.assertEqual(result["completed_steps"], ["purchase_receipt"])
+		mock_cancel_supplier_payment.assert_called_once_with("PAY-0001")
+		mock_cancel_purchase_invoice.assert_called_once_with("PINV-0001", request_id="quick-cancel-recovery-c")
+		self.assertEqual(mock_cancel_purchase_receipt.call_count, 2)
+		mock_cancel_purchase_receipt.assert_called_with("PR-0001", request_id="quick-cancel-recovery-d")
+		self.assertEqual(mock_run_idempotent.call_count, 2)
+
 	@patch("myapp.services.purchase_service._get_latest_purchase_payment_entry_summary")
 	@patch("myapp.services.purchase_service._load_purchase_invoice_rows")
 	@patch("myapp.services.purchase_service._collect_purchase_order_reference_names")
