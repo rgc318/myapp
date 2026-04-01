@@ -1078,3 +1078,39 @@ v2 轻链路内容：
 容器内 bench 环境执行结果：
 
 - `Ran 111 tests in 0.491s ... OK`
+
+### 16.7 第二阶段查询收敛
+
+在第一轮索引补丁之后，`tabPayment Entry Reference` 相关查询虽然已经有了更合适的候选索引，但由于查询仍带 `ORDER BY modified DESC`，`EXPLAIN` 仍显示：
+
+- `Using index condition; Using where; Using filesort`
+
+本轮进一步调整了销售 / 采购付款摘要 helper 的实现：
+
+- 去掉 `Payment Entry Reference` 查询上的数据库排序
+- 改为在服务层按 `modified` 选择同一 `Payment Entry` 下的最新引用行
+
+涉及服务：
+
+- `myapp.services.order_service._build_sales_latest_payment_summary_map`
+- `myapp.services.purchase_service._build_purchase_latest_payment_summary_map`
+
+调整后，当前 `EXPLAIN` 结果变为：
+
+- `Using index condition; Using where`
+
+也就是：
+
+- `filesort` 已消失
+- 当前策略更适合与新增索引配合使用
+
+### 16.8 第二阶段验证
+
+本轮继续通过：
+
+- 6 个付款摘要 / 详情相关聚焦单测
+  - `Ran 6 tests in 0.007s ... OK`
+- 销售 / 采购服务核心单测文件
+  - `apps.myapp.myapp.tests.unit.test_order_service`
+  - `apps.myapp.myapp.tests.unit.test_purchase_service`
+  - `Ran 82 tests in 0.575s ... OK`

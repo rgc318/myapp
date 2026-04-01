@@ -280,7 +280,6 @@ def _build_sales_latest_payment_summary_map(order_invoice_names_map: dict[str, l
 			"parentfield": "references",
 		},
 		fields=["parent", "reference_name", "allocated_amount", "modified"],
-		order_by="modified desc",
 		limit_page_length=0,
 	)
 	if not reference_rows:
@@ -358,9 +357,10 @@ def _build_sales_latest_payment_summary_map(order_invoice_names_map: dict[str, l
 			None,
 		)
 		latest_payment_entry_name = getattr(latest_payment_entry, "name", None) if latest_payment_entry else None
-		latest_reference = next(
+		latest_reference = max(
 			(row for row in order_reference_rows if getattr(row, "parent", None) == latest_payment_entry_name),
-			None,
+			key=lambda row: str(getattr(row, "modified", "") or ""),
+			default=None,
 		)
 		allocated_amount = flt(getattr(latest_reference, "allocated_amount", 0) or 0)
 		paid_amount = flt(
