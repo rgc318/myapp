@@ -879,3 +879,42 @@ v2 轻链路内容：
 - 本轮不改变详情接口名称、参数或主要返回结构
 - 主要收益在于减少销售 / 采购详情侧重复实现
 - 后续继续演进详情接口时，可在共用 helper 上统一维护付款摘要口径
+
+## 14. 单票付款摘要与批量底座统一验证（2026-04-02）
+
+本轮继续做了一步内部收敛，目标是把详情接口中的“单票最新付款摘要”计算，统一委托到工作台同源的批量付款摘要底座上。
+
+涉及服务：
+
+- `myapp.services.order_service._get_latest_payment_entry_summary`
+- `myapp.services.order_service._build_sales_latest_payment_summary_map`
+- `myapp.services.purchase_service._get_latest_purchase_payment_entry_summary`
+- `myapp.services.purchase_service._build_purchase_latest_payment_summary_map`
+
+### 14.1 本轮调整
+
+- 销售单票收款摘要改为直接委托销售批量付款摘要 map helper
+- 采购单票付款摘要改为直接委托采购批量付款摘要 map helper
+- 详情接口与工作台接口进一步收敛到同一套付款归因规则
+- 减少了单票 helper 与批量 helper 两套并行实现继续漂移的风险
+
+### 14.2 已通过的聚焦单元测试
+
+本轮已验证：
+
+- `test_get_latest_payment_entry_summary_returns_actual_paid_and_writeoff`
+- `test_get_latest_purchase_payment_entry_summary_returns_actual_paid_and_writeoff`
+- `test_get_sales_order_detail_aggregates_statuses`
+- `test_get_sales_invoice_detail_returns_payment_and_references`
+- `test_get_purchase_order_detail_v2_returns_aggregated_data`
+- `test_get_purchase_invoice_detail_v2_returns_detail`
+
+容器内执行结果：
+
+- `Ran 6 tests in 0.005s ... OK`
+
+### 14.3 当前意义
+
+- 本轮不改变接口名称与返回结构
+- 主要收益在于进一步统一销售 / 采购列表与详情的付款汇总底座
+- 后续若继续调整付款归因规则，只需要维护批量摘要 helper 的主逻辑

@@ -25,6 +25,44 @@ from myapp.services.purchase_service import (
 
 
 class TestPurchaseService(TestCase):
+	@patch("myapp.services.purchase_service.frappe.get_all")
+	def test_get_latest_purchase_payment_entry_summary_returns_actual_paid_and_writeoff(self, mock_get_all):
+		from myapp.services.purchase_service import _get_latest_purchase_payment_entry_summary
+
+		mock_get_all.side_effect = [
+			[
+				frappe._dict(
+					{
+						"parent": "ACC-PAY-0001",
+						"reference_name": "ACC-PINV-0001",
+						"allocated_amount": 9460,
+						"modified": "2026-03-20 10:00:00",
+					}
+				)
+			],
+			[
+				frappe._dict(
+					{
+						"name": "ACC-PAY-0001",
+						"paid_amount": 9046,
+						"received_amount": 9046,
+						"unallocated_amount": 0,
+						"difference_amount": 414,
+						"modified": "2026-03-20 10:00:00",
+					}
+				)
+			],
+		]
+
+		result = _get_latest_purchase_payment_entry_summary(["ACC-PINV-0001"])
+
+		self.assertEqual(result["payment_entry"], "ACC-PAY-0001")
+		self.assertEqual(result["invoice_name"], "ACC-PINV-0001")
+		self.assertEqual(result["writeoff_amount"], 414)
+		self.assertEqual(result["actual_paid_amount"], 9046)
+		self.assertEqual(result["total_actual_paid_amount"], 9046)
+		self.assertEqual(result["total_writeoff_amount"], 414)
+
 	@patch(
 		"myapp.services.purchase_service._validate_warehouse_company",
 		side_effect=frappe.ValidationError("cross-company"),
