@@ -242,19 +242,25 @@ Client
 
 目标：
 
-- 在一个入口中完成采购链路逆向回退
+- 在一个入口中完成采购链路逆向回退，并将采购订单恢复到“可继续编辑”的 `submitted` 状态
 
 建议回退顺序（必须严格逆序）：
 
 1. 付款单 `Payment Entry`
 2. 采购发票 `Purchase Invoice`
 3. 采购收货单 `Purchase Receipt`
-4. 采购订单 `Purchase Order`
+
+当前实现口径：
+
+- 快捷回退的职责是撤销下游单据，不直接作废采购订单本身
+- 成功后应返回最新 `get_purchase_order_detail_v2(order_name)` 结果
+- 前端可直接依据返回的 `detail.actions.can_receive_purchase_order` / `detail.actions.can_create_purchase_invoice` 判断订单已恢复为可编辑状态
 
 建议保护规则：
 
 - 若存在“多张发票 / 多张收货单 / 多笔付款”且超出快捷回退安全边界，应明确拒绝并提示改用分步回退
 - 回退结果应返回每一步是否执行、执行成功与否，避免前端误判
+- 若存在采购退货单，当前会体现在“多张采购收货单 / 多张采购发票”的保护分支中，快捷回退应保守拒绝
 
 #### 6.3.2 关键业务规则
 

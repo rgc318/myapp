@@ -31,6 +31,8 @@
   覆盖既有销售与采购主链路
 - [test_gateway_v2_http.py](/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/tests/http/test_gateway_v2_http.py)
   覆盖商品工作台与销售状态聚合相关 v2 能力
+- [test_purchase_quick_http.py](/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/tests/http/test_purchase_quick_http.py)
+  覆盖采购快捷开单 / 快捷回退的真实 HTTP 回归
 
 结果文件：
 
@@ -104,6 +106,12 @@ python3 -m unittest apps.myapp.myapp.tests.http.test_gateway_http
 
 ```bash
 python3 -m unittest apps.myapp.myapp.tests.http.test_gateway_v2_http
+```
+
+跑采购快捷链路回归：
+
+```bash
+python3 -m unittest apps.myapp.myapp.tests.http.test_purchase_quick_http
 ```
 
 跑单个测试方法：
@@ -257,6 +265,48 @@ docker exec frappe_docker-backend-1 bash -lc '
   - `python3 -m unittest apps.myapp.myapp.tests.http.test_gateway_v2_http`
 
 本轮已完成的 v2 测试类型：
+
+### 5.2.1 2026-04-01 采购快捷链路补充回归
+
+本轮围绕采购快捷开单与快捷回退，新增了一份独立 HTTP 回归文件：
+
+- [test_purchase_quick_http.py](/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/tests/http/test_purchase_quick_http.py)
+
+本轮最新结果：
+
+- `python3 -m unittest apps.myapp.myapp.tests.http.test_purchase_quick_http`
+  - `Ran 17 tests in 15.295s`
+  - `OK`
+
+本轮覆盖重点：
+
+- `quick_create_purchase_order_v2`
+  - 快捷下单 -> 收货 -> 开票
+  - 同一 `request_id` 幂等重放
+- `quick_cancel_purchase_order_v2`
+  - 部分付款后逆序回退
+  - 同一 `request_id` 幂等重放
+  - 回退后恢复到可编辑 `submitted` 状态
+  - 无下游单据时空回退
+- 分步与快捷交叉：
+  - 先手动回退付款，再快捷回退剩余发票/收货单
+  - 先手动回退发票，再快捷回退剩余收货单
+  - 先手动回退收货单，再快捷回退空链路
+- 安全拒绝边界：
+  - 多张采购收货单
+  - 多张采购发票
+  - 多笔有效付款
+  - 已付款但 `rollback_payment=false`
+  - 收货退货单存在
+  - 发票退货单存在
+
+本轮新增结论：
+
+- `quick_cancel_purchase_order_v2` 当前语义是“撤销下游单据并返回订单详情”，不再直接作废采购订单
+- 当采购退货单存在时，当前明细聚合会把退货单一起计入引用列表：
+  - 收货退货表现为“多张采购收货单”
+  - 发票退货表现为“多张采购发票”
+- 因此当前快捷回退在退货场景下会保守拒绝，要求改用分步回退
 
 - 单接口成功路径
 - 商品创建后可被 `search_product_v2` 搜到
