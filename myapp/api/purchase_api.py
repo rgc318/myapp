@@ -22,6 +22,7 @@ from myapp.services.purchase_service import get_purchase_order_detail_v2 as get_
 from myapp.services.purchase_service import (
 	get_purchase_order_status_summary as get_purchase_order_status_summary_service,
 )
+from myapp.services.purchase_service import search_purchase_orders_v2 as search_purchase_orders_v2_service
 from myapp.services.purchase_service import get_purchase_receipt_detail_v2 as get_purchase_receipt_detail_v2_service
 from myapp.services.purchase_service import get_supplier_detail_v2 as get_supplier_detail_v2_service
 from myapp.services.purchase_service import get_supplier_purchase_context as get_supplier_purchase_context_service
@@ -64,6 +65,29 @@ def get_purchase_order_detail_v2(order_name: str):
 @frappe.whitelist()
 def get_purchase_order_status_summary(supplier: str | None = None, company: str | None = None, limit: int = 20):
 	return get_purchase_order_status_summary_service(supplier=supplier, company=company, limit=cint(limit))
+
+
+@frappe.whitelist()
+def search_purchase_orders_v2(
+	search_key: str | None = None,
+	supplier: str | None = None,
+	company: str | None = None,
+	status_filter: str | None = None,
+	exclude_cancelled=None,
+	sort_by: str | None = None,
+	limit: int = 20,
+	start: int = 0,
+):
+	return search_purchase_orders_v2_service(
+		search_key=search_key,
+		supplier=supplier,
+		company=company,
+		status_filter=status_filter,
+		exclude_cancelled=exclude_cancelled,
+		sort_by=sort_by,
+		limit=cint(limit),
+		start=cint(start),
+	)
 
 
 @frappe.whitelist()

@@ -455,6 +455,7 @@ Client
 - `myapp.api.gateway.process_purchase_return`
 - `myapp.api.gateway.get_purchase_order_detail_v2`
 - `myapp.api.gateway.get_purchase_order_status_summary`
+- `myapp.api.gateway.search_purchase_orders_v2`
 - `myapp.api.gateway.get_purchase_receipt_detail_v2`
 - `myapp.api.gateway.get_purchase_invoice_detail_v2`
 - `myapp.api.gateway.get_supplier_purchase_context`
@@ -588,10 +589,44 @@ def record_supplier_payment(reference_name: str, paid_amount: float, **kwargs): 
 def process_purchase_return(source_doctype: str, source_name: str, return_items=None, **kwargs): ...
 def get_purchase_order_detail_v2(order_name: str): ...
 def get_purchase_order_status_summary(...): ...
+def search_purchase_orders_v2(...): ...
 def get_purchase_receipt_detail_v2(receipt_name: str): ...
 def get_purchase_invoice_detail_v2(invoice_name: str): ...
 def get_supplier_purchase_context(supplier: str): ...
 ```
+
+### 9.1 采购工作台检索接口补充
+
+当前需要明确区分两类接口职责：
+
+- `get_purchase_order_status_summary`
+  - 更适合“摘要聚合”
+  - 适合状态卡片、顶部数量概览、轻量列表摘要
+- `search_purchase_orders_v2`
+  - 更适合“采购工作台检索”
+  - 适合移动端采购工作台页面直接调用
+
+`search_purchase_orders_v2` 当前已支持：
+
+- `search_key`
+- `company`
+- `supplier`
+- `status_filter`
+- `exclude_cancelled`
+- `sort_by`
+- `limit/start`
+
+当前移动端采购工作台的推荐默认策略：
+
+- 默认 `status_filter = unfinished`
+- 默认 `exclude_cancelled = true`
+- 只有用户主动切到 `已作废` 或 `全部订单` 时，再把已作废订单带回前端
+
+这样可以避免以下问题：
+
+- 已作废订单混入默认结果，干扰日常操作
+- 前端误把“摘要接口”当作“真实搜索接口”
+- 搜索按钮只是本地筛选，看起来像“假搜索”
 
 ## 10. 第一阶段开发顺序
 

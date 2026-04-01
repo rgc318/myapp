@@ -543,6 +543,29 @@ v2 轻链路内容：
   - `West View Software Ltd.`
   - `Grant Plastics Ltd.`
 
+### 8.1 采购工作台搜索最新补充验证（2026-04-01）
+
+本轮新增采购工作台真实检索接口：
+
+- `myapp.api.gateway.search_purchase_orders_v2`
+
+本地已完成并通过的验证：
+
+- 后端单元测试
+  - `search_purchase_orders_v2` 默认排除已作废
+  - `search_key / status_filter / sort_by / company / start / limit` 参数透传
+- 真实 HTTP 回归
+  - 默认 `exclude_cancelled=true` 时，已作废订单不会进入 `items`
+  - 显式切到 `status_filter=cancelled` 时，可以查到已作废订单
+  - `status_filter=receiving` 可命中待收货订单
+  - `status_filter=paying` 可命中已收货已开票但未付款订单
+  - `search_key=完整订单号` 可稳定命中目标订单
+
+本轮最新一次采购 HTTP 全量回归结果：
+
+- `apps.myapp.myapp.tests.http.test_purchase_quick_http`
+- `Ran 36 tests in 30.947s ... OK`
+
 ## 9. 当前仍建议后续补充的测试
 
 虽然当前 v2 核心能力已可用，但以下场景仍建议后续补：

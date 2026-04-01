@@ -62,7 +62,7 @@
 - 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
 - 采购快捷链路（规划中）：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
-- 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`
+- 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`
 - 采购更新与作废：`update_purchase_order_v2`、`update_purchase_order_items_v2`、`cancel_purchase_order_v2`、`cancel_purchase_receipt_v2`、`cancel_purchase_invoice_v2`、`cancel_supplier_payment`
 - 通用辅助：`confirm_pending_document`
 
@@ -2107,6 +2107,33 @@ frappe.call({
 
 - 返回采购订单列表页可直接使用的状态摘要
 - 每条记录都基于详情聚合口径构造，避免前端自己推导“已收货 / 已开票 / 已付款 / 是否完成”
+- 该接口更适合“摘要卡片 / 状态概览”，不建议再把它当作采购工作台的真实搜索接口使用
+
+### search_purchase_orders_v2
+
+方法：
+
+- `myapp.api.gateway.search_purchase_orders_v2`
+
+参数：
+
+- `search_key: str | None`
+- `supplier: str | None`
+- `company: str | None`
+- `status_filter: str | None`
+- `exclude_cancelled: bool | None`
+- `sort_by: str | None`
+- `limit: int | None = 20`
+- `start: int | None = 0`
+
+行为：
+
+- 面向采购工作台的真实检索接口
+- 支持关键词、公司、状态、排序、分页联动查询
+- 支持默认排除已作废订单，避免有效订单列表被历史作废单据淹没
+- 返回两层数据：
+  - `items`：当前命中的采购订单摘要列表
+  - `summary`：当前检索口径下的未完成 / 待收货 / 待付款 / 已完成 / 已作废计数
 
 ### get_purchase_receipt_detail_v2
 

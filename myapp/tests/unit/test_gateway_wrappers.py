@@ -19,6 +19,7 @@ from myapp.api.gateway import (
 	get_purchase_order_detail_v2,
 	get_purchase_order_status_summary,
 	get_purchase_receipt_detail_v2,
+	search_purchase_orders_v2,
 	create_product_and_stock,
 	create_sales_invoice,
 	create_uom_v2,
@@ -71,6 +72,7 @@ class TestGatewayWrappers(TestCase):
 			quick_create_purchase_order_v2,
 			get_purchase_order_detail_v2,
 			get_purchase_order_status_summary,
+			search_purchase_orders_v2,
 			get_purchase_receipt_detail_v2,
 			get_purchase_invoice_detail_v2,
 			get_sales_order_detail,
@@ -235,6 +237,32 @@ class TestGatewayWrappers(TestCase):
 			supplier="SUP-001",
 			company="Test Company",
 			limit=5,
+		)
+
+	@patch("myapp.api.gateway.search_purchase_orders_v2_service")
+	def test_search_purchase_orders_v2_passes_filters_to_service(self, mock_search_purchase_orders_v2_service):
+		mock_search_purchase_orders_v2_service.return_value = {"status": "success", "data": {"items": []}}
+
+		search_purchase_orders_v2(
+			search_key="PO",
+			supplier="SUP-001",
+			company="Test Company",
+			status_filter="unfinished",
+			exclude_cancelled=True,
+			sort_by="unfinished_first",
+			limit=8,
+			start=5,
+		)
+
+		mock_search_purchase_orders_v2_service.assert_called_once_with(
+			search_key="PO",
+			supplier="SUP-001",
+			company="Test Company",
+			status_filter="unfinished",
+			exclude_cancelled=True,
+			sort_by="unfinished_first",
+			limit=8,
+			start=5,
 		)
 
 	@patch("myapp.api.gateway.get_purchase_receipt_detail_v2_service")

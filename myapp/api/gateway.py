@@ -46,6 +46,7 @@ from .purchase_api import get_purchase_company_context as get_purchase_company_c
 from .purchase_api import get_purchase_invoice_detail_v2 as get_purchase_invoice_detail_v2_service
 from .purchase_api import get_purchase_order_detail_v2 as get_purchase_order_detail_v2_service
 from .purchase_api import get_purchase_order_status_summary as get_purchase_order_status_summary_service
+from .purchase_api import search_purchase_orders_v2 as search_purchase_orders_v2_service
 from .purchase_api import get_purchase_receipt_detail_v2 as get_purchase_receipt_detail_v2_service
 from .purchase_api import get_supplier_detail_v2 as get_supplier_detail_v2_service
 from .purchase_api import get_supplier_purchase_context as get_supplier_purchase_context_service
@@ -366,6 +367,32 @@ def get_purchase_order_status_summary(supplier: str | None = None, company: str 
 	return _handle_gateway_call(
 		lambda: get_purchase_order_status_summary_service(supplier=supplier, company=company, limit=limit),
 		success_code="PURCHASE_ORDER_STATUS_SUMMARY_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def search_purchase_orders_v2(
+	search_key: str | None = None,
+	supplier: str | None = None,
+	company: str | None = None,
+	status_filter: str | None = None,
+	exclude_cancelled=None,
+	sort_by: str | None = None,
+	limit: int = 20,
+	start: int = 0,
+):
+	return _handle_gateway_call(
+		lambda: search_purchase_orders_v2_service(
+			search_key=search_key,
+			supplier=supplier,
+			company=company,
+			status_filter=status_filter,
+			exclude_cancelled=exclude_cancelled,
+			sort_by=sort_by,
+			limit=limit,
+			start=start,
+		),
+		success_code="PURCHASE_ORDER_SEARCHED",
 	)
 
 

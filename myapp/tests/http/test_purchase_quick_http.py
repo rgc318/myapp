@@ -371,6 +371,31 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		)
 		self._assert_success(status_code, response, code="PURCHASE_ORDER_CANCELLED")
 
+	def _search_purchase_orders(
+		self,
+		*,
+		search_key: str | None = None,
+		company: str | None = PURCHASE_COMPANY,
+		status_filter: str = "unfinished",
+		exclude_cancelled: bool = True,
+		sort_by: str = "unfinished_first",
+		limit: int = 120,
+		start: int = 0,
+	):
+		payload = {
+			"search_key": search_key,
+			"company": company,
+			"status_filter": status_filter,
+			"exclude_cancelled": 1 if exclude_cancelled else 0,
+			"sort_by": sort_by,
+			"limit": limit,
+			"start": start,
+		}
+		status_code, response = self._post_method("myapp.api.gateway.search_purchase_orders_v2", payload)
+		self._print_response(self._testMethodName, response)
+		self._assert_success(status_code, response, code="PURCHASE_ORDER_SEARCHED")
+		return response["message"]["data"]
+
 	def _process_purchase_return(self, source_doctype: str, source_name: str):
 		status_code, response = self._post_method(
 			"myapp.api.gateway.process_purchase_return",
@@ -1242,4 +1267,78 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			self._cancel_supplier_payment(data["payment_entry"])
 			self._cancel_purchase_invoice(data["purchase_invoice"])
 			self._cancel_purchase_receipt(data["purchase_receipt"])
+			self._cancel_purchase_order(order_name)
+
+	def test_search_purchase_orders_hides_cancelled_order_by_default(self):
+		order_name = self._create_purchase_order()
+		self._cancel_purchase_order(order_name)
+
+		search_data = self._search_purchase_orders(
+			search_key=order_name,
+			status_filter="all",
+			exclude_cancelled=True,
+		)
+
+		self.assertEqual(search_data["items"], [])
+		self.assertGreaterEqual(search_data["summary"]["cancelled_count"], 1)
+
+	def test_search_purchase_orders_can_query_cancelled_orders_explicitly(self):
+		order_name = self._create_purchase_order()
+		self._cancel_purchase_order(order_name)
+
+		search_data = self._search_purchase_orders(
+			search_key=order_name,
+			status_filter="cancelled",
+			exclude_cancelled=False,
+		)
+
+		self.assertTrue(any(row["purchase_order_name"] == order_name for row in search_data["items"]))
+
+	def test_search_purchase_orders_finds_receiving_pending_order(self):
+		order_name = self._create_purchase_order()
+
+		try:
+			search_data = self._search_purchase_orders(
+				search_key=order_name,
+				status_filter="receiving",
+				exclude_cancelled=True,
+			)
+
+			self.assertTrue(any(row["purchase_order_name"] == order_name for row in search_data["items"]))
+			self.assertGreaterEqual(search_data["summary"]["receiving_count"], 1)
+		finally:
+			self._cancel_purchase_order(order_name)
+
+	def test_search_purchase_orders_finds_payment_pending_order(self):
+		data = self._quick_create_purchase_order(immediate_payment=False)
+		order_name = data["purchase_order"]
+
+		try:
+			search_data = self._search_purchase_orders(
+				search_key=order_name,
+				status_filter="paying",
+				exclude_cancelled=True,
+			)
+
+			self.assertTrue(any(row["purchase_order_name"] == order_name for row in search_data["items"]))
+			self.assertGreaterEqual(search_data["summary"]["payment_count"], 1)
+		finally:
+			self._cancel_purchase_invoice(data["purchase_invoice"])
+			self._cancel_purchase_receipt(data["purchase_receipt"])
+			self._cancel_purchase_order(order_name)
+
+	def test_search_purchase_orders_finds_order_by_exact_name_keyword(self):
+		order_name = self._create_purchase_order()
+
+		try:
+			search_data = self._search_purchase_orders(
+				search_key=order_name,
+				status_filter="unfinished",
+				exclude_cancelled=True,
+			)
+
+			self.assertEqual(len([row for row in search_data["items"] if row["purchase_order_name"] == order_name]), 1)
+			matched = next(row for row in search_data["items"] if row["purchase_order_name"] == order_name)
+			self.assertEqual(matched["company"], PURCHASE_COMPANY)
+		finally:
 			self._cancel_purchase_order(order_name)
