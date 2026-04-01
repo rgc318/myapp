@@ -1,4 +1,5 @@
 import frappe
+import heapq
 from frappe import _
 from frappe.utils import cint, flt, nowdate
 
@@ -229,6 +230,38 @@ def _sort_purchase_summary_rows(rows: list[dict], sort_by: str):
 		rows,
 		key=lambda row: (_purchase_summary_sort_weight(row), -_get_purchase_summary_modified_time(row).timestamp()),
 	)
+
+
+def _purchase_search_batch_size(limit: int, start: int):
+	return max(100, min(max(limit + start, 0) + 40, 300))
+
+
+def _purchase_summary_rank(summary_row: dict, sort_by: str):
+	resolved_sort = _normalize_purchase_desk_sort(sort_by)
+	modified_ts = _get_purchase_summary_modified_time(summary_row).timestamp()
+	if resolved_sort == "amount_desc":
+		return (flt(summary_row.get("order_amount_estimate") or 0), modified_ts)
+	if resolved_sort == "unfinished_first":
+		return (-_purchase_summary_sort_weight(summary_row), modified_ts)
+	return None
+
+
+def _finalize_purchase_ranked_page(heap_rows: list[tuple], sort_by: str, start: int, limit: int):
+	if not heap_rows:
+		return []
+
+	if _normalize_purchase_desk_sort(sort_by) == "amount_desc":
+		sorted_rows = sorted(
+			[row for _, _, row in heap_rows],
+			key=lambda row: (flt(row.get("order_amount_estimate") or 0), _get_purchase_summary_modified_time(row)),
+			reverse=True,
+		)
+	else:
+		sorted_rows = sorted(
+			[row for _, _, row in heap_rows],
+			key=lambda row: (_purchase_summary_sort_weight(row), -_get_purchase_summary_modified_time(row).timestamp()),
+		)
+	return sorted_rows[start : start + limit]
 
 
 def _build_empty_purchase_payment_summary():
@@ -1095,49 +1128,106 @@ def search_purchase_orders_v2(
 		]
 
 	try:
-		order_rows = frappe.get_all(
-			"Purchase Order",
-			filters=filters,
-			or_filters=or_filters,
-			fields=[
-				"name",
-				"supplier",
-				"supplier_name",
-				"transaction_date",
-				"company",
-				"docstatus",
-				"rounded_total",
-				"grand_total",
-				"modified",
-			],
-			order_by="modified desc",
-			limit_page_length=0,
-		)
+		fields = [
+			"name",
+			"supplier",
+			"supplier_name",
+			"transaction_date",
+			"company",
+			"docstatus",
+			"rounded_total",
+			"grand_total",
+			"modified",
+		]
+		order_by = "modified desc"
+		if resolved_sort == "oldest":
+			order_by = "transaction_date asc, modified asc"
 
-		summaries = _build_purchase_order_summary_rows(order_rows)
-		scoped_rows = [
-			row for row in summaries if _purchase_summary_matches_filter(row, "all", exclude_cancelled=resolved_exclude_cancelled)
-		]
-		filtered_rows = [
-			row
-			for row in scoped_rows
-			if _purchase_summary_matches_filter(row, resolved_status_filter, exclude_cancelled=False)
-		]
-		sorted_rows = _sort_purchase_summary_rows(filtered_rows, resolved_sort)
-		paged_rows = sorted_rows[start : start + limit]
+		total_count = 0
+		visible_count = 0
+		unfinished_count = 0
+		receiving_count = 0
+		payment_count = 0
+		completed_count = 0
+		cancelled_count = 0
+		paged_rows = []
+		visible_cursor = 0
+		page_target = start + limit
+		ranked_rows = []
+		sequence = 0
+		chunk_start = 0
+		batch_size = _purchase_search_batch_size(limit, start)
+
+		while True:
+			order_rows = frappe.get_all(
+				"Purchase Order",
+				filters=filters,
+				or_filters=or_filters,
+				fields=fields,
+				order_by=order_by,
+				limit_start=chunk_start,
+				limit_page_length=batch_size,
+			)
+			if not order_rows:
+				break
+
+			summaries = _build_purchase_order_summary_rows(order_rows)
+			for row in summaries:
+				sequence += 1
+				if _is_purchase_summary_cancelled(row):
+					cancelled_count += 1
+
+				if not _purchase_summary_matches_filter(row, "all", exclude_cancelled=resolved_exclude_cancelled):
+					continue
+
+				total_count += 1
+				if _is_purchase_summary_unfinished(row):
+					unfinished_count += 1
+				if _is_purchase_summary_receiving_pending(row):
+					receiving_count += 1
+				if _is_purchase_summary_payment_pending(row):
+					payment_count += 1
+				if _is_purchase_summary_completed(row):
+					completed_count += 1
+
+				if not _purchase_summary_matches_filter(row, resolved_status_filter, exclude_cancelled=False):
+					continue
+
+				visible_count += 1
+				if resolved_sort in {"latest", "oldest"}:
+					if visible_cursor >= start and len(paged_rows) < limit:
+						paged_rows.append(row)
+					visible_cursor += 1
+					continue
+
+				rank = _purchase_summary_rank(row, resolved_sort)
+				if rank is None:
+					continue
+				entry = (rank, -sequence, row)
+				if len(ranked_rows) < page_target:
+					heapq.heappush(ranked_rows, entry)
+				elif entry > ranked_rows[0]:
+					heapq.heapreplace(ranked_rows, entry)
+
+			chunk_start += len(order_rows)
+			if len(order_rows) < batch_size:
+				break
+
+		if resolved_sort in {"amount_desc", "unfinished_first"}:
+			paged_rows = _finalize_purchase_ranked_page(ranked_rows, resolved_sort, start, limit)
 
 		return {
 			"status": "success",
 			"data": {
 				"items": paged_rows,
 				"summary": {
-					"total_count": len(scoped_rows),
-					"visible_count": len(filtered_rows),
-					"unfinished_count": sum(1 for row in scoped_rows if _is_purchase_summary_unfinished(row)),
-					"receiving_count": sum(1 for row in scoped_rows if _is_purchase_summary_receiving_pending(row)),
-					"payment_count": sum(1 for row in scoped_rows if _is_purchase_summary_payment_pending(row)),
-					"completed_count": sum(1 for row in scoped_rows if _is_purchase_summary_completed(row)),
-					"cancelled_count": sum(1 for row in summaries if _is_purchase_summary_cancelled(row)),
+					"total_count": total_count,
+					"visible_count": visible_count,
+					"unfinished_count": unfinished_count,
+					"receiving_count": receiving_count,
+					"payment_count": payment_count,
+					"completed_count": completed_count,
+					"cancelled_count": cancelled_count,
 				},
 				"meta": {
 					"filters": {
