@@ -405,7 +405,7 @@ class TestPurchaseService(TestCase):
 		mock_run_idempotent.assert_called_once()
 
 	@patch("myapp.services.purchase_service.run_idempotent", side_effect=lambda namespace, request_id, callback: callback())
-	@patch("myapp.services.purchase_service.cancel_purchase_order_v2")
+	@patch("myapp.services.purchase_service.get_purchase_order_detail_v2")
 	@patch("myapp.services.purchase_service.cancel_purchase_receipt_v2")
 	@patch("myapp.services.purchase_service.cancel_purchase_invoice_v2")
 	@patch("myapp.services.purchase_service.cancel_supplier_payment")
@@ -420,7 +420,7 @@ class TestPurchaseService(TestCase):
 		mock_cancel_supplier_payment,
 		mock_cancel_purchase_invoice,
 		mock_cancel_purchase_receipt,
-		mock_cancel_purchase_order,
+		mock_get_purchase_order_detail,
 		mock_run_idempotent,
 	):
 		mock_get_purchase_order_doc_for_update.return_value = frappe._dict({"name": "PO-0001"})
@@ -440,11 +440,7 @@ class TestPurchaseService(TestCase):
 		mock_cancel_supplier_payment.return_value = {"status": "success", "payment_entry": "PAY-0001"}
 		mock_cancel_purchase_invoice.return_value = {"status": "success", "purchase_invoice": "PINV-0001"}
 		mock_cancel_purchase_receipt.return_value = {"status": "success", "purchase_receipt": "PR-0001"}
-		mock_cancel_purchase_order.return_value = {
-			"status": "success",
-			"purchase_order": "PO-0001",
-			"detail": {"purchase_order_name": "PO-0001"},
-		}
+		mock_get_purchase_order_detail.return_value = {"status": "success", "data": {"purchase_order_name": "PO-0001"}}
 
 		result = quick_cancel_purchase_order_v2("PO-0001", request_id="quick-cancel-001")
 
@@ -454,9 +450,9 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["cancelled_purchase_receipt"], "PR-0001")
 		self.assertEqual(
 			result["completed_steps"],
-			["payment_entry", "purchase_invoice", "purchase_receipt", "purchase_order"],
+			["payment_entry", "purchase_invoice", "purchase_receipt"],
 		)
-		mock_cancel_purchase_order.assert_called_once_with("PO-0001", request_id="quick-cancel-001")
+		mock_get_purchase_order_detail.assert_called_once_with("PO-0001")
 		mock_run_idempotent.assert_called_once()
 
 	@patch("myapp.services.purchase_service.run_idempotent", side_effect=lambda namespace, request_id, callback: callback())

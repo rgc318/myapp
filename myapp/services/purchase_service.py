@@ -1774,8 +1774,7 @@ def quick_cancel_purchase_order_v2(order_name: str, rollback_payment: bool = Tru
 				cancelled_receipt = receipt_result.get("purchase_receipt")
 				completed_steps.append("purchase_receipt")
 
-			order_result = cancel_purchase_order_v2(order_name, **kwargs)
-			completed_steps.append("purchase_order")
+			detail = get_purchase_order_detail_v2(order_name).get("data", {})
 			return {
 				"status": "success",
 				"purchase_order": order_name,
@@ -1784,7 +1783,7 @@ def quick_cancel_purchase_order_v2(order_name: str, rollback_payment: bool = Tru
 				"cancelled_purchase_receipt": cancelled_receipt,
 				"completed_steps": completed_steps,
 				"message": _("采购订单 {0} 已按快捷回退模式撤销下游单据，可返回订单继续修改。").format(order_name),
-				"detail": order_result.get("detail", {}),
+				"detail": detail,
 			}
 
 		return run_idempotent("quick_cancel_purchase_order_v2", request_id, _quick_cancel_purchase_order_v2)
