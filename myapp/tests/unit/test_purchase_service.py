@@ -399,6 +399,8 @@ class TestPurchaseService(TestCase):
 			result["completed_steps"],
 			["purchase_order", "purchase_receipt", "purchase_invoice", "payment_entry"],
 		)
+		self.assertFalse(result["detail_included"])
+		self.assertIsNone(result["detail"])
 		mock_receive_purchase_order.assert_called_once()
 		mock_create_purchase_invoice_from_receipt.assert_called_once()
 		mock_record_supplier_payment.assert_called_once_with(
@@ -410,6 +412,43 @@ class TestPurchaseService(TestCase):
 			request_id="quick-po-001",
 		)
 		mock_run_idempotent.assert_called_once()
+		mock_get_purchase_order_detail.assert_not_called()
+
+	@patch("myapp.services.purchase_service.run_idempotent", side_effect=lambda namespace, request_id, callback: callback())
+	@patch("myapp.services.purchase_service.get_purchase_order_detail_v2")
+	@patch("myapp.services.purchase_service.record_supplier_payment")
+	@patch("myapp.services.purchase_service.create_purchase_invoice_from_receipt")
+	@patch("myapp.services.purchase_service.receive_purchase_order")
+	@patch("myapp.services.purchase_service.create_purchase_order")
+	def test_quick_create_purchase_order_v2_can_include_detail_when_requested(
+		self,
+		mock_create_purchase_order,
+		mock_receive_purchase_order,
+		mock_create_purchase_invoice_from_receipt,
+		mock_record_supplier_payment,
+		mock_get_purchase_order_detail,
+		mock_run_idempotent,
+	):
+		mock_create_purchase_order.return_value = {"status": "success", "purchase_order": "PO-0002"}
+		mock_receive_purchase_order.return_value = {"status": "success", "purchase_receipt": "PR-0002"}
+		mock_create_purchase_invoice_from_receipt.return_value = {
+			"status": "success",
+			"purchase_invoice": "PINV-0002",
+		}
+		mock_record_supplier_payment.return_value = {"status": "success", "payment_entry": "PAY-0002"}
+		mock_get_purchase_order_detail.return_value = {"status": "success", "data": {"purchase_order_name": "PO-0002"}}
+
+		result = quick_create_purchase_order_v2(
+			supplier="SUP-001",
+			items=[{"item_code": "ITEM-001", "qty": 2, "warehouse": "Stores - TC"}],
+			immediate_payment=1,
+			paid_amount=200,
+			include_detail=1,
+		)
+
+		self.assertTrue(result["detail_included"])
+		self.assertEqual(result["detail"]["purchase_order_name"], "PO-0002")
+		mock_get_purchase_order_detail.assert_called_once_with("PO-0002")
 
 	@patch("myapp.services.purchase_service.run_idempotent", side_effect=lambda namespace, request_id, callback: callback())
 	@patch("myapp.services.purchase_service.get_purchase_order_detail_v2")
@@ -459,7 +498,9 @@ class TestPurchaseService(TestCase):
 			result["completed_steps"],
 			["payment_entry", "purchase_invoice", "purchase_receipt"],
 		)
-		mock_get_purchase_order_detail.assert_called_once_with("PO-0001")
+		self.assertFalse(result["detail_included"])
+		self.assertIsNone(result["detail"])
+		mock_get_purchase_order_detail.assert_not_called()
 		mock_run_idempotent.assert_called_once()
 
 	@patch("myapp.services.purchase_service.run_idempotent", side_effect=lambda namespace, request_id, callback: callback())
@@ -542,10 +583,13 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["cancelled_purchase_invoice"], "PINV-0001")
 		self.assertEqual(result["cancelled_purchase_receipt"], "PR-0001")
 		self.assertEqual(result["completed_steps"], ["purchase_invoice", "purchase_receipt"])
+		self.assertFalse(result["detail_included"])
+		self.assertIsNone(result["detail"])
 		mock_cancel_supplier_payment.assert_called_once_with("PAY-0001")
 		self.assertEqual(mock_cancel_purchase_invoice.call_count, 2)
 		mock_cancel_purchase_receipt.assert_called_once_with("PR-0001", request_id="quick-cancel-recovery-b")
 		self.assertEqual(mock_run_idempotent.call_count, 2)
+		mock_get_purchase_order_detail.assert_not_called()
 
 	@patch("myapp.services.purchase_service.run_idempotent", side_effect=lambda namespace, request_id, callback: callback())
 	@patch("myapp.services.purchase_service.get_purchase_order_detail_v2")
@@ -602,11 +646,14 @@ class TestPurchaseService(TestCase):
 		self.assertIsNone(result["cancelled_purchase_invoice"])
 		self.assertEqual(result["cancelled_purchase_receipt"], "PR-0001")
 		self.assertEqual(result["completed_steps"], ["purchase_receipt"])
+		self.assertFalse(result["detail_included"])
+		self.assertIsNone(result["detail"])
 		mock_cancel_supplier_payment.assert_called_once_with("PAY-0001")
 		mock_cancel_purchase_invoice.assert_called_once_with("PINV-0001", request_id="quick-cancel-recovery-c")
 		self.assertEqual(mock_cancel_purchase_receipt.call_count, 2)
 		mock_cancel_purchase_receipt.assert_called_with("PR-0001", request_id="quick-cancel-recovery-d")
 		self.assertEqual(mock_run_idempotent.call_count, 2)
+		mock_get_purchase_order_detail.assert_not_called()
 
 	@patch("myapp.services.purchase_service._get_latest_purchase_payment_entry_summary")
 	@patch("myapp.services.purchase_service._load_purchase_invoice_rows")

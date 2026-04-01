@@ -1397,6 +1397,32 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["sales_invoice"], "SINV-QUICK-0001")
 		self.assertTrue(result["force_delivery"])
 		self.assertEqual(result["completed_steps"], ["order", "delivery_note", "sales_invoice"])
+		self.assertFalse(result["detail_included"])
+		self.assertIsNone(result["detail"])
+		mock_get_sales_order_detail.assert_not_called()
+
+	@patch("myapp.services.order_service.get_sales_order_detail")
+	@patch("myapp.services.order_service.create_order_v2")
+	def test_quick_create_order_v2_can_include_detail_when_requested(self, mock_create_order_v2, mock_get_sales_order_detail):
+		mock_create_order_v2.return_value = {
+			"status": "success",
+			"order": "SO-QUICK-0002",
+			"delivery_note": "DN-QUICK-0002",
+			"sales_invoice": "SINV-QUICK-0002",
+			"force_delivery": True,
+		}
+		mock_get_sales_order_detail.return_value = {"data": {"order_name": "SO-QUICK-0002"}}
+
+		result = quick_create_order_v2(
+			customer="Test Customer",
+			items=[{"item_code": "ITEM-001", "qty": 1, "warehouse": "Stores - TC"}],
+			company="Test Company",
+			include_detail=1,
+		)
+
+		self.assertTrue(result["detail_included"])
+		self.assertEqual(result["detail"]["order_name"], "SO-QUICK-0002")
+		mock_get_sales_order_detail.assert_called_once_with("SO-QUICK-0002")
 
 	@patch("myapp.services.settlement_service.cancel_payment_entry")
 	@patch("myapp.services.order_service.cancel_delivery_note")
@@ -1453,3 +1479,6 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["cancelled_payment_entries"], ["PE-0001"])
 		self.assertEqual(result["cancelled_sales_invoice"], "SINV-0001")
 		self.assertEqual(result["cancelled_delivery_note"], "DN-0001")
+		self.assertFalse(result["detail_included"])
+		self.assertIsNone(result["detail"])
+		mock_get_sales_order_detail.assert_not_called()

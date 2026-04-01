@@ -241,18 +241,22 @@ frappe.call({
 - `price` 可选
 - `delivery_date` 可选
 
-### quick_create_purchase_order_v2（规划中）
+### quick_create_purchase_order_v2
 
 方法：
 
 - `myapp.api.gateway.quick_create_purchase_order_v2`
 
-目标：
+行为：
 
 - 一次调用完成采购主链路的快捷编排能力
 - 与销售侧 `quick_create_order_v2` 保持同类语义
+- 支持按参数决定是否继续执行：
+  - 收货
+  - 开票
+  - 付款
 
-建议参数：
+参数：
 
 - `supplier: str`
 - `items: list[dict] | json-string`
@@ -260,9 +264,12 @@ frappe.call({
 - `immediate_receive: bool = False`
 - `immediate_invoice: bool = False`
 - `immediate_payment: bool = False`
-- `payment_payload: dict | None`（当 `immediate_payment=True` 时生效）
+- `mode_of_payment: str | None`
+- `reference_no: str | None`
+- `reference_date: str | None`
+- `include_detail: bool | None`
 
-建议返回：
+返回：
 
 - `purchase_order`
 - `purchase_receipt`（可为空）
@@ -270,14 +277,20 @@ frappe.call({
 - `payment_entry`（可为空）
 - `completed_steps: list[str]`
 - `detail`
+- `detail_included`
 
-### quick_cancel_purchase_order_v2（规划中）
+说明：
+
+- 默认返回精简结果，不主动附带完整 `detail`
+- 若调用方明确传入 `include_detail=1`，才会额外返回完整采购订单详情
+
+### quick_cancel_purchase_order_v2
 
 方法：
 
 - `myapp.api.gateway.quick_cancel_purchase_order_v2`
 
-目标：
+行为：
 
 - 一次调用按安全逆序回退采购链路
 - 与销售侧 `quick_cancel_order_v2` 保持同类语义
@@ -287,15 +300,16 @@ frappe.call({
 - `order_name: str`
 - `rollback_payment: bool = True`
 - `request_id: str | None`
+- `include_detail: bool | None`
 
-建议回退顺序：
+当前回退顺序：
 
 1. `Payment Entry`
 2. `Purchase Invoice`
 3. `Purchase Receipt`
 4. `Purchase Order`
 
-建议返回：
+- 返回：
 
 - `order`
 - `cancelled_payment_entries`
@@ -303,6 +317,12 @@ frappe.call({
 - `cancelled_purchase_receipt`
 - `completed_steps: list[str]`
 - `detail`
+- `detail_included`
+
+说明：
+
+- 默认返回精简结果，不主动附带完整 `detail`
+- 若调用方明确传入 `include_detail=1`，才会额外返回完整采购订单详情
 
 单位处理说明：
 
@@ -447,6 +467,9 @@ curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.create_o
   - `force_delivery`
   - `completed_steps`
   - `detail`
+  - `detail_included`
+- 默认返回精简结果，不主动附带完整 `detail`
+- 若调用方明确传入 `include_detail=1`，才会额外返回完整订单详情
 - 当前定位：
   - 这是面向前端“快速开单”按钮的独立聚合接口
   - 用来避免前端自己拼 `create_order_v2(immediate=1)` 的流程语义
@@ -485,6 +508,9 @@ curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.create_o
   - `cancelled_delivery_note`
   - `completed_steps`
   - `detail`
+  - `detail_included`
+- 默认返回精简结果，不主动附带完整 `detail`
+- 若调用方明确传入 `include_detail=1`，才会额外返回完整订单详情
 
 当前限制：
 

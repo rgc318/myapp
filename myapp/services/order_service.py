@@ -57,6 +57,10 @@ def _normalize_bool_flag(value, default: bool = False):
 	return bool(value)
 
 
+def _include_detail_in_response(kwargs: dict | None, *, default: bool = False):
+	return _normalize_bool_flag((kwargs or {}).get("include_detail"), default=default)
+
+
 def _validate_order_inputs(customer: str, items: list[dict], company: str | None):
 	if not customer:
 		frappe.throw(_("客户不能为空。"))
@@ -2165,12 +2169,13 @@ def create_order_v2(customer: str, items: list[dict], immediate: bool = False, *
 
 def quick_create_order_v2(customer: str, items: list[dict], **kwargs):
 	request_id = kwargs.get("request_id")
+	include_detail = _include_detail_in_response(kwargs)
 
 	try:
 		def _quick_create_order_v2():
 			result = create_order_v2(customer=customer, items=items, immediate=True, **kwargs)
 			order_name = result.get("order")
-			detail = get_sales_order_detail(order_name).get("data", {}) if order_name else {}
+			detail = get_sales_order_detail(order_name).get("data", {}) if include_detail and order_name else None
 			return {
 				"status": "success",
 				"order": order_name,
@@ -2180,6 +2185,7 @@ def quick_create_order_v2(customer: str, items: list[dict], **kwargs):
 				"completed_steps": ["order", "delivery_note", "sales_invoice"],
 				"message": _("销售订单 {0} 已按快捷模式完成下单、发货和开票。").format(order_name),
 				"detail": detail,
+				"detail_included": bool(detail),
 			}
 
 		return run_idempotent("quick_create_order_v2", request_id, _quick_create_order_v2)
@@ -2449,6 +2455,7 @@ def _ensure_single_quick_flow_reference(reference_names: list[str], *, label: st
 
 def quick_cancel_order_v2(order_name: str, rollback_payment: bool = True, **kwargs):
 	request_id = kwargs.get("request_id")
+	include_detail = _include_detail_in_response(kwargs)
 
 	try:
 		def _quick_cancel_order_v2():
@@ -2502,7 +2509,7 @@ def quick_cancel_order_v2(order_name: str, rollback_payment: bool = True, **kwar
 				cancelled_delivery_note = delivery_result.get("delivery_note")
 				completed_steps.append("delivery_note")
 
-			detail = get_sales_order_detail(order_name).get("data", {})
+			detail = get_sales_order_detail(order_name).get("data", {}) if include_detail else None
 			return {
 				"status": "success",
 				"order": order_name,
@@ -2512,6 +2519,7 @@ def quick_cancel_order_v2(order_name: str, rollback_payment: bool = True, **kwar
 				"completed_steps": completed_steps,
 				"message": _("销售订单 {0} 已按快捷回退模式撤销下游单据，可返回订单继续修改。").format(order_name),
 				"detail": detail,
+				"detail_included": bool(detail),
 			}
 
 		return run_idempotent("quick_cancel_order_v2", request_id, _quick_cancel_order_v2)
