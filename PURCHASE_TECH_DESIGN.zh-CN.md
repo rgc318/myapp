@@ -360,12 +360,24 @@ Client
 
 已实现：
 
+- `get_return_source_context_v2`
 - `process_purchase_return`
 - 支持从 `Purchase Invoice` 发起采购退货
 - 支持从 `Purchase Receipt` 发起采购退货
 - `request_id` 幂等支持
 - 顺序重放验证
 - 基于 `Purchase Receipt` 的部分退货场景已完成真实 HTTP 验证
+- 已付款采购发票执行退货后，当前会给出 `review_supplier_refund` 的后续动作建议
+
+当前口径补充：
+
+- 采购退货当前已经是独立 return 单据模型，不直接回改原采购订单/收货单/发票
+- 对已付款采购发票执行退货时，系统当前支持：
+  - 创建退货单
+  - 返回退货摘要与来源单据上下文
+  - 提示后续应处理供应商退款 / 应付冲减
+- 系统当前尚未实现：
+  - 在 `process_purchase_return` 中自动生成供应商退款闭环
 
 本期规划：
 

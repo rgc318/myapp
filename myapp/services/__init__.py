@@ -34,6 +34,7 @@ from .purchase_service import (
 	update_purchase_order_items_v2,
 	update_purchase_order_v2,
 )
+from .return_service import get_return_source_context_v2
 from .settlement_service import cancel_payment_entry, confirm_pending_document, process_sales_return, update_payment_status
 from .uom_service import create_uom_v2, delete_uom_v2, disable_uom_v2, get_uom_detail_v2, list_uoms_v2, update_uom_v2
 from .wholesale_service import search_product
@@ -63,6 +64,7 @@ __all__ = [
 	"get_purchase_order_detail_v2",
 	"get_purchase_order_status_summary",
 	"get_purchase_receipt_detail_v2",
+	"get_return_source_context_v2",
 	"get_supplier_detail_v2",
 	"get_supplier_purchase_context",
 	"get_uom_detail_v2",

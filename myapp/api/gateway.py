@@ -57,6 +57,7 @@ from .purchase_api import receive_purchase_order as receive_purchase_order_servi
 from .purchase_api import record_supplier_payment as record_supplier_payment_service
 from .purchase_api import update_purchase_order_items_v2 as update_purchase_order_items_v2_service
 from .purchase_api import update_purchase_order_v2 as update_purchase_order_v2_service
+from .returns_api import get_return_source_context_v2 as get_return_source_context_v2_service
 from .settlement_api import confirm_pending_document as confirm_pending_document_service
 from .settlement_api import cancel_payment_entry as cancel_payment_entry_service
 from .settlement_api import process_sales_return as process_sales_return_service
@@ -436,6 +437,14 @@ def get_purchase_invoice_detail_v2(invoice_name: str):
 	return _handle_gateway_call(
 		lambda: get_purchase_invoice_detail_v2_service(invoice_name=invoice_name),
 		success_code="PURCHASE_INVOICE_DETAIL_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_return_source_context_v2(source_doctype: str, source_name: str):
+	return _handle_gateway_call(
+		lambda: get_return_source_context_v2_service(source_doctype=source_doctype, source_name=source_name),
+		success_code="RETURN_SOURCE_CONTEXT_FETCHED",
 	)
 
 

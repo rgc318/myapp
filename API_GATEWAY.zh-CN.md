@@ -2032,6 +2032,68 @@ frappe.call({
 - 创建并提交映射后的退货单据
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的退货结果
 
+当前返回重点字段：
+
+- `return_document`
+- `return_doctype`
+- `document_status`
+- `source_doctype`
+- `source_name`
+- `business_type`
+- `summary`
+  - `item_count`
+  - `total_qty`
+  - `return_amount_estimate`
+  - `is_partial_return`
+- `references`
+- `next_actions`
+  - `can_view_return_document`
+  - `can_back_to_source`
+  - `suggested_next_action`
+
+当前建议动作口径：
+
+- 对已收款销售发票执行退货后，当前会建议前端进入：
+  - `review_refund`
+- 这表示“退货单已创建”，但当前并不会自动生成独立退款闭环凭证
+
+### get_return_source_context_v2
+
+方法：
+
+- `myapp.api.gateway.get_return_source_context_v2`
+
+参数：
+
+- `source_doctype: str`
+- `source_name: str`
+
+行为：
+
+- 按来源单据统一返回退货页可直接消费的上下文
+- 当前支持来源：
+  - `Delivery Note`
+  - `Sales Invoice`
+  - `Purchase Receipt`
+  - `Purchase Invoice`
+- 返回统一字段：
+  - `business_type`
+  - `source_doctype`
+  - `source_name`
+  - `source_label`
+  - `document_status`
+  - `party`
+  - `amounts`
+  - `actions`
+  - `references`
+  - `meta`
+  - `items`
+
+说明：
+
+- 该接口定位是“通用退货页面上下文接口”
+- 第一阶段建议前端优先使用它来渲染退货页，而不是分别拼接销售/采购详情接口
+
 ### record_supplier_payment
 
 方法：
@@ -2075,6 +2137,31 @@ frappe.call({
 - 支持在 `return_items` 中按明细行优先、`item_code` 兜底指定退货数量
 - 创建并提交映射后的采购退货单据
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的退货结果
+
+当前返回重点字段：
+
+- `return_document`
+- `return_doctype`
+- `document_status`
+- `source_doctype`
+- `source_name`
+- `business_type`
+- `summary`
+  - `item_count`
+  - `total_qty`
+  - `return_amount_estimate`
+  - `is_partial_return`
+- `references`
+- `next_actions`
+  - `can_view_return_document`
+  - `can_back_to_source`
+  - `suggested_next_action`
+
+当前建议动作口径：
+
+- 对已付款采购发票执行退货后，当前会建议前端进入：
+  - `review_supplier_refund`
+- 这表示“采购退货单已创建”，但当前并不会自动生成供应商退款 / 应付冲减闭环
 
 ### get_purchase_order_detail_v2
 

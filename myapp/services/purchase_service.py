@@ -12,6 +12,7 @@ from myapp.services.order_service import (
 	_serialize_contact_doc,
 	_sum_row_values,
 )
+from myapp.services.return_service import build_return_submission_payload
 from myapp.services.settlement_service import cancel_payment_entry
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.uom import resolve_item_quantity_to_stock
@@ -2055,12 +2056,13 @@ def process_purchase_return(source_doctype: str, source_name: str, return_items=
 			return_doc.insert()
 			return_doc.submit()
 
-			return {
-				"status": "success",
-				"return_document": return_doc.name,
-				"return_doctype": return_doc.doctype,
-				"message": _("采购退货单 {0} 已创建并提交。").format(return_doc.name),
-			}
+			return build_return_submission_payload(
+				return_doc,
+				source_doctype=source_doctype,
+				source_name=source_name,
+				business_type="purchase",
+				is_partial_return=bool(return_items),
+			)
 
 		return run_idempotent("process_purchase_return", request_id, _process_purchase_return)
 	except frappe.ValidationError:

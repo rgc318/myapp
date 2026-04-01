@@ -337,6 +337,12 @@
 - 但详情接口中建议预留：
   - `returned_qty`
   - `returned_amount`
+- 当前销售退货后端已补：
+  - `get_return_source_context_v2`
+  - `process_sales_return` 增强返回
+- 对已收款销售发票执行退货时，当前会建议前端进入：
+  - `review_refund`
+- 这表示系统当前支持“退货单创建 + 后续退款提示”，但尚未在退货接口中自动生成退款闭环
 
 ## 8. 当前阶段推荐实现范围
 

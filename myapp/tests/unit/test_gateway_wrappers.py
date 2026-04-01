@@ -19,6 +19,7 @@ from myapp.api.gateway import (
 	get_purchase_order_detail_v2,
 	get_purchase_order_status_summary,
 	get_purchase_receipt_detail_v2,
+	get_return_source_context_v2,
 	search_purchase_orders_v2,
 	create_product_and_stock,
 	create_sales_invoice,
@@ -76,6 +77,7 @@ class TestGatewayWrappers(TestCase):
 			search_purchase_orders_v2,
 			get_purchase_receipt_detail_v2,
 			get_purchase_invoice_detail_v2,
+			get_return_source_context_v2,
 			get_sales_order_detail,
 			get_sales_order_status_summary,
 			search_sales_orders_v2,
@@ -288,6 +290,20 @@ class TestGatewayWrappers(TestCase):
 		get_purchase_invoice_detail_v2("PINV-0001")
 
 		mock_get_purchase_invoice_detail_v2_service.assert_called_once_with(invoice_name="PINV-0001")
+
+	@patch("myapp.api.gateway.get_return_source_context_v2_service")
+	def test_get_return_source_context_v2_passes_args_to_service(self, mock_get_return_source_context_v2_service):
+		mock_get_return_source_context_v2_service.return_value = {
+			"status": "success",
+			"data": {"source_name": "ACC-SINV-0001"},
+		}
+
+		get_return_source_context_v2("Sales Invoice", "ACC-SINV-0001")
+
+		mock_get_return_source_context_v2_service.assert_called_once_with(
+			source_doctype="Sales Invoice",
+			source_name="ACC-SINV-0001",
+		)
 
 	@patch("myapp.api.gateway.get_supplier_purchase_context_service")
 	def test_get_supplier_purchase_context_passes_supplier_to_service(self, mock_get_supplier_purchase_context_service):

@@ -257,6 +257,10 @@ class TestPurchaseService(TestCase):
 		return_doc.insert.assert_called_once()
 		return_doc.submit.assert_called_once()
 		self.assertEqual(result["return_document"], "MAT-PRE-RET-0001")
+		self.assertEqual(result["source_doctype"], "Purchase Receipt")
+		self.assertEqual(result["source_name"], "MAT-PRE-0001")
+		self.assertEqual(result["business_type"], "purchase")
+		self.assertEqual(result["next_actions"]["suggested_next_action"], "view_return_document")
 
 	@patch("erpnext.controllers.sales_and_purchase_return.make_return_doc")
 	def test_process_purchase_return_updates_qty_by_receipt_detail(self, mock_make_return_doc):
@@ -279,6 +283,7 @@ class TestPurchaseService(TestCase):
 
 		self.assertEqual(item.qty, -1)
 		self.assertEqual(result["return_document"], "MAT-PRE-RET-0002")
+		self.assertTrue(result["summary"]["is_partial_return"])
 
 	@patch("erpnext.controllers.sales_and_purchase_return.make_return_doc")
 	def test_process_purchase_return_updates_qty_by_invoice_detail(self, mock_make_return_doc):
@@ -301,6 +306,7 @@ class TestPurchaseService(TestCase):
 
 		self.assertEqual(item.qty, -2)
 		self.assertEqual(result["return_document"], "ACC-PINV-RET-0002")
+		self.assertEqual(result["next_actions"]["suggested_next_action"], "review_supplier_refund")
 
 	@patch("myapp.services.purchase_service.run_idempotent")
 	def test_receive_purchase_order_uses_idempotent_runner(self, mock_run_idempotent):

@@ -244,6 +244,71 @@ docker exec frappe_docker-backend-1 bash -lc '
 - 对本轮新增采购后端能力，主链路、失败恢复、付款边界、退货边界、幂等与竞争场景都已完成实测
 - 目前剩余的测试更多是更深层的极端组合，而不是主链路空白
 
+### 5.1.2 2026-04-01 销售 / 采购退货上下文与结果增强回归
+
+本轮围绕“通用退货模块底座”新增了两类后端能力：
+
+- `get_return_source_context_v2`
+- 销售 / 采购退货提交后的增强返回
+
+当前结果：
+
+- backend 容器 bench 环境：
+  - `PYTHONPATH=apps/myapp:apps/frappe ./env/bin/python -m unittest`
+  - 定向集：
+    - `myapp.tests.unit.test_return_service`
+    - `myapp.tests.unit.test_gateway_wrappers`
+    - 退货相关定向单测
+  - `Ran 61 tests`
+  - `OK`
+- 宿主机真实 HTTP 回归：
+  - 退货 / 付款定向集
+  - `Ran 14 tests`
+  - `OK`
+- 宿主机 gateway HTTP 全量回归：
+  - `python3 -m unittest apps.myapp.myapp.tests.http.test_gateway_http`
+  - `Ran 55 tests`
+  - `OK`
+
+本轮退货 HTTP 覆盖重点：
+
+- `get_return_source_context_v2`
+  - `Sales Invoice`
+  - `Delivery Note`
+  - `Purchase Invoice`
+  - `Purchase Receipt`
+- `process_sales_return`
+  - 成功
+  - 幂等 replay
+  - 已收款销售发票退货后的后续动作建议
+- `process_purchase_return`
+  - 成功
+  - 幂等 replay
+  - 基于 `Purchase Receipt` 的部分退货
+  - 已付款采购发票退货后的后续动作建议
+- 相关资金动作现状校验：
+  - 销售收款成功
+  - 销售 `writeoff` 成功
+  - 采购付款成功
+
+当前已确认的退货 / 退款口径：
+
+- 系统当前支持：
+  - 创建独立销售退货单 / 采购退货单
+  - 返回统一退货来源上下文
+  - 返回退货结果摘要与后续动作建议
+- 系统当前不自动支持：
+  - 销售退货时自动生成退款闭环
+  - 采购退货时自动生成供应商退款 / 应付冲减闭环
+- 因此当前推荐口径是：
+  - 销售已收款发票退货 -> `review_refund`
+  - 采购已付款发票退货 -> `review_supplier_refund`
+
+测试工具层补充：
+
+- `test_gateway_http.py` 当前已对 `http-test-results.json` 的损坏内容增加容错
+- 即使结果快照文件异常，真实 HTTP 回归本身仍可继续执行，不会被 `JSONDecodeError` 全面阻断
+
 ### 5.2 本轮 v2 HTTP 测试
 
 本轮新增并完成真实 HTTP 验证的接口：

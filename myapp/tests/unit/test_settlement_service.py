@@ -1,6 +1,7 @@
 import sys
 from types import ModuleType
 from unittest import TestCase
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -73,27 +74,26 @@ class TestSettlementService(TestCase):
 		return_doc.insert.assert_called_once()
 		return_doc.submit.assert_called_once()
 		self.assertEqual(result["return_document"], "SINV-RET-0001")
+		self.assertEqual(result["source_doctype"], "Sales Invoice")
+		self.assertEqual(result["source_name"], "SINV-0001")
+		self.assertEqual(result["business_type"], "sales")
+		self.assertEqual(result["next_actions"]["suggested_next_action"], "review_refund")
 
 	@patch("myapp.services.settlement_service.frappe.get_attr")
 	def test_process_sales_return_updates_qty_by_invoice_detail(self, mock_get_attr):
-		return_doc = frappe._dict(
-			{
-				"items": [
-					frappe._dict(
-						{
-							"item_code": "ITEM-001",
-							"sales_invoice_item": "SII-001",
-							"si_detail": "SII-001",
-							"qty": -3,
-						}
-					)
-				],
-				"name": "SINV-RET-0002",
-				"doctype": "Sales Invoice",
-			}
+		item = SimpleNamespace(
+			item_code="ITEM-001",
+			sales_invoice_item="SII-001",
+			si_detail="SII-001",
+			qty=-3,
 		)
-		return_doc.insert = MagicMock()
-		return_doc.submit = MagicMock()
+		return_doc = SimpleNamespace(
+			items=[item],
+			name="SINV-RET-0002",
+			doctype="Sales Invoice",
+			insert=MagicMock(),
+			submit=MagicMock(),
+		)
 		mock_get_attr.return_value = MagicMock(return_value=return_doc)
 
 		result = process_sales_return(
@@ -102,29 +102,25 @@ class TestSettlementService(TestCase):
 			return_items=[{"sales_invoice_item": "SII-001", "qty": 1}],
 		)
 
-		self.assertEqual(return_doc.items[0].qty, -1)
+		self.assertEqual(item.qty, -1)
 		self.assertEqual(result["return_document"], "SINV-RET-0002")
+		self.assertTrue(result["summary"]["is_partial_return"])
 
 	@patch("myapp.services.settlement_service.frappe.get_attr")
 	def test_process_sales_return_updates_qty_by_delivery_detail(self, mock_get_attr):
-		return_doc = frappe._dict(
-			{
-				"items": [
-					frappe._dict(
-						{
-							"item_code": "ITEM-001",
-							"delivery_note_item": "DNI-001",
-							"dn_detail": "DNI-001",
-							"qty": -2,
-						}
-					)
-				],
-				"name": "DN-RET-0002",
-				"doctype": "Delivery Note",
-			}
+		item = SimpleNamespace(
+			item_code="ITEM-001",
+			delivery_note_item="DNI-001",
+			dn_detail="DNI-001",
+			qty=-2,
 		)
-		return_doc.insert = MagicMock()
-		return_doc.submit = MagicMock()
+		return_doc = SimpleNamespace(
+			items=[item],
+			name="DN-RET-0002",
+			doctype="Delivery Note",
+			insert=MagicMock(),
+			submit=MagicMock(),
+		)
 		mock_get_attr.return_value = MagicMock(return_value=return_doc)
 
 		result = process_sales_return(
@@ -133,8 +129,9 @@ class TestSettlementService(TestCase):
 			return_items=[{"delivery_note_item": "DNI-001", "qty": 1}],
 		)
 
-		self.assertEqual(return_doc.items[0].qty, -1)
+		self.assertEqual(item.qty, -1)
 		self.assertEqual(result["return_document"], "DN-RET-0002")
+		self.assertEqual(result["next_actions"]["suggested_next_action"], "view_return_document")
 
 	@patch("myapp.services.settlement_service.frappe.get_traceback", return_value="traceback")
 	@patch("erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry")

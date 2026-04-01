@@ -161,7 +161,10 @@ class GatewayHttpTestCase(TestCase):
 	def _load_saved_results(cls):
 		if not RESULTS_FILE.exists():
 			return {}
-		return json.loads(RESULTS_FILE.read_text(encoding="utf-8") or "{}")
+		try:
+			return json.loads(RESULTS_FILE.read_text(encoding="utf-8") or "{}")
+		except json.JSONDecodeError:
+			return {}
 
 	@classmethod
 	def _get_saved_result(cls, test_name: str):
@@ -422,6 +425,15 @@ class GatewayHttpTestCase(TestCase):
 			payload["return_items"] = return_items
 		status_code, response = self._post_method("myapp.api.gateway.process_purchase_return", payload)
 		self._assert_success(status_code, response, code="PURCHASE_RETURN_CREATED")
+		return payload, response
+
+	def _get_return_source_context(self, source_doctype: str, source_name: str):
+		payload = {
+			"source_doctype": source_doctype,
+			"source_name": source_name,
+		}
+		status_code, response = self._post_method("myapp.api.gateway.get_return_source_context_v2", payload)
+		self._assert_success(status_code, response, code="RETURN_SOURCE_CONTEXT_FETCHED")
 		return payload, response
 
 	def test_test_remote_debug_returns_success(self):
@@ -916,7 +928,13 @@ class GatewayHttpTestCase(TestCase):
 			invoice_name,
 			source_doctype="Purchase Invoice",
 		)
-		self.assertIn("return_document", payload["message"]["data"])
+		data = payload["message"]["data"]
+		self.assertIn("return_document", data)
+		self.assertEqual(data["source_doctype"], "Purchase Invoice")
+		self.assertEqual(data["source_name"], invoice_name)
+		self.assertEqual(data["business_type"], "purchase")
+		self.assertIn("summary", data)
+		self.assertIn("next_actions", data)
 
 	def test_process_purchase_return_idempotent_replay(self):
 		_order_request, order_payload = self._create_purchase_order()
@@ -969,8 +987,11 @@ class GatewayHttpTestCase(TestCase):
 		)
 
 		self._assert_success(status_code, payload, code="PURCHASE_RETURN_CREATED")
-		return_name = payload["message"]["data"]["return_document"]
-		return_doc = self._get_resource(payload["message"]["data"]["return_doctype"], return_name)
+		message_data = payload["message"]["data"]
+		self.assertTrue(message_data["summary"]["is_partial_return"])
+		self.assertEqual(message_data["source_doctype"], "Purchase Receipt")
+		return_name = message_data["return_document"]
+		return_doc = self._get_resource(message_data["return_doctype"], return_name)
 		self.assertEqual(return_doc["items"][0]["qty"], -1.0)
 
 	def test_create_purchase_order_concurrent_same_request_id_returns_single_order(self):
@@ -1184,7 +1205,100 @@ class GatewayHttpTestCase(TestCase):
 			invoice_name,
 			source_doctype="Sales Invoice",
 		)
-		self.assertIn("return_document", payload["message"]["data"])
+		data = payload["message"]["data"]
+		self.assertIn("return_document", data)
+		self.assertEqual(data["source_doctype"], "Sales Invoice")
+		self.assertEqual(data["source_name"], invoice_name)
+		self.assertEqual(data["business_type"], "sales")
+		self.assertIn("summary", data)
+		self.assertIn("next_actions", data)
+		self.assertEqual(data["next_actions"]["suggested_next_action"], "review_refund")
+
+	def test_get_return_source_context_sales_invoice_success(self):
+		_order_request, order_payload = self._create_sales_order()
+		order_name = order_payload["message"]["data"]["order"]
+		_invoice_request, invoice_payload = self._create_sales_invoice(order_name)
+		invoice_name = invoice_payload["message"]["data"]["sales_invoice"]
+
+		_request, payload = self._get_return_source_context("Sales Invoice", invoice_name)
+		data = payload["message"]["data"]
+		self.assertEqual(data["business_type"], "sales")
+		self.assertEqual(data["source_doctype"], "Sales Invoice")
+		self.assertEqual(data["source_name"], invoice_name)
+		self.assertEqual(data["actions"]["detail_submit_key"], "sales_invoice_item")
+		self.assertTrue(data["items"])
+
+	def test_get_return_source_context_delivery_note_success(self):
+		_order_request, order_payload = self._create_sales_order()
+		order_name = order_payload["message"]["data"]["order"]
+		_delivery_request, delivery_payload = self._submit_sales_delivery(order_name)
+		delivery_name = delivery_payload["message"]["data"]["delivery_note"]
+
+		_request, payload = self._get_return_source_context("Delivery Note", delivery_name)
+		data = payload["message"]["data"]
+		self.assertEqual(data["business_type"], "sales")
+		self.assertEqual(data["source_doctype"], "Delivery Note")
+		self.assertEqual(data["source_name"], delivery_name)
+		self.assertEqual(data["actions"]["detail_submit_key"], "delivery_note_item")
+		self.assertTrue(data["items"])
+
+	def test_get_return_source_context_purchase_invoice_success(self):
+		_order_request, order_payload = self._create_purchase_order()
+		order_name = order_payload["message"]["data"]["purchase_order"]
+		_invoice_request, invoice_payload = self._create_purchase_invoice(order_name)
+		invoice_name = invoice_payload["message"]["data"]["purchase_invoice"]
+
+		_request, payload = self._get_return_source_context("Purchase Invoice", invoice_name)
+		data = payload["message"]["data"]
+		self.assertEqual(data["business_type"], "purchase")
+		self.assertEqual(data["source_doctype"], "Purchase Invoice")
+		self.assertEqual(data["source_name"], invoice_name)
+		self.assertEqual(data["actions"]["detail_submit_key"], "purchase_invoice_item")
+		self.assertTrue(data["items"])
+
+	def test_get_return_source_context_purchase_receipt_success(self):
+		_order_request, order_payload = self._create_purchase_order()
+		order_name = order_payload["message"]["data"]["purchase_order"]
+		_receipt_request, receipt_payload = self._receive_purchase_order(order_name)
+		receipt_name = receipt_payload["message"]["data"]["purchase_receipt"]
+
+		_request, payload = self._get_return_source_context("Purchase Receipt", receipt_name)
+		data = payload["message"]["data"]
+		self.assertEqual(data["business_type"], "purchase")
+		self.assertEqual(data["source_doctype"], "Purchase Receipt")
+		self.assertEqual(data["source_name"], receipt_name)
+		self.assertEqual(data["actions"]["detail_submit_key"], "purchase_receipt_item")
+		self.assertTrue(data["items"])
+
+	def test_process_sales_return_after_paid_invoice_requires_followup_refund(self):
+		_order_request, order_payload = self._create_sales_order(price=900)
+		order_name = order_payload["message"]["data"]["order"]
+		_invoice_request, invoice_payload = self._create_sales_invoice(order_name)
+		invoice_name = invoice_payload["message"]["data"]["sales_invoice"]
+		self._record_sales_payment(invoice_name, paid_amount=900)
+
+		_request, payload = self._create_sales_return(invoice_name, source_doctype="Sales Invoice")
+		data = payload["message"]["data"]
+		self.assertEqual(data["next_actions"]["suggested_next_action"], "review_refund")
+
+		invoice_doc = self._get_resource("Sales Invoice", invoice_name)
+		self.assertEqual(float(invoice_doc["outstanding_amount"]), 0.0)
+		self.assertEqual(invoice_doc["status"], "Paid")
+
+	def test_process_purchase_return_after_paid_invoice_requires_followup_supplier_refund(self):
+		_order_request, order_payload = self._create_purchase_order(price=10)
+		order_name = order_payload["message"]["data"]["purchase_order"]
+		_invoice_request, invoice_payload = self._create_purchase_invoice(order_name)
+		invoice_name = invoice_payload["message"]["data"]["purchase_invoice"]
+		self._record_supplier_payment(invoice_name, paid_amount=50)
+
+		_request, payload = self._create_purchase_return(invoice_name, source_doctype="Purchase Invoice")
+		data = payload["message"]["data"]
+		self.assertEqual(data["next_actions"]["suggested_next_action"], "review_supplier_refund")
+
+		invoice_doc = self._get_resource("Purchase Invoice", invoice_name)
+		self.assertEqual(float(invoice_doc["outstanding_amount"]), 0.0)
+		self.assertEqual(invoice_doc["status"], "Paid")
 
 	def test_process_sales_return_idempotent_replay(self):
 		_order_request, order_payload = self._create_sales_order()
