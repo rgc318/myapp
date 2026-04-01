@@ -98,6 +98,20 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		with cls._opener.open(request, timeout=15) as response:
 			return json.loads(response.read().decode() or "{}")["data"]
 
+	@classmethod
+	def _get_list(cls, doctype: str, *, filters: list | None = None, fields: list | None = None, order_by: str | None = None):
+		payload = {"doctype": doctype}
+		if filters is not None:
+			payload["filters"] = filters
+		if fields is not None:
+			payload["fields"] = fields
+		if order_by is not None:
+			payload["order_by"] = order_by
+		status_code, response = cls._post_method("frappe.client.get_list", payload)
+		if status_code != 200:
+			raise AssertionError(f"Failed to get list for {doctype}: {response}")
+		return response["message"]
+
 	def _unique_request_id(self, prefix: str):
 		return f"{prefix}-{self.id().rsplit('.', 1)[-1]}-{time.time_ns()}"
 
@@ -120,6 +134,21 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			print(f"\n[{label}]")
 			print(json.dumps(payload, ensure_ascii=False, indent=2))
 
+	def _post_method_with_retry(self, method_path: str, payload: dict, *, retry_on: str | None = None, attempts: int = 2):
+		last_status = None
+		last_response = None
+		for attempt in range(attempts):
+			status_code, response = self._post_method(method_path, payload)
+			last_status = status_code
+			last_response = response
+			if retry_on:
+				message = (((response or {}).get("message") or {}).get("message")) or ""
+				if retry_on in message and attempt < attempts - 1:
+					time.sleep(0.2)
+					continue
+			return status_code, response
+		return last_status, last_response
+
 	def _create_purchase_order(self, *, qty: float | None = None):
 		payload = {
 			"supplier": PURCHASE_SUPPLIER,
@@ -133,7 +162,11 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			"company": PURCHASE_COMPANY,
 			"request_id": self._unique_request_id("purchase-order"),
 		}
-		status_code, response = self._post_method("myapp.api.gateway.create_purchase_order", payload)
+		status_code, response = self._post_method_with_retry(
+			"myapp.api.gateway.create_purchase_order",
+			payload,
+			retry_on="Record has changed since last read in table 'tabBin'",
+		)
 		self._assert_success(status_code, response, code="PURCHASE_ORDER_CREATED")
 		return response["message"]["data"]["purchase_order"]
 
@@ -143,7 +176,11 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			"receipt_items": [{"purchase_order_item": purchase_order_item, "qty": qty}],
 			"request_id": self._unique_request_id(f"purchase-receipt-{qty}"),
 		}
-		status_code, response = self._post_method("myapp.api.gateway.receive_purchase_order", payload)
+		status_code, response = self._post_method_with_retry(
+			"myapp.api.gateway.receive_purchase_order",
+			payload,
+			retry_on="Record has changed since last read in table 'tabBin'",
+		)
 		self._assert_success(status_code, response, code="PURCHASE_RECEIPT_CREATED")
 		return response["message"]["data"]["purchase_receipt"]
 
@@ -153,7 +190,11 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			"invoice_items": [{"purchase_order_item": purchase_order_item, "qty": qty}],
 			"request_id": self._unique_request_id(f"purchase-invoice-{qty}"),
 		}
-		status_code, response = self._post_method("myapp.api.gateway.create_purchase_invoice", payload)
+		status_code, response = self._post_method_with_retry(
+			"myapp.api.gateway.create_purchase_invoice",
+			payload,
+			retry_on="Record has changed since last read in table 'tabBin'",
+		)
 		self._assert_success(status_code, response, code="PURCHASE_INVOICE_CREATED")
 		return response["message"]["data"]["purchase_invoice"]
 
@@ -197,10 +238,23 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		if mode_of_payment is not None:
 			payload["mode_of_payment"] = mode_of_payment
 
-		status_code, response = self._post_method("myapp.api.gateway.quick_create_purchase_order_v2", payload)
+		status_code, response = self._post_method_with_retry(
+			"myapp.api.gateway.quick_create_purchase_order_v2",
+			payload,
+			retry_on="Record has changed since last read in table 'tabBin'",
+		)
 		self._print_response(self._testMethodName, response)
 		self._assert_success(status_code, response, code="PURCHASE_ORDER_QUICK_CREATED")
 		return response["message"]["data"]
+
+	def _quick_create_purchase_order_raw(self, payload: dict):
+		status_code, response = self._post_method_with_retry(
+			"myapp.api.gateway.quick_create_purchase_order_v2",
+			payload,
+			retry_on="Record has changed since last read in table 'tabBin'",
+		)
+		self._print_response(self._testMethodName, response)
+		return status_code, response
 
 	def _quick_cancel_purchase_order(self, order_name: str, *, rollback_payment: bool = True):
 		payload = {
@@ -220,11 +274,19 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		self._assert_success(status_code, response, code="PURCHASE_RECEIPT_CANCELLED")
 
 	def _cancel_purchase_invoice(self, invoice_name: str):
-		status_code, response = self._post_method(
-			"myapp.api.gateway.cancel_purchase_invoice_v2",
-			{"invoice_name": invoice_name, "request_id": self._unique_request_id("purchase-invoice-cancel")},
-		)
-		self._assert_success(status_code, response, code="PURCHASE_INVOICE_CANCELLED")
+		for attempt in range(2):
+			status_code, response = self._post_method(
+				"myapp.api.gateway.cancel_purchase_invoice_v2",
+				{"invoice_name": invoice_name, "request_id": self._unique_request_id("purchase-invoice-cancel")},
+			)
+			if status_code == 200:
+				self._assert_success(status_code, response, code="PURCHASE_INVOICE_CANCELLED")
+				return
+			message = (((response or {}).get("message") or {}).get("message")) or ""
+			if "Record has changed since last read" in message and attempt == 0:
+				time.sleep(0.2)
+				continue
+			self._assert_success(status_code, response, code="PURCHASE_INVOICE_CANCELLED")
 
 	def _cancel_supplier_payment(self, payment_entry_name: str):
 		status_code, response = self._post_method(
@@ -240,16 +302,40 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		)
 		self._assert_success(status_code, response, code="PURCHASE_ORDER_CANCELLED")
 
+	def _process_purchase_return(self, source_doctype: str, source_name: str):
+		status_code, response = self._post_method(
+			"myapp.api.gateway.process_purchase_return",
+			{
+				"source_doctype": source_doctype,
+				"source_name": source_name,
+				"request_id": self._unique_request_id("purchase-return"),
+			},
+		)
+		self._assert_success(status_code, response, code="PURCHASE_RETURN_CREATED")
+		return response["message"]["data"]["return_document"], response["message"]["data"]["return_doctype"]
+
+	def _cancel_doc_via_client(self, doctype: str, name: str):
+		status_code, response = self._post_method(
+			"frappe.client.cancel",
+			{"doctype": doctype, "name": name},
+		)
+		if status_code != 200:
+			self.fail(f"Failed to cancel {doctype} {name}: {response}")
+
 	def test_quick_create_purchase_order_receipt_and_invoice_success(self):
 		data = self._quick_create_purchase_order(immediate_payment=False)
-
-		self.assertTrue(data["purchase_order"])
-		self.assertTrue(data["purchase_receipt"])
-		self.assertTrue(data["purchase_invoice"])
-		self.assertEqual(
-			data["completed_steps"],
-			["purchase_order", "purchase_receipt", "purchase_invoice"],
-		)
+		try:
+			self.assertTrue(data["purchase_order"])
+			self.assertTrue(data["purchase_receipt"])
+			self.assertTrue(data["purchase_invoice"])
+			self.assertEqual(
+				data["completed_steps"],
+				["purchase_order", "purchase_receipt", "purchase_invoice"],
+			)
+		finally:
+			self._cancel_purchase_invoice(data["purchase_invoice"])
+			self._cancel_purchase_receipt(data["purchase_receipt"])
+			self._cancel_purchase_order(data["purchase_order"])
 
 	def test_quick_cancel_purchase_order_after_partial_payment_restores_editable_order(self):
 		data = self._quick_create_purchase_order(
@@ -260,26 +346,198 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		)
 		order_name = data["purchase_order"]
 
-		detail_status, detail_payload = self._post_method(
-			"myapp.api.gateway.get_purchase_order_detail_v2",
-			{"order_name": order_name},
-		)
-		self._assert_success(detail_status, detail_payload, code="PURCHASE_ORDER_DETAIL_FETCHED")
-		self.assertGreater(detail_payload["message"]["data"]["payment"]["paid_amount"], 0)
-		self.assertGreater(detail_payload["message"]["data"]["payment"]["outstanding_amount"], 0)
+		try:
+			detail_status, detail_payload = self._post_method(
+				"myapp.api.gateway.get_purchase_order_detail_v2",
+				{"order_name": order_name},
+			)
+			self._assert_success(detail_status, detail_payload, code="PURCHASE_ORDER_DETAIL_FETCHED")
+			self.assertGreater(detail_payload["message"]["data"]["payment"]["paid_amount"], 0)
+			self.assertGreater(detail_payload["message"]["data"]["payment"]["outstanding_amount"], 0)
 
-		cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
-		self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
-		cancel_data = cancel_payload["message"]["data"]
-		self.assertEqual(
-			cancel_data["completed_steps"],
-			["payment_entry", "purchase_invoice", "purchase_receipt"],
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
+			cancel_data = cancel_payload["message"]["data"]
+			self.assertEqual(
+				cancel_data["completed_steps"],
+				["payment_entry", "purchase_invoice", "purchase_receipt"],
+			)
+			self.assertEqual(cancel_data["detail"]["document_status"], "submitted")
+			self.assertEqual(cancel_data["detail"]["references"]["purchase_receipts"], [])
+			self.assertEqual(cancel_data["detail"]["references"]["purchase_invoices"], [])
+			self.assertTrue(cancel_data["detail"]["actions"]["can_receive_purchase_order"])
+			self.assertTrue(cancel_data["detail"]["actions"]["can_create_purchase_invoice"])
+		finally:
+			self._cancel_purchase_order(order_name)
+
+	def test_quick_create_purchase_order_idempotent_replay_returns_same_documents(self):
+		request_id = self._unique_request_id("purchase-quick-order-replay")
+		payload = {
+			"supplier": PURCHASE_SUPPLIER,
+			"items": [
+				{
+					"item_code": PURCHASE_ITEM_CODE,
+					"qty": PURCHASE_QTY,
+					"warehouse": PURCHASE_WAREHOUSE,
+				}
+			],
+			"company": PURCHASE_COMPANY,
+			"immediate_receive": 1,
+			"immediate_invoice": 1,
+			"immediate_payment": 0,
+			"request_id": request_id,
+		}
+		status_code_a, response_a = self._post_method("myapp.api.gateway.quick_create_purchase_order_v2", payload)
+		status_code_b, response_b = self._post_method("myapp.api.gateway.quick_create_purchase_order_v2", payload)
+		self._assert_success(status_code_a, response_a, code="PURCHASE_ORDER_QUICK_CREATED")
+		self._assert_success(status_code_b, response_b, code="PURCHASE_ORDER_QUICK_CREATED")
+
+		data_a = response_a["message"]["data"]
+		data_b = response_b["message"]["data"]
+		self.assertEqual(data_a["purchase_order"], data_b["purchase_order"])
+		self.assertEqual(data_a["purchase_receipt"], data_b["purchase_receipt"])
+		self.assertEqual(data_a["purchase_invoice"], data_b["purchase_invoice"])
+		self.assertEqual(data_a["completed_steps"], data_b["completed_steps"])
+
+		self._cancel_purchase_invoice(data_a["purchase_invoice"])
+		self._cancel_purchase_receipt(data_a["purchase_receipt"])
+		self._cancel_purchase_order(data_a["purchase_order"])
+
+	def test_quick_cancel_purchase_order_idempotent_replay_returns_same_result(self):
+		data = self._quick_create_purchase_order(
+			immediate_payment=True,
+			paid_amount=min(PURCHASE_PAID_AMOUNT, 10),
+			mode_of_payment="微信支付",
 		)
-		self.assertEqual(cancel_data["detail"]["document_status"], "submitted")
-		self.assertEqual(cancel_data["detail"]["references"]["purchase_receipts"], [])
-		self.assertEqual(cancel_data["detail"]["references"]["purchase_invoices"], [])
-		self.assertTrue(cancel_data["detail"]["actions"]["can_receive_purchase_order"])
-		self.assertTrue(cancel_data["detail"]["actions"]["can_create_purchase_invoice"])
+		order_name = data["purchase_order"]
+		request_id = self._unique_request_id("purchase-quick-cancel-replay")
+		payload = {
+			"order_name": order_name,
+			"rollback_payment": 1,
+			"request_id": request_id,
+		}
+
+		try:
+			status_code_a, response_a = self._post_method("myapp.api.gateway.quick_cancel_purchase_order_v2", payload)
+			status_code_b, response_b = self._post_method("myapp.api.gateway.quick_cancel_purchase_order_v2", payload)
+			self._assert_success(status_code_a, response_a, code="PURCHASE_ORDER_QUICK_CANCELLED")
+			self._assert_success(status_code_b, response_b, code="PURCHASE_ORDER_QUICK_CANCELLED")
+
+			data_a = response_a["message"]["data"]
+			data_b = response_b["message"]["data"]
+			self.assertEqual(data_a["cancelled_payment_entries"], data_b["cancelled_payment_entries"])
+			self.assertEqual(data_a["cancelled_purchase_invoice"], data_b["cancelled_purchase_invoice"])
+			self.assertEqual(data_a["cancelled_purchase_receipt"], data_b["cancelled_purchase_receipt"])
+			self.assertEqual(data_a["completed_steps"], data_b["completed_steps"])
+			self.assertEqual(data_b["detail"]["references"]["purchase_receipts"], [])
+			self.assertEqual(data_b["detail"]["references"]["purchase_invoices"], [])
+			self.assertTrue(data_b["detail"]["actions"]["can_receive_purchase_order"])
+		finally:
+			self._cancel_purchase_order(order_name)
+
+	def test_quick_cancel_purchase_order_allows_stepwise_flow_after_rollback(self):
+		data = self._quick_create_purchase_order(immediate_payment=False)
+		order_name = data["purchase_order"]
+
+		try:
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
+
+			order_doc = self._get_resource("Purchase Order", order_name)
+			order_item = order_doc["items"][0]["name"]
+			receipt_name = self._receive_purchase_order(order_name, order_item, PURCHASE_QTY)
+			invoice_name = self._create_purchase_invoice(order_name, order_item, PURCHASE_QTY)
+			payment_entry = self._record_supplier_payment(invoice_name, PURCHASE_PAID_AMOUNT, "recreated")
+
+			detail_status, detail_payload = self._post_method(
+				"myapp.api.gateway.get_purchase_order_detail_v2",
+				{"order_name": order_name},
+			)
+			self._assert_success(detail_status, detail_payload, code="PURCHASE_ORDER_DETAIL_FETCHED")
+			detail_data = detail_payload["message"]["data"]
+			self.assertEqual(detail_data["references"]["purchase_receipts"], [receipt_name])
+			self.assertEqual(detail_data["references"]["purchase_invoices"], [invoice_name])
+			self.assertEqual(detail_data["payment"]["latest_payment_entry"], payment_entry)
+			self.assertGreater(detail_data["payment"]["paid_amount"], 0)
+
+			self._cancel_supplier_payment(payment_entry)
+			self._cancel_purchase_invoice(invoice_name)
+			self._cancel_purchase_receipt(receipt_name)
+		finally:
+			self._cancel_purchase_order(order_name)
+
+	def test_quick_cancel_purchase_order_without_downstream_is_noop(self):
+		order_name = self._create_purchase_order(qty=2)
+
+		try:
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
+			cancel_data = cancel_payload["message"]["data"]
+			self.assertEqual(cancel_data["completed_steps"], [])
+			self.assertEqual(cancel_data["cancelled_payment_entries"], [])
+			self.assertIsNone(cancel_data["cancelled_purchase_invoice"])
+			self.assertIsNone(cancel_data["cancelled_purchase_receipt"])
+			self.assertEqual(cancel_data["detail"]["document_status"], "submitted")
+			self.assertTrue(cancel_data["detail"]["actions"]["can_receive_purchase_order"])
+			self.assertTrue(cancel_data["detail"]["actions"]["can_create_purchase_invoice"])
+		finally:
+			self._cancel_purchase_order(order_name)
+
+	def test_quick_cancel_purchase_order_after_manual_payment_cancel_finishes_remaining_steps(self):
+		data = self._quick_create_purchase_order(
+			immediate_payment=True,
+			paid_amount=min(PURCHASE_PAID_AMOUNT, 10),
+			mode_of_payment="微信支付",
+		)
+		order_name = data["purchase_order"]
+		self._cancel_supplier_payment(data["payment_entry"])
+
+		try:
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
+			cancel_data = cancel_payload["message"]["data"]
+			self.assertEqual(cancel_data["cancelled_payment_entries"], [])
+			self.assertEqual(cancel_data["completed_steps"], ["purchase_invoice", "purchase_receipt"])
+			self.assertEqual(cancel_data["cancelled_purchase_invoice"], data["purchase_invoice"])
+			self.assertEqual(cancel_data["cancelled_purchase_receipt"], data["purchase_receipt"])
+			self.assertTrue(cancel_data["detail"]["actions"]["can_receive_purchase_order"])
+		finally:
+			self._cancel_purchase_order(order_name)
+
+	def test_quick_cancel_purchase_order_after_manual_invoice_cancel_finishes_remaining_receipt(self):
+		data = self._quick_create_purchase_order(immediate_payment=False)
+		order_name = data["purchase_order"]
+		self._cancel_purchase_invoice(data["purchase_invoice"])
+
+		try:
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
+			cancel_data = cancel_payload["message"]["data"]
+			self.assertIsNone(cancel_data["cancelled_purchase_invoice"])
+			self.assertEqual(cancel_data["cancelled_purchase_receipt"], data["purchase_receipt"])
+			self.assertEqual(cancel_data["completed_steps"], ["purchase_receipt"])
+			self.assertEqual(cancel_data["detail"]["references"]["purchase_invoices"], [])
+			self.assertEqual(cancel_data["detail"]["references"]["purchase_receipts"], [])
+		finally:
+			self._cancel_purchase_order(order_name)
+
+	def test_quick_cancel_purchase_order_after_manual_receipt_cancel_is_noop(self):
+		order_name = self._create_purchase_order(qty=3)
+		order_item = self._get_resource("Purchase Order", order_name)["items"][0]["name"]
+		receipt_name = self._receive_purchase_order(order_name, order_item, 3)
+		self._cancel_purchase_receipt(receipt_name)
+
+		try:
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
+			cancel_data = cancel_payload["message"]["data"]
+			self.assertEqual(cancel_data["completed_steps"], [])
+			self.assertIsNone(cancel_data["cancelled_purchase_invoice"])
+			self.assertIsNone(cancel_data["cancelled_purchase_receipt"])
+			self.assertEqual(cancel_data["detail"]["references"]["purchase_receipts"], [])
+			self.assertTrue(cancel_data["detail"]["actions"]["can_receive_purchase_order"])
+		finally:
+			self._cancel_purchase_order(order_name)
 
 	def test_quick_cancel_purchase_order_rejects_multiple_receipts(self):
 		order_name = self._create_purchase_order(qty=4)
@@ -295,6 +553,46 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			self._cancel_purchase_receipt(receipt_name_a)
 			self._cancel_purchase_order(order_name)
 
+	def test_quick_cancel_purchase_order_rejects_multiple_receipts_before_invoice_cleanup(self):
+		order_name = self._create_purchase_order(qty=4)
+		order_item = self._get_resource("Purchase Order", order_name)["items"][0]["name"]
+		receipt_name_a = self._receive_purchase_order(order_name, order_item, 2)
+		receipt_name_b = self._receive_purchase_order(order_name, order_item, 2)
+		invoice_name = self._create_purchase_invoice(order_name, order_item, 4)
+
+		try:
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			self._assert_validation_error(cancel_status, cancel_payload, contains="多张采购收货单")
+		finally:
+			self._cancel_purchase_invoice(invoice_name)
+			self._cancel_purchase_receipt(receipt_name_b)
+			self._cancel_purchase_receipt(receipt_name_a)
+			self._cancel_purchase_order(order_name)
+
+	def test_quick_cancel_purchase_order_fails_without_mutation_when_receipt_return_exists(self):
+		order_name = self._create_purchase_order(qty=3)
+		order_item = self._get_resource("Purchase Order", order_name)["items"][0]["name"]
+		receipt_name = self._receive_purchase_order(order_name, order_item, 3)
+		return_name, return_doctype = self._process_purchase_return("Purchase Receipt", receipt_name)
+
+		try:
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			self.assertNotEqual(cancel_status, 200, cancel_payload)
+
+			detail_status, detail_payload = self._post_method(
+				"myapp.api.gateway.get_purchase_order_detail_v2",
+				{"order_name": order_name},
+			)
+			self._assert_success(detail_status, detail_payload, code="PURCHASE_ORDER_DETAIL_FETCHED")
+			detail_data = detail_payload["message"]["data"]
+			self.assertIn(receipt_name, detail_data["references"]["purchase_receipts"])
+			self.assertEqual(len(detail_data["references"]["purchase_receipts"]), 2)
+			self.assertEqual(detail_data["receiving"]["status"], "pending")
+		finally:
+			self._cancel_doc_via_client(return_doctype, return_name)
+			self._cancel_purchase_receipt(receipt_name)
+			self._cancel_purchase_order(order_name)
+
 	def test_quick_cancel_purchase_order_rejects_multiple_invoices(self):
 		order_name = self._create_purchase_order(qty=4)
 		order_item = self._get_resource("Purchase Order", order_name)["items"][0]["name"]
@@ -307,6 +605,177 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		finally:
 			self._cancel_purchase_invoice(invoice_name_b)
 			self._cancel_purchase_invoice(invoice_name_a)
+			self._cancel_purchase_order(order_name)
+
+	def test_quick_cancel_purchase_order_rejects_multiple_invoices_even_with_payment(self):
+		order_name = self._create_purchase_order(qty=4)
+		order_item = self._get_resource("Purchase Order", order_name)["items"][0]["name"]
+		invoice_name_a = self._create_purchase_invoice(order_name, order_item, 2)
+		invoice_name_b = self._create_purchase_invoice(order_name, order_item, 2)
+		payment_entry = self._record_supplier_payment(invoice_name_a, 5, "invoice-mix")
+
+		try:
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			self._assert_validation_error(cancel_status, cancel_payload, contains="多张采购发票")
+		finally:
+			self._cancel_supplier_payment(payment_entry)
+			self._cancel_purchase_invoice(invoice_name_b)
+			self._cancel_purchase_invoice(invoice_name_a)
+			self._cancel_purchase_order(order_name)
+
+	def test_quick_cancel_purchase_order_succeeds_after_disabling_payment_rollback_then_retrying(self):
+		data = self._quick_create_purchase_order(
+			immediate_payment=True,
+			paid_amount=min(PURCHASE_PAID_AMOUNT, 10),
+			mode_of_payment="微信支付",
+		)
+		order_name = data["purchase_order"]
+
+		try:
+			reject_status, reject_payload = self._quick_cancel_purchase_order(order_name, rollback_payment=False)
+			self._assert_validation_error(reject_status, reject_payload, contains="先回退付款")
+
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name, rollback_payment=True)
+			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
+			cancel_data = cancel_payload["message"]["data"]
+			self.assertEqual(
+				cancel_data["completed_steps"],
+				["payment_entry", "purchase_invoice", "purchase_receipt"],
+			)
+			self.assertTrue(cancel_data["detail"]["actions"]["can_receive_purchase_order"])
+		finally:
+			self._cancel_purchase_order(order_name)
+
+	def test_quick_cancel_purchase_order_succeeds_after_manual_cleanup_of_extra_invoice(self):
+		order_name = self._create_purchase_order(qty=4)
+		order_item = self._get_resource("Purchase Order", order_name)["items"][0]["name"]
+		invoice_name_a = self._create_purchase_invoice(order_name, order_item, 2)
+		invoice_name_b = self._create_purchase_invoice(order_name, order_item, 2)
+
+		try:
+			reject_status, reject_payload = self._quick_cancel_purchase_order(order_name)
+			self._assert_validation_error(reject_status, reject_payload, contains="多张采购发票")
+
+			self._cancel_purchase_invoice(invoice_name_b)
+
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
+			cancel_data = cancel_payload["message"]["data"]
+			self.assertEqual(cancel_data["completed_steps"], ["purchase_invoice"])
+			self.assertEqual(cancel_data["cancelled_purchase_invoice"], invoice_name_a)
+			self.assertEqual(cancel_data["detail"]["references"]["purchase_invoices"], [])
+		finally:
+			self._cancel_purchase_order(order_name)
+
+	def test_quick_create_purchase_order_recovers_after_payment_step_failure(self):
+		request_id = self._unique_request_id("purchase-quick-order-payment-recovery")
+		transaction_date = time.strftime("%Y-%m-%d")
+		before_rows = self._get_list(
+			"Purchase Order",
+			filters=[
+				["supplier", "=", PURCHASE_SUPPLIER],
+				["company", "=", PURCHASE_COMPANY],
+				["transaction_date", "=", transaction_date],
+			],
+			fields=["name"],
+			order_by="creation desc",
+		)
+		before_names = {row["name"] for row in before_rows}
+		base_payload = {
+			"supplier": PURCHASE_SUPPLIER,
+			"items": [
+				{
+					"item_code": PURCHASE_ITEM_CODE,
+					"qty": PURCHASE_QTY,
+					"warehouse": PURCHASE_WAREHOUSE,
+				}
+			],
+			"company": PURCHASE_COMPANY,
+			"immediate_receive": 1,
+			"immediate_invoice": 1,
+			"immediate_payment": 1,
+			"paid_amount": min(PURCHASE_PAID_AMOUNT, 10),
+			"request_id": request_id,
+		}
+
+		fail_status, fail_payload = self._quick_create_purchase_order_raw(
+			{**base_payload, "mode_of_payment": "不存在的付款方式"}
+		)
+		self._assert_validation_error(fail_status, fail_payload)
+
+		order_rows = self._get_list(
+			"Purchase Order",
+			filters=[
+				["supplier", "=", PURCHASE_SUPPLIER],
+				["company", "=", PURCHASE_COMPANY],
+				["transaction_date", "=", transaction_date],
+			],
+			fields=["name"],
+			order_by="creation desc",
+		)
+		new_order_names = [row["name"] for row in order_rows if row["name"] not in before_names]
+		self.assertEqual(len(new_order_names), 1, order_rows)
+		order_name = new_order_names[0]
+
+		try:
+			detail_status, detail_payload = self._post_method(
+				"myapp.api.gateway.get_purchase_order_detail_v2",
+				{"order_name": order_name},
+			)
+			self._assert_success(detail_status, detail_payload, code="PURCHASE_ORDER_DETAIL_FETCHED")
+			detail_before = detail_payload["message"]["data"]
+			self.assertEqual(len(detail_before["references"]["purchase_receipts"]), 1)
+			self.assertEqual(len(detail_before["references"]["purchase_invoices"]), 1)
+			self.assertEqual(detail_before["payment"]["latest_payment_entry"], None)
+			self.assertEqual(detail_before["payment"]["status"], "unpaid")
+
+			retry_status, retry_payload = self._quick_create_purchase_order_raw(
+				{**base_payload, "mode_of_payment": "微信支付"}
+			)
+			self._assert_success(retry_status, retry_payload, code="PURCHASE_ORDER_QUICK_CREATED")
+			retry_data = retry_payload["message"]["data"]
+			self.assertEqual(retry_data["purchase_order"], order_name)
+			self.assertEqual(
+				retry_data["completed_steps"],
+				["purchase_order", "purchase_receipt", "purchase_invoice", "payment_entry"],
+			)
+			self.assertTrue(retry_data["payment_entry"])
+
+			detail_status_after, detail_payload_after = self._post_method(
+				"myapp.api.gateway.get_purchase_order_detail_v2",
+				{"order_name": order_name},
+			)
+			self._assert_success(detail_status_after, detail_payload_after, code="PURCHASE_ORDER_DETAIL_FETCHED")
+			detail_after = detail_payload_after["message"]["data"]
+			self.assertEqual(detail_after["payment"]["latest_payment_entry"], retry_data["payment_entry"])
+			self.assertGreater(detail_after["payment"]["paid_amount"], 0)
+		finally:
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
+			self._cancel_purchase_order(order_name)
+
+	def test_quick_cancel_purchase_order_fails_without_mutation_when_invoice_return_exists(self):
+		order_name = self._create_purchase_order(qty=3)
+		order_item = self._get_resource("Purchase Order", order_name)["items"][0]["name"]
+		invoice_name = self._create_purchase_invoice(order_name, order_item, 3)
+		return_name, return_doctype = self._process_purchase_return("Purchase Invoice", invoice_name)
+
+		try:
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			self.assertNotEqual(cancel_status, 200, cancel_payload)
+
+			detail_status, detail_payload = self._post_method(
+				"myapp.api.gateway.get_purchase_order_detail_v2",
+				{"order_name": order_name},
+			)
+			self._assert_success(detail_status, detail_payload, code="PURCHASE_ORDER_DETAIL_FETCHED")
+			detail_data = detail_payload["message"]["data"]
+			self.assertIn(invoice_name, detail_data["references"]["purchase_invoices"])
+			self.assertEqual(len(detail_data["references"]["purchase_invoices"]), 2)
+			self.assertIn(detail_data["payment"]["status"], {"unpaid", "partial", "paid"})
+		finally:
+			self._cancel_doc_via_client(return_doctype, return_name)
+			self._cancel_purchase_invoice(invoice_name)
 			self._cancel_purchase_order(order_name)
 
 	def test_quick_cancel_purchase_order_rejects_multiple_payments(self):
