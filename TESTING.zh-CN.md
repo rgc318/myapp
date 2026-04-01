@@ -1263,3 +1263,96 @@ OK
 - 这套性能基线脚本已经可以作为后续查询、索引、详情聚合优化后的统一验收入口
 - 当前版本在本地数据量下，销售 / 采购工作台查询与关键详情接口耗时已经处于可接受范围
 - 后续若出现性能回归，可直接复跑脚本并与 `performance-baseline-results.json` 对比
+
+## 19. 项目级后端完整回归（2026-04-02）
+
+本轮在前述生产化优化完成后，额外执行了一次项目级后端回归，目标不是验证单一接口，而是同时确认：
+
+- 销售链路分步流程与快捷流程是否都可用
+- 采购链路分步流程与快捷流程是否都可用
+- 查询、详情、幂等、回退与付款相关改动是否没有引入回归
+- 订单执行收货 / 发货 / 开票 / 付款后，库存与结算结果是否和订单聚合详情一致
+
+### 19.1 本轮实际执行的测试层次
+
+- 核心单元测试矩阵
+  - `apps.myapp.myapp.tests.unit.test_customer_service`
+  - `apps.myapp.myapp.tests.unit.test_gateway_wrappers`
+  - `apps.myapp.myapp.tests.unit.test_idempotency`
+  - `apps.myapp.myapp.tests.unit.test_order_service`
+  - `apps.myapp.myapp.tests.unit.test_purchase_service`
+  - `apps.myapp.myapp.tests.unit.test_return_service`
+  - `apps.myapp.myapp.tests.unit.test_settlement_service`
+  - `apps.myapp.myapp.tests.unit.test_uom_service`
+  - `apps.myapp.myapp.tests.unit.test_wholesale_service`
+- 全量 HTTP 回归
+  - `apps.myapp.myapp.tests.http.test_gateway_http`
+  - `apps.myapp.myapp.tests.http.test_gateway_v2_http`
+  - `apps.myapp.myapp.tests.http.test_purchase_quick_http`
+- 真实站点集成链路
+  - `apps.myapp.myapp.tests.integration.test_sales_uom_stock_chain`
+  - `apps.myapp.myapp.tests.integration.test_purchase_stock_payment_chain`
+
+### 19.2 本轮结果
+
+- 核心单元测试矩阵：
+  - `Ran 186 tests in 0.418s ... OK`
+- 销售 / 采购核心服务单测复跑：
+  - `Ran 82 tests in 0.303s ... OK`
+- 全量 HTTP 回归：
+  - `Ran 229 tests in 89.337s ... OK`
+- 真实站点集成测试：
+  - `Ran 6 tests in 2.145s ... OK`
+
+### 19.3 新增采购真实站点链路覆盖
+
+本轮新增：
+
+- [test_purchase_stock_payment_chain.py](/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/tests/integration/test_purchase_stock_payment_chain.py)
+
+当前覆盖两类关键一致性验证：
+
+- 采购收货后：
+  - `Purchase Order Item.stock_qty`
+  - `Bin.actual_qty`
+  - `Stock Ledger Entry.actual_qty`
+  三者保持一致
+- 采购发票与付款后：
+  - `Purchase Invoice.outstanding_amount`
+  - `get_purchase_order_detail_v2(...).data.payment.paid_amount`
+  - `get_purchase_order_detail_v2(...).data.payment.outstanding_amount`
+  - `latest_payment_entry`
+  保持一致
+
+### 19.4 本轮顺手修正的问题
+
+- 采购快捷回退 HTTP 测试原先仍按旧假设直接读取默认 `detail`
+  - 现已显式改为 `include_detail=1`
+- 销售 / 采购付款摘要中的：
+  - `latest_writeoff_amount`
+  - `latest_actual_paid_amount`
+  当前已统一在无值时返回 `0`，避免回归测试与前端摘要出现 `None`
+- 采购 HTTP 回归中的高频建单 / 收货 / 开票步骤，重试条件已从只识别 `tabBin` 扩展为通用：
+  - `Record has changed since last read`
+  以降低 Frappe / ERPNext 并发写入噪声对测试结果的影响
+
+### 19.5 关于中途出现的并发噪声
+
+本轮执行过程中曾出现过少量数据库并发噪声，例如：
+
+- `tabSeries`
+- `tabItem`
+
+报错形式为：
+
+- `Record has changed since last read`
+
+最终处理方式：
+
+- 对采购 HTTP 用例增加更稳的瞬时冲突重试
+- 将销售 / 采购真实站点集成测试改为在 HTTP 全量结束后串行复跑
+
+最终结论：
+
+- 这些报错属于测试执行阶段的环境级并发噪声，不是业务断言失败
+- 在串行复跑后，本轮项目级后端回归结果已全部通过

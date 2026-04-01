@@ -848,8 +848,8 @@ def _apply_sales_latest_payment_metrics(payment: dict, latest_payment_entry: dic
 	payment["latest_payment_entry"] = latest_payment_entry.get("payment_entry")
 	payment["latest_payment_invoice"] = latest_payment_entry.get("invoice_name")
 	payment["latest_unallocated_amount"] = latest_payment_entry.get("unallocated_amount")
-	payment["latest_writeoff_amount"] = latest_payment_entry.get("writeoff_amount")
-	payment["latest_actual_paid_amount"] = latest_payment_entry.get("actual_paid_amount")
+	payment["latest_writeoff_amount"] = latest_payment_entry.get("writeoff_amount") or 0
+	payment["latest_actual_paid_amount"] = latest_payment_entry.get("actual_paid_amount") or 0
 	return payment
 
 

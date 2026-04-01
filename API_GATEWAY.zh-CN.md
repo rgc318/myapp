@@ -283,6 +283,7 @@ frappe.call({
 
 - 默认返回精简结果，不主动附带完整 `detail`
 - 若调用方明确传入 `include_detail=1`，才会额外返回完整采购订单详情
+- 需要在成功响应后直接读取 `actions`、`references`、`document_status` 等详情字段的调用方，必须显式传入 `include_detail=1`
 
 ### quick_cancel_purchase_order_v2
 

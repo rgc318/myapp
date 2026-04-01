@@ -135,7 +135,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			print(f"\n[{label}]")
 			print(json.dumps(payload, ensure_ascii=False, indent=2))
 
-	def _post_method_with_retry(self, method_path: str, payload: dict, *, retry_on: str | None = None, attempts: int = 2):
+	def _post_method_with_retry(self, method_path: str, payload: dict, *, retry_on=None, attempts: int = 3):
 		last_status = None
 		last_response = None
 		for attempt in range(attempts):
@@ -144,7 +144,8 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			last_response = response
 			if retry_on:
 				message = (((response or {}).get("message") or {}).get("message")) or ""
-				if retry_on in message and attempt < attempts - 1:
+				patterns = retry_on if isinstance(retry_on, (list, tuple, set)) else [retry_on]
+				if any(pattern in message for pattern in patterns) and attempt < attempts - 1:
 					time.sleep(0.2)
 					continue
 			return status_code, response
@@ -166,7 +167,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		status_code, response = self._post_method_with_retry(
 			"myapp.api.gateway.create_purchase_order",
 			payload,
-			retry_on="Record has changed since last read in table 'tabBin'",
+			retry_on="Record has changed since last read",
 		)
 		self._assert_success(status_code, response, code="PURCHASE_ORDER_CREATED")
 		return response["message"]["data"]["purchase_order"]
@@ -180,7 +181,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		status_code, response = self._post_method_with_retry(
 			"myapp.api.gateway.receive_purchase_order",
 			payload,
-			retry_on="Record has changed since last read in table 'tabBin'",
+			retry_on="Record has changed since last read",
 		)
 		self._assert_success(status_code, response, code="PURCHASE_RECEIPT_CREATED")
 		return response["message"]["data"]["purchase_receipt"]
@@ -189,7 +190,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		status_code, response = self._post_method_with_retry(
 			"myapp.api.gateway.receive_purchase_order",
 			payload,
-			retry_on="Record has changed since last read in table 'tabBin'",
+			retry_on="Record has changed since last read",
 		)
 		self._print_response(self._testMethodName, response)
 		return status_code, response
@@ -203,7 +204,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		status_code, response = self._post_method_with_retry(
 			"myapp.api.gateway.create_purchase_invoice",
 			payload,
-			retry_on="Record has changed since last read in table 'tabBin'",
+			retry_on="Record has changed since last read",
 		)
 		self._assert_success(status_code, response, code="PURCHASE_INVOICE_CREATED")
 		return response["message"]["data"]["purchase_invoice"]
@@ -212,7 +213,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		status_code, response = self._post_method_with_retry(
 			"myapp.api.gateway.create_purchase_invoice",
 			payload,
-			retry_on="Record has changed since last read in table 'tabBin'",
+			retry_on="Record has changed since last read",
 		)
 		self._print_response(self._testMethodName, response)
 		return status_code, response
@@ -310,7 +311,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		status_code, response = self._post_method_with_retry(
 			"myapp.api.gateway.quick_create_purchase_order_v2",
 			payload,
-			retry_on="Record has changed since last read in table 'tabBin'",
+			retry_on="Record has changed since last read",
 		)
 		self._print_response(self._testMethodName, response)
 		self._assert_success(status_code, response, code="PURCHASE_ORDER_QUICK_CREATED")
@@ -320,17 +321,19 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		status_code, response = self._post_method_with_retry(
 			"myapp.api.gateway.quick_create_purchase_order_v2",
 			payload,
-			retry_on="Record has changed since last read in table 'tabBin'",
+			retry_on="Record has changed since last read",
 		)
 		self._print_response(self._testMethodName, response)
 		return status_code, response
 
-	def _quick_cancel_purchase_order(self, order_name: str, *, rollback_payment: bool = True):
+	def _quick_cancel_purchase_order(self, order_name: str, *, rollback_payment: bool = True, include_detail: bool = False):
 		payload = {
 			"order_name": order_name,
 			"rollback_payment": 1 if rollback_payment else 0,
 			"request_id": self._unique_request_id("purchase-quick-cancel"),
 		}
+		if include_detail:
+			payload["include_detail"] = 1
 		status_code, response = self._post_method("myapp.api.gateway.quick_cancel_purchase_order_v2", payload)
 		self._print_response(self._testMethodName, response)
 		return status_code, response
@@ -449,7 +452,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			self.assertGreater(detail_payload["message"]["data"]["payment"]["paid_amount"], 0)
 			self.assertGreater(detail_payload["message"]["data"]["payment"]["outstanding_amount"], 0)
 
-			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name, include_detail=True)
 			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
 			cancel_data = cancel_payload["message"]["data"]
 			self.assertEqual(
@@ -648,6 +651,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			"order_name": order_name,
 			"rollback_payment": 1,
 			"request_id": request_id,
+			"include_detail": 1,
 		}
 
 		try:
@@ -673,7 +677,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		order_name = data["purchase_order"]
 
 		try:
-			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name, include_detail=True)
 			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
 
 			order_doc = self._get_resource("Purchase Order", order_name)
@@ -703,7 +707,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		order_name = self._create_purchase_order(qty=2)
 
 		try:
-			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name, include_detail=True)
 			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
 			cancel_data = cancel_payload["message"]["data"]
 			self.assertEqual(cancel_data["completed_steps"], [])
@@ -726,7 +730,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		self._cancel_supplier_payment(data["payment_entry"])
 
 		try:
-			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name, include_detail=True)
 			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
 			cancel_data = cancel_payload["message"]["data"]
 			self.assertEqual(cancel_data["cancelled_payment_entries"], [])
@@ -743,7 +747,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		self._cancel_purchase_invoice(data["purchase_invoice"])
 
 		try:
-			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name, include_detail=True)
 			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
 			cancel_data = cancel_payload["message"]["data"]
 			self.assertIsNone(cancel_data["cancelled_purchase_invoice"])
@@ -761,7 +765,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		self._cancel_purchase_receipt(receipt_name)
 
 		try:
-			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name, include_detail=True)
 			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
 			cancel_data = cancel_payload["message"]["data"]
 			self.assertEqual(cancel_data["completed_steps"], [])
@@ -899,7 +903,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			reject_status, reject_payload = self._quick_cancel_purchase_order(order_name, rollback_payment=False)
 			self._assert_validation_error(reject_status, reject_payload, contains="先回退付款")
 
-			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name, rollback_payment=True)
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name, rollback_payment=True, include_detail=True)
 			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
 			cancel_data = cancel_payload["message"]["data"]
 			self.assertEqual(
@@ -922,7 +926,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 
 			self._cancel_purchase_invoice(invoice_name_b)
 
-			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name)
+			cancel_status, cancel_payload = self._quick_cancel_purchase_order(order_name, include_detail=True)
 			self._assert_success(cancel_status, cancel_payload, code="PURCHASE_ORDER_QUICK_CANCELLED")
 			cancel_data = cancel_payload["message"]["data"]
 			self.assertEqual(cancel_data["completed_steps"], ["purchase_invoice"])
