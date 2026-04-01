@@ -679,3 +679,110 @@ v2 轻链路内容：
 - 用什么方式测
 - 测过哪些成功路径、幂等、并发、边界条件
 - 当前已知未覆盖项
+
+## 11. 工作台查询性能重构补充验证（2026-04-02）
+
+本轮针对销售与采购工作台查询接口做了生产化方向的性能重构。
+
+涉及接口：
+
+- `myapp.api.gateway.search_sales_orders_v2`
+- `myapp.api.gateway.search_purchase_orders_v2`
+
+### 11.1 本轮实现调整
+
+- 去掉工作台检索中的逐单详情聚合模式
+  - 销售侧不再对列表候选逐条调用 `get_sales_order_detail`
+  - 采购侧不再对列表候选逐条调用 `get_purchase_order_detail_v2`
+- 改为批量读取并聚合：
+  - 订单主表
+  - 订单明细
+  - 发票引用
+  - 付款引用
+- 修正工作台状态口径：
+  - 销售待发货判断改为基于 `is_fully_delivered`
+  - 采购待收货判断改为基于 `is_fully_received`
+
+### 11.2 已通过的聚焦单元测试
+
+本轮新增 / 调整后已通过的聚焦单元测试包括：
+
+- 销售
+  - `test_get_sales_order_status_summary_returns_list`
+  - `test_search_sales_orders_v2_filters_out_cancelled_by_default`
+  - `test_search_sales_orders_v2_passes_search_filters_and_sorts`
+- 采购
+  - `test_get_purchase_order_status_summary_uses_summary_rows`
+  - `test_search_purchase_orders_v2_filters_out_cancelled_by_default`
+  - `test_search_purchase_orders_v2_passes_search_filters_and_sorts`
+
+容器内执行结果：
+
+- `Ran 6 tests in 0.008s ... OK`
+
+### 11.3 已通过的真实 HTTP 搜索回归
+
+本轮额外执行了销售与采购工作台的真实 HTTP 查询回归，共 12 个用例，全部通过。
+
+销售侧覆盖：
+
+- 默认隐藏已作废订单
+- 显式查询已作废订单
+- 按完整订单号搜索
+- `status_filter=delivering`
+- `status_filter=completed`
+- 客户 / 公司过滤
+- `sort_by=amount_desc`
+- `limit + start` 分页
+
+采购侧覆盖：
+
+- 默认隐藏已作废订单
+- 显式查询已作废订单
+- 按完整订单号搜索
+- `status_filter=receiving`
+- `status_filter=paying`
+
+执行结果：
+
+- `Ran 12 tests in 5.526s ... OK`
+
+### 11.4 当前本机延迟采样
+
+基于本地服务、真实 HTTP 请求、同一批现有业务数据，连续采样 5 次后的结果如下：
+
+- 销售 `unfinished`
+  - 平均 `42.1ms`
+  - 最低 `40.7ms`
+  - 最高 `43.5ms`
+  - 当时查询口径：`visible_count=594`, `total_count=620`
+- 销售 `amount_desc`
+  - 平均 `42.3ms`
+  - 最低 `41.5ms`
+  - 最高 `42.7ms`
+- 采购 `unfinished`
+  - 平均 `49.8ms`
+  - 最低 `45.6ms`
+  - 最高 `65.6ms`
+  - 当时查询口径：`visible_count=577`, `total_count=583`
+- 采购 `paying`
+  - 平均 `46.0ms`
+  - 最低 `44.8ms`
+  - 最高 `48.1ms`
+
+说明：
+
+- 相比此前本地约 `1000ms` 的体感，本轮工作台查询延迟已明显下降
+- 当前结果说明：
+  - 在数百条有效订单规模下，工作台搜索已达到可接受的本地联调性能
+- 采购首轮样本略高，后续样本回落到稳定区间，判断为常见冷启动 / 缓存预热波动
+
+### 11.5 当前仍未覆盖的部分
+
+- 还没有形成正式的压测报告
+- 还没有在更高数量级数据下做系统化基准对比
+- 工作台查询虽然已去掉逐单详情 N+1，但当前仍属于“服务层批量聚合”
+- 如果后续数据规模继续上升，仍建议进一步推进：
+  - 更接近数据库原生分页
+  - 计数查询与列表查询分离
+  - 视需要补充索引与 explain 级分析

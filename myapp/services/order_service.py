@@ -137,7 +137,9 @@ def _is_sales_summary_unfinished(summary_row: dict):
 
 
 def _is_sales_summary_delivery_pending(summary_row: dict):
-	return summary_row.get("document_status") == "submitted" and (summary_row.get("fulfillment") or {}).get("status") != "completed"
+	return summary_row.get("document_status") == "submitted" and not bool(
+		(summary_row.get("fulfillment") or {}).get("is_fully_delivered")
+	)
 
 
 def _is_sales_summary_payment_pending(summary_row: dict):
@@ -168,7 +170,7 @@ def _sales_summary_sort_weight(summary_row: dict):
 		return 3
 	if (summary_row.get("payment") or {}).get("status") == "paid":
 		return 2
-	if (summary_row.get("fulfillment") or {}).get("status") == "completed":
+	if (summary_row.get("fulfillment") or {}).get("is_fully_delivered"):
 		return 1
 	return 0
 
@@ -208,23 +210,232 @@ def _sort_sales_summary_rows(rows: list[dict], sort_by: str):
 	)
 
 
-def _build_sales_order_summary_row(row):
-	detail = get_sales_order_detail(row.name)
-	data = detail.get("data", {})
+def _build_empty_sales_payment_summary():
 	return {
-		"order_name": row.name,
-		"customer_name": row.customer_name or row.customer,
-		"customer": row.customer,
-		"company": row.company,
-		"transaction_date": row.transaction_date,
-		"document_status": _document_status_label(row.docstatus),
-		"order_amount_estimate": flt(row.rounded_total or row.grand_total or 0),
-		"fulfillment": data.get("fulfillment", {}),
-		"payment": data.get("payment", {}),
-		"completion": data.get("completion", {}),
-		"outstanding_amount": flt(data.get("payment", {}).get("outstanding_amount", 0) or 0),
-		"modified": row.modified,
+		"receivable_amount": 0,
+		"paid_amount": 0,
+		"outstanding_amount": 0,
+		"status": "unpaid",
+		"is_fully_paid": False,
+		"actual_paid_amount": 0,
+		"total_writeoff_amount": 0,
+		"latest_payment_entry": None,
+		"latest_payment_invoice": None,
+		"latest_unallocated_amount": 0,
+		"latest_writeoff_amount": 0,
+		"latest_actual_paid_amount": 0,
 	}
+
+
+def _build_sales_latest_payment_summary_map(order_invoice_names_map: dict[str, list[str]]):
+	order_names = list(order_invoice_names_map.keys())
+	summary_map = {order_name: _build_empty_sales_payment_summary() for order_name in order_names}
+	all_invoice_names = sorted({invoice_name for invoice_names in order_invoice_names_map.values() for invoice_name in invoice_names})
+	if not all_invoice_names:
+		return summary_map
+
+	reference_rows = frappe.get_all(
+		"Payment Entry Reference",
+		filters={
+			"reference_doctype": "Sales Invoice",
+			"reference_name": ["in", all_invoice_names],
+			"parenttype": "Payment Entry",
+			"parentfield": "references",
+		},
+		fields=["parent", "reference_name", "allocated_amount", "modified"],
+		order_by="modified desc",
+		limit_page_length=0,
+	)
+	if not reference_rows:
+		return summary_map
+
+	invoice_to_orders = {}
+	for order_name, invoice_names in order_invoice_names_map.items():
+		for invoice_name in invoice_names:
+			invoice_to_orders.setdefault(invoice_name, set()).add(order_name)
+
+	parent_names = []
+	order_reference_map = {order_name: [] for order_name in order_names}
+	for row in reference_rows:
+		reference_name = getattr(row, "reference_name", None)
+		parent = getattr(row, "parent", None)
+		if parent and parent not in parent_names:
+			parent_names.append(parent)
+		for order_name in invoice_to_orders.get(reference_name, ()):
+			order_reference_map[order_name].append(row)
+
+	if not parent_names:
+		return summary_map
+
+	payment_entry_rows = frappe.get_all(
+		"Payment Entry",
+		filters={"name": ["in", parent_names], "docstatus": 1},
+		fields=["name", "paid_amount", "received_amount", "unallocated_amount", "difference_amount", "modified"],
+		order_by="modified desc",
+		limit_page_length=0,
+	)
+	if not payment_entry_rows:
+		return summary_map
+
+	payment_entry_map = {getattr(row, "name", None): row for row in payment_entry_rows}
+
+	for order_name, order_reference_rows in order_reference_map.items():
+		if not order_reference_rows:
+			continue
+
+		total_allocated_by_parent = {}
+		for row in order_reference_rows:
+			parent = getattr(row, "parent", None)
+			if not parent:
+				continue
+			total_allocated_by_parent[parent] = total_allocated_by_parent.get(parent, 0) + flt(
+				getattr(row, "allocated_amount", 0) or 0
+			)
+
+		total_actual_paid_amount = 0
+		total_writeoff_amount = 0
+		for row in order_reference_rows:
+			parent = getattr(row, "parent", None)
+			payment_entry = payment_entry_map.get(parent)
+			if not payment_entry:
+				continue
+			allocated_amount = flt(getattr(row, "allocated_amount", 0) or 0)
+			parent_total_allocated = flt(total_allocated_by_parent.get(parent, 0) or 0)
+			parent_paid_amount = flt(
+				getattr(payment_entry, "paid_amount", None)
+				or getattr(payment_entry, "received_amount", None)
+				or 0
+			)
+			parent_effective_paid_amount = min(parent_paid_amount, parent_total_allocated)
+			attributed_actual_paid = (
+				parent_effective_paid_amount * allocated_amount / parent_total_allocated
+				if parent_total_allocated > 0
+				else 0
+			)
+			attributed_writeoff = max(allocated_amount - attributed_actual_paid, 0)
+			total_writeoff_amount += attributed_writeoff
+			total_actual_paid_amount += max(attributed_actual_paid, 0)
+
+		latest_payment_entry = next(
+			(row for row in payment_entry_rows if getattr(row, "name", None) in total_allocated_by_parent),
+			None,
+		)
+		latest_payment_entry_name = getattr(latest_payment_entry, "name", None) if latest_payment_entry else None
+		latest_reference = next(
+			(row for row in order_reference_rows if getattr(row, "parent", None) == latest_payment_entry_name),
+			None,
+		)
+		allocated_amount = flt(getattr(latest_reference, "allocated_amount", 0) or 0)
+		paid_amount = flt(
+			getattr(latest_payment_entry, "paid_amount", None)
+			or getattr(latest_payment_entry, "received_amount", None)
+			or 0
+		)
+		unallocated_amount = flt(getattr(latest_payment_entry, "unallocated_amount", 0) or 0)
+		parent_total_allocated = flt(total_allocated_by_parent.get(latest_payment_entry_name, 0) or 0)
+		parent_effective_paid_amount = min(paid_amount, parent_total_allocated)
+		actual_paid_amount = (
+			parent_effective_paid_amount * allocated_amount / parent_total_allocated
+			if parent_total_allocated > 0
+			else 0
+		)
+		writeoff_amount = max(allocated_amount - actual_paid_amount, 0)
+
+		summary_map[order_name] = {
+			"payment_entry": latest_payment_entry_name,
+			"invoice_name": getattr(latest_reference, "reference_name", None) if latest_reference else None,
+			"allocated_amount": allocated_amount,
+			"unallocated_amount": unallocated_amount,
+			"writeoff_amount": writeoff_amount,
+			"actual_paid_amount": actual_paid_amount,
+			"total_actual_paid_amount": total_actual_paid_amount,
+			"total_writeoff_amount": total_writeoff_amount,
+		}
+
+	return summary_map
+
+
+def _build_sales_order_summary_rows(order_rows):
+	if not order_rows:
+		return []
+
+	order_names = [row.name for row in order_rows if getattr(row, "name", None)]
+	item_rows = frappe.get_all(
+		"Sales Order Item",
+		filters={"parent": ["in", order_names]},
+		fields=["parent", "qty", "delivered_qty"],
+		limit_page_length=0,
+	)
+	item_rows_by_order = {}
+	for row in item_rows:
+		parent = getattr(row, "parent", None)
+		if not parent:
+			continue
+		item_rows_by_order.setdefault(parent, []).append(row)
+
+	invoice_link_rows = frappe.get_all(
+		"Sales Invoice Item",
+		filters={"sales_order": ["in", order_names], "docstatus": 1},
+		fields=["sales_order", "parent"],
+		limit_page_length=0,
+	)
+	order_invoice_names_map = {order_name: [] for order_name in order_names}
+	for row in invoice_link_rows:
+		order_name = getattr(row, "sales_order", None)
+		invoice_name = getattr(row, "parent", None)
+		if not order_name or not invoice_name:
+			continue
+		if invoice_name not in order_invoice_names_map.setdefault(order_name, []):
+			order_invoice_names_map[order_name].append(invoice_name)
+
+	all_invoice_names = sorted({invoice_name for invoice_names in order_invoice_names_map.values() for invoice_name in invoice_names})
+	invoice_row_map = {}
+	if all_invoice_names:
+		invoice_rows = frappe.get_all(
+			"Sales Invoice",
+			filters={"name": ["in", all_invoice_names], "docstatus": 1, "is_return": 0},
+			fields=["name", "grand_total", "rounded_total", "base_rounded_total", "outstanding_amount"],
+			limit_page_length=0,
+		)
+		invoice_row_map = {getattr(row, "name", None): row for row in invoice_rows}
+
+	latest_payment_summary_map = _build_sales_latest_payment_summary_map(order_invoice_names_map)
+	summaries = []
+	for row in order_rows:
+		fulfillment = _build_fulfillment_summary(item_rows_by_order.get(row.name, []))
+		invoice_rows_for_order = [
+			invoice_row_map[invoice_name]
+			for invoice_name in order_invoice_names_map.get(row.name, [])
+			if invoice_name in invoice_row_map
+		]
+		payment = _build_payment_summary(invoice_rows_for_order)
+		latest_payment = latest_payment_summary_map.get(row.name, {})
+		payment["actual_paid_amount"] = latest_payment.get("total_actual_paid_amount", 0)
+		payment["total_writeoff_amount"] = latest_payment.get("total_writeoff_amount", 0)
+		payment["latest_payment_entry"] = latest_payment.get("payment_entry")
+		payment["latest_payment_invoice"] = latest_payment.get("invoice_name")
+		payment["latest_unallocated_amount"] = latest_payment.get("unallocated_amount", 0)
+		payment["latest_writeoff_amount"] = latest_payment.get("writeoff_amount", 0)
+		payment["latest_actual_paid_amount"] = latest_payment.get("actual_paid_amount", 0)
+		completion = _build_completion_summary(fulfillment, payment, docstatus=row.docstatus)
+		summaries.append(
+			{
+				"order_name": row.name,
+				"customer_name": row.customer_name or row.customer,
+				"customer": row.customer,
+				"company": row.company,
+				"transaction_date": row.transaction_date,
+				"document_status": _document_status_label(row.docstatus),
+				"order_amount_estimate": flt(row.rounded_total or row.grand_total or 0),
+				"fulfillment": fulfillment,
+				"payment": payment,
+				"completion": completion,
+				"outstanding_amount": flt(payment.get("outstanding_amount", 0) or 0),
+				"modified": row.modified,
+			}
+		)
+
+	return summaries
 
 
 def _has_sales_order_item_field(fieldname: str) -> bool:
@@ -1659,9 +1870,7 @@ def get_sales_order_status_summary(customer: str | None = None, company: str | N
 			limit_page_length=limit,
 		)
 
-		summaries = []
-		for row in order_rows:
-			summaries.append(_build_sales_order_summary_row(row))
+		summaries = _build_sales_order_summary_rows(order_rows)
 
 		return {
 			"status": "success",
@@ -1716,8 +1925,6 @@ def search_sales_orders_v2(
 			["Sales Order", "transaction_date", "like", like_pattern],
 		]
 
-	candidate_limit = min(max(limit + start + 80, 200), 500)
-
 	try:
 		order_rows = frappe.get_all(
 			"Sales Order",
@@ -1735,10 +1942,10 @@ def search_sales_orders_v2(
 				"modified",
 			],
 			order_by="modified desc",
-			limit_page_length=candidate_limit,
+			limit_page_length=0,
 		)
 
-		summaries = [_build_sales_order_summary_row(row) for row in order_rows]
+		summaries = _build_sales_order_summary_rows(order_rows)
 		scoped_rows = [
 			row for row in summaries if _sales_summary_matches_filter(row, "all", exclude_cancelled=resolved_exclude_cancelled)
 		]

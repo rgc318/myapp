@@ -718,9 +718,9 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["data"]["purchase_invoice_name"], "PINV-0001")
 		self.assertEqual(result["data"]["payment"]["outstanding_amount"], 50)
 
-	@patch("myapp.services.purchase_service.get_purchase_order_detail_v2")
+	@patch("myapp.services.purchase_service._build_purchase_order_summary_rows")
 	@patch("myapp.services.purchase_service.frappe.get_all")
-	def test_get_purchase_order_status_summary_uses_detail_payload(self, mock_get_all, mock_get_detail):
+	def test_get_purchase_order_status_summary_uses_summary_rows(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
 				{
@@ -736,13 +736,14 @@ class TestPurchaseService(TestCase):
 				}
 			)
 		]
-		mock_get_detail.return_value = {
-			"data": {
+		mock_build_summary_rows.return_value = [
+			{
+				"purchase_order_name": "PO-0001",
 				"receiving": {"status": "partial"},
 				"payment": {"outstanding_amount": 120},
 				"completion": {"status": "open"},
 			}
-		}
+		]
 
 		result = get_purchase_order_status_summary(supplier="SUP-001", company="Test Company", limit=5)
 
@@ -750,9 +751,9 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["data"][0]["purchase_order_name"], "PO-0001")
 		self.assertEqual(result["data"][0]["receiving"]["status"], "partial")
 
-	@patch("myapp.services.purchase_service.get_purchase_order_detail_v2")
+	@patch("myapp.services.purchase_service._build_purchase_order_summary_rows")
 	@patch("myapp.services.purchase_service.frappe.get_all")
-	def test_search_purchase_orders_v2_filters_out_cancelled_by_default(self, mock_get_all, mock_get_detail):
+	def test_search_purchase_orders_v2_filters_out_cancelled_by_default(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
 				{
@@ -781,9 +782,21 @@ class TestPurchaseService(TestCase):
 				}
 			),
 		]
-		mock_get_detail.side_effect = [
-			{"data": {"receiving": {"status": "pending"}, "payment": {"status": "unpaid"}, "completion": {"status": "open"}}},
-			{"data": {"receiving": {"status": "pending"}, "payment": {"status": "unpaid"}, "completion": {"status": "open"}}},
+		mock_build_summary_rows.return_value = [
+			{
+				"purchase_order_name": "PO-OPEN-001",
+				"document_status": "submitted",
+				"receiving": {"status": "pending", "is_fully_received": False},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "open"},
+			},
+			{
+				"purchase_order_name": "PO-CAN-001",
+				"document_status": "cancelled",
+				"receiving": {"status": "pending", "is_fully_received": False},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "open"},
+			},
 		]
 
 		result = search_purchase_orders_v2(company="Test Company", status_filter="unfinished", exclude_cancelled=True, limit=20)
@@ -793,9 +806,9 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["data"]["items"][0]["purchase_order_name"], "PO-OPEN-001")
 		self.assertEqual(result["data"]["summary"]["cancelled_count"], 1)
 
-	@patch("myapp.services.purchase_service.get_purchase_order_detail_v2")
+	@patch("myapp.services.purchase_service._build_purchase_order_summary_rows")
 	@patch("myapp.services.purchase_service.frappe.get_all")
-	def test_search_purchase_orders_v2_passes_search_filters_and_sorts(self, mock_get_all, mock_get_detail):
+	def test_search_purchase_orders_v2_passes_search_filters_and_sorts(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
 				{
@@ -824,9 +837,27 @@ class TestPurchaseService(TestCase):
 				}
 			),
 		]
-		mock_get_detail.side_effect = [
-			{"data": {"receiving": {"status": "completed"}, "payment": {"status": "unpaid"}, "completion": {"status": "open"}}},
-			{"data": {"receiving": {"status": "pending"}, "payment": {"status": "unpaid"}, "completion": {"status": "open"}}},
+		mock_build_summary_rows.return_value = [
+			{
+				"purchase_order_name": "PO-0001",
+				"document_status": "submitted",
+				"order_amount_estimate": 50,
+				"transaction_date": "2026-03-24",
+				"modified": "2026-03-24 09:00:00",
+				"receiving": {"status": "received", "is_fully_received": True},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "open"},
+			},
+			{
+				"purchase_order_name": "PO-0002",
+				"document_status": "submitted",
+				"order_amount_estimate": 500,
+				"transaction_date": "2026-03-26",
+				"modified": "2026-03-26 12:00:00",
+				"receiving": {"status": "pending", "is_fully_received": False},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "open"},
+			},
 		]
 
 		result = search_purchase_orders_v2(

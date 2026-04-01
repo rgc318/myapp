@@ -1208,9 +1208,9 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"]["shipping"]["city"], "测试市")
 		self.assertEqual(result["data"]["items"][0]["image"], "/files/item-001.png")
 
-	@patch("myapp.services.order_service.get_sales_order_detail")
+	@patch("myapp.services.order_service._build_sales_order_summary_rows")
 	@patch("myapp.services.order_service.frappe.get_all")
-	def test_get_sales_order_status_summary_returns_list(self, mock_get_all, mock_get_sales_order_detail):
+	def test_get_sales_order_status_summary_returns_list(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
 				{
@@ -1226,14 +1226,14 @@ class TestOrderService(TestCase):
 				}
 			)
 		]
-		mock_get_sales_order_detail.return_value = {
-			"status": "success",
-			"data": {
+		mock_build_summary_rows.return_value = [
+			{
+				"order_name": "SO-0001",
 				"fulfillment": {"status": "partial"},
 				"payment": {"status": "partial", "outstanding_amount": 50},
 				"completion": {"status": "open"},
-			},
-		}
+			}
+		]
 
 		result = get_sales_order_status_summary(customer="Test Customer", company="Test Company", limit=5)
 
@@ -1242,9 +1242,9 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"][0]["payment"]["status"], "partial")
 		self.assertEqual(result["meta"]["filters"]["customer"], "Test Customer")
 
-	@patch("myapp.services.order_service.get_sales_order_detail")
+	@patch("myapp.services.order_service._build_sales_order_summary_rows")
 	@patch("myapp.services.order_service.frappe.get_all")
-	def test_search_sales_orders_v2_filters_out_cancelled_by_default(self, mock_get_all, mock_get_sales_order_detail):
+	def test_search_sales_orders_v2_filters_out_cancelled_by_default(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
 				{
@@ -1273,9 +1273,21 @@ class TestOrderService(TestCase):
 				}
 			),
 		]
-		mock_get_sales_order_detail.side_effect = [
-			{"data": {"fulfillment": {"status": "pending"}, "payment": {"status": "unpaid"}, "completion": {"status": "open"}}},
-			{"data": {"fulfillment": {"status": "pending"}, "payment": {"status": "unpaid"}, "completion": {"status": "closed"}}},
+		mock_build_summary_rows.return_value = [
+			{
+				"order_name": "SO-OPEN-001",
+				"document_status": "submitted",
+				"fulfillment": {"status": "pending", "is_fully_delivered": False},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "open"},
+			},
+			{
+				"order_name": "SO-CAN-001",
+				"document_status": "cancelled",
+				"fulfillment": {"status": "pending", "is_fully_delivered": False},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "closed"},
+			},
 		]
 
 		result = search_sales_orders_v2(company="Test Company", status_filter="unfinished", exclude_cancelled=True, limit=20)
@@ -1285,9 +1297,9 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"]["items"][0]["order_name"], "SO-OPEN-001")
 		self.assertEqual(result["data"]["summary"]["cancelled_count"], 1)
 
-	@patch("myapp.services.order_service.get_sales_order_detail")
+	@patch("myapp.services.order_service._build_sales_order_summary_rows")
 	@patch("myapp.services.order_service.frappe.get_all")
-	def test_search_sales_orders_v2_passes_search_filters_and_sorts(self, mock_get_all, mock_get_sales_order_detail):
+	def test_search_sales_orders_v2_passes_search_filters_and_sorts(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
 				{
@@ -1316,9 +1328,27 @@ class TestOrderService(TestCase):
 				}
 			),
 		]
-		mock_get_sales_order_detail.side_effect = [
-			{"data": {"fulfillment": {"status": "completed"}, "payment": {"status": "unpaid"}, "completion": {"status": "open"}}},
-			{"data": {"fulfillment": {"status": "pending"}, "payment": {"status": "unpaid"}, "completion": {"status": "open"}}},
+		mock_build_summary_rows.return_value = [
+			{
+				"order_name": "SO-0001",
+				"document_status": "submitted",
+				"order_amount_estimate": 200,
+				"transaction_date": "2026-03-17",
+				"modified": "2026-03-17 10:00:00",
+				"fulfillment": {"status": "shipped", "is_fully_delivered": True},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "open"},
+			},
+			{
+				"order_name": "SO-0002",
+				"document_status": "submitted",
+				"order_amount_estimate": 600,
+				"transaction_date": "2026-03-18",
+				"modified": "2026-03-18 11:00:00",
+				"fulfillment": {"status": "pending", "is_fully_delivered": False},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "open"},
+			},
 		]
 
 		result = search_sales_orders_v2(
