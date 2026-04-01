@@ -24,6 +24,8 @@ from myapp.api.gateway import (
 	create_uom_v2,
 	create_order,
 	create_purchase_order,
+	quick_cancel_purchase_order_v2,
+	quick_create_purchase_order_v2,
 	delete_uom_v2,
 	disable_customer_v2,
 	disable_uom_v2,
@@ -66,6 +68,7 @@ class TestGatewayWrappers(TestCase):
 			test_remote_debug,
 			create_order,
 			create_purchase_order,
+			quick_create_purchase_order_v2,
 			get_purchase_order_detail_v2,
 			get_purchase_order_status_summary,
 			get_purchase_receipt_detail_v2,
@@ -79,6 +82,7 @@ class TestGatewayWrappers(TestCase):
 			cancel_purchase_invoice_v2,
 			cancel_purchase_order_v2,
 			cancel_purchase_receipt_v2,
+			quick_cancel_purchase_order_v2,
 			cancel_order_v2,
 			cancel_sales_invoice,
 			cancel_supplier_payment,
@@ -264,7 +268,7 @@ class TestGatewayWrappers(TestCase):
 
 		get_supplier_purchase_context("SUP-001")
 
-		mock_get_supplier_purchase_context_service.assert_called_once_with(supplier="SUP-001")
+		mock_get_supplier_purchase_context_service.assert_called_once_with(supplier="SUP-001", company=None)
 
 	@patch("myapp.api.gateway.list_suppliers_v2_service")
 	def test_list_suppliers_v2_passes_filters_to_service(self, mock_list_suppliers_v2_service):
@@ -324,6 +328,42 @@ class TestGatewayWrappers(TestCase):
 		cancel_purchase_order_v2("PO-0001", request_id="po-cancel-001")
 
 		mock_cancel_purchase_order_v2_service.assert_called_once_with(order_name="PO-0001", request_id="po-cancel-001")
+
+	@patch("myapp.api.gateway.quick_create_purchase_order_v2_service")
+	def test_quick_create_purchase_order_v2_passes_payload_to_service(
+		self,
+		mock_quick_create_purchase_order_v2_service,
+	):
+		mock_quick_create_purchase_order_v2_service.return_value = {"status": "success", "purchase_order": "PO-0001"}
+
+		quick_create_purchase_order_v2(
+			"SUP-001",
+			items=[{"item_code": "ITEM-001", "qty": 2}],
+			immediate_payment=1,
+			request_id="quick-po-001",
+		)
+
+		mock_quick_create_purchase_order_v2_service.assert_called_once_with(
+			supplier="SUP-001",
+			items=[{"item_code": "ITEM-001", "qty": 2}],
+			immediate_payment=1,
+			request_id="quick-po-001",
+		)
+
+	@patch("myapp.api.gateway.quick_cancel_purchase_order_v2_service")
+	def test_quick_cancel_purchase_order_v2_passes_request_id_to_service(
+		self,
+		mock_quick_cancel_purchase_order_v2_service,
+	):
+		mock_quick_cancel_purchase_order_v2_service.return_value = {"status": "success", "purchase_order": "PO-0001"}
+
+		quick_cancel_purchase_order_v2("PO-0001", rollback_payment=False, request_id="quick-po-cancel-001")
+
+		mock_quick_cancel_purchase_order_v2_service.assert_called_once_with(
+			order_name="PO-0001",
+			rollback_payment=False,
+			request_id="quick-po-cancel-001",
+		)
 
 	@patch("myapp.api.gateway.cancel_purchase_receipt_v2_service")
 	def test_cancel_purchase_receipt_v2_passes_request_id_to_service(self, mock_cancel_purchase_receipt_v2_service):

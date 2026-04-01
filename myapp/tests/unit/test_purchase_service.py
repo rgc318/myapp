@@ -16,6 +16,8 @@ from myapp.services.purchase_service import (
 	get_purchase_receipt_detail_v2,
 	list_suppliers_v2,
 	process_purchase_return,
+	quick_cancel_purchase_order_v2,
+	quick_create_purchase_order_v2,
 	receive_purchase_order,
 	record_supplier_payment,
 )
@@ -348,6 +350,143 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["return_document"], "PINV-RET-0099")
 		mock_run_idempotent.assert_called_once()
 
+	@patch("myapp.services.purchase_service.run_idempotent", side_effect=lambda namespace, request_id, callback: callback())
+	@patch("myapp.services.purchase_service.get_purchase_order_detail_v2")
+	@patch("myapp.services.purchase_service.record_supplier_payment")
+	@patch("myapp.services.purchase_service.create_purchase_invoice_from_receipt")
+	@patch("myapp.services.purchase_service.receive_purchase_order")
+	@patch("myapp.services.purchase_service.create_purchase_order")
+	def test_quick_create_purchase_order_v2_runs_full_chain(
+		self,
+		mock_create_purchase_order,
+		mock_receive_purchase_order,
+		mock_create_purchase_invoice_from_receipt,
+		mock_record_supplier_payment,
+		mock_get_purchase_order_detail,
+		mock_run_idempotent,
+	):
+		mock_create_purchase_order.return_value = {"status": "success", "purchase_order": "PO-0001"}
+		mock_receive_purchase_order.return_value = {"status": "success", "purchase_receipt": "PR-0001"}
+		mock_create_purchase_invoice_from_receipt.return_value = {
+			"status": "success",
+			"purchase_invoice": "PINV-0001",
+		}
+		mock_record_supplier_payment.return_value = {"status": "success", "payment_entry": "PAY-0001"}
+		mock_get_purchase_order_detail.return_value = {"status": "success", "data": {"purchase_order_name": "PO-0001"}}
+
+		result = quick_create_purchase_order_v2(
+			supplier="SUP-001",
+			items=[{"item_code": "ITEM-001", "qty": 2, "warehouse": "Stores - TC"}],
+			immediate_payment=1,
+			paid_amount=200,
+			mode_of_payment="微信支付",
+			reference_date="2026-04-01",
+			request_id="quick-po-001",
+		)
+
+		self.assertEqual(result["purchase_order"], "PO-0001")
+		self.assertEqual(result["purchase_receipt"], "PR-0001")
+		self.assertEqual(result["purchase_invoice"], "PINV-0001")
+		self.assertEqual(result["payment_entry"], "PAY-0001")
+		self.assertEqual(
+			result["completed_steps"],
+			["purchase_order", "purchase_receipt", "purchase_invoice", "payment_entry"],
+		)
+		mock_receive_purchase_order.assert_called_once()
+		mock_create_purchase_invoice_from_receipt.assert_called_once()
+		mock_record_supplier_payment.assert_called_once_with(
+			"PINV-0001",
+			paid_amount=200,
+			mode_of_payment="微信支付",
+			reference_no=None,
+			reference_date="2026-04-01",
+			request_id="quick-po-001",
+		)
+		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.purchase_service.run_idempotent", side_effect=lambda namespace, request_id, callback: callback())
+	@patch("myapp.services.purchase_service.cancel_purchase_order_v2")
+	@patch("myapp.services.purchase_service.cancel_purchase_receipt_v2")
+	@patch("myapp.services.purchase_service.cancel_purchase_invoice_v2")
+	@patch("myapp.services.purchase_service.cancel_supplier_payment")
+	@patch("myapp.services.purchase_service._collect_submitted_supplier_payment_entry_summaries")
+	@patch("myapp.services.purchase_service._collect_purchase_order_reference_names")
+	@patch("myapp.services.purchase_service._get_purchase_order_doc_for_update")
+	def test_quick_cancel_purchase_order_v2_runs_reverse_chain(
+		self,
+		mock_get_purchase_order_doc_for_update,
+		mock_collect_purchase_refs,
+		mock_collect_payments,
+		mock_cancel_supplier_payment,
+		mock_cancel_purchase_invoice,
+		mock_cancel_purchase_receipt,
+		mock_cancel_purchase_order,
+		mock_run_idempotent,
+	):
+		mock_get_purchase_order_doc_for_update.return_value = frappe._dict({"name": "PO-0001"})
+		mock_collect_purchase_refs.return_value = (["PR-0001"], ["PINV-0001"])
+		mock_collect_payments.return_value = [
+			{
+				"payment_entry": "PAY-0001",
+				"references": [
+					{
+						"reference_doctype": "Purchase Invoice",
+						"reference_name": "PINV-0001",
+						"allocated_amount": 200,
+					}
+				],
+			}
+		]
+		mock_cancel_supplier_payment.return_value = {"status": "success", "payment_entry": "PAY-0001"}
+		mock_cancel_purchase_invoice.return_value = {"status": "success", "purchase_invoice": "PINV-0001"}
+		mock_cancel_purchase_receipt.return_value = {"status": "success", "purchase_receipt": "PR-0001"}
+		mock_cancel_purchase_order.return_value = {
+			"status": "success",
+			"purchase_order": "PO-0001",
+			"detail": {"purchase_order_name": "PO-0001"},
+		}
+
+		result = quick_cancel_purchase_order_v2("PO-0001", request_id="quick-cancel-001")
+
+		self.assertEqual(result["purchase_order"], "PO-0001")
+		self.assertEqual(result["cancelled_payment_entries"], ["PAY-0001"])
+		self.assertEqual(result["cancelled_purchase_invoice"], "PINV-0001")
+		self.assertEqual(result["cancelled_purchase_receipt"], "PR-0001")
+		self.assertEqual(
+			result["completed_steps"],
+			["payment_entry", "purchase_invoice", "purchase_receipt", "purchase_order"],
+		)
+		mock_cancel_purchase_order.assert_called_once_with("PO-0001", request_id="quick-cancel-001")
+		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.purchase_service.run_idempotent", side_effect=lambda namespace, request_id, callback: callback())
+	@patch(
+		"myapp.services.purchase_service._collect_submitted_supplier_payment_entry_summaries",
+		return_value=[{"payment_entry": "PAY-0001", "references": []}],
+	)
+	@patch(
+		"myapp.services.purchase_service._collect_purchase_order_reference_names",
+		return_value=(["PR-0001"], ["PINV-0001"]),
+	)
+	@patch("myapp.services.purchase_service._get_purchase_order_doc_for_update")
+	def test_quick_cancel_purchase_order_v2_rejects_when_payment_rollback_disabled(
+		self,
+		mock_get_purchase_order_doc_for_update,
+		mock_collect_purchase_refs,
+		mock_collect_payments,
+		mock_run_idempotent,
+	):
+		mock_get_purchase_order_doc_for_update.return_value = frappe._dict({"name": "PO-0001"})
+
+		with patch(
+			"myapp.services.purchase_service.frappe.throw",
+			side_effect=frappe.ValidationError("采购订单 PO-0001 当前存在有效付款，快捷作废要求先回退付款。"),
+		):
+			with self.assertRaisesRegex(frappe.ValidationError, "先回退付款"):
+				quick_cancel_purchase_order_v2("PO-0001", rollback_payment=False)
+
+		mock_run_idempotent.assert_called_once()
+
 	@patch("myapp.services.purchase_service._get_latest_purchase_payment_entry_summary")
 	@patch("myapp.services.purchase_service._load_purchase_invoice_rows")
 	@patch("myapp.services.purchase_service._collect_purchase_order_reference_names")
@@ -533,7 +672,7 @@ class TestPurchaseService(TestCase):
 	@patch("myapp.services.purchase_service._serialize_contact_doc")
 	@patch("myapp.services.purchase_service._get_linked_parent_names")
 	@patch("myapp.services.purchase_service._get_doc_if_exists")
-	@patch("myapp.services.purchase_service._get_default_warehouse_for_context")
+	@patch("myapp.services.purchase_service._get_purchase_default_warehouse_for_company")
 	@patch("myapp.services.purchase_service.frappe.defaults.get_user_default")
 	@patch("myapp.services.purchase_service.frappe.get_doc")
 	def test_get_supplier_purchase_context_returns_defaults(

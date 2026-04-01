@@ -40,6 +40,8 @@ from .purchase_api import (
 	create_purchase_invoice_from_receipt as create_purchase_invoice_from_receipt_service,
 )
 from .purchase_api import create_purchase_order as create_purchase_order_service
+from .purchase_api import quick_cancel_purchase_order_v2 as quick_cancel_purchase_order_v2_service
+from .purchase_api import quick_create_purchase_order_v2 as quick_create_purchase_order_v2_service
 from .purchase_api import get_purchase_company_context as get_purchase_company_context_service
 from .purchase_api import get_purchase_invoice_detail_v2 as get_purchase_invoice_detail_v2_service
 from .purchase_api import get_purchase_order_detail_v2 as get_purchase_order_detail_v2_service
@@ -336,6 +338,14 @@ def create_purchase_order(supplier: str, items, **kwargs):
 
 
 @frappe.whitelist()
+def quick_create_purchase_order_v2(supplier: str, items, **kwargs):
+	return _handle_gateway_call(
+		lambda: quick_create_purchase_order_v2_service(supplier=supplier, items=items, **kwargs),
+		success_code="PURCHASE_ORDER_QUICK_CREATED",
+	)
+
+
+@frappe.whitelist()
 def get_purchase_company_context(company: str | None = None):
 	return _handle_gateway_call(
 		lambda: get_purchase_company_context_service(company=company),
@@ -436,6 +446,18 @@ def cancel_purchase_order_v2(order_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: cancel_purchase_order_v2_service(order_name=order_name, **kwargs),
 		success_code="PURCHASE_ORDER_CANCELLED",
+	)
+
+
+@frappe.whitelist()
+def quick_cancel_purchase_order_v2(order_name: str, rollback_payment: bool = True, **kwargs):
+	return _handle_gateway_call(
+		lambda: quick_cancel_purchase_order_v2_service(
+			order_name=order_name,
+			rollback_payment=rollback_payment,
+			**kwargs,
+		),
+		success_code="PURCHASE_ORDER_QUICK_CANCELLED",
 	)
 
 

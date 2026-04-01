@@ -1395,6 +1395,84 @@ def create_purchase_order(supplier: str, items, **kwargs):
 		raise
 
 
+def quick_create_purchase_order_v2(supplier: str, items, **kwargs):
+	request_id = kwargs.get("request_id")
+
+	try:
+		def _quick_create_purchase_order_v2():
+			result = create_purchase_order(supplier=supplier, items=items, **kwargs)
+			order_name = result.get("purchase_order")
+			receipt_name = None
+			invoice_name = None
+			payment_entry_name = None
+			completed_steps = ["purchase_order"] if order_name else []
+
+			if order_name and cint(kwargs.get("immediate_receive", 1)):
+				receipt_result = receive_purchase_order(
+					order_name,
+					receipt_items=kwargs.get("receipt_items"),
+					kwargs=kwargs,
+				)
+				receipt_name = receipt_result.get("purchase_receipt")
+				if receipt_name:
+					completed_steps.append("purchase_receipt")
+
+			if cint(kwargs.get("immediate_invoice", 1)):
+				if receipt_name:
+					invoice_result = create_purchase_invoice_from_receipt(
+						receipt_name,
+						invoice_items=kwargs.get("invoice_items"),
+						kwargs=kwargs,
+					)
+				elif order_name:
+					invoice_result = create_purchase_invoice(
+						order_name,
+						invoice_items=kwargs.get("invoice_items"),
+						kwargs=kwargs,
+					)
+				else:
+					invoice_result = {}
+				invoice_name = invoice_result.get("purchase_invoice")
+				if invoice_name:
+					completed_steps.append("purchase_invoice")
+
+			if invoice_name and cint(kwargs.get("immediate_payment", 0)):
+				paid_amount = kwargs.get("paid_amount")
+				if paid_amount is None:
+					detail_for_payment = get_purchase_invoice_detail_v2(invoice_name).get("data", {})
+					paid_amount = flt(detail_for_payment.get("amounts", {}).get("outstanding_amount", 0) or 0)
+				payment_result = record_supplier_payment(
+					invoice_name,
+					paid_amount=paid_amount,
+					mode_of_payment=kwargs.get("mode_of_payment"),
+					reference_no=kwargs.get("reference_no"),
+					reference_date=kwargs.get("reference_date"),
+					request_id=kwargs.get("request_id"),
+				)
+				payment_entry_name = payment_result.get("payment_entry")
+				if payment_entry_name:
+					completed_steps.append("payment_entry")
+
+			detail = get_purchase_order_detail_v2(order_name).get("data", {}) if order_name else {}
+			return {
+				"status": "success",
+				"purchase_order": order_name,
+				"purchase_receipt": receipt_name,
+				"purchase_invoice": invoice_name,
+				"payment_entry": payment_entry_name,
+				"completed_steps": completed_steps,
+				"message": _("采购订单 {0} 已按快捷模式完成下单、收货、开票。").format(order_name),
+				"detail": detail,
+			}
+
+		return run_idempotent("quick_create_purchase_order_v2", request_id, _quick_create_purchase_order_v2)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("快捷采购开单失败"))
+		raise
+
+
 def receive_purchase_order(order_name: str, receipt_items=None, kwargs: dict | None = None):
 	from erpnext.buying.doctype.purchase_order.purchase_order import make_purchase_receipt
 
@@ -1576,6 +1654,144 @@ def record_supplier_payment(reference_name: str, paid_amount: float, **kwargs):
 		raise
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), _("采购付款录入失败"))
+		raise
+
+
+def _collect_submitted_supplier_payment_entry_summaries(invoice_names: list[str]):
+	if not invoice_names:
+		return []
+
+	reference_rows = frappe.get_all(
+		"Payment Entry Reference",
+		filters={
+			"reference_doctype": "Purchase Invoice",
+			"reference_name": ["in", invoice_names],
+			"parenttype": "Payment Entry",
+			"parentfield": "references",
+		},
+		fields=["parent", "reference_name", "allocated_amount"],
+	)
+	parent_names = sorted({row.parent for row in reference_rows if getattr(row, "parent", None)})
+	if not parent_names:
+		return []
+
+	payment_entry_rows = frappe.get_all(
+		"Payment Entry",
+		filters={"name": ["in", parent_names], "docstatus": 1},
+		fields=["name", "modified"],
+		order_by="modified desc",
+	)
+	active_parent_names = [row.name for row in payment_entry_rows if getattr(row, "name", None)]
+	if not active_parent_names:
+		return []
+
+	all_reference_rows = frappe.get_all(
+		"Payment Entry Reference",
+		filters={"parent": ["in", active_parent_names]},
+		fields=["parent", "reference_doctype", "reference_name", "allocated_amount"],
+	)
+	reference_rows_by_parent = {}
+	for row in all_reference_rows:
+		parent = getattr(row, "parent", None)
+		if not parent:
+			continue
+		reference_rows_by_parent.setdefault(parent, []).append(row)
+
+	return [
+		{
+			"payment_entry": row.name,
+			"references": [
+				{
+					"reference_doctype": getattr(reference_row, "reference_doctype", None),
+					"reference_name": getattr(reference_row, "reference_name", None),
+					"allocated_amount": flt(getattr(reference_row, "allocated_amount", 0) or 0),
+				}
+				for reference_row in reference_rows_by_parent.get(row.name, [])
+			],
+		}
+		for row in payment_entry_rows
+	]
+
+
+def _ensure_single_quick_purchase_reference(reference_names: list[str], *, label: str, order_name: str):
+	if len(reference_names) > 1:
+		frappe.throw(
+			_("采购订单 {0} 当前存在多张{1}，暂不支持快捷回退，请改用分步回退流程。").format(
+				order_name,
+				label,
+			)
+		)
+
+
+def quick_cancel_purchase_order_v2(order_name: str, rollback_payment: bool = True, **kwargs):
+	request_id = kwargs.get("request_id")
+
+	try:
+		def _quick_cancel_purchase_order_v2():
+			_get_purchase_order_doc_for_update(order_name)
+			receipt_names, invoice_names = _collect_purchase_order_reference_names(order_name)
+			_ensure_single_quick_purchase_reference(receipt_names, label=_("采购收货单"), order_name=order_name)
+			_ensure_single_quick_purchase_reference(invoice_names, label=_("采购发票"), order_name=order_name)
+
+			payment_entries = _collect_submitted_supplier_payment_entry_summaries(invoice_names)
+			if len(payment_entries) > 1:
+				frappe.throw(
+					_("采购订单 {0} 当前存在多笔有效付款，暂不支持快捷回退，请改用分步回退流程。").format(
+						order_name
+					)
+				)
+
+			cancelled_payment_entries = []
+			completed_steps = []
+			for payment_entry in payment_entries:
+				references = payment_entry.get("references") or []
+				reference_names = {
+					row.get("reference_name")
+					for row in references
+					if row.get("reference_doctype") == "Purchase Invoice" and row.get("reference_name")
+				}
+				if len(reference_names) > 1:
+					frappe.throw(
+						_("付款单 {0} 同时关联多张采购发票，暂不支持快捷回退，请改用分步回退流程。").format(
+							payment_entry.get("payment_entry")
+						)
+					)
+				if payment_entry.get("payment_entry") and not cint(rollback_payment):
+					frappe.throw(_("采购订单 {0} 当前存在有效付款，快捷作废要求先回退付款。").format(order_name))
+				payment_result = cancel_supplier_payment(payment_entry.get("payment_entry"))
+				cancelled_payment_entries.append(payment_result.get("payment_entry"))
+				completed_steps.append("payment_entry")
+
+			cancelled_invoice = None
+			if invoice_names:
+				invoice_result = cancel_purchase_invoice_v2(invoice_names[0], **kwargs)
+				cancelled_invoice = invoice_result.get("purchase_invoice")
+				completed_steps.append("purchase_invoice")
+
+			cancelled_receipt = None
+			if receipt_names:
+				receipt_result = cancel_purchase_receipt_v2(receipt_names[0], **kwargs)
+				cancelled_receipt = receipt_result.get("purchase_receipt")
+				completed_steps.append("purchase_receipt")
+
+			order_result = cancel_purchase_order_v2(order_name, **kwargs)
+			completed_steps.append("purchase_order")
+			return {
+				"status": "success",
+				"purchase_order": order_name,
+				"cancelled_payment_entries": cancelled_payment_entries,
+				"cancelled_purchase_invoice": cancelled_invoice,
+				"cancelled_purchase_receipt": cancelled_receipt,
+				"completed_steps": completed_steps,
+				"message": _("采购订单 {0} 已按快捷回退模式撤销下游单据，可返回订单继续修改。").format(order_name),
+				"detail": order_result.get("detail", {}),
+			}
+
+		return run_idempotent("quick_cancel_purchase_order_v2", request_id, _quick_cancel_purchase_order_v2)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("快捷采购回退失败"))
 		raise
 
 

@@ -27,6 +27,8 @@ from myapp.services.purchase_service import get_supplier_detail_v2 as get_suppli
 from myapp.services.purchase_service import get_supplier_purchase_context as get_supplier_purchase_context_service
 from myapp.services.purchase_service import list_suppliers_v2 as list_suppliers_v2_service
 from myapp.services.purchase_service import process_purchase_return as process_purchase_return_service
+from myapp.services.purchase_service import quick_cancel_purchase_order_v2 as quick_cancel_purchase_order_v2_service
+from myapp.services.purchase_service import quick_create_purchase_order_v2 as quick_create_purchase_order_v2_service
 from myapp.services.purchase_service import receive_purchase_order as receive_purchase_order_service
 from myapp.services.purchase_service import record_supplier_payment as record_supplier_payment_service
 from myapp.services.purchase_service import update_purchase_order_items_v2 as update_purchase_order_items_v2_service
@@ -42,6 +44,11 @@ def _merge_kwargs(kwargs, extra_kwargs):
 @frappe.whitelist()
 def create_purchase_order(supplier: str, items, **kwargs):
 	return create_purchase_order_service(supplier=supplier, items=items, **kwargs)
+
+
+@frappe.whitelist()
+def quick_create_purchase_order_v2(supplier: str, items, **kwargs):
+	return quick_create_purchase_order_v2_service(supplier=supplier, items=items, **kwargs)
 
 
 @frappe.whitelist()
@@ -113,6 +120,15 @@ def update_purchase_order_items_v2(order_name: str, items, **kwargs):
 @frappe.whitelist()
 def cancel_purchase_order_v2(order_name: str, **kwargs):
 	return cancel_purchase_order_v2_service(order_name=order_name, **kwargs)
+
+
+@frappe.whitelist()
+def quick_cancel_purchase_order_v2(order_name: str, rollback_payment: bool = True, **kwargs):
+	return quick_cancel_purchase_order_v2_service(
+		order_name=order_name,
+		rollback_payment=rollback_payment,
+		**kwargs,
+	)
 
 
 @frappe.whitelist()
