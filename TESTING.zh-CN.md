@@ -978,3 +978,103 @@ v2 轻链路内容：
   - 上述 9 份核心单测文件
   - `test_sales_uom_stock_chain`
 - 这比只靠零散定向测试更适合持续演进阶段的验收节奏
+
+## 16. 数据库 / 索引 / EXPLAIN 第一轮检查（2026-04-02）
+
+本轮开始对销售 / 采购工作台相关查询做数据库层体检，目标是确认当前服务层优化之外，数据库执行计划是否也足够健康。
+
+### 16.1 当前检查范围
+
+本轮重点检查了以下表：
+
+- `tabSales Order`
+- `tabPurchase Order`
+- `tabSales Invoice Item`
+- `tabPurchase Invoice Item`
+- `tabPayment Entry Reference`
+- `tabPayment Entry`
+
+### 16.2 第一轮 EXPLAIN 发现
+
+在未补索引前，最明显的问题是：
+
+- 销售工作台主订单查询
+  - `tabSales Order`
+  - `WHERE company = ? ORDER BY modified DESC`
+  - `EXPLAIN` 为：
+    - `type = ALL`
+    - `Extra = Using where; Using filesort`
+- 采购工作台主订单查询
+  - `tabPurchase Order`
+  - `WHERE company = ? ORDER BY modified DESC`
+  - `EXPLAIN` 同样为：
+    - `type = ALL`
+    - `Extra = Using where; Using filesort`
+
+这说明数据库在订单主表层面没有合适的复合索引可直接支撑工作台的“按公司过滤 + 按修改时间倒序”读取。
+
+### 16.3 本轮新增的复合索引补丁
+
+本轮新增 patch：
+
+- [add_workbench_query_indexes.py](/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/patches/add_workbench_query_indexes.py)
+
+并登记到：
+
+- [patches.txt](/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/patches.txt)
+
+新增索引包括：
+
+- `tabSales Order`
+  - `idx_myapp_so_company_modified (company, modified)`
+  - `idx_myapp_so_customer_modified (customer, modified)`
+- `tabPurchase Order`
+  - `idx_myapp_po_company_modified (company, modified)`
+  - `idx_myapp_po_supplier_modified (supplier, modified)`
+- `tabPayment Entry Reference`
+  - `idx_myapp_per_reference_lookup (reference_doctype, reference_name, parenttype, parentfield, modified)`
+
+### 16.4 补索引后的结果
+
+补丁在当前站点执行后，订单主查询的执行计划已经改善：
+
+- 销售工作台主订单查询
+  - 从 `type = ALL` 变为 `type = range`
+  - 命中 `idx_myapp_so_company_modified`
+  - `Extra` 降为 `Using where`
+- 采购工作台主订单查询
+  - 从 `type = ALL` 变为 `type = range`
+  - 命中 `idx_myapp_po_company_modified`
+  - `Extra` 降为 `Using where`
+- 按客户 / 供应商过滤的订单查询
+  - 分别命中：
+    - `idx_myapp_so_customer_modified`
+    - `idx_myapp_po_supplier_modified`
+
+### 16.5 当前仍需继续观察的点
+
+`tabPayment Entry Reference` 当前虽然新增了复合索引，但在以下查询上：
+
+- `reference_doctype + reference_name + parenttype + parentfield + ORDER BY modified DESC`
+
+优化器当前仍更倾向于使用旧的 `reference_name` 单列索引，`EXPLAIN` 仍显示：
+
+- `Using index condition; Using where; Using filesort`
+
+这说明第二阶段如果要继续深挖，可能需要二选一：
+
+- 继续微调该复合索引的列顺序
+- 或调整付款引用查询的取数 / 排序策略
+
+### 16.6 本轮验证
+
+本轮在补丁执行后，回归通过：
+
+- `apps.myapp.myapp.tests.unit.test_order_service`
+- `apps.myapp.myapp.tests.unit.test_purchase_service`
+- `apps.myapp.myapp.tests.unit.test_settlement_service`
+- `apps.myapp.myapp.tests.unit.test_wholesale_service`
+
+容器内 bench 环境执行结果：
+
+- `Ran 111 tests in 0.491s ... OK`
