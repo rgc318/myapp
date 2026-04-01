@@ -464,13 +464,18 @@ def _build_purchase_order_summary_rows(order_rows):
 		]
 		payment = _build_payment_summary(invoice_rows_for_order)
 		latest_payment = latest_payment_summary_map.get(row.name, {})
-		payment["actual_paid_amount"] = latest_payment.get("total_actual_paid_amount", 0)
-		payment["total_writeoff_amount"] = latest_payment.get("total_writeoff_amount", 0)
-		payment["latest_payment_entry"] = latest_payment.get("payment_entry")
-		payment["latest_payment_invoice"] = latest_payment.get("invoice_name")
-		payment["latest_unallocated_amount"] = latest_payment.get("unallocated_amount", 0)
-		payment["latest_writeoff_amount"] = latest_payment.get("writeoff_amount", 0)
-		payment["latest_actual_paid_amount"] = latest_payment.get("actual_paid_amount", 0)
+		_apply_purchase_latest_payment_metrics(
+			payment,
+			{
+				"total_actual_paid_amount": latest_payment.get("total_actual_paid_amount", 0),
+				"total_writeoff_amount": latest_payment.get("total_writeoff_amount", 0),
+				"payment_entry": latest_payment.get("payment_entry"),
+				"invoice_name": latest_payment.get("invoice_name"),
+				"unallocated_amount": latest_payment.get("unallocated_amount", 0),
+				"writeoff_amount": latest_payment.get("writeoff_amount", 0),
+				"actual_paid_amount": latest_payment.get("actual_paid_amount", 0),
+			},
+		)
 		completion = _build_purchase_completion_summary(receiving, payment, docstatus=row.docstatus)
 		summaries.append(
 			{
@@ -554,6 +559,17 @@ def _build_purchase_receiving_summary(order_items):
 	}
 
 
+def _apply_purchase_latest_payment_metrics(payment: dict, latest_payment_entry: dict):
+	payment["actual_paid_amount"] = latest_payment_entry.get("total_actual_paid_amount")
+	payment["total_writeoff_amount"] = latest_payment_entry.get("total_writeoff_amount")
+	payment["latest_payment_entry"] = latest_payment_entry.get("payment_entry")
+	payment["latest_payment_invoice"] = latest_payment_entry.get("invoice_name")
+	payment["latest_unallocated_amount"] = latest_payment_entry.get("unallocated_amount")
+	payment["latest_writeoff_amount"] = latest_payment_entry.get("writeoff_amount")
+	payment["latest_actual_paid_amount"] = latest_payment_entry.get("actual_paid_amount")
+	return payment
+
+
 def _build_purchase_completion_summary(receiving: dict, payment: dict, *, docstatus: int):
 	if cint(docstatus) == 2:
 		return {"status": "closed", "is_completed": False}
@@ -563,6 +579,16 @@ def _build_purchase_completion_summary(receiving: dict, payment: dict, *, docsta
 		"status": "completed" if is_completed else "open",
 		"is_completed": is_completed,
 	}
+
+
+def _build_purchase_order_financial_summary(order_items, invoice_names: list[str], *, docstatus: int):
+	invoice_rows = _load_purchase_invoice_rows(invoice_names)
+	receiving = _build_purchase_receiving_summary(order_items)
+	payment = _build_payment_summary(invoice_rows)
+	latest_payment_entry = _get_latest_purchase_payment_entry_summary(invoice_names)
+	_apply_purchase_latest_payment_metrics(payment, latest_payment_entry)
+	completion = _build_purchase_completion_summary(receiving, payment, docstatus=docstatus)
+	return receiving, payment, completion, latest_payment_entry
 
 
 def _build_purchase_order_action_flags(receiving: dict, payment: dict, *, invoice_names: list[str], receipt_names: list[str], docstatus: int):
@@ -872,19 +898,11 @@ def get_purchase_order_detail_v2(order_name: str):
 		po = frappe.get_doc("Purchase Order", order_name)
 		order_items = list(po.get("items") or [])
 		receipt_names, invoice_names = _collect_purchase_order_reference_names(order_name)
-		invoice_rows = _load_purchase_invoice_rows(invoice_names)
-
-		receiving = _build_purchase_receiving_summary(order_items)
-		payment = _build_payment_summary(invoice_rows)
-		latest_payment_entry = _get_latest_purchase_payment_entry_summary(invoice_names)
-		payment["actual_paid_amount"] = latest_payment_entry.get("total_actual_paid_amount")
-		payment["total_writeoff_amount"] = latest_payment_entry.get("total_writeoff_amount")
-		payment["latest_payment_entry"] = latest_payment_entry.get("payment_entry")
-		payment["latest_payment_invoice"] = latest_payment_entry.get("invoice_name")
-		payment["latest_unallocated_amount"] = latest_payment_entry.get("unallocated_amount")
-		payment["latest_writeoff_amount"] = latest_payment_entry.get("writeoff_amount")
-		payment["latest_actual_paid_amount"] = latest_payment_entry.get("actual_paid_amount")
-		completion = _build_purchase_completion_summary(receiving, payment, docstatus=po.docstatus)
+		receiving, payment, completion, latest_payment_entry = _build_purchase_order_financial_summary(
+			order_items,
+			invoice_names,
+			docstatus=po.docstatus,
+		)
 
 		return {
 			"status": "success",
@@ -994,13 +1012,7 @@ def get_purchase_invoice_detail_v2(invoice_name: str):
 		references = _build_purchase_invoice_references(invoice_items)
 		payment = _build_payment_summary([pi])
 		latest_payment_entry = _get_latest_purchase_payment_entry_summary([pi.name])
-		payment["actual_paid_amount"] = latest_payment_entry.get("total_actual_paid_amount")
-		payment["total_writeoff_amount"] = latest_payment_entry.get("total_writeoff_amount")
-		payment["latest_payment_entry"] = latest_payment_entry.get("payment_entry")
-		payment["latest_payment_invoice"] = latest_payment_entry.get("invoice_name")
-		payment["latest_unallocated_amount"] = latest_payment_entry.get("unallocated_amount")
-		payment["latest_writeoff_amount"] = latest_payment_entry.get("writeoff_amount")
-		payment["latest_actual_paid_amount"] = latest_payment_entry.get("actual_paid_amount")
+		_apply_purchase_latest_payment_metrics(payment, latest_payment_entry)
 
 		return {
 			"status": "success",

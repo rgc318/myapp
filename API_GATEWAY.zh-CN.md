@@ -1514,6 +1514,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 返回发货状态 `fulfillment`
 - 返回收款状态 `payment`
 - 返回完成状态 `completion`
+- 详情侧的付款汇总字段当前与销售发票详情复用同一组写回辅助逻辑
+- `payment.latest_payment_*` 字段口径会在订单详情与销售发票详情之间保持一致
 - 当存在发货单时，`delivery.status` 会按真实履约结果聚合为 `shipped`
 - 当存在销售发票时，`actions.can_create_sales_invoice` 会自动变为 `false`
 - 当存在未结清销售发票时，`actions.can_record_payment` 会按真实应收状态返回
@@ -1679,6 +1681,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 适合移动端发票详情页直接渲染
 - 返回来源销售订单与来源发货单引用
 - 返回结算摘要、最新收款结果与商品明细
+- 详情侧的付款汇总字段当前与销售订单详情复用同一组写回辅助逻辑
+- 用于避免订单详情与发票详情分别重复装配 `latest_payment_*` 字段
 
 当前返回重点字段：
 
@@ -2223,6 +2227,8 @@ frappe.call({
 - 返回采购订单详情聚合数据，供移动端详情页直接渲染
 - 返回供应商快照、金额摘要、收货状态、付款状态、商品明细与下游单据引用
 - 返回当前订单是否还能继续收货、开票、编辑或作废的动作标记
+- 详情侧的付款汇总字段当前与采购发票详情复用同一组写回辅助逻辑
+- `payment.latest_payment_*` 字段口径会在订单详情与采购发票详情之间保持一致
 
 当前返回重点字段：
 
@@ -2331,6 +2337,8 @@ frappe.call({
 - 返回采购发票详情聚合数据
 - 返回来源采购单 / 收货单引用、付款摘要、最新付款结果与商品明细
 - 适合发票详情页、付款确认页直接渲染
+- 详情侧的付款汇总字段当前与采购订单详情复用同一组写回辅助逻辑
+- 用于避免订单详情与发票详情分别重复装配 `latest_payment_*` 字段
 
 ### get_supplier_purchase_context
 

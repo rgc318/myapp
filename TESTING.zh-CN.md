@@ -833,3 +833,49 @@ v2 轻链路内容：
   - 降低响应体积
   - 降低成功响应中的额外聚合负担
   - 让详情查询继续回归专用详情接口
+
+## 13. 详情聚合复用验证（2026-04-02）
+
+本轮继续对销售与采购详情接口做了一步生产化收敛，目标是减少详情侧重复的付款汇总装配逻辑。
+
+涉及接口：
+
+- `myapp.api.gateway.get_sales_order_detail`
+- `myapp.api.gateway.get_sales_invoice_detail_v2`
+- `myapp.api.gateway.get_purchase_order_detail_v2`
+- `myapp.api.gateway.get_purchase_invoice_detail_v2`
+
+### 13.1 本轮调整
+
+- 销售侧抽出了订单详情与销售发票详情共用的付款指标写回辅助逻辑
+- 采购侧抽出了订单详情与采购发票详情共用的付款指标写回辅助逻辑
+- 统一了 `payment.latest_payment_*` 相关字段在订单详情与发票详情中的写回方式
+- 减少了详情接口内部重复拼装付款摘要与最新付款结果的代码
+
+### 13.2 测试夹具修正
+
+在这轮验证中，发现一条历史销售详情测试的夹具缺少：
+
+- `contact_person`
+- `shipping_address_name`
+
+这会导致测试断言联系人与地址快照时前提不成立。当前已补齐该夹具，使其与真实详情语义保持一致。
+
+### 13.3 已通过的聚焦单元测试
+
+本轮已验证：
+
+- `test_get_sales_order_detail_aggregates_statuses`
+- `test_get_sales_invoice_detail_returns_payment_and_references`
+- `test_get_purchase_order_detail_v2_returns_aggregated_data`
+- `test_get_purchase_invoice_detail_v2_returns_detail`
+
+容器内执行结果：
+
+- `Ran 4 tests in 0.006s ... OK`
+
+### 13.4 当前意义
+
+- 本轮不改变详情接口名称、参数或主要返回结构
+- 主要收益在于减少销售 / 采购详情侧重复实现
+- 后续继续演进详情接口时，可在共用 helper 上统一维护付款摘要口径

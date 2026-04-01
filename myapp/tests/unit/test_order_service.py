@@ -1106,6 +1106,8 @@ class TestOrderService(TestCase):
 				"currency": "CNY",
 				"transaction_date": "2026-03-17",
 				"delivery_date": "2026-03-18",
+				"contact_person": "CONT-0001",
+				"shipping_address_name": "ADDR-0001",
 				"rounded_total": 200,
 				"remarks": "测试备注",
 				"items": [
