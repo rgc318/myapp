@@ -566,6 +566,27 @@ v2 轻链路内容：
 - `apps.myapp.myapp.tests.http.test_purchase_quick_http`
 - `Ran 36 tests in 30.947s ... OK`
 
+### 8.2 销售工作台搜索最新补充验证（2026-04-01）
+
+本轮新增销售工作台真实检索接口：
+
+- `myapp.api.gateway.search_sales_orders_v2`
+
+本地已完成并通过的验证：
+
+- 后端单元测试
+  - `search_sales_orders_v2` 默认排除已作废
+  - `search_key / customer / company / status_filter / sort_by / start / limit` 参数透传
+- 真实 HTTP 回归
+  - 默认 `exclude_cancelled=true` 时，已作废订单不会进入 `items`
+  - 显式切到 `status_filter=cancelled` 时，可以查到已作废销售订单
+  - `search_key=完整订单号` 可稳定命中目标订单
+
+本轮最新一次销售 HTTP 定向回归结果：
+
+- `myapp.tests.http.test_gateway_v2_http.GatewayV2HttpTestCase`
+- `Ran 3 tests in 1.553s ... OK`
+
 ## 9. 当前仍建议后续补充的测试
 
 虽然当前 v2 核心能力已可用，但以下场景仍建议后续补：

@@ -270,6 +270,20 @@
 - `completion.status`
 - `outstanding_amount`
 
+补充说明：
+
+- 该接口适合首页待办、最近订单、轻量摘要卡片
+- 若后续要制作销售工作台，不建议继续把它当成真实搜索接口
+- 工作台查询应改用 `search_sales_orders_v2`，由后端统一处理：
+  - `search_key`
+  - `customer`
+  - `company`
+  - `status_filter`
+  - `exclude_cancelled`
+  - `sort_by`
+  - `limit`
+  - `start`
+
 ### 6.3 第二阶段接口
 
 若后续接入送达确认，可继续新增：

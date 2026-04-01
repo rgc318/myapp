@@ -440,6 +440,66 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self.assertIn("payment", data[0])
 		self.assertIn("completion", data[0])
 
+	def test_search_sales_orders_v2_hides_cancelled_order_by_default(self):
+		_request, order_payload = self._create_sales_order_v2()
+		order_name = order_payload["message"]["data"]["order"]
+		self._cancel_sales_order_v2(order_name)
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"search_key": order_name,
+				"company": SALES_COMPANY,
+				"status_filter": "all",
+				"exclude_cancelled": 1,
+				"limit": 20,
+			},
+		)
+
+		self._assert_success(status_code, payload, code="SALES_ORDER_SEARCHED")
+		data = payload["message"]["data"]
+		self.assertEqual(data["items"], [])
+		self.assertGreaterEqual(data["summary"]["cancelled_count"], 1)
+
+	def test_search_sales_orders_v2_can_query_cancelled_orders(self):
+		_request, order_payload = self._create_sales_order_v2()
+		order_name = order_payload["message"]["data"]["order"]
+		self._cancel_sales_order_v2(order_name)
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"search_key": order_name,
+				"company": SALES_COMPANY,
+				"status_filter": "cancelled",
+				"exclude_cancelled": 0,
+				"limit": 20,
+			},
+		)
+
+		self._assert_success(status_code, payload, code="SALES_ORDER_SEARCHED")
+		items = payload["message"]["data"]["items"]
+		self.assertTrue(any(row["order_name"] == order_name for row in items))
+
+	def test_search_sales_orders_v2_finds_order_by_exact_name_keyword(self):
+		_request, order_payload = self._create_sales_order_v2()
+		order_name = order_payload["message"]["data"]["order"]
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"search_key": order_name,
+				"company": SALES_COMPANY,
+				"status_filter": "unfinished",
+				"exclude_cancelled": 1,
+				"limit": 20,
+			},
+		)
+
+		self._assert_success(status_code, payload, code="SALES_ORDER_SEARCHED")
+		items = payload["message"]["data"]["items"]
+		self.assertTrue(any(row["order_name"] == order_name for row in items))
+
 	def test_create_product_and_stock_idempotent_replay(self):
 		request_id = self._unique_request_id("http-v2-product-idem")
 		payload = self._build_product_payload(request_id=request_id)

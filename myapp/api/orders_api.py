@@ -13,6 +13,7 @@ from myapp.services.order_service import get_customer_sales_context as get_custo
 from myapp.services.order_service import get_sales_order_detail as get_sales_order_detail_service
 from myapp.services.order_service import get_sales_invoice_detail as get_sales_invoice_detail_service
 from myapp.services.order_service import get_sales_order_status_summary as get_sales_order_status_summary_service
+from myapp.services.order_service import search_sales_orders_v2 as search_sales_orders_v2_service
 from myapp.services.order_service import submit_delivery as submit_delivery_service
 from myapp.services.order_service import update_order_items_v2 as update_order_items_v2_service
 from myapp.services.order_service import update_order_v2 as update_order_v2_service
@@ -90,6 +91,29 @@ def get_sales_invoice_detail(sales_invoice_name: str):
 @frappe.whitelist()
 def get_sales_order_status_summary(customer: str | None = None, company: str | None = None, limit: int = 20):
 	return get_sales_order_status_summary_service(customer=customer, company=company, limit=limit)
+
+
+@frappe.whitelist()
+def search_sales_orders_v2(
+	search_key: str | None = None,
+	customer: str | None = None,
+	company: str | None = None,
+	status_filter: str | None = None,
+	exclude_cancelled=None,
+	sort_by: str | None = None,
+	limit: int = 20,
+	start: int = 0,
+):
+	return search_sales_orders_v2_service(
+		search_key=search_key,
+		customer=customer,
+		company=company,
+		status_filter=status_filter,
+		exclude_cancelled=exclude_cancelled,
+		sort_by=sort_by,
+		limit=limit,
+		start=start,
+	)
 
 
 @frappe.whitelist()

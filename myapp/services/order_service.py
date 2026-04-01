@@ -19,6 +19,44 @@ def _coerce_json_value(value, default):
 	return value
 
 
+def _normalize_text(value: str | None):
+	return (value or "").strip()
+
+
+def _normalize_limit(limit: int | None):
+	return max(1, min(int(limit or 20), 100))
+
+
+def _normalize_start(start: int | None):
+	return max(0, int(start or 0))
+
+
+def _normalize_sales_status_filter(status_filter: str | None):
+	allowed_filters = {"all", "unfinished", "delivering", "paying", "completed", "cancelled"}
+	resolved = (_normalize_text(status_filter) or "all").lower()
+	if resolved not in allowed_filters:
+		return "all"
+	return resolved
+
+
+def _normalize_sales_desk_sort(sort_by: str | None):
+	allowed_sorts = {"unfinished_first", "latest", "oldest", "amount_desc"}
+	resolved = (_normalize_text(sort_by) or "unfinished_first").lower()
+	if resolved not in allowed_sorts:
+		return "unfinished_first"
+	return resolved
+
+
+def _normalize_bool_flag(value, default: bool = False):
+	if value in (None, ""):
+		return default
+	if isinstance(value, bool):
+		return value
+	if isinstance(value, str):
+		return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+	return bool(value)
+
+
 def _validate_order_inputs(customer: str, items: list[dict], company: str | None):
 	if not customer:
 		frappe.throw(_("客户不能为空。"))
@@ -84,6 +122,109 @@ def _get_sales_order_remark(doc):
 	if not fieldname:
 		return None
 	return doc.get(fieldname)
+
+
+def _is_sales_summary_cancelled(summary_row: dict):
+	return summary_row.get("document_status") == "cancelled"
+
+
+def _is_sales_summary_completed(summary_row: dict):
+	return (summary_row.get("completion") or {}).get("status") == "completed"
+
+
+def _is_sales_summary_unfinished(summary_row: dict):
+	return not _is_sales_summary_cancelled(summary_row) and not _is_sales_summary_completed(summary_row)
+
+
+def _is_sales_summary_delivery_pending(summary_row: dict):
+	return summary_row.get("document_status") == "submitted" and (summary_row.get("fulfillment") or {}).get("status") != "completed"
+
+
+def _is_sales_summary_payment_pending(summary_row: dict):
+	return summary_row.get("document_status") == "submitted" and (summary_row.get("payment") or {}).get("status") != "paid"
+
+
+def _sales_summary_matches_filter(summary_row: dict, status_filter: str, exclude_cancelled: bool = False):
+	if exclude_cancelled and _is_sales_summary_cancelled(summary_row):
+		return False
+
+	if status_filter == "unfinished":
+		return _is_sales_summary_unfinished(summary_row)
+	if status_filter == "delivering":
+		return _is_sales_summary_delivery_pending(summary_row)
+	if status_filter == "paying":
+		return _is_sales_summary_payment_pending(summary_row)
+	if status_filter == "completed":
+		return _is_sales_summary_completed(summary_row)
+	if status_filter == "cancelled":
+		return _is_sales_summary_cancelled(summary_row)
+	return True
+
+
+def _sales_summary_sort_weight(summary_row: dict):
+	if _is_sales_summary_cancelled(summary_row):
+		return 4
+	if _is_sales_summary_completed(summary_row):
+		return 3
+	if (summary_row.get("payment") or {}).get("status") == "paid":
+		return 2
+	if (summary_row.get("fulfillment") or {}).get("status") == "completed":
+		return 1
+	return 0
+
+
+def _get_sales_summary_modified_time(summary_row: dict):
+	value = summary_row.get("modified")
+	try:
+		return frappe.utils.get_datetime(value)
+	except Exception:
+		return frappe.utils.get_datetime("1900-01-01")
+
+
+def _get_sales_summary_transaction_time(summary_row: dict):
+	value = summary_row.get("transaction_date")
+	try:
+		return frappe.utils.get_datetime(value)
+	except Exception:
+		return frappe.utils.get_datetime("1900-01-01")
+
+
+def _sort_sales_summary_rows(rows: list[dict], sort_by: str):
+	resolved_sort = _normalize_sales_desk_sort(sort_by)
+	if resolved_sort == "amount_desc":
+		return sorted(
+			rows,
+			key=lambda row: (flt(row.get("order_amount_estimate") or 0), _get_sales_summary_modified_time(row)),
+			reverse=True,
+		)
+	if resolved_sort == "oldest":
+		return sorted(rows, key=lambda row: (_get_sales_summary_transaction_time(row), _get_sales_summary_modified_time(row)))
+	if resolved_sort == "latest":
+		return sorted(rows, key=_get_sales_summary_modified_time, reverse=True)
+
+	return sorted(
+		rows,
+		key=lambda row: (_sales_summary_sort_weight(row), -_get_sales_summary_modified_time(row).timestamp()),
+	)
+
+
+def _build_sales_order_summary_row(row):
+	detail = get_sales_order_detail(row.name)
+	data = detail.get("data", {})
+	return {
+		"order_name": row.name,
+		"customer_name": row.customer_name or row.customer,
+		"customer": row.customer,
+		"company": row.company,
+		"transaction_date": row.transaction_date,
+		"document_status": _document_status_label(row.docstatus),
+		"order_amount_estimate": flt(row.rounded_total or row.grand_total or 0),
+		"fulfillment": data.get("fulfillment", {}),
+		"payment": data.get("payment", {}),
+		"completion": data.get("completion", {}),
+		"outstanding_amount": flt(data.get("payment", {}).get("outstanding_amount", 0) or 0),
+		"modified": row.modified,
+	}
 
 
 def _has_sales_order_item_field(fieldname: str) -> bool:
@@ -1492,7 +1633,7 @@ def get_sales_invoice_detail(sales_invoice_name: str):
 
 
 def get_sales_order_status_summary(customer: str | None = None, company: str | None = None, limit: int = 20):
-	limit = max(1, min(int(limit or 20), 100))
+	limit = _normalize_limit(limit)
 	filters = {}
 	if customer:
 		filters["customer"] = customer
@@ -1520,24 +1661,7 @@ def get_sales_order_status_summary(customer: str | None = None, company: str | N
 
 		summaries = []
 		for row in order_rows:
-			detail = get_sales_order_detail(row.name)
-			data = detail.get("data", {})
-			summaries.append(
-				{
-					"order_name": row.name,
-					"customer_name": row.customer_name or row.customer,
-					"customer": row.customer,
-					"company": row.company,
-					"transaction_date": row.transaction_date,
-					"document_status": _document_status_label(row.docstatus),
-					"order_amount_estimate": flt(row.rounded_total or row.grand_total or 0),
-					"fulfillment": data.get("fulfillment", {}),
-					"payment": data.get("payment", {}),
-					"completion": data.get("completion", {}),
-					"outstanding_amount": flt(data.get("payment", {}).get("outstanding_amount", 0) or 0),
-					"modified": row.modified,
-				}
-			)
+			summaries.append(_build_sales_order_summary_row(row))
 
 		return {
 			"status": "success",
@@ -1555,6 +1679,107 @@ def get_sales_order_status_summary(customer: str | None = None, company: str | N
 		raise
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), _("销售订单状态摘要获取失败"))
+		raise
+
+
+def search_sales_orders_v2(
+	search_key: str | None = None,
+	customer: str | None = None,
+	company: str | None = None,
+	status_filter: str | None = None,
+	exclude_cancelled=None,
+	sort_by: str | None = None,
+	limit: int = 20,
+	start: int = 0,
+):
+	limit = _normalize_limit(limit)
+	start = _normalize_start(start)
+	resolved_status_filter = _normalize_sales_status_filter(status_filter)
+	resolved_sort = _normalize_sales_desk_sort(sort_by)
+	resolved_search_key = _normalize_text(search_key)
+	resolved_exclude_cancelled = _normalize_bool_flag(exclude_cancelled, default=False)
+
+	filters = {}
+	if customer:
+		filters["customer"] = customer
+	if company:
+		filters["company"] = company
+
+	or_filters = None
+	if resolved_search_key:
+		like_pattern = f"%{resolved_search_key}%"
+		or_filters = [
+			["Sales Order", "name", "like", like_pattern],
+			["Sales Order", "customer", "like", like_pattern],
+			["Sales Order", "customer_name", "like", like_pattern],
+			["Sales Order", "company", "like", like_pattern],
+			["Sales Order", "transaction_date", "like", like_pattern],
+		]
+
+	candidate_limit = min(max(limit + start + 80, 200), 500)
+
+	try:
+		order_rows = frappe.get_all(
+			"Sales Order",
+			filters=filters,
+			or_filters=or_filters,
+			fields=[
+				"name",
+				"customer",
+				"customer_name",
+				"transaction_date",
+				"company",
+				"docstatus",
+				"rounded_total",
+				"grand_total",
+				"modified",
+			],
+			order_by="modified desc",
+			limit_page_length=candidate_limit,
+		)
+
+		summaries = [_build_sales_order_summary_row(row) for row in order_rows]
+		scoped_rows = [
+			row for row in summaries if _sales_summary_matches_filter(row, "all", exclude_cancelled=resolved_exclude_cancelled)
+		]
+		filtered_rows = [
+			row for row in scoped_rows if _sales_summary_matches_filter(row, resolved_status_filter, exclude_cancelled=False)
+		]
+		sorted_rows = _sort_sales_summary_rows(filtered_rows, resolved_sort)
+		paged_rows = sorted_rows[start : start + limit]
+
+		return {
+			"status": "success",
+			"data": {
+				"items": paged_rows,
+				"summary": {
+					"total_count": len(scoped_rows),
+					"visible_count": len(filtered_rows),
+					"unfinished_count": sum(1 for row in scoped_rows if _is_sales_summary_unfinished(row)),
+					"delivery_count": sum(1 for row in scoped_rows if _is_sales_summary_delivery_pending(row)),
+					"payment_count": sum(1 for row in scoped_rows if _is_sales_summary_payment_pending(row)),
+					"completed_count": sum(1 for row in scoped_rows if _is_sales_summary_completed(row)),
+					"cancelled_count": sum(1 for row in summaries if _is_sales_summary_cancelled(row)),
+				},
+				"meta": {
+					"filters": {
+						"search_key": resolved_search_key or None,
+						"customer": customer,
+						"company": company,
+						"status_filter": resolved_status_filter,
+						"exclude_cancelled": resolved_exclude_cancelled,
+						"sort_by": resolved_sort,
+						"limit": limit,
+						"start": start,
+					}
+				},
+			},
+			"message": _("销售订单工作台查询成功。"),
+		}
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("销售订单工作台查询失败"))
 		raise
 
 

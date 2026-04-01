@@ -59,7 +59,7 @@
 
 ### 模块导航
 
-- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`process_sales_return`
+- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
 - 采购快捷链路（规划中）：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
 - 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`
@@ -1549,6 +1549,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 返回销售订单列表级摘要
 - 复用销售详情聚合状态口径
 - 适合首页待办、列表卡片和最近订单展示
+- 该接口更适合“摘要卡片 / 状态概览”，不建议再把它当作销售工作台的真实搜索接口使用
 
 当前返回重点字段：
 
@@ -1562,6 +1563,32 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `completion.status`
 - `outstanding_amount`
 - `modified`
+
+### search_sales_orders_v2
+
+方法：
+
+- `myapp.api.gateway.search_sales_orders_v2`
+
+参数：
+
+- `search_key: str | None`
+- `customer: str | None`
+- `company: str | None`
+- `status_filter: str | None`
+- `exclude_cancelled: bool | None`
+- `sort_by: str | None`
+- `limit: int | None = 20`
+- `start: int | None = 0`
+
+行为：
+
+- 面向销售工作台的真实检索接口
+- 支持关键词、客户、公司、状态、排序、分页联动查询
+- 支持默认排除已作废订单，避免未来销售工作台把历史作废单据混入有效订单列表
+- 返回两层数据：
+  - `items`：当前命中的销售订单摘要列表
+  - `summary`：当前检索口径下的未完成 / 待发货 / 待收款 / 已完成 / 已作废计数
 
 ### get_delivery_note_detail_v2
 

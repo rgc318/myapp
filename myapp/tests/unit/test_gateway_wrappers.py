@@ -36,6 +36,7 @@ from myapp.api.gateway import (
 	get_sales_order_detail,
 	get_sales_invoice_detail_v2,
 	get_sales_order_status_summary,
+	search_sales_orders_v2,
 	get_customer_sales_context,
 	get_supplier_detail_v2,
 	get_supplier_purchase_context,
@@ -77,6 +78,7 @@ class TestGatewayWrappers(TestCase):
 			get_purchase_invoice_detail_v2,
 			get_sales_order_detail,
 			get_sales_order_status_summary,
+			search_sales_orders_v2,
 			get_customer_sales_context,
 			get_supplier_purchase_context,
 			cancel_delivery_note,
@@ -802,6 +804,32 @@ class TestGatewayWrappers(TestCase):
 			customer="Test Customer",
 			company="Test Company",
 			limit=5,
+		)
+
+	@patch("myapp.api.gateway.search_sales_orders_v2_service")
+	def test_search_sales_orders_v2_passes_filters_to_service(self, mock_search_sales_orders_v2_service):
+		mock_search_sales_orders_v2_service.return_value = {"status": "success", "data": {"items": []}}
+
+		search_sales_orders_v2(
+			search_key="SO",
+			customer="Test Customer",
+			company="Test Company",
+			status_filter="unfinished",
+			exclude_cancelled=True,
+			sort_by="unfinished_first",
+			limit=8,
+			start=5,
+		)
+
+		mock_search_sales_orders_v2_service.assert_called_once_with(
+			search_key="SO",
+			customer="Test Customer",
+			company="Test Company",
+			status_filter="unfinished",
+			exclude_cancelled=True,
+			sort_by="unfinished_first",
+			limit=8,
+			start=5,
 		)
 
 	@patch("myapp.api.gateway.update_order_v2_service")

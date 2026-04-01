@@ -17,6 +17,7 @@ from myapp.services.order_service import (
 	get_sales_invoice_detail,
 	quick_cancel_order_v2,
 	quick_create_order_v2,
+	search_sales_orders_v2,
 	submit_delivery,
 	update_order_items_v2,
 	update_order_v2,
@@ -1240,6 +1241,101 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"][0]["order_name"], "SO-0001")
 		self.assertEqual(result["data"][0]["payment"]["status"], "partial")
 		self.assertEqual(result["meta"]["filters"]["customer"], "Test Customer")
+
+	@patch("myapp.services.order_service.get_sales_order_detail")
+	@patch("myapp.services.order_service.frappe.get_all")
+	def test_search_sales_orders_v2_filters_out_cancelled_by_default(self, mock_get_all, mock_get_sales_order_detail):
+		mock_get_all.return_value = [
+			frappe._dict(
+				{
+					"name": "SO-OPEN-001",
+					"customer": "Test Customer",
+					"customer_name": "测试客户",
+					"transaction_date": "2026-03-17",
+					"company": "Test Company",
+					"docstatus": 1,
+					"rounded_total": 200,
+					"grand_total": 200,
+					"modified": "2026-03-17 10:00:00",
+				}
+			),
+			frappe._dict(
+				{
+					"name": "SO-CAN-001",
+					"customer": "Test Customer",
+					"customer_name": "测试客户",
+					"transaction_date": "2026-03-16",
+					"company": "Test Company",
+					"docstatus": 2,
+					"rounded_total": 50,
+					"grand_total": 50,
+					"modified": "2026-03-16 09:00:00",
+				}
+			),
+		]
+		mock_get_sales_order_detail.side_effect = [
+			{"data": {"fulfillment": {"status": "pending"}, "payment": {"status": "unpaid"}, "completion": {"status": "open"}}},
+			{"data": {"fulfillment": {"status": "pending"}, "payment": {"status": "unpaid"}, "completion": {"status": "closed"}}},
+		]
+
+		result = search_sales_orders_v2(company="Test Company", status_filter="unfinished", exclude_cancelled=True, limit=20)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(len(result["data"]["items"]), 1)
+		self.assertEqual(result["data"]["items"][0]["order_name"], "SO-OPEN-001")
+		self.assertEqual(result["data"]["summary"]["cancelled_count"], 1)
+
+	@patch("myapp.services.order_service.get_sales_order_detail")
+	@patch("myapp.services.order_service.frappe.get_all")
+	def test_search_sales_orders_v2_passes_search_filters_and_sorts(self, mock_get_all, mock_get_sales_order_detail):
+		mock_get_all.return_value = [
+			frappe._dict(
+				{
+					"name": "SO-0001",
+					"customer": "Test Customer",
+					"customer_name": "测试客户",
+					"transaction_date": "2026-03-17",
+					"company": "Test Company",
+					"docstatus": 1,
+					"rounded_total": 200,
+					"grand_total": 200,
+					"modified": "2026-03-17 10:00:00",
+				}
+			),
+			frappe._dict(
+				{
+					"name": "SO-0002",
+					"customer": "Other Customer",
+					"customer_name": "另一位客户",
+					"transaction_date": "2026-03-18",
+					"company": "Test Company",
+					"docstatus": 1,
+					"rounded_total": 600,
+					"grand_total": 600,
+					"modified": "2026-03-18 11:00:00",
+				}
+			),
+		]
+		mock_get_sales_order_detail.side_effect = [
+			{"data": {"fulfillment": {"status": "completed"}, "payment": {"status": "unpaid"}, "completion": {"status": "open"}}},
+			{"data": {"fulfillment": {"status": "pending"}, "payment": {"status": "unpaid"}, "completion": {"status": "open"}}},
+		]
+
+		result = search_sales_orders_v2(
+			search_key="客户",
+			company="Test Company",
+			status_filter="all",
+			exclude_cancelled=False,
+			sort_by="amount_desc",
+			limit=10,
+			start=0,
+		)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["summary"]["total_count"], 2)
+		self.assertEqual(result["data"]["items"][0]["order_name"], "SO-0002")
+		self.assertEqual(mock_get_all.call_args.kwargs["filters"]["company"], "Test Company")
+		self.assertEqual(len(mock_get_all.call_args.kwargs["or_filters"]), 5)
 
 	@patch("myapp.services.order_service.get_sales_order_detail")
 	@patch("myapp.services.order_service.create_order_v2")

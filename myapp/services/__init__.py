@@ -6,6 +6,7 @@ from .order_service import (
 	create_sales_invoice,
 	quick_cancel_order_v2,
 	quick_create_order_v2,
+	search_sales_orders_v2,
 	submit_delivery,
 )
 from .purchase_service import (
@@ -71,6 +72,7 @@ __all__ = [
 	"search_purchase_orders_v2",
 	"quick_cancel_order_v2",
 	"quick_create_order_v2",
+	"search_sales_orders_v2",
 	"process_purchase_return",
 	"process_sales_return",
 	"quick_cancel_purchase_order_v2",
