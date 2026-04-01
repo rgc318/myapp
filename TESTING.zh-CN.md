@@ -1,6 +1,6 @@
 # 测试说明
 
-更新时间：2026-04-01
+更新时间：2026-04-02
 
 ## 1. 测试原则
 
@@ -918,3 +918,63 @@ v2 轻链路内容：
 - 本轮不改变接口名称与返回结构
 - 主要收益在于进一步统一销售 / 采购列表与详情的付款汇总底座
 - 后续若继续调整付款归因规则，只需要维护批量摘要 helper 的主逻辑
+
+## 15. 测试体系生产化整理（2026-04-02）
+
+本轮目标不是新增业务能力，而是把核心测试矩阵整理成更稳定、可重复执行的形态，并清理一批历史单测中的环境脆弱点。
+
+### 15.1 当前稳定的核心单测矩阵
+
+本轮已回归并确认通过：
+
+- `apps.myapp.myapp.tests.unit.test_order_service`
+- `apps.myapp.myapp.tests.unit.test_purchase_service`
+- `apps.myapp.myapp.tests.unit.test_customer_service`
+- `apps.myapp.myapp.tests.unit.test_gateway_wrappers`
+- `apps.myapp.myapp.tests.unit.test_idempotency`
+- `apps.myapp.myapp.tests.unit.test_return_service`
+- `apps.myapp.myapp.tests.unit.test_settlement_service`
+- `apps.myapp.myapp.tests.unit.test_uom_service`
+- `apps.myapp.myapp.tests.unit.test_wholesale_service`
+
+容器内 bench 环境执行结果：
+
+- `Ran 185 tests in 0.338s ... OK`
+
+### 15.2 当前稳定的真实站点集成回归
+
+本轮同时确认通过：
+
+- `apps.myapp.myapp.tests.integration.test_sales_uom_stock_chain`
+
+容器内 bench 环境执行结果：
+
+- `Ran 4 tests in 1.470s ... OK`
+
+### 15.3 本轮整理掉的历史脆弱模式
+
+本轮清理的主要不是业务断言，而是测试与 Frappe 运行时之间的脆弱耦合：
+
+- 销售服务单测中一批直接 patch `frappe.db.*` / `frappe.throw` / `nowdate()` 的旧写法
+- 批发与结算单测里少量依赖 `frappe.local` 已绑定的假设
+- 商品测试里 `_get_qty_map` 调用次数变化后，旧 `side_effect` 不够导致的 `StopIteration`
+- 把 `frappe._dict({"items": [...]})` 当作可安全走 `.items` 属性的目标单据夹具
+
+### 15.4 当前建议的测试写法
+
+为了让后续单测继续稳定，当前建议优先采用以下方式：
+
+- 优先 patch 自己的 service helper，而不是直接 patch `frappe.db.*` 这类懒代理属性
+- 若确实需要数据库代理，优先 patch 整个 `frappe.db` mock 对象，而不是只 patch `frappe.db.get_value`
+- 涉及 `frappe.throw` 的纯服务层单测，显式 patch 成 `ValidationError` 更稳
+- 涉及 `nowdate()` / 系统时区的服务层单测，显式 patch `nowdate`
+- 需要走 `target_doc.items` 属性路径时，优先使用 `MagicMock` / `SimpleNamespace`，不要把 `frappe._dict` 当成完整 Document 替身
+
+### 15.5 当前意义
+
+- 现在核心后端单测矩阵已经形成了更明确、可重复执行的主回归入口
+- 新增生产化改动后，可以先回归：
+  - 相关聚焦单测
+  - 上述 9 份核心单测文件
+  - `test_sales_uom_stock_chain`
+- 这比只靠零散定向测试更适合持续演进阶段的验收节奏

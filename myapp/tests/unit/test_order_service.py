@@ -25,12 +25,12 @@ from myapp.services.order_service import (
 
 
 class TestOrderService(TestCase):
-	@patch("myapp.services.order_service.frappe.db.get_value")
+	@patch("myapp.services.order_service._get_default_warehouse_for_context")
 	@patch("myapp.services.order_service.frappe.defaults.get_user_default")
 	@patch("myapp.services.order_service.frappe.get_all")
 	@patch("myapp.services.order_service.frappe.get_doc")
 	def test_get_customer_sales_context_builds_customer_defaults_and_recent_addresses(
-		self, mock_get_doc, mock_get_all, mock_get_user_default, mock_get_value
+		self, mock_get_doc, mock_get_all, mock_get_user_default, mock_get_default_warehouse
 	):
 		customer_doc = frappe._dict(
 			{
@@ -87,7 +87,7 @@ class TestOrderService(TestCase):
 			],
 		]
 		mock_get_user_default.side_effect = ["Test Company", None]
-		mock_get_value.return_value = "Stores - TC"
+		mock_get_default_warehouse.return_value = "Stores - TC"
 
 		result = get_customer_sales_context("Test Customer")
 
@@ -367,8 +367,9 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["sales_orders"], ["SO-0001"])
 		self.assertEqual(result["delivery_notes"], ["MAT-DN-0009"])
 
+	@patch("myapp.services.order_service.frappe.throw", side_effect=frappe.ValidationError("本次需要 1.0"))
 	@patch("myapp.services.order_service.frappe.get_all")
-	def test_validate_stock_for_immediate_delivery_rejects_insufficient_stock(self, mock_get_all):
+	def test_validate_stock_for_immediate_delivery_rejects_insufficient_stock(self, mock_get_all, _mock_throw):
 		from myapp.services.order_service import _validate_stock_for_immediate_delivery
 
 		mock_get_all.return_value = [{"actual_qty": -1, "reserved_qty": 1}]
@@ -378,8 +379,9 @@ class TestOrderService(TestCase):
 				[{"item_code": "ITEM-001", "qty": 1, "warehouse": "Stores - TC"}]
 			)
 
+	@patch("myapp.services.order_service.frappe.throw", side_effect=frappe.ValidationError("没有库存记录"))
 	@patch("myapp.services.order_service.frappe.get_all")
-	def test_validate_stock_for_immediate_delivery_rejects_missing_bin(self, mock_get_all):
+	def test_validate_stock_for_immediate_delivery_rejects_missing_bin(self, mock_get_all, _mock_throw):
 		from myapp.services.order_service import _validate_stock_for_immediate_delivery
 
 		mock_get_all.return_value = []
@@ -389,11 +391,12 @@ class TestOrderService(TestCase):
 				[{"item_code": "ITEM-001", "qty": 1, "warehouse": "Stores - TC"}]
 			)
 
-	@patch("myapp.services.order_service.frappe.db.get_value")
-	def test_build_sales_order_item_rejects_cross_company_warehouse(self, mock_get_value):
+	@patch(
+		"myapp.services.order_service._validate_warehouse_company",
+		side_effect=frappe.ValidationError("cross-company"),
+	)
+	def test_build_sales_order_item_rejects_cross_company_warehouse(self, mock_validate_warehouse):
 		from myapp.services.order_service import _build_sales_order_item
-
-		mock_get_value.return_value = "Other Company"
 
 		with self.assertRaises(frappe.ValidationError):
 			_build_sales_order_item(
@@ -402,20 +405,29 @@ class TestOrderService(TestCase):
 				None,
 				"Test Company",
 			)
+		mock_validate_warehouse.assert_called_once_with("Stores - OC", "Test Company", "ITEM-001")
 
+	@patch("myapp.services.order_service._commit_sales_order_context_update")
+	@patch("myapp.services.order_service._build_sales_order_item")
 	@patch("myapp.services.order_service._insert_and_submit")
-	@patch("myapp.services.order_service.frappe.db.get_value")
 	@patch("myapp.services.order_service.frappe.new_doc")
+	@patch("myapp.services.order_service.nowdate", return_value="2026-03-26")
 	@patch("myapp.services.order_service.frappe.defaults.get_user_default")
 	def test_create_order_builds_and_submits_sales_order(
-		self, mock_get_user_default, mock_new_doc, mock_get_value, mock_insert_and_submit
+		self,
+		mock_get_user_default,
+		_mock_nowdate,
+		mock_new_doc,
+		mock_insert_and_submit,
+		mock_build_sales_order_item,
+		mock_commit_context,
 	):
 		mock_get_user_default.return_value = "Test Company"
-		mock_get_value.return_value = "Test Company"
 		so = MagicMock()
 		so.name = "SO-0001"
 		so.docstatus = 1
 		mock_new_doc.return_value = so
+		mock_build_sales_order_item.return_value = {"item_code": "ITEM-001", "qty": 2, "warehouse": "Stores - TC"}
 
 		result = create_order(
 			customer="Test Customer",
@@ -426,26 +438,57 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["status"], "success")
 		self.assertEqual(result["order"], "SO-0001")
 		mock_insert_and_submit.assert_called_once_with(so)
+		mock_commit_context.assert_called_once()
 		so.append.assert_called_once()
 
-	def test_create_order_rejects_empty_items(self):
+	@patch(
+		"myapp.services.order_service.frappe.throw",
+		side_effect=frappe.ValidationError("无法创建空订单，请至少选择一个商品。"),
+	)
+	@patch("myapp.services.order_service.nowdate", return_value="2026-03-26")
+	def test_create_order_rejects_empty_items(self, _mock_nowdate, _mock_throw):
 		with self.assertRaises(frappe.ValidationError):
 			create_order(customer="Test Customer", items=[], company="Test Company")
 
+	@patch(
+		"myapp.services.order_service.frappe.throw",
+		side_effect=frappe.ValidationError("销售订单 SO-0001 当前没有可发货的商品明细。"),
+	)
+	@patch("myapp.services.order_service.run_idempotent")
+	@patch("myapp.services.order_service.frappe.get_doc")
 	@patch("erpnext.selling.doctype.sales_order.sales_order.make_delivery_note")
-	def test_submit_delivery_rejects_sales_order_without_deliverable_items(self, mock_make_delivery_note):
+	def test_submit_delivery_rejects_sales_order_without_deliverable_items(
+		self, mock_make_delivery_note, mock_get_doc, mock_run_idempotent, _mock_throw
+	):
 		dn = frappe._dict({"items": []})
 		mock_make_delivery_note.return_value = dn
+		mock_get_doc.return_value = frappe._dict({"name": "SO-0001"})
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
 
 		with self.assertRaisesRegex(frappe.ValidationError, "没有可发货的商品明细"):
 			submit_delivery("SO-0001")
 
+	@patch("myapp.services.order_service.run_idempotent")
+	@patch("myapp.services.order_service._persist_independent_shipping_snapshot", return_value=[])
+	@patch("myapp.services.order_service._apply_sales_order_context_to_target_doc")
+	@patch("myapp.services.order_service.frappe.get_doc")
 	@patch("erpnext.selling.doctype.sales_order.sales_order.make_delivery_note")
-	def test_submit_delivery_updates_qty_and_price(self, mock_make_delivery_note):
+	def test_submit_delivery_updates_qty_and_price(
+		self,
+		mock_make_delivery_note,
+		mock_get_doc,
+		_mock_apply_context,
+		_mock_persist_snapshot,
+		mock_run_idempotent,
+	):
 		item = frappe._dict({"item_code": "ITEM-001", "so_detail": "SOI-001", "qty": 1, "rate": 10})
-		dn = frappe._dict({"items": [item], "name": "DN-0002"})
-		dn.get = lambda key: dn[key]
+		dn = MagicMock()
+		dn.name = "DN-0002"
+		dn.items = [item]
+		dn.get.side_effect = lambda field, default=None: dn.items if field == "items" else getattr(dn, field, default)
 		mock_make_delivery_note.return_value = dn
+		mock_get_doc.return_value = frappe._dict({"name": "SO-0001"})
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
 
 		with patch("myapp.services.order_service._validate_stock_for_immediate_delivery"), patch(
 			"myapp.services.order_service._insert_and_submit"
@@ -459,12 +502,25 @@ class TestOrderService(TestCase):
 		self.assertEqual(item.rate, 16)
 		self.assertEqual(result["delivery_note"], "DN-0002")
 
+	@patch("myapp.services.order_service.run_idempotent")
+	@patch("myapp.services.order_service._persist_independent_shipping_snapshot", return_value=[])
+	@patch("myapp.services.order_service._apply_sales_order_context_to_target_doc")
+	@patch("myapp.services.order_service.frappe.get_doc")
 	@patch("erpnext.selling.doctype.sales_order.sales_order.make_delivery_note")
-	def test_submit_delivery_force_delivery_skips_stock_precheck(self, mock_make_delivery_note):
+	def test_submit_delivery_force_delivery_skips_stock_precheck(
+		self,
+		mock_make_delivery_note,
+		mock_get_doc,
+		_mock_apply_context,
+		_mock_persist_snapshot,
+		mock_run_idempotent,
+	):
 		item = frappe._dict({"item_code": "ITEM-001", "warehouse": "Stores - RD", "qty": 2})
 		dn = frappe._dict({"items": [item], "name": "DN-0004"})
 		dn.get = lambda key: dn[key]
 		mock_make_delivery_note.return_value = dn
+		mock_get_doc.return_value = frappe._dict({"name": "SO-0001"})
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
 
 		with patch("myapp.services.order_service._validate_stock_for_immediate_delivery") as mock_validate, patch(
 			"myapp.services.order_service._insert_and_submit_with_temporary_negative_stock"
@@ -476,38 +532,76 @@ class TestOrderService(TestCase):
 		self.assertTrue(result["force_delivery"])
 		self.assertEqual(result["delivery_note"], "DN-0004")
 
+	@patch("myapp.services.order_service.run_idempotent")
+	@patch("myapp.services.order_service._apply_sales_order_context_to_target_doc")
+	@patch("myapp.services.order_service.frappe.get_doc")
 	@patch("erpnext.selling.doctype.sales_order.sales_order.make_delivery_note")
-	def test_submit_delivery_cleans_up_draft_delivery_note_when_submit_fails(self, mock_make_delivery_note):
+	def test_submit_delivery_cleans_up_draft_delivery_note_when_submit_fails(
+		self, mock_make_delivery_note, mock_get_doc, _mock_apply_context, mock_run_idempotent
+	):
 		item = frappe._dict({"item_code": "ITEM-001", "warehouse": "Stores - RD", "qty": 2})
 		dn = frappe._dict({"items": [item], "name": "DN-0003"})
 		dn.get = lambda key: dn[key]
 		mock_make_delivery_note.return_value = dn
+		mock_get_doc.return_value = frappe._dict({"name": "SO-0001"})
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
+
+		from myapp.services import order_service
+
+		fake_db = MagicMock()
+		fake_db.exists.return_value = True
+		fake_db.get_value.return_value = 0
 
 		with patch("myapp.services.order_service._validate_stock_for_immediate_delivery"), patch(
 			"myapp.services.order_service._insert_and_submit",
 			side_effect=frappe.ValidationError("库存不足"),
-		), patch("myapp.services.order_service.frappe.db.exists", return_value=True), patch(
-			"myapp.services.order_service.frappe.db.get_value", return_value=0
-		), patch("myapp.services.order_service.frappe.delete_doc") as mock_delete_doc:
+		), patch.object(order_service.frappe, "db", fake_db), patch(
+			"myapp.services.order_service.frappe.delete_doc"
+		) as mock_delete_doc:
 			with self.assertRaisesRegex(frappe.ValidationError, "库存不足"):
 				submit_delivery("SO-0001")
 
 		mock_delete_doc.assert_called_once_with("Delivery Note", "DN-0003", ignore_permissions=True, force=1)
 
+	@patch(
+		"myapp.services.order_service.frappe.throw",
+		side_effect=frappe.ValidationError("销售订单 SO-0001 当前没有可开票的商品明细。"),
+	)
+	@patch("myapp.services.order_service.run_idempotent")
+	@patch("myapp.services.order_service.frappe.get_doc")
 	@patch("erpnext.selling.doctype.sales_order.sales_order.make_sales_invoice")
-	def test_create_sales_invoice_rejects_sales_order_without_billable_items(self, mock_make_sales_invoice):
+	def test_create_sales_invoice_rejects_sales_order_without_billable_items(
+		self, mock_make_sales_invoice, mock_get_doc, mock_run_idempotent, _mock_throw
+	):
 		si = frappe._dict({"items": []})
 		mock_make_sales_invoice.return_value = si
+		mock_get_doc.return_value = frappe._dict({"name": "SO-0001"})
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
 
 		with self.assertRaisesRegex(frappe.ValidationError, "没有可开票的商品明细"):
 			create_sales_invoice("SO-0001")
 
+	@patch("myapp.services.order_service.run_idempotent")
+	@patch("myapp.services.order_service._persist_independent_shipping_snapshot", return_value=[])
+	@patch("myapp.services.order_service._apply_sales_order_context_to_target_doc")
+	@patch("myapp.services.order_service.frappe.get_doc")
 	@patch("erpnext.selling.doctype.sales_order.sales_order.make_sales_invoice")
-	def test_create_sales_invoice_updates_qty_and_price(self, mock_make_sales_invoice):
+	def test_create_sales_invoice_updates_qty_and_price(
+		self,
+		mock_make_sales_invoice,
+		mock_get_doc,
+		_mock_apply_context,
+		_mock_persist_snapshot,
+		mock_run_idempotent,
+	):
 		item = frappe._dict({"item_code": "ITEM-001", "so_detail": "SOI-001", "qty": 1, "rate": 10})
-		si = frappe._dict({"items": [item], "name": "SINV-0002"})
-		si.get = lambda key: si[key]
+		si = MagicMock()
+		si.name = "SINV-0002"
+		si.items = [item]
+		si.get.side_effect = lambda field, default=None: si.items if field == "items" else getattr(si, field, default)
 		mock_make_sales_invoice.return_value = si
+		mock_get_doc.return_value = frappe._dict({"name": "SO-0001"})
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
 
 		with patch("myapp.services.order_service._insert_and_submit"):
 			result = create_sales_invoice(
@@ -520,13 +614,7 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["sales_invoice"], "SINV-0002")
 
 	@patch("myapp.services.order_service.run_idempotent")
-	@patch("myapp.services.order_service.frappe.db.get_value")
-	@patch("myapp.services.order_service.frappe.defaults.get_user_default")
-	def test_create_order_returns_cached_result_for_same_request_id(
-		self, mock_get_user_default, mock_get_value, mock_run_idempotent
-	):
-		mock_get_user_default.return_value = "Test Company"
-		mock_get_value.return_value = "Test Company"
+	def test_create_order_returns_cached_result_for_same_request_id(self, mock_run_idempotent):
 		mock_run_idempotent.return_value = {
 			"status": "success",
 			"order": "SO-0009",
@@ -535,6 +623,8 @@ class TestOrderService(TestCase):
 		result = create_order(
 			customer="Test Customer",
 			items=[{"item_code": "ITEM-001", "qty": 2, "warehouse": "Stores - TC"}],
+			company="Test Company",
+			delivery_date="2026-03-26",
 			request_id="req-001",
 		)
 
@@ -578,8 +668,14 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["order"], "SO-0012")
 		self.assertEqual(result["document_status"], "cancelled")
 
+	@patch(
+		"myapp.services.order_service.frappe.throw",
+		side_effect=frappe.ValidationError("销售订单 SO-0013 已存在发货或开票记录，当前不允许作废。"),
+	)
 	@patch("myapp.services.order_service._collect_sales_order_reference_names")
-	def test_cancel_order_v2_rejects_order_with_downstream_documents(self, mock_collect_sales_order_reference_names):
+	def test_cancel_order_v2_rejects_order_with_downstream_documents(
+		self, mock_collect_sales_order_reference_names, _mock_throw
+	):
 		so = frappe._dict({"name": "SO-0013", "docstatus": 1})
 		mock_collect_sales_order_reference_names.return_value = (["DN-0001"], [])
 
@@ -948,6 +1044,7 @@ class TestOrderService(TestCase):
 
 	@patch("erpnext.selling.doctype.sales_order.sales_order.make_delivery_note")
 	@patch("myapp.services.order_service.run_idempotent")
+	@patch("myapp.services.order_service._persist_independent_shipping_snapshot", return_value=[])
 	@patch("myapp.services.order_service._apply_sales_order_context_to_target_doc")
 	@patch("myapp.services.order_service._insert_and_submit")
 	@patch("myapp.services.order_service._validate_stock_for_immediate_delivery")
@@ -958,6 +1055,7 @@ class TestOrderService(TestCase):
 		mock_validate_stock,
 		mock_insert_and_submit,
 		mock_apply_context,
+		_mock_persist_snapshot,
 		mock_run_idempotent,
 		mock_make_delivery_note,
 	):
@@ -976,6 +1074,7 @@ class TestOrderService(TestCase):
 
 	@patch("erpnext.selling.doctype.sales_order.sales_order.make_delivery_note")
 	@patch("myapp.services.order_service.run_idempotent")
+	@patch("myapp.services.order_service._persist_independent_shipping_snapshot", return_value=[])
 	@patch("myapp.services.order_service._apply_sales_order_context_to_target_doc")
 	@patch("myapp.services.order_service._insert_and_submit")
 	@patch("myapp.services.order_service._validate_stock_for_immediate_delivery")
@@ -986,26 +1085,23 @@ class TestOrderService(TestCase):
 		mock_validate_stock,
 		mock_insert_and_submit,
 		mock_apply_context,
+		_mock_persist_snapshot,
 		mock_run_idempotent,
 		mock_make_delivery_note,
 	):
 		so = frappe._dict({"name": "SO-0001", "address_display": "北京市朝阳区测试路 100 号"})
-		dn = frappe._dict(
+		dn_item = frappe._dict(
 			{
-				"name": "DN-0001",
-				"items": [
-					frappe._dict(
-						{
-							"item_code": "ITEM-001",
-							"warehouse": "Stores - TC",
-							"qty": 2,
-							"stock_qty": 48,
-							"conversion_factor": 24,
-						}
-					)
-				],
+				"item_code": "ITEM-001",
+				"warehouse": "Stores - TC",
+				"qty": 2,
+				"stock_qty": 48,
+				"conversion_factor": 24,
 			}
 		)
+		dn = MagicMock()
+		dn.name = "DN-0001"
+		dn.items = [dn_item]
 		mock_get_doc.return_value = so
 		mock_make_delivery_note.return_value = dn
 		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
@@ -1027,6 +1123,7 @@ class TestOrderService(TestCase):
 
 	@patch("erpnext.selling.doctype.sales_order.sales_order.make_sales_invoice")
 	@patch("myapp.services.order_service.run_idempotent")
+	@patch("myapp.services.order_service._persist_independent_shipping_snapshot", return_value=[])
 	@patch("myapp.services.order_service._apply_sales_order_context_to_target_doc")
 	@patch("myapp.services.order_service._insert_and_submit")
 	@patch("myapp.services.order_service.frappe.get_doc")
@@ -1035,6 +1132,7 @@ class TestOrderService(TestCase):
 		mock_get_doc,
 		mock_insert_and_submit,
 		mock_apply_context,
+		_mock_persist_snapshot,
 		mock_run_idempotent,
 		mock_make_sales_invoice,
 	):
@@ -1051,13 +1149,7 @@ class TestOrderService(TestCase):
 		mock_insert_and_submit.assert_called_once_with(si)
 
 	@patch("myapp.services.order_service.run_idempotent")
-	@patch("myapp.services.order_service.frappe.db.get_value")
-	@patch("myapp.services.order_service.frappe.defaults.get_user_default")
-	def test_create_order_immediate_uses_same_idempotent_runner(
-		self, mock_get_user_default, mock_get_value, mock_run_idempotent
-	):
-		mock_get_user_default.return_value = "Test Company"
-		mock_get_value.return_value = "Test Company"
+	def test_create_order_immediate_uses_same_idempotent_runner(self, mock_run_idempotent):
 		mock_run_idempotent.return_value = {
 			"status": "success",
 			"order": "SO-0010",
@@ -1068,6 +1160,8 @@ class TestOrderService(TestCase):
 		result = create_order(
 			customer="Test Customer",
 			items=[{"item_code": "ITEM-001", "qty": 2, "warehouse": "Stores - TC"}],
+			company="Test Company",
+			delivery_date="2026-03-26",
 			immediate=1,
 			request_id="req-002",
 		)

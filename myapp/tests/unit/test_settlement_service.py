@@ -134,14 +134,23 @@ class TestSettlementService(TestCase):
 		self.assertEqual(result["next_actions"]["suggested_next_action"], "view_return_document")
 
 	@patch("myapp.services.settlement_service.frappe.get_traceback", return_value="traceback")
+	@patch("myapp.services.settlement_service.nowdate", return_value="2026-03-26")
+	@patch("myapp.services.settlement_service.frappe.log_error")
 	@patch("erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry")
-	def test_update_payment_status_creates_payment_entry(self, mock_get_payment_entry, mock_traceback):
+	def test_update_payment_status_creates_payment_entry(
+		self, mock_get_payment_entry, _mock_log_error, _mock_nowdate, mock_traceback
+	):
 		pe = MagicMock()
 		pe.name = "ACC-PAY-0001"
 		pe.mode_of_payment = None
 		mock_get_payment_entry.return_value = pe
 
-		result = update_payment_status("Sales Invoice", "SINV-0001", 120)
+		with patch.object(
+			frappe,
+			"db",
+			MagicMock(get_value=MagicMock(return_value=120)),
+		):
+			result = update_payment_status("Sales Invoice", "SINV-0001", 120)
 
 		mock_get_payment_entry.assert_called_once_with("Sales Invoice", "SINV-0001", party_amount=120.0)
 		pe.insert.assert_called_once()

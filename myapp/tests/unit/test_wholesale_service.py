@@ -92,6 +92,7 @@ class TestWholesaleService(TestCase):
 		mock_get_qty_map.side_effect = [
 			{"ITEM-001": 9},
 			{"ITEM-001": 42},
+			{"ITEM-001": 42},
 		]
 		mock_get_warehouse_stock_detail_map.return_value = {
 			"ITEM-001": [
@@ -166,6 +167,7 @@ class TestWholesaleService(TestCase):
 		)
 		mock_get_qty_map.side_effect = [
 			{"ITEM-001": 8},
+			{"ITEM-001": 21},
 			{"ITEM-001": 21},
 		]
 		mock_get_warehouse_stock_detail_map.return_value = {
@@ -263,6 +265,7 @@ class TestWholesaleService(TestCase):
 		mock_get_qty_map.side_effect = [
 			{"ITEM-001": 0, "ITEM-002": 8},
 			{"ITEM-001": 5, "ITEM-002": 12},
+			{"ITEM-001": 5, "ITEM-002": 12},
 		]
 		mock_get_warehouse_stock_detail_map.return_value = {
 			"ITEM-002": [
@@ -289,16 +292,20 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(result["filters"]["sort_by"], "price")
 		self.assertTrue(result["filters"]["in_stock_only"])
 
-	@patch("myapp.services.wholesale_service.frappe.db.exists")
-	@patch("myapp.services.wholesale_service.frappe.defaults.get_user_default")
+	@patch(
+		"myapp.services.wholesale_service.frappe.throw",
+		side_effect=frappe.ValidationError("请先选择仓库，或在当前用户默认值中配置 warehouse。"),
+	)
+	@patch(
+		"myapp.services.wholesale_service._resolve_default_warehouse",
+		side_effect=frappe.ValidationError("请先选择仓库，或在当前用户默认值中配置 warehouse。"),
+	)
 	def test_create_product_and_stock_requires_warehouse_when_no_default(
-		self, mock_get_user_default, mock_exists
+		self, mock_resolve_default_warehouse, _mock_throw
 	):
-		mock_get_user_default.return_value = None
-		mock_exists.return_value = False
-
 		with self.assertRaises(frappe.ValidationError):
 			create_product_and_stock(item_name="测试商品")
+		mock_resolve_default_warehouse.assert_called_once()
 
 	@patch("myapp.services.wholesale_service.run_idempotent")
 	def test_create_product_and_stock_uses_idempotent_runner(self, mock_run_idempotent):
@@ -319,31 +326,32 @@ class TestWholesaleService(TestCase):
 	@patch("myapp.services.wholesale_service._create_stock_entry")
 	@patch("myapp.services.wholesale_service._get_item_nickname_field")
 	@patch("myapp.services.wholesale_service._upsert_item_price")
+	@patch("myapp.services.wholesale_service.resolve_item_quantity_to_stock")
 	@patch("myapp.services.wholesale_service.frappe.new_doc")
-	@patch("myapp.services.wholesale_service.frappe.db.get_value")
-	@patch("myapp.services.wholesale_service.frappe.db.exists")
+	@patch("myapp.services.wholesale_service._build_item_code")
+	@patch("myapp.services.wholesale_service._resolve_default_item_group")
+	@patch("myapp.services.wholesale_service._resolve_default_uom")
+	@patch("myapp.services.wholesale_service._resolve_company_from_warehouse")
+	@patch("myapp.services.wholesale_service.frappe.defaults.get_user_default")
 	def test_create_product_and_stock_builds_item_and_receipt(
 		self,
-		mock_exists,
-		mock_get_value,
+		mock_get_user_default,
+		mock_resolve_company_from_warehouse,
+		mock_resolve_default_uom,
+		mock_resolve_default_item_group,
+		mock_build_item_code,
 		mock_new_doc,
+		mock_resolve_qty,
 		mock_upsert_item_price,
 		mock_get_item_nickname_field,
 		mock_create_stock_entry,
 	):
-		def fake_exists(doctype, filters=None):
-			if doctype == "Item":
-				return False
-			if doctype == "UOM":
-				return True
-			if doctype == "Item Group":
-				return filters == "All Item Groups" or filters == {"barcode": "BAR-001"}
-			if doctype == "Item Barcode":
-				return False
-			return False
-
-		mock_exists.side_effect = fake_exists
-		mock_get_value.return_value = "Test Company"
+		mock_get_user_default.return_value = "CNY"
+		mock_resolve_company_from_warehouse.return_value = "Test Company"
+		mock_resolve_default_uom.return_value = "Nos"
+		mock_resolve_default_item_group.return_value = "All Item Groups"
+		mock_build_item_code.return_value = "TEST-COLA"
+		mock_resolve_qty.return_value = {"qty": 8, "uom": "Nos", "stock_qty": 8}
 		mock_get_item_nickname_field.return_value = "custom_nickname"
 
 		item = MagicMock()
@@ -357,15 +365,21 @@ class TestWholesaleService(TestCase):
 		stock_entry.name = "MAT-STE-0001"
 		mock_create_stock_entry.return_value = stock_entry
 
-		result = create_product_and_stock(
-			item_name="测试可乐",
-			warehouse="Stores - RD",
-			opening_qty=8,
-			standard_rate=5.5,
-			image="/files/cola.png",
-			barcode="BAR-001X",
-			nickname="冰可乐",
-		)
+		from myapp.services import wholesale_service
+
+		fake_db = MagicMock()
+		fake_db.exists.return_value = False
+
+		with patch.object(wholesale_service.frappe, "db", fake_db):
+			result = create_product_and_stock(
+				item_name="测试可乐",
+				warehouse="Stores - RD",
+				opening_qty=8,
+				standard_rate=5.5,
+				image="/files/cola.png",
+				barcode="BAR-001X",
+				nickname="冰可乐",
+			)
 
 		mock_new_doc.assert_called_once_with("Item")
 		self.assertEqual(item.custom_nickname, "冰可乐")
