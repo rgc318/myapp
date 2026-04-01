@@ -114,6 +114,12 @@ python3 -m unittest apps.myapp.myapp.tests.http.test_gateway_v2_http
 python3 -m unittest apps.myapp.myapp.tests.http.test_purchase_quick_http
 ```
 
+跑性能基线脚本：
+
+```bash
+python3 -m apps.myapp.myapp.tests.http.benchmark_gateway_http
+```
+
 跑单个测试方法：
 
 ```bash
@@ -136,6 +142,52 @@ docker exec frappe_docker-backend-1 bash -lc '
 2. 再跑幂等与并发测试
 3. 最后跑链路 smoke test
 4. 需要全量回归时再跑整份文件
+
+### 4.2 性能基线执行方式
+
+性能基线脚本用于记录当前版本在本机 / 本地 devcontainer 环境下的接口耗时基准，不替代功能回归测试。
+
+当前脚本：
+
+- [benchmark_gateway_http.py](/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/tests/http/benchmark_gateway_http.py)
+
+默认覆盖 5 类高频接口：
+
+- `search_sales_orders_v2`
+- `search_purchase_orders_v2`
+- `get_sales_order_detail`
+- `get_purchase_order_detail_v2`
+- `search_product_v2`
+
+默认行为：
+
+- 每个接口采样 5 次
+- 自动先查询当前可用销售单 / 采购单，避免手填单号
+- 输出平均值、最小值、最大值和近似 `P95`
+- 将结果写入：
+  - [performance-baseline-results.json](/home/rgc318/python-project/frappe_docker/apps/myapp/performance-baseline-results.json)
+
+可选执行方式：
+
+```bash
+python3 -m apps.myapp.myapp.tests.http.benchmark_gateway_http --samples 10
+```
+
+```bash
+python3 -m apps.myapp.myapp.tests.http.benchmark_gateway_http \
+  --output /tmp/myapp-perf-baseline.json
+```
+
+建议使用场景：
+
+- 工作台查询或详情聚合有性能改动后
+- 索引调整后
+- 上线前进行本机基线复核
+- 后续出现“接口变慢”反馈时做回归比对
+
+当前最新一次采样结果文件：
+
+- [performance-baseline-results.json](/home/rgc318/python-project/frappe_docker/apps/myapp/performance-baseline-results.json)
 
 ### 4.1 容器内运行单元测试的建议
 
@@ -1140,3 +1192,74 @@ v2 轻链路内容：
 执行结果：
 
 - `Ran 17 tests in 0.016s ... OK`
+
+## 18. 性能基线脚本与当前基准（2026-04-02）
+
+本轮作为后端生产化优化的最后一块，新增了独立的 HTTP 性能基线脚本：
+
+- [benchmark_gateway_http.py](/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/tests/http/benchmark_gateway_http.py)
+
+执行方式：
+
+```bash
+python3 -m apps.myapp.myapp.tests.http.benchmark_gateway_http
+```
+
+本次基线使用默认采样：
+
+- 每个接口 5 次
+- 本机 HTTP 网关
+- 自动取当前可用销售单与采购单作为详情样本
+
+### 18.1 本次实际采样结果
+
+- `search_sales_orders_v2`
+  - `avg 60.18ms`
+  - `min 59.43ms`
+  - `max 61.51ms`
+- `search_purchase_orders_v2`
+  - `avg 74.40ms`
+  - `min 73.88ms`
+  - `max 75.03ms`
+- `get_sales_order_detail`
+  - `avg 12.68ms`
+  - `min 11.76ms`
+  - `max 14.03ms`
+- `get_purchase_order_detail_v2`
+  - `avg 11.93ms`
+  - `min 11.26ms`
+  - `max 12.41ms`
+- `search_product_v2`
+  - `avg 10.51ms`
+  - `min 9.11ms`
+  - `max 12.59ms`
+
+本次采样时工作台数据量摘要：
+
+- 销售工作台：
+  - `total_count = 710`
+  - `visible_count = 602`
+- 采购工作台：
+  - `total_count = 1032`
+  - `visible_count = 577`
+
+### 18.2 配套回归验证
+
+本轮同步回跑并通过：
+
+- `apps.myapp.myapp.tests.http.test_gateway_v2_http.GatewayV2HttpTestCase.test_search_sales_orders_v2_supports_amount_desc_sort_and_paging`
+- `apps.myapp.myapp.tests.http.test_purchase_quick_http.PurchaseQuickHttpTestCase.test_search_purchase_orders_finds_payment_pending_order`
+
+结果：
+
+```text
+Ran 2 tests in 1.706s
+
+OK
+```
+
+### 18.3 当前结论
+
+- 这套性能基线脚本已经可以作为后续查询、索引、详情聚合优化后的统一验收入口
+- 当前版本在本地数据量下，销售 / 采购工作台查询与关键详情接口耗时已经处于可接受范围
+- 后续若出现性能回归，可直接复跑脚本并与 `performance-baseline-results.json` 对比

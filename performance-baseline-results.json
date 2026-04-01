@@ -1,0 +1,149 @@
+{
+  "generated_at": "2026-04-02 07:36:06",
+  "samples_per_endpoint": 5,
+  "targets": {
+    "sales_order_name": "SAL-ORD-2026-00646",
+    "purchase_order_name": "PUR-ORD-2026-01020",
+    "sales_company": "rgc (Demo)",
+    "purchase_company": "rgc (Demo)",
+    "product_keyword": "SKU010"
+  },
+  "benchmarks": [
+    {
+      "method": "myapp.api.gateway.search_sales_orders_v2",
+      "request": {
+        "company": "rgc (Demo)",
+        "status_filter": "unfinished",
+        "limit": 20,
+        "start": 0
+      },
+      "samples": [
+        59.59,
+        60.24,
+        61.51,
+        59.43,
+        60.14
+      ],
+      "avg_ms": 60.18,
+      "min_ms": 59.43,
+      "max_ms": 61.51,
+      "p95_ms": 60.24,
+      "last_code": "SALES_ORDER_SEARCHED",
+      "result_meta": {
+        "message": "销售订单工作台查询成功。",
+        "summary": {
+          "total_count": 710,
+          "visible_count": 602,
+          "unfinished_count": 602,
+          "delivery_count": 505,
+          "payment_count": 544,
+          "completed_count": 27,
+          "cancelled_count": 81
+        },
+        "item_count": 20
+      }
+    },
+    {
+      "method": "myapp.api.gateway.search_purchase_orders_v2",
+      "request": {
+        "company": "rgc (Demo)",
+        "status_filter": "unfinished",
+        "limit": 20,
+        "start": 0
+      },
+      "samples": [
+        73.88,
+        74.25,
+        74.33,
+        74.52,
+        75.03
+      ],
+      "avg_ms": 74.4,
+      "min_ms": 73.88,
+      "max_ms": 75.03,
+      "p95_ms": 74.52,
+      "last_code": "PURCHASE_ORDER_SEARCHED",
+      "result_meta": {
+        "message": "采购订单工作台查询成功。",
+        "summary": {
+          "total_count": 1032,
+          "visible_count": 577,
+          "unfinished_count": 577,
+          "receiving_count": 446,
+          "payment_count": 574,
+          "completed_count": 6,
+          "cancelled_count": 449
+        },
+        "item_count": 20
+      }
+    },
+    {
+      "method": "myapp.api.gateway.get_sales_order_detail",
+      "request": {
+        "order_name": "SAL-ORD-2026-00646"
+      },
+      "samples": [
+        12.76,
+        12.2,
+        11.76,
+        12.66,
+        14.03
+      ],
+      "avg_ms": 12.68,
+      "min_ms": 11.76,
+      "max_ms": 14.03,
+      "p95_ms": 12.76,
+      "last_code": "ORDER_DETAIL_FETCHED",
+      "result_meta": {
+        "message": "销售订单 SAL-ORD-2026-00646 详情获取成功。",
+        "item_count": 1,
+        "order_name": "SAL-ORD-2026-00646"
+      }
+    },
+    {
+      "method": "myapp.api.gateway.get_purchase_order_detail_v2",
+      "request": {
+        "order_name": "PUR-ORD-2026-01020"
+      },
+      "samples": [
+        12.3,
+        12.23,
+        11.43,
+        11.26,
+        12.41
+      ],
+      "avg_ms": 11.93,
+      "min_ms": 11.26,
+      "max_ms": 12.41,
+      "p95_ms": 12.3,
+      "last_code": "PURCHASE_ORDER_DETAIL_FETCHED",
+      "result_meta": {
+        "message": "采购订单 PUR-ORD-2026-01020 详情获取成功。",
+        "item_count": 1
+      }
+    },
+    {
+      "method": "myapp.api.gateway.search_product_v2",
+      "request": {
+        "search_key": "SKU010",
+        "price_list": "Standard Selling",
+        "limit": 20
+      },
+      "samples": [
+        12.59,
+        9.67,
+        9.11,
+        10.99,
+        10.18
+      ],
+      "avg_ms": 10.51,
+      "min_ms": 9.11,
+      "max_ms": 12.59,
+      "p95_ms": 10.99,
+      "last_code": "PRODUCTS_FETCHED",
+      "result_meta": {
+        "message": ""
+      }
+    }
+  ]
+}
