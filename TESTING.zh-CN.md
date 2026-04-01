@@ -1114,3 +1114,29 @@ v2 轻链路内容：
   - `apps.myapp.myapp.tests.unit.test_order_service`
   - `apps.myapp.myapp.tests.unit.test_purchase_service`
   - `Ran 82 tests in 0.575s ... OK`
+
+## 17. 全服务层体检中的低风险收敛（2026-04-02）
+
+在继续做全服务层接口体检时，本轮先处理了一处明显的低风险遗留问题：
+
+- `myapp.services.wholesale_service.search_product`
+
+### 17.1 本轮调整
+
+- 移除了 `search_product` 中重复的 `_get_multi_price_map(...)` 调用
+- 销售价 / 采购价聚合当前只各执行一次
+- 这一步不改变接口参数、返回结构或业务口径
+
+### 17.2 已通过的验证
+
+本轮新增并通过：
+
+- `apps.myapp.myapp.tests.unit.test_wholesale_service`
+
+其中包含一条新的约束测试：
+
+- `test_search_product_calls_price_summary_maps_once`
+
+执行结果：
+
+- `Ran 17 tests in 0.016s ... OK`

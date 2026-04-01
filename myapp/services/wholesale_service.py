@@ -798,10 +798,6 @@ def search_product(
 	qty_map = _get_qty_map(item_codes, warehouse=warehouse, company=company)
 	selling_price_map = _get_multi_price_map(item_codes, price_lists=list(DEFAULT_SELLING_PRICE_LISTS), currency=currency)
 	buying_price_map = _get_multi_price_map(item_codes, price_lists=list(DEFAULT_BUYING_PRICE_LISTS), currency=currency)
-	selling_price_map = _get_multi_price_map(item_codes, price_lists=list(DEFAULT_SELLING_PRICE_LISTS), currency=currency)
-	buying_price_map = _get_multi_price_map(item_codes, price_lists=list(DEFAULT_BUYING_PRICE_LISTS), currency=currency)
-	selling_price_map = _get_multi_price_map(item_codes, price_lists=list(DEFAULT_SELLING_PRICE_LISTS), currency=currency)
-	buying_price_map = _get_multi_price_map(item_codes, price_lists=list(DEFAULT_BUYING_PRICE_LISTS), currency=currency)
 
 	results = []
 	for code in item_codes:
