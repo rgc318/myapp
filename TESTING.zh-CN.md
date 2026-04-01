@@ -1,6 +1,6 @@
 # 测试说明
 
-更新时间：2026-03-26
+更新时间：2026-04-01
 
 ## 1. 测试原则
 
@@ -193,41 +193,56 @@ docker exec frappe_docker-backend-1 bash -lc '
 - 基于收货单的部分开票
 - 基于收货单的部分退货
 
-### 5.1.1 2026-03-26 采购补充回归
+### 5.1.1 2026-04-01 采购快捷链路补充回归
 
-本轮围绕采购模块新增接口与既有链路做了三层验证：
+本轮围绕采购快捷开单、快捷回退、付款边界与退货边界做了两层主验证：
 
-- 采购聚合接口与网关包装定向单测
-- 采购服务层与网关包装整组单测
-- 采购真实 HTTP 主链路重复执行回归
+- 采购服务层定向单测
+- 采购真实 HTTP 链路回归
 
 当前结果：
 
-- `env/bin/python -m unittest apps.myapp.myapp.tests.unit.test_purchase_service apps.myapp.myapp.tests.unit.test_gateway_wrappers`
-  - `Ran 74 tests`
+- backend 容器 bench 环境：
+  - `env/bin/python -m unittest apps.myapp.myapp.tests.unit.test_purchase_service`
+  - `Ran 32 tests`
   - `OK`
-- 采购新增接口定向单测
-  - `Ran 54 tests`
+- 宿主机 HTTP 回归：
+  - `python3 -m unittest apps.myapp.myapp.tests.http.test_purchase_quick_http`
+  - `Ran 31 tests`
   - `OK`
-- 采购 HTTP 主链路定向用例
-  - 单轮 `Ran 23 tests`
-  - 连续重跑 `2` 轮，均为 `OK`
 
 本轮采购 HTTP 覆盖重点：
 
-- 创建采购订单
-- 采购收货
-- 采购开票
-- 基于收货单开票
-- 供应商付款
-- 采购退货
-- 顺序幂等 replay
-- 同一 `request_id` 不同数据
-- 不同 `request_id` 不同数据
-- 部分收货
-- 基于收货单的部分开票
-- 基于收货单的部分退货
-- 并发条件下同一 `request_id` 仅生成一张采购单
+- `quick_create_purchase_order_v2`
+- `quick_cancel_purchase_order_v2`
+- 快捷回退后重新走分步 `收货 -> 开票 -> 付款`
+- 快捷开单与快捷回退的幂等 replay
+- 收货 / 开票 / 付款分步动作的幂等 replay
+- 同一 `request_id` 下的并发付款竞争，仅生成一笔付款
+- 付款步骤失败后的恢复
+- 快捷回退中途失败后的恢复
+- 多收货单 / 多发票 / 多付款保护分支
+- 部分付款后追加付款
+- 超额付款与非正数付款金额
+- 收货退货 / 发票退货存在时的快捷回退边界
+- 收货退货 / 发票退货存在时的分步回退边界
+- 采购发票 `writeoff` 当前限制验证
+
+当前已确认的采购付款 / 结算口径：
+
+- `record_supplier_payment`：
+  - `paid_amount <= 0` 会直接拒绝
+  - 超额付款会直接拒绝，不会落成 unallocated amount
+- `update_payment_status(reference_doctype="Purchase Invoice", settlement_mode="writeoff")`：
+  - 当前对采购发票会返回 `当前无需执行差额核销。`
+  - 即：销售发票支持的 `writeoff` 成功路径，采购发票当前尚未跑通
+  - 失败后不会污染采购订单详情中的付款状态
+
+当前阶段结论：
+
+- 采购快捷链路已经具备可重复执行的 HTTP 回归文件，可作为后续改动的主验收入口
+- 对本轮新增采购后端能力，主链路、失败恢复、付款边界、退货边界、幂等与竞争场景都已完成实测
+- 目前剩余的测试更多是更深层的极端组合，而不是主链路空白
 
 ### 5.2 本轮 v2 HTTP 测试
 

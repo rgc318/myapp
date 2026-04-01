@@ -5,8 +5,8 @@
 - 文档名称：副食批发采购与进货流程技术设计文档
 - 适用项目：`myapp` for Frappe / ERPNext
 - 文档定位：作为采购订单、到货收货、采购结算、采购退货功能的实现基线
-- 当前版本：v0.3
-- 更新日期：2026-03-12
+- 当前版本：v0.4
+- 更新日期：2026-04-01
 
 ## 2. 适用场景
 
@@ -218,9 +218,9 @@ Client
 
 在采购收货完成后，按实际业务需要生成采购发票并登记付款。
 
-### 6.6 快捷链路编排（规划中）
+### 6.6 快捷链路编排
 
-为对齐销售侧已落地的快捷链路，采购侧建议补齐两个“编排型”网关，而不是让移动端串行拼接 3~4 次写接口调用。
+为对齐销售侧已落地的快捷链路，采购侧当前已补齐两个“编排型”网关，避免移动端串行拼接 3~4 次写接口调用。
 
 #### 6.6.1 `quick_create_purchase_order_v2`
 
@@ -237,6 +237,17 @@ Client
 - 默认仅创建采购订单（最稳妥）
 - `immediate_*` 作为显式开关，不做隐式自动联动
 - 每一步都需要返回明确结果，便于前端展示“已完成步骤”
+
+当前实现口径：
+
+- 已实现 `myapp.api.gateway.quick_create_purchase_order_v2`
+- 已完成真实 HTTP 回归验证
+- 当前支持覆盖：
+  - 仅下采购订单
+  - 下单后立即收货
+  - 下单后立即收货并开票
+  - 下单后立即收货、开票并登记付款
+- 对于“付款步骤失败”的场景，当前已验证可通过相同业务请求继续恢复后续付款
 
 #### 6.6.2 `quick_cancel_purchase_order_v2`
 
@@ -262,6 +273,28 @@ Client
 - 回退结果应返回每一步是否执行、执行成功与否，避免前端误判
 - 若存在采购退货单，当前会体现在“多张采购收货单 / 多张采购发票”的保护分支中，快捷回退应保守拒绝
 
+当前已验证口径：
+
+- 已实现 `myapp.api.gateway.quick_cancel_purchase_order_v2`
+- 当前按如下逆序回退：
+  - `Payment Entry`
+  - `Purchase Invoice`
+  - `Purchase Receipt`
+- 快捷回退成功后：
+  - 不直接作废采购订单
+  - 采购订单保留为可继续编辑的 `submitted`
+  - 前端应直接依据返回的 `detail.actions` 刷新下一步动作
+- 当前保护分支已完成真实 HTTP 验证：
+  - 多张采购收货单时拒绝快捷回退
+  - 多张采购发票时拒绝快捷回退
+  - 多笔有效付款时拒绝快捷回退
+  - 已付款但 `rollback_payment=false` 时拒绝快捷回退
+  - 存在采购退货单时，当前会落入“多张采购收货单 / 多张采购发票”的保守拒绝分支
+- 当前也已验证：
+  - 中途失败后的恢复
+  - 手动先回退一部分后，再走快捷回退
+  - 快捷回退后重新走分步 `收货 -> 开票 -> 付款`
+
 #### 6.3.2 关键业务规则
 
 - 支持从 `Purchase Order` 直接生成 `Purchase Invoice`
@@ -283,10 +316,30 @@ Client
 - `Purchase Receipt -> Purchase Invoice` 主链路已完成真实 HTTP 验证
 - 基于 `Purchase Receipt` 的部分开票场景已完成真实 HTTP 验证
 - 付款动作已支持 `request_id` 幂等与顺序重放验证
+- 付款动作已完成同一 `request_id` 并发竞争验证
+- 已确认 `paid_amount <= 0` 会直接拒绝
+- 已确认超额付款会直接拒绝，不会作为 unallocated amount 挂账
 
 本期规划：
 
 - 更多多行商品与复杂组合的部分开票边界测试
+
+#### 6.3.4 当前采购结算限制补充
+
+当前系统存在一个已确认限制：
+
+- 通用结算网关 `myapp.api.gateway.update_payment_status` 在销售发票上支持 `settlement_mode="writeoff"` 成功结清
+- 但在采购发票上，当前真实 HTTP 行为是：
+  - 返回 `当前无需执行差额核销。`
+  - 不会生成付款单
+  - 不会污染采购订单详情中的 `paid_amount / outstanding_amount / total_writeoff_amount`
+
+因此当前采购侧结算口径应理解为：
+
+- 标准付款：支持
+- 部分付款：支持
+- 多笔付款后快捷回退：不支持，应走分步回退
+- 采购 `writeoff` 成功结清：当前尚未打通，不应在前端以“可正常使用”能力对外承诺
 
 ### 6.4 模块 P4：采购退货
 
@@ -321,7 +374,7 @@ Client
 
 ## 6.5 本轮测试补充
 
-在 2026-03-12 的本轮开发与测试中，已通过宿主机 `python3` 直接访问 `http://localhost:8080` 的方式，对采购侧主链路完成真实 HTTP 验证。
+在 2026-04-01 的本轮开发与测试中，已通过宿主机 `python3` 直接访问 `http://localhost:8080` 的方式，对采购快捷链路与采购付款边界完成真实 HTTP 验证。
 
 已跑通的采购侧链路：
 
@@ -331,6 +384,8 @@ Client
 - `create_purchase_invoice_from_receipt`
 - `record_supplier_payment`
 - `process_purchase_return`
+- `quick_create_purchase_order_v2`
+- `quick_cancel_purchase_order_v2`
 
 已验证可用的当前样例主数据：
 
@@ -345,12 +400,16 @@ Client
 - 同一 `request_id` 但不同请求数据
 - 不同 `request_id` 且不同请求数据
 - 并发条件下同一 `request_id`
+- 并发条件下同一 `request_id` 的付款动作只落一笔付款
 
 当前阶段结论：
 
 - 采购主链路已经具备可重复执行的 HTTP 回归测试
 - 采购结算已同时支持 `Purchase Order -> Purchase Invoice` 与 `Purchase Receipt -> Purchase Invoice`
 - 部分收货、基于收货单的部分开票、基于收货单的部分退货已完成真实 HTTP 验证
+- 采购快捷开单 / 快捷回退已经具备独立 HTTP 回归文件
+- 采购回退的恢复场景、付款边界、退货边界与并发误触场景均已完成验证
+- 采购 `writeoff` 当前限制已经通过真实 HTTP 行为确认
 - `myapp/tests/http/test_gateway_http.py` 已重构为可独立执行的链路测试，单条运行、分组运行和整份全量运行均已重新回归通过
 
 ## 6.6 当前系统设置约束补充
