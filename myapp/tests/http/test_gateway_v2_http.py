@@ -500,6 +500,138 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		items = payload["message"]["data"]["items"]
 		self.assertTrue(any(row["order_name"] == order_name for row in items))
 
+	def test_search_sales_orders_v2_supports_delivering_filter(self):
+		_request, order_payload = self._create_sales_order_v2()
+		order_name = order_payload["message"]["data"]["order"]
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"search_key": order_name,
+				"customer": SALES_CUSTOMER,
+				"company": SALES_COMPANY,
+				"status_filter": "delivering",
+				"exclude_cancelled": 1,
+				"limit": 20,
+			},
+		)
+
+		self._assert_success(status_code, payload, code="SALES_ORDER_SEARCHED")
+		items = payload["message"]["data"]["items"]
+		self.assertTrue(any(row["order_name"] == order_name for row in items))
+		self.assertEqual(payload["message"]["data"]["meta"]["filters"]["status_filter"], "delivering")
+
+	def test_search_sales_orders_v2_supports_completed_filter(self):
+		_request, order_payload = self._create_sales_order_v2()
+		order_name = order_payload["message"]["data"]["order"]
+		_delivery_request, delivery_payload = self._submit_sales_delivery(order_name)
+		_create_request, invoice_payload = self._create_sales_invoice(order_name)
+		invoice_name = invoice_payload["message"]["data"]["sales_invoice"]
+		self._record_sales_payment(invoice_name, paid_amount=900)
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"search_key": order_name,
+				"customer": SALES_CUSTOMER,
+				"company": SALES_COMPANY,
+				"status_filter": "completed",
+				"exclude_cancelled": 1,
+				"limit": 20,
+			},
+		)
+
+		self._assert_success(status_code, payload, code="SALES_ORDER_SEARCHED")
+		items = payload["message"]["data"]["items"]
+		self.assertTrue(any(row["order_name"] == order_name for row in items), delivery_payload)
+
+	def test_search_sales_orders_v2_respects_customer_and_company_filters(self):
+		_request, order_payload = self._create_sales_order_v2()
+		order_name = order_payload["message"]["data"]["order"]
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"search_key": order_name,
+				"customer": SALES_CUSTOMER,
+				"company": SALES_COMPANY,
+				"status_filter": "unfinished",
+				"exclude_cancelled": 1,
+				"limit": 20,
+			},
+		)
+		self._assert_success(status_code, payload, code="SALES_ORDER_SEARCHED")
+		items = payload["message"]["data"]["items"]
+		self.assertTrue(any(row["order_name"] == order_name for row in items))
+
+		miss_status, miss_payload = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"search_key": order_name,
+				"customer": "Does Not Exist Customer",
+				"company": SALES_COMPANY,
+				"status_filter": "unfinished",
+				"exclude_cancelled": 1,
+				"limit": 20,
+			},
+		)
+		self._assert_success(miss_status, miss_payload, code="SALES_ORDER_SEARCHED")
+		self.assertEqual(miss_payload["message"]["data"]["items"], [])
+
+	def test_search_sales_orders_v2_supports_amount_desc_sort_and_paging(self):
+		_low_request, low_payload = self._create_sales_order_v2(price=8888888)
+		_high_request, high_payload = self._create_sales_order_v2(price=9999999)
+		low_order_name = low_payload["message"]["data"]["order"]
+		high_order_name = high_payload["message"]["data"]["order"]
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"customer": SALES_CUSTOMER,
+				"company": SALES_COMPANY,
+				"status_filter": "unfinished",
+				"exclude_cancelled": 1,
+				"sort_by": "amount_desc",
+				"limit": 20,
+			},
+		)
+		self._assert_success(status_code, payload, code="SALES_ORDER_SEARCHED")
+		items = payload["message"]["data"]["items"]
+		order_positions = {row["order_name"]: index for index, row in enumerate(items)}
+		self.assertIn(high_order_name, order_positions)
+		self.assertIn(low_order_name, order_positions)
+		self.assertLess(order_positions[high_order_name], order_positions[low_order_name])
+
+		first_page_status, first_page_payload = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"customer": SALES_CUSTOMER,
+				"company": SALES_COMPANY,
+				"status_filter": "unfinished",
+				"exclude_cancelled": 1,
+				"sort_by": "amount_desc",
+				"limit": 1,
+				"start": order_positions[high_order_name],
+			},
+		)
+		self._assert_success(first_page_status, first_page_payload, code="SALES_ORDER_SEARCHED")
+		self.assertEqual(first_page_payload["message"]["data"]["items"][0]["order_name"], high_order_name)
+
+		second_page_status, second_page_payload = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"customer": SALES_CUSTOMER,
+				"company": SALES_COMPANY,
+				"status_filter": "unfinished",
+				"exclude_cancelled": 1,
+				"sort_by": "amount_desc",
+				"limit": 1,
+				"start": order_positions[low_order_name],
+			},
+		)
+		self._assert_success(second_page_status, second_page_payload, code="SALES_ORDER_SEARCHED")
+		self.assertEqual(second_page_payload["message"]["data"]["items"][0]["order_name"], low_order_name)
+
 	def test_create_product_and_stock_idempotent_replay(self):
 		request_id = self._unique_request_id("http-v2-product-idem")
 		payload = self._build_product_payload(request_id=request_id)
