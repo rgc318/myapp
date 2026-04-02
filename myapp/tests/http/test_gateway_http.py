@@ -408,6 +408,31 @@ class GatewayHttpTestCase(TestCase):
 		self._assert_success(status_code, response, code="SUPPLIER_PAYMENT_RECORDED")
 		return payload, response
 
+	def _get_supplier_seed_payload(self, *, suffix: str):
+		template = self._get_resource("Supplier", PURCHASE_SUPPLIER)
+		supplier_name = f"MyApp Supplier {suffix}"
+		serial = "".join(ch for ch in suffix if ch.isdigit())[-8:].zfill(8)
+		return {
+			"supplier_name": supplier_name,
+			"supplier_type": template.get("supplier_type") or "Company",
+			"supplier_group": template.get("supplier_group"),
+			"default_currency": template.get("default_currency") or "CNY",
+			"mobile_no": f"139{serial}",
+			"email_id": f"supplier-{suffix}@example.com",
+			"remarks": "HTTP supplier management test",
+			"default_contact": {
+				"display_name": f"联系人{serial[-4:]}",
+				"phone": f"138{serial}",
+				"email": f"contact-{suffix}@example.com",
+			},
+			"default_address": {
+				"address_line1": f"测试路 {serial[-4:]} 号",
+				"city": "上海",
+				"country": "China",
+				"address_type": "Billing",
+			},
+		}
+
 	def _create_purchase_return(
 		self,
 		source_name: str,
@@ -896,6 +921,272 @@ class GatewayHttpTestCase(TestCase):
 			first_payload["message"]["data"]["payment_entry"],
 			second_payload["message"]["data"]["payment_entry"],
 		)
+
+	def test_create_supplier_v2_success(self):
+		suffix = str(time.time_ns())
+		payload = self._get_supplier_seed_payload(suffix=suffix)
+		payload["request_id"] = self._unique_request_id("http-create-supplier")
+
+		status_code, response = self._call_gateway("myapp.api.gateway.create_supplier_v2", payload)
+
+		self._assert_success(status_code, response, code="SUPPLIER_CREATED")
+		data = response["message"]["data"]
+		self.assertEqual(data["display_name"], payload["supplier_name"])
+		self.assertEqual(data["default_contact"]["email"], payload["default_contact"]["email"])
+		self.assertEqual(data["default_address"]["city"], payload["default_address"]["city"])
+
+	def test_update_supplier_v2_success(self):
+		suffix = str(time.time_ns())
+		create_payload = self._get_supplier_seed_payload(suffix=suffix)
+		create_payload["request_id"] = self._unique_request_id("http-update-supplier-create")
+		create_status, create_response = self._call_gateway("myapp.api.gateway.create_supplier_v2", create_payload)
+		self._assert_success(create_status, create_response, code="SUPPLIER_CREATED")
+		supplier_name = create_response["message"]["data"]["name"]
+
+		status_code, response = self._call_gateway(
+			"myapp.api.gateway.update_supplier_v2",
+			{
+				"supplier": supplier_name,
+				"supplier_name": f"{create_payload['supplier_name']} Updated",
+				"remarks": "updated by http test",
+				"default_contact": {
+					"display_name": "更新联系人",
+					"phone": "13800138000",
+					"email": f"updated-{suffix}@example.com",
+				},
+				"default_address": {
+					"address_line1": "更新地址 88 号",
+					"city": "杭州",
+					"country": "China",
+					"address_type": "Billing",
+				},
+				"request_id": self._unique_request_id("http-update-supplier"),
+			},
+		)
+
+		self._assert_success(status_code, response, code="SUPPLIER_UPDATED")
+		data = response["message"]["data"]
+		self.assertEqual(data["display_name"], f"{create_payload['supplier_name']} Updated")
+		self.assertEqual(data["default_address"]["city"], "杭州")
+		self.assertEqual(data["default_contact"]["email"], f"updated-{suffix}@example.com")
+
+	def test_disable_supplier_v2_success(self):
+		suffix = str(time.time_ns())
+		create_payload = self._get_supplier_seed_payload(suffix=suffix)
+		create_payload["request_id"] = self._unique_request_id("http-disable-supplier-create")
+		create_status, create_response = self._call_gateway("myapp.api.gateway.create_supplier_v2", create_payload)
+		self._assert_success(create_status, create_response, code="SUPPLIER_CREATED")
+		supplier_name = create_response["message"]["data"]["name"]
+
+		status_code, response = self._call_gateway(
+			"myapp.api.gateway.disable_supplier_v2",
+			{
+				"supplier": supplier_name,
+				"disabled": 1,
+				"request_id": self._unique_request_id("http-disable-supplier"),
+			},
+		)
+
+		self._assert_success(status_code, response, code="SUPPLIER_DISABLED")
+		self.assertEqual(response["message"]["data"]["disabled"], 1)
+
+	def test_list_and_detail_supplier_v2_include_created_supplier(self):
+		suffix = str(time.time_ns())
+		create_payload = self._get_supplier_seed_payload(suffix=suffix)
+		create_payload["request_id"] = self._unique_request_id("http-list-supplier-create")
+		create_status, create_response = self._call_gateway("myapp.api.gateway.create_supplier_v2", create_payload)
+		self._assert_success(create_status, create_response, code="SUPPLIER_CREATED")
+		supplier_name = create_response["message"]["data"]["name"]
+
+		list_status, list_response = self._call_gateway(
+			"myapp.api.gateway.list_suppliers_v2",
+			{"search_key": create_payload["supplier_name"], "limit": 20, "start": 0},
+		)
+		self._assert_success(list_status, list_response, code="SUPPLIER_LIST_FETCHED")
+		self.assertTrue(
+			any(row["name"] == supplier_name for row in list_response["message"]["data"]),
+			"newly created supplier should be discoverable in list_suppliers_v2",
+		)
+
+		detail_status, detail_response = self._call_gateway(
+			"myapp.api.gateway.get_supplier_detail_v2",
+			{"supplier": supplier_name},
+		)
+		self._assert_success(detail_status, detail_response, code="SUPPLIER_DETAIL_FETCHED")
+		self.assertEqual(detail_response["message"]["data"]["name"], supplier_name)
+		self.assertIn("recent_addresses", detail_response["message"]["data"])
+
+	def test_create_supplier_v2_validation_error_shape(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.create_supplier_v2",
+			{"supplier_name": "", "request_id": self._unique_request_id("http-create-supplier-invalid")},
+		)
+
+		self._assert_validation_error(status_code, payload)
+
+	def test_create_supplier_v2_rejects_duplicate_name(self):
+		suffix = str(time.time_ns())
+		create_payload = self._get_supplier_seed_payload(suffix=suffix)
+		create_payload["request_id"] = self._unique_request_id("http-duplicate-supplier-create-a")
+		create_status, create_response = self._call_gateway("myapp.api.gateway.create_supplier_v2", create_payload)
+		self._assert_success(create_status, create_response, code="SUPPLIER_CREATED")
+
+		duplicate_payload = dict(create_payload)
+		duplicate_payload["request_id"] = self._unique_request_id("http-duplicate-supplier-create-b")
+		status_code, payload = self._call_gateway("myapp.api.gateway.create_supplier_v2", duplicate_payload)
+
+		self._assert_validation_error(status_code, payload)
+
+	def test_create_supplier_v2_idempotent_replay_returns_same_supplier(self):
+		suffix = str(time.time_ns())
+		request_payload = self._get_supplier_seed_payload(suffix=suffix)
+		request_payload["request_id"] = self._unique_request_id("http-create-supplier-idempotent")
+
+		first_status, first_response = self._call_gateway("myapp.api.gateway.create_supplier_v2", request_payload)
+		second_status, second_response = self._call_gateway("myapp.api.gateway.create_supplier_v2", request_payload)
+
+		self._assert_success(first_status, first_response, code="SUPPLIER_CREATED")
+		self._assert_success(second_status, second_response, code="SUPPLIER_CREATED")
+		self.assertEqual(
+			first_response["message"]["data"]["name"],
+			second_response["message"]["data"]["name"],
+		)
+
+	def test_update_supplier_v2_idempotent_replay_returns_same_payload(self):
+		suffix = str(time.time_ns())
+		create_payload = self._get_supplier_seed_payload(suffix=suffix)
+		create_payload["request_id"] = self._unique_request_id("http-update-supplier-idempotent-create")
+		create_status, create_response = self._call_gateway("myapp.api.gateway.create_supplier_v2", create_payload)
+		self._assert_success(create_status, create_response, code="SUPPLIER_CREATED")
+		supplier_name = create_response["message"]["data"]["name"]
+
+		update_payload = {
+			"supplier": supplier_name,
+			"supplier_name": f"{create_payload['supplier_name']} Replay",
+			"remarks": "replay update",
+			"default_contact": {
+				"display_name": "回放联系人",
+				"phone": "13800990099",
+				"email": f"replay-{suffix}@example.com",
+			},
+			"default_address": {
+				"address_line1": "回放地址 66 号",
+				"city": "苏州",
+				"country": "China",
+				"address_type": "Billing",
+			},
+			"request_id": self._unique_request_id("http-update-supplier-idempotent"),
+		}
+
+		first_status, first_response = self._call_gateway("myapp.api.gateway.update_supplier_v2", update_payload)
+		second_status, second_response = self._call_gateway("myapp.api.gateway.update_supplier_v2", update_payload)
+
+		self._assert_success(first_status, first_response, code="SUPPLIER_UPDATED")
+		self._assert_success(second_status, second_response, code="SUPPLIER_UPDATED")
+		self.assertEqual(
+			first_response["message"]["data"]["default_contact"]["email"],
+			second_response["message"]["data"]["default_contact"]["email"],
+		)
+
+	def test_disable_supplier_v2_idempotent_replay_returns_same_supplier(self):
+		suffix = str(time.time_ns())
+		create_payload = self._get_supplier_seed_payload(suffix=suffix)
+		create_payload["request_id"] = self._unique_request_id("http-disable-supplier-idempotent-create")
+		create_status, create_response = self._call_gateway("myapp.api.gateway.create_supplier_v2", create_payload)
+		self._assert_success(create_status, create_response, code="SUPPLIER_CREATED")
+		supplier_name = create_response["message"]["data"]["name"]
+
+		disable_payload = {
+			"supplier": supplier_name,
+			"disabled": 1,
+			"request_id": self._unique_request_id("http-disable-supplier-idempotent"),
+		}
+		first_status, first_response = self._call_gateway("myapp.api.gateway.disable_supplier_v2", disable_payload)
+		second_status, second_response = self._call_gateway("myapp.api.gateway.disable_supplier_v2", disable_payload)
+
+		self._assert_success(first_status, first_response, code="SUPPLIER_DISABLED")
+		self._assert_success(second_status, second_response, code="SUPPLIER_DISABLED")
+		self.assertEqual(
+			first_response["message"]["data"]["name"],
+			second_response["message"]["data"]["name"],
+		)
+		self.assertEqual(second_response["message"]["data"]["disabled"], 1)
+
+	def test_list_suppliers_v2_supports_disabled_filter_and_paging(self):
+		suffix_a = f"{time.time_ns()}a"
+		suffix_b = f"{time.time_ns()}b"
+		payload_a = self._get_supplier_seed_payload(suffix=suffix_a)
+		payload_a["request_id"] = self._unique_request_id("http-list-supplier-filter-a")
+		payload_b = self._get_supplier_seed_payload(suffix=suffix_b)
+		payload_b["request_id"] = self._unique_request_id("http-list-supplier-filter-b")
+
+		status_a, response_a = self._call_gateway("myapp.api.gateway.create_supplier_v2", payload_a)
+		status_b, response_b = self._call_gateway("myapp.api.gateway.create_supplier_v2", payload_b)
+		self._assert_success(status_a, response_a, code="SUPPLIER_CREATED")
+		self._assert_success(status_b, response_b, code="SUPPLIER_CREATED")
+		supplier_a = response_a["message"]["data"]["name"]
+		supplier_b = response_b["message"]["data"]["name"]
+
+		disable_status, disable_response = self._call_gateway(
+			"myapp.api.gateway.disable_supplier_v2",
+			{
+				"supplier": supplier_b,
+				"disabled": 1,
+				"request_id": self._unique_request_id("http-list-supplier-filter-disable"),
+			},
+		)
+		self._assert_success(disable_status, disable_response, code="SUPPLIER_DISABLED")
+
+		active_status, active_response = self._call_gateway(
+			"myapp.api.gateway.list_suppliers_v2",
+			{
+				"search_key": payload_a["supplier_name"],
+				"disabled": 0,
+				"limit": 1,
+				"start": 0,
+				"sort_by": "creation",
+				"sort_order": "asc",
+			},
+		)
+		self._assert_success(active_status, active_response, code="SUPPLIER_LIST_FETCHED")
+		active_names = [row["name"] for row in active_response["message"]["data"]]
+		self.assertIn(supplier_a, active_names)
+		self.assertNotIn(supplier_b, active_names)
+		self.assertEqual(active_response["message"]["meta"]["limit"], 1)
+		self.assertEqual(active_response["message"]["meta"]["start"], 0)
+
+		disabled_status, disabled_response = self._call_gateway(
+			"myapp.api.gateway.list_suppliers_v2",
+			{
+				"search_key": payload_b["supplier_name"],
+				"disabled": 1,
+				"limit": 20,
+				"start": 0,
+			},
+		)
+		self._assert_success(disabled_status, disabled_response, code="SUPPLIER_LIST_FETCHED")
+		disabled_names = [row["name"] for row in disabled_response["message"]["data"]]
+		self.assertIn(supplier_b, disabled_names)
+
+	def test_list_suppliers_v2_filters_by_group(self):
+		suffix = str(time.time_ns())
+		payload = self._get_supplier_seed_payload(suffix=suffix)
+		payload["request_id"] = self._unique_request_id("http-list-supplier-group-create")
+		create_status, create_response = self._call_gateway("myapp.api.gateway.create_supplier_v2", payload)
+		self._assert_success(create_status, create_response, code="SUPPLIER_CREATED")
+		supplier_name = create_response["message"]["data"]["name"]
+
+		list_status, list_response = self._call_gateway(
+			"myapp.api.gateway.list_suppliers_v2",
+			{
+				"search_key": payload["supplier_name"],
+				"supplier_group": payload["supplier_group"],
+				"limit": 20,
+				"start": 0,
+			},
+		)
+		self._assert_success(list_status, list_response, code="SUPPLIER_LIST_FETCHED")
+		self.assertTrue(any(row["name"] == supplier_name for row in list_response["message"]["data"]))
 
 	def test_process_sales_return_validation_error_shape(self):
 		status_code, payload = self._call_gateway(

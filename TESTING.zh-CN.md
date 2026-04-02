@@ -1385,3 +1385,39 @@ OK
 - 结果：
   - `Ran 95 tests in 0.378s`
   - `OK`
+
+### 20.1 供应商管理 HTTP 专项回归
+
+本轮继续补了供应商管理的真实网关 HTTP 用例，覆盖：
+
+- 成功链路：
+  - `create_supplier_v2`
+  - `update_supplier_v2`
+  - `disable_supplier_v2`
+  - `list_suppliers_v2`
+  - `get_supplier_detail_v2`
+- 校验失败：
+  - 空 `supplier_name`
+  - 重复创建同名供应商
+- 幂等重放：
+  - `create_supplier_v2`
+  - `update_supplier_v2`
+  - `disable_supplier_v2`
+- 多条件筛选：
+  - `supplier_group`
+  - `disabled=0/1`
+  - `search_key`
+  - `limit/start`
+
+执行结果：
+
+- 在宿主机网关环境中运行：
+  - `python3 -m unittest apps.myapp.myapp.tests.http.test_gateway_http.GatewayHttpTestCase.<11 supplier tests>`
+- 结果：
+  - `Ran 11 tests in 121.734s`
+  - `OK`
+
+运行注意事项：
+
+- 供应商管理网关方法新增后，如果 HTTP 测试首次返回“找不到 `myapp.api.gateway.create_supplier_v2`”，通常不是代码缺失，而是运行中的 Frappe Web 进程还没有刷新新模块。
+- 当前验证中通过重启 `frappe_docker-backend-1` 后，新的供应商网关方法已被正常加载，后续 HTTP 专项回归全部通过。
