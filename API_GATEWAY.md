@@ -24,6 +24,9 @@ Recommended custom API entry points:
 - `myapp.api.gateway.get_supplier_purchase_context`
 - `myapp.api.gateway.list_suppliers_v2`
 - `myapp.api.gateway.get_supplier_detail_v2`
+- `myapp.api.gateway.create_supplier_v2`
+- `myapp.api.gateway.update_supplier_v2`
+- `myapp.api.gateway.disable_supplier_v2`
 - `myapp.api.gateway.update_purchase_order_v2`
 - `myapp.api.gateway.update_purchase_order_items_v2`
 - `myapp.api.gateway.cancel_purchase_order_v2`
@@ -47,7 +50,7 @@ This document only covers custom APIs from this app. ERPNext / Frappe native API
 ### Module Navigation
 
 - Sales and product: `search_product`, `create_order`, `submit_delivery`, `create_sales_invoice`, `update_payment_status`, `process_sales_return`
-- Purchase and settlement: `create_purchase_order`, `receive_purchase_order`, `create_purchase_invoice`, `create_purchase_invoice_from_receipt`, `record_supplier_payment`, `process_purchase_return`, `get_purchase_order_detail_v2`, `get_purchase_order_status_summary`, `get_purchase_receipt_detail_v2`, `get_purchase_invoice_detail_v2`, `get_supplier_purchase_context`, `list_suppliers_v2`, `get_supplier_detail_v2`, `update_purchase_order_v2`, `update_purchase_order_items_v2`, `cancel_purchase_order_v2`, `cancel_purchase_receipt_v2`, `cancel_purchase_invoice_v2`, `cancel_supplier_payment`
+- Purchase and settlement: `create_purchase_order`, `receive_purchase_order`, `create_purchase_invoice`, `create_purchase_invoice_from_receipt`, `record_supplier_payment`, `process_purchase_return`, `get_purchase_order_detail_v2`, `get_purchase_order_status_summary`, `get_purchase_receipt_detail_v2`, `get_purchase_invoice_detail_v2`, `get_supplier_purchase_context`, `list_suppliers_v2`, `get_supplier_detail_v2`, `create_supplier_v2`, `update_supplier_v2`, `disable_supplier_v2`, `update_purchase_order_v2`, `update_purchase_order_items_v2`, `cancel_purchase_order_v2`, `cancel_purchase_receipt_v2`, `cancel_purchase_invoice_v2`, `cancel_supplier_payment`
 - Shared utilities: `confirm_pending_document`
 
 ### Unified Success Response
@@ -802,6 +805,59 @@ Behavior:
 
 - Returns aggregated supplier detail data.
 - Includes default contact, default address, recent purchase addresses, and core master-data summary.
+
+### create_supplier_v2
+
+Method:
+
+- `myapp.api.gateway.create_supplier_v2`
+
+Arguments:
+
+- `supplier_name: str`
+- `supplier_type: str | None`
+- `supplier_group: str | None`
+- `default_currency: str | None`
+- `remarks: str | None`
+- `mobile_no: str | None`
+- `email_id: str | None`
+- `default_contact: dict | json-string | None`
+- `default_address: dict | json-string | None`
+- `disabled: bool | int = False`
+
+Behavior:
+
+- Creates supplier master data.
+- Can create and link a default contact and default address in the same call.
+- Returns the created supplier detail snapshot.
+
+### update_supplier_v2
+
+Method:
+
+- `myapp.api.gateway.update_supplier_v2`
+
+Arguments:
+
+- `supplier: str`
+- Remaining fields are the same as `create_supplier_v2`
+
+Behavior:
+
+- Updates supplier master data.
+- Can update the default contact and default address in the same call.
+- Does not rewrite historical purchase-document snapshots.
+
+### disable_supplier_v2
+
+Method:
+
+- `myapp.api.gateway.disable_supplier_v2`
+
+Arguments:
+
+- `supplier: str`
+- `disabled: bool = True`
 
 ### update_purchase_order_v2
 

@@ -1356,3 +1356,32 @@ OK
 
 - 这些报错属于测试执行阶段的环境级并发噪声，不是业务断言失败
 - 在串行复跑后，本轮项目级后端回归结果已全部通过
+
+## 20. 供应商管理模块补测
+
+本轮新增了供应商主数据管理动作接口：
+
+- `create_supplier_v2`
+- `update_supplier_v2`
+- `disable_supplier_v2`
+
+新增 / 回归验证范围：
+
+- `test_purchase_service`
+  - 供应商创建走幂等执行器
+  - 供应商创建可同时生成默认联系人与默认地址
+  - 供应商更新可同时更新主数据和主联系人 / 主地址绑定
+  - 供应商停用走幂等执行器
+- `test_gateway_wrappers`
+  - 网关层正确透传 `create_supplier_v2`
+  - 网关层正确透传 `update_supplier_v2`
+  - 网关层正确透传 `disable_supplier_v2`
+  - 新接口默认不暴露给 Guest
+
+执行结果：
+
+- 在后端容器中运行：
+  - `env/bin/python -m unittest apps.myapp.myapp.tests.unit.test_purchase_service apps.myapp.myapp.tests.unit.test_gateway_wrappers`
+- 结果：
+  - `Ran 95 tests in 0.378s`
+  - `OK`

@@ -5,9 +5,11 @@ from unittest.mock import MagicMock, patch
 import frappe
 
 from myapp.services.purchase_service import (
+	create_supplier_v2,
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
 	create_purchase_order,
+	disable_supplier_v2,
 	get_supplier_detail_v2,
 	get_supplier_purchase_context,
 	get_purchase_invoice_detail_v2,
@@ -21,6 +23,7 @@ from myapp.services.purchase_service import (
 	receive_purchase_order,
 	record_supplier_payment,
 	search_purchase_orders_v2,
+	update_supplier_v2,
 )
 
 
@@ -1083,3 +1086,98 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(len(result["data"]), 1)
 		self.assertEqual(result["data"][0]["name"], "SUP-001")
 		self.assertEqual(result["meta"]["total"], 2)
+
+	@patch("myapp.services.purchase_service.run_idempotent")
+	def test_create_supplier_v2_uses_idempotent_runner(self, mock_run_idempotent):
+		mock_run_idempotent.return_value = {"status": "success", "data": {"name": "SUP-001"}}
+
+		result = create_supplier_v2(supplier_name="MA Inc.", request_id="sup-create-001")
+
+		self.assertEqual(result["status"], "success")
+		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.purchase_service._build_supplier_payload")
+	@patch("myapp.services.purchase_service._upsert_supplier_primary_address")
+	@patch("myapp.services.purchase_service._upsert_supplier_primary_contact")
+	@patch("myapp.services.purchase_service._supplier_name_exists")
+	@patch("myapp.services.purchase_service._safe_doc_field", return_value=True)
+	@patch("myapp.services.purchase_service._new_doc")
+	def test_create_supplier_v2_creates_supplier_contact_and_address(
+		self,
+		mock_new_doc,
+		_mock_safe_doc_field,
+		mock_exists,
+		mock_upsert_contact,
+		mock_upsert_address,
+		mock_build_payload,
+	):
+		supplier_doc = MagicMock()
+		supplier_doc.name = "SUP-001"
+		supplier_doc.supplier_name = "MA Inc."
+		supplier_doc.disabled = 0
+		mock_new_doc.return_value = supplier_doc
+		mock_exists.return_value = False
+		mock_upsert_contact.return_value = frappe._dict({"name": "CONT-001"})
+		mock_upsert_address.return_value = frappe._dict({"name": "ADDR-001"})
+		mock_build_payload.return_value = {"name": "SUP-001"}
+
+		result = create_supplier_v2(
+			supplier_name="MA Inc.",
+			supplier_group="Raw",
+			default_contact={"display_name": "张三", "phone": "13800000000"},
+			default_address={"address_line1": "测试路 100 号", "city": "上海", "country": "China"},
+		)
+
+		self.assertEqual(result["status"], "success")
+		supplier_doc.insert.assert_called_once()
+		supplier_doc.save.assert_called_once()
+		mock_upsert_contact.assert_called_once()
+		mock_upsert_address.assert_called_once()
+		self.assertEqual(result["meta"]["created_contact"], "CONT-001")
+		self.assertEqual(result["meta"]["created_address"], "ADDR-001")
+
+	@patch("myapp.services.purchase_service._build_supplier_payload")
+	@patch("myapp.services.purchase_service._upsert_supplier_primary_address")
+	@patch("myapp.services.purchase_service._upsert_supplier_primary_contact")
+	@patch("myapp.services.purchase_service._safe_doc_field", return_value=True)
+	@patch("myapp.services.purchase_service.frappe.get_doc")
+	def test_update_supplier_v2_updates_supplier_and_primary_links(
+		self,
+		mock_get_doc,
+		_mock_safe_doc_field,
+		mock_upsert_contact,
+		mock_upsert_address,
+		mock_build_payload,
+	):
+		supplier_doc = MagicMock()
+		supplier_doc.name = "SUP-001"
+		supplier_doc.supplier_name = "旧供应商"
+		supplier_doc.supplier_primary_contact = "CONT-001"
+		supplier_doc.supplier_primary_address = "ADDR-001"
+		supplier_doc.meta.has_field.return_value = True
+		mock_get_doc.return_value = supplier_doc
+		mock_upsert_contact.return_value = frappe._dict({"name": "CONT-001"})
+		mock_upsert_address.return_value = frappe._dict({"name": "ADDR-001"})
+		mock_build_payload.return_value = {"name": "SUP-001"}
+
+		result = update_supplier_v2(
+			supplier="SUP-001",
+			supplier_name="新供应商",
+			default_contact={"name": "CONT-001", "display_name": "李四"},
+			default_address={"name": "ADDR-001", "address_line1": "新地址", "city": "杭州", "country": "China"},
+		)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(supplier_doc.supplier_name, "新供应商")
+		self.assertEqual(supplier_doc.save.call_count, 2)
+		mock_upsert_contact.assert_called_once()
+		mock_upsert_address.assert_called_once()
+
+	@patch("myapp.services.purchase_service.run_idempotent")
+	def test_disable_supplier_v2_uses_idempotent_runner(self, mock_run_idempotent):
+		mock_run_idempotent.return_value = {"status": "success", "data": {"name": "SUP-001"}}
+
+		result = disable_supplier_v2(supplier="SUP-001", request_id="sup-disable-001")
+
+		self.assertEqual(result["status"], "success")
+		mock_run_idempotent.assert_called_once()

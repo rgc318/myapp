@@ -43,6 +43,9 @@
 - `myapp.api.gateway.record_supplier_payment`
 - `myapp.api.gateway.process_purchase_return`
 - `myapp.api.gateway.quick_cancel_purchase_order_v2`（规划中）
+- `myapp.api.gateway.create_supplier_v2`
+- `myapp.api.gateway.update_supplier_v2`
+- `myapp.api.gateway.disable_supplier_v2`
 
 - 通用辅助：
 - `myapp.api.gateway.confirm_pending_document`
@@ -62,7 +65,7 @@
 - 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
 - 采购快捷链路（规划中）：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
-- 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`
+- 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`、`create_supplier_v2`、`update_supplier_v2`、`disable_supplier_v2`
 - 采购更新与作废：`update_purchase_order_v2`、`update_purchase_order_items_v2`、`cancel_purchase_order_v2`、`cancel_purchase_receipt_v2`、`cancel_purchase_invoice_v2`、`cancel_supplier_payment`
 - 通用辅助：`confirm_pending_document`
 
@@ -2397,6 +2400,59 @@ frappe.call({
 
 - 返回供应商详情聚合数据
 - 包含默认联系人、默认地址、最近采购地址和基础主数据摘要
+
+### create_supplier_v2
+
+方法：
+
+- `myapp.api.gateway.create_supplier_v2`
+
+参数：
+
+- `supplier_name: str`
+- `supplier_type: str | None`
+- `supplier_group: str | None`
+- `default_currency: str | None`
+- `remarks: str | None`
+- `mobile_no: str | None`
+- `email_id: str | None`
+- `default_contact: dict | json-string | None`
+- `default_address: dict | json-string | None`
+- `disabled: bool | int = False`
+
+行为：
+
+- 创建供应商主数据
+- 可同时创建并绑定默认联系人、默认地址
+- 返回创建后的供应商详情快照
+
+### update_supplier_v2
+
+方法：
+
+- `myapp.api.gateway.update_supplier_v2`
+
+参数：
+
+- `supplier: str`
+- 其余字段同 `create_supplier_v2`
+
+行为：
+
+- 更新供应商主数据
+- 可同时更新默认联系人、默认地址
+- 不影响历史采购单上的地址 / 联系人快照，只影响后续默认建议值
+
+### disable_supplier_v2
+
+方法：
+
+- `myapp.api.gateway.disable_supplier_v2`
+
+参数：
+
+- `supplier: str`
+- `disabled: bool = True`
 
 ### update_purchase_order_v2
 

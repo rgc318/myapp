@@ -33,6 +33,10 @@ def _insert_and_submit(doc):
 	return doc
 
 
+def _new_doc(doctype: str):
+	return frappe.new_doc(doctype)
+
+
 def _normalize_text(value: str | None):
 	return (value or "").strip()
 
@@ -49,6 +53,68 @@ def _normalize_disabled(value):
 	if value in (None, ""):
 		return None
 	return cint(value)
+
+
+def _normalize_payload(payload):
+	if payload in (None, "", {}):
+		return {}
+	if isinstance(payload, str):
+		try:
+			payload = frappe.parse_json(payload)
+		except Exception:
+			return {}
+	return dict(payload or {})
+
+
+def _normalize_contact_payload(payload, kwargs=None):
+	data = _normalize_payload(payload)
+	kwargs = kwargs or {}
+	display_name = _normalize_text(data.get("display_name") or data.get("full_name") or kwargs.get("contact_display_name"))
+	first_name = _normalize_text(data.get("first_name"))
+	last_name = _normalize_text(data.get("last_name"))
+	if not first_name and display_name:
+		parts = display_name.split()
+		first_name = parts[0]
+		last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
+	return {
+		"name": _normalize_text(data.get("name")),
+		"display_name": display_name or _extract_first_non_empty(first_name, last_name),
+		"first_name": first_name,
+		"last_name": last_name,
+		"phone": _normalize_text(data.get("phone") or data.get("mobile_no") or kwargs.get("contact_phone")),
+		"email": _normalize_text(data.get("email") or data.get("email_id") or kwargs.get("contact_email")),
+	}
+
+
+def _normalize_address_payload(payload, kwargs=None):
+	data = _normalize_payload(payload)
+	kwargs = kwargs or {}
+	return {
+		"name": _normalize_text(data.get("name")),
+		"address_line1": _normalize_text(data.get("address_line1") or kwargs.get("address_line1")),
+		"address_line2": _normalize_text(data.get("address_line2") or kwargs.get("address_line2")),
+		"city": _normalize_text(data.get("city") or kwargs.get("city")),
+		"county": _normalize_text(data.get("county") or kwargs.get("county")),
+		"state": _normalize_text(data.get("state") or kwargs.get("state")),
+		"country": _normalize_text(data.get("country") or kwargs.get("country")),
+		"pincode": _normalize_text(data.get("pincode") or kwargs.get("pincode")),
+		"email": _normalize_text(data.get("email") or data.get("email_id") or kwargs.get("address_email")),
+		"phone": _normalize_text(data.get("phone") or kwargs.get("address_phone")),
+		"address_type": _normalize_text(data.get("address_type") or kwargs.get("address_type")) or "Billing",
+		"address_title": _normalize_text(data.get("address_title")),
+	}
+
+
+def _has_meaningful_contact_payload(payload: dict):
+	return any(
+		payload.get(key)
+		for key in ("name", "display_name", "first_name", "last_name", "phone", "email")
+	)
+
+
+def _has_meaningful_address_payload(payload: dict):
+	required_fields = ("address_line1", "city", "country")
+	return bool(payload.get("name")) or any(payload.get(key) for key in required_fields)
 
 
 def _normalize_sort(sort_by: str | None, sort_order: str | None):
@@ -98,6 +164,76 @@ def _safe_doc_field(doctype: str, fieldname: str) -> bool:
 		return bool(frappe.get_meta(doctype).has_field(fieldname))
 	except Exception:
 		return False
+
+
+def _supplier_name_exists(supplier_name: str):
+	return bool(frappe.db.exists("Supplier", {"supplier_name": supplier_name}))
+
+
+def _ensure_supplier_link(doc, supplier_name: str):
+	links = list(getattr(doc, "links", []) or [])
+	for link in links:
+		if getattr(link, "link_doctype", None) == "Supplier" and getattr(link, "link_name", None) == supplier_name:
+			return
+	doc.append("links", {"link_doctype": "Supplier", "link_name": supplier_name})
+
+
+def _upsert_supplier_primary_contact(supplier_doc, payload: dict):
+	if not _has_meaningful_contact_payload(payload):
+		return _get_doc_if_exists("Contact", getattr(supplier_doc, "supplier_primary_contact", None))
+
+	contact = _get_doc_if_exists("Contact", payload.get("name") or getattr(supplier_doc, "supplier_primary_contact", None))
+	is_new = not contact
+	if is_new:
+		contact = _new_doc("Contact")
+
+	contact.first_name = payload.get("first_name") or payload.get("display_name") or supplier_doc.supplier_name or supplier_doc.name
+	contact.last_name = payload.get("last_name")
+	contact.company_name = supplier_doc.supplier_name or supplier_doc.name
+	contact.is_primary_contact = 1
+	_ensure_supplier_link(contact, supplier_doc.name)
+	contact.set("phone_nos", [])
+	contact.set("email_ids", [])
+	if payload.get("phone"):
+		contact.add_phone(payload.get("phone"), is_primary_mobile_no=True)
+	if payload.get("email"):
+		contact.add_email(payload.get("email"), is_primary=True)
+
+	if is_new:
+		contact.insert()
+	else:
+		contact.save()
+	return contact
+
+
+def _upsert_supplier_primary_address(supplier_doc, payload: dict):
+	if not _has_meaningful_address_payload(payload):
+		return _get_doc_if_exists("Address", getattr(supplier_doc, "supplier_primary_address", None))
+
+	address = _get_doc_if_exists("Address", payload.get("name") or getattr(supplier_doc, "supplier_primary_address", None))
+	is_new = not address
+	if is_new:
+		address = _new_doc("Address")
+
+	address.address_title = payload.get("address_title") or supplier_doc.supplier_name or supplier_doc.name
+	address.address_type = payload.get("address_type") or "Billing"
+	address.address_line1 = payload.get("address_line1")
+	address.address_line2 = payload.get("address_line2")
+	address.city = payload.get("city")
+	address.county = payload.get("county")
+	address.state = payload.get("state")
+	address.country = payload.get("country")
+	address.pincode = payload.get("pincode")
+	address.email_id = payload.get("email")
+	address.phone = payload.get("phone")
+	address.is_primary_address = 1
+	_ensure_supplier_link(address, supplier_doc.name)
+
+	if is_new:
+		address.insert()
+	else:
+		address.save()
+	return address
 
 
 def _build_supplier_snapshot_for_doc(doc):
@@ -1179,8 +1315,11 @@ def _build_supplier_payload(supplier_doc, *, include_recent_addresses: bool = Fa
 		"supplier_group": getattr(supplier_doc, "supplier_group", None),
 		"default_currency": getattr(supplier_doc, "default_currency", None),
 		"disabled": cint(getattr(supplier_doc, "disabled", 0)),
+		"remarks": getattr(supplier_doc, "supplier_details", None) if _safe_doc_field("Supplier", "supplier_details") else None,
 		"default_contact": default_contact,
 		"default_address": default_address,
+		"mobile_no": _extract_first_non_empty(getattr(supplier_doc, "mobile_no", None), (default_contact or {}).get("phone")),
+		"email_id": _extract_first_non_empty(getattr(supplier_doc, "email_id", None), (default_contact or {}).get("email")),
 		"modified": getattr(supplier_doc, "modified", None),
 		"creation": getattr(supplier_doc, "creation", None),
 	}
@@ -1278,9 +1417,21 @@ def list_suppliers_v2(
 			"name": ["like", f"%{search_key}%"],
 			"supplier_name": ["like", f"%{search_key}%"],
 		}
+		if _safe_doc_field("Supplier", "mobile_no"):
+			or_filters["mobile_no"] = ["like", f"%{search_key}%"]
+		if _safe_doc_field("Supplier", "email_id"):
+			or_filters["email_id"] = ["like", f"%{search_key}%"]
 
 	fields = ["name", "supplier_name", "supplier_type", "supplier_group", "modified", "creation"]
-	for optional_field in ["default_currency", "disabled", "supplier_primary_contact", "supplier_primary_address"]:
+	for optional_field in [
+		"default_currency",
+		"disabled",
+		"supplier_primary_contact",
+		"supplier_primary_address",
+		"mobile_no",
+		"email_id",
+		"supplier_details",
+	]:
 		if _safe_doc_field("Supplier", optional_field):
 			fields.append(optional_field)
 
@@ -1329,6 +1480,134 @@ def get_supplier_detail_v2(supplier: str):
 		),
 		"data": _build_supplier_payload(supplier_doc, include_recent_addresses=True),
 	}
+
+
+def create_supplier_v2(supplier_name: str, **kwargs):
+	supplier_name = _normalize_text(supplier_name)
+	if not supplier_name:
+		frappe.throw(_("供应商名称不能为空。"))
+
+	request_id = kwargs.get("request_id")
+
+	def _create_supplier():
+		if _supplier_name_exists(supplier_name):
+			frappe.throw(_("供应商 {0} 已存在。").format(supplier_name))
+
+		supplier = _new_doc("Supplier")
+		supplier.supplier_name = supplier_name
+		supplier.supplier_type = _normalize_text(kwargs.get("supplier_type")) or "Company"
+		supplier.supplier_group = _normalize_text(kwargs.get("supplier_group"))
+		if _safe_doc_field("Supplier", "default_currency"):
+			supplier.default_currency = _normalize_text(kwargs.get("default_currency"))
+		if _safe_doc_field("Supplier", "disabled"):
+			supplier.disabled = cint(kwargs.get("disabled", 0))
+		if _safe_doc_field("Supplier", "mobile_no"):
+			supplier.mobile_no = _normalize_text(kwargs.get("mobile_no"))
+		if _safe_doc_field("Supplier", "email_id"):
+			supplier.email_id = _normalize_text(kwargs.get("email_id"))
+		if _safe_doc_field("Supplier", "supplier_details"):
+			supplier.supplier_details = kwargs.get("remarks")
+		if _normalize_text(kwargs.get("naming_series")) and supplier.meta.has_field("naming_series"):
+			supplier.naming_series = _normalize_text(kwargs.get("naming_series"))
+		supplier.insert()
+
+		contact_doc = _upsert_supplier_primary_contact(supplier, _normalize_contact_payload(kwargs.get("default_contact"), kwargs))
+		address_doc = _upsert_supplier_primary_address(supplier, _normalize_address_payload(kwargs.get("default_address"), kwargs))
+		supplier.reload()
+		if contact_doc and supplier.meta.has_field("supplier_primary_contact"):
+			supplier.supplier_primary_contact = contact_doc.name
+		if address_doc and supplier.meta.has_field("supplier_primary_address"):
+			supplier.supplier_primary_address = address_doc.name
+		supplier.save()
+		supplier.reload()
+
+		return {
+			"status": "success",
+			"message": _("供应商 {0} 已创建。").format(supplier.supplier_name or supplier.name),
+			"data": _build_supplier_payload(supplier, include_recent_addresses=True),
+			"meta": {
+				"created_contact": getattr(contact_doc, "name", None),
+				"created_address": getattr(address_doc, "name", None),
+			},
+		}
+
+	return run_idempotent("create_supplier_v2", request_id, _create_supplier)
+
+
+def update_supplier_v2(supplier: str, **kwargs):
+	supplier = _normalize_text(supplier)
+	if not supplier:
+		frappe.throw(_("供应商不能为空。"))
+
+	request_id = kwargs.get("request_id")
+
+	def _update_supplier():
+		supplier_doc = frappe.get_doc("Supplier", supplier)
+		if kwargs.get("supplier_name") is not None:
+			supplier_doc.supplier_name = _normalize_text(kwargs.get("supplier_name")) or supplier_doc.supplier_name
+		if kwargs.get("supplier_type") is not None:
+			supplier_doc.supplier_type = _normalize_text(kwargs.get("supplier_type")) or supplier_doc.supplier_type
+		if kwargs.get("supplier_group") is not None:
+			supplier_doc.supplier_group = _normalize_text(kwargs.get("supplier_group"))
+		if kwargs.get("default_currency") is not None and _safe_doc_field("Supplier", "default_currency"):
+			supplier_doc.default_currency = _normalize_text(kwargs.get("default_currency"))
+		if kwargs.get("disabled") is not None and _safe_doc_field("Supplier", "disabled"):
+			supplier_doc.disabled = cint(kwargs.get("disabled"))
+		if kwargs.get("mobile_no") is not None and _safe_doc_field("Supplier", "mobile_no"):
+			supplier_doc.mobile_no = _normalize_text(kwargs.get("mobile_no"))
+		if kwargs.get("email_id") is not None and _safe_doc_field("Supplier", "email_id"):
+			supplier_doc.email_id = _normalize_text(kwargs.get("email_id"))
+		if kwargs.get("remarks") is not None and _safe_doc_field("Supplier", "supplier_details"):
+			supplier_doc.supplier_details = kwargs.get("remarks")
+		supplier_doc.save()
+		supplier_doc.reload()
+
+		contact_doc = _upsert_supplier_primary_contact(supplier_doc, _normalize_contact_payload(kwargs.get("default_contact"), kwargs))
+		address_doc = _upsert_supplier_primary_address(supplier_doc, _normalize_address_payload(kwargs.get("default_address"), kwargs))
+		supplier_doc.reload()
+		if contact_doc and supplier_doc.meta.has_field("supplier_primary_contact"):
+			supplier_doc.supplier_primary_contact = contact_doc.name
+		if address_doc and supplier_doc.meta.has_field("supplier_primary_address"):
+			supplier_doc.supplier_primary_address = address_doc.name
+		supplier_doc.save()
+		supplier_doc.reload()
+
+		return {
+			"status": "success",
+			"message": _("供应商 {0} 已更新。").format(supplier_doc.supplier_name or supplier_doc.name),
+			"data": _build_supplier_payload(supplier_doc, include_recent_addresses=True),
+			"meta": {
+				"updated_contact": getattr(contact_doc, "name", None),
+				"updated_address": getattr(address_doc, "name", None),
+			},
+		}
+
+	return run_idempotent("update_supplier_v2", request_id, _update_supplier)
+
+
+def disable_supplier_v2(supplier: str, disabled: bool | int = True, **kwargs):
+	supplier = _normalize_text(supplier)
+	if not supplier:
+		frappe.throw(_("供应商不能为空。"))
+
+	request_id = kwargs.get("request_id")
+
+	def _disable_supplier():
+		supplier_doc = frappe.get_doc("Supplier", supplier)
+		if _safe_doc_field("Supplier", "disabled"):
+			supplier_doc.disabled = cint(disabled)
+		supplier_doc.save()
+		supplier_doc.reload()
+		return {
+			"status": "success",
+			"message": _("供应商 {0} 已{1}。").format(
+				supplier_doc.supplier_name or supplier_doc.name,
+				_("停用") if cint(disabled) else _("启用"),
+			),
+			"data": _build_supplier_payload(supplier_doc, include_recent_addresses=True),
+		}
+
+	return run_idempotent("disable_supplier_v2", request_id, _disable_supplier)
 
 
 def _get_purchase_order_doc_for_update(order_name: str, *, allow_cancelled: bool = False):

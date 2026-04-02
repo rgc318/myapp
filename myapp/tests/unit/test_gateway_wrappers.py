@@ -13,6 +13,7 @@ from myapp.api.gateway import (
 	cancel_sales_invoice,
 	cancel_supplier_payment,
 	create_customer_v2,
+	create_supplier_v2,
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
 	get_purchase_invoice_detail_v2,
@@ -30,6 +31,7 @@ from myapp.api.gateway import (
 	quick_create_purchase_order_v2,
 	delete_uom_v2,
 	disable_customer_v2,
+	disable_supplier_v2,
 	disable_uom_v2,
 	get_customer_detail_v2,
 	get_delivery_note_detail_v2,
@@ -54,6 +56,7 @@ from myapp.api.gateway import (
 	update_payment_status,
 	update_purchase_order_items_v2,
 	update_purchase_order_v2,
+	update_supplier_v2,
 	update_customer_v2,
 	update_product_v2,
 	update_uom_v2,
@@ -89,11 +92,12 @@ class TestGatewayWrappers(TestCase):
 			cancel_purchase_order_v2,
 			cancel_purchase_receipt_v2,
 			quick_cancel_purchase_order_v2,
-			cancel_order_v2,
-			cancel_sales_invoice,
-			cancel_supplier_payment,
-			create_customer_v2,
-			create_uom_v2,
+				cancel_order_v2,
+				cancel_sales_invoice,
+				cancel_supplier_payment,
+				create_customer_v2,
+				create_supplier_v2,
+				create_uom_v2,
 			update_order_v2,
 			update_order_items_v2,
 			submit_delivery,
@@ -111,17 +115,19 @@ class TestGatewayWrappers(TestCase):
 			get_sales_invoice_detail_v2,
 			update_product_v2,
 			list_customers_v2,
-			list_suppliers_v2,
-			list_uoms_v2,
-			disable_customer_v2,
-			disable_uom_v2,
+				list_suppliers_v2,
+				list_uoms_v2,
+				disable_customer_v2,
+				disable_supplier_v2,
+				disable_uom_v2,
 			delete_uom_v2,
 			get_uom_detail_v2,
 			confirm_pending_document,
-			update_payment_status,
-			update_purchase_order_v2,
-			update_purchase_order_items_v2,
-			record_supplier_payment,
+				update_payment_status,
+				update_purchase_order_v2,
+				update_purchase_order_items_v2,
+				update_supplier_v2,
+				record_supplier_payment,
 			process_sales_return,
 			process_purchase_return,
 		):
@@ -657,6 +663,55 @@ class TestGatewayWrappers(TestCase):
 			customer="CUST-0001",
 			disabled=True,
 			request_id="cust-disable-001",
+		)
+
+	@patch("myapp.api.gateway.create_supplier_v2_service")
+	def test_create_supplier_v2_passes_payload_to_service(self, mock_create_supplier_v2_service):
+		mock_create_supplier_v2_service.return_value = {
+			"status": "success",
+			"data": {"name": "SUP-0001"},
+		}
+
+		create_supplier_v2(
+			supplier_name="MA Inc.",
+			default_contact={"display_name": "张三"},
+			request_id="sup-create-001",
+		)
+
+		mock_create_supplier_v2_service.assert_called_once_with(
+			supplier_name="MA Inc.",
+			default_contact={"display_name": "张三"},
+			request_id="sup-create-001",
+		)
+
+	@patch("myapp.api.gateway.update_supplier_v2_service")
+	def test_update_supplier_v2_passes_payload_to_service(self, mock_update_supplier_v2_service):
+		mock_update_supplier_v2_service.return_value = {
+			"status": "success",
+			"data": {"name": "SUP-0001"},
+		}
+
+		update_supplier_v2("SUP-0001", supplier_name="新供应商", request_id="sup-update-001")
+
+		mock_update_supplier_v2_service.assert_called_once_with(
+			supplier="SUP-0001",
+			supplier_name="新供应商",
+			request_id="sup-update-001",
+		)
+
+	@patch("myapp.api.gateway.disable_supplier_v2_service")
+	def test_disable_supplier_v2_passes_disabled_flag_to_service(self, mock_disable_supplier_v2_service):
+		mock_disable_supplier_v2_service.return_value = {
+			"status": "success",
+			"data": {"name": "SUP-0001"},
+		}
+
+		disable_supplier_v2("SUP-0001", disabled=True, request_id="sup-disable-001")
+
+		mock_disable_supplier_v2_service.assert_called_once_with(
+			supplier="SUP-0001",
+			disabled=True,
+			request_id="sup-disable-001",
 		)
 
 	@patch("myapp.api.gateway.list_uoms_v2_service")

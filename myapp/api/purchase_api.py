@@ -2,6 +2,7 @@ import frappe
 from frappe.utils import cint
 
 from myapp.services.purchase_service import create_purchase_invoice as create_purchase_invoice_service
+from myapp.services.purchase_service import create_supplier_v2 as create_supplier_v2_service
 from myapp.services.purchase_service import (
 	cancel_purchase_invoice_v2 as cancel_purchase_invoice_v2_service,
 )
@@ -32,6 +33,8 @@ from myapp.services.purchase_service import quick_cancel_purchase_order_v2 as qu
 from myapp.services.purchase_service import quick_create_purchase_order_v2 as quick_create_purchase_order_v2_service
 from myapp.services.purchase_service import receive_purchase_order as receive_purchase_order_service
 from myapp.services.purchase_service import record_supplier_payment as record_supplier_payment_service
+from myapp.services.purchase_service import disable_supplier_v2 as disable_supplier_v2_service
+from myapp.services.purchase_service import update_supplier_v2 as update_supplier_v2_service
 from myapp.services.purchase_service import update_purchase_order_items_v2 as update_purchase_order_items_v2_service
 from myapp.services.purchase_service import update_purchase_order_v2 as update_purchase_order_v2_service
 
@@ -129,6 +132,21 @@ def list_suppliers_v2(
 @frappe.whitelist()
 def get_supplier_detail_v2(supplier: str):
 	return get_supplier_detail_v2_service(supplier=supplier)
+
+
+@frappe.whitelist()
+def create_supplier_v2(supplier_name: str, **kwargs):
+	return create_supplier_v2_service(supplier_name=supplier_name, **kwargs)
+
+
+@frappe.whitelist()
+def update_supplier_v2(supplier: str, **kwargs):
+	return update_supplier_v2_service(supplier=supplier, **kwargs)
+
+
+@frappe.whitelist()
+def disable_supplier_v2(supplier: str, disabled: bool = True, **kwargs):
+	return disable_supplier_v2_service(supplier=supplier, disabled=disabled, **kwargs)
 
 
 @frappe.whitelist()

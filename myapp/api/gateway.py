@@ -37,6 +37,7 @@ from .purchase_api import (
 	cancel_purchase_receipt_v2 as cancel_purchase_receipt_v2_service,
 )
 from .purchase_api import cancel_supplier_payment as cancel_supplier_payment_service
+from .purchase_api import create_supplier_v2 as create_supplier_v2_service
 from .purchase_api import (
 	create_purchase_invoice_from_receipt as create_purchase_invoice_from_receipt_service,
 )
@@ -55,6 +56,8 @@ from .purchase_api import list_suppliers_v2 as list_suppliers_v2_service
 from .purchase_api import process_purchase_return as process_purchase_return_service
 from .purchase_api import receive_purchase_order as receive_purchase_order_service
 from .purchase_api import record_supplier_payment as record_supplier_payment_service
+from .purchase_api import disable_supplier_v2 as disable_supplier_v2_service
+from .purchase_api import update_supplier_v2 as update_supplier_v2_service
 from .purchase_api import update_purchase_order_items_v2 as update_purchase_order_items_v2_service
 from .purchase_api import update_purchase_order_v2 as update_purchase_order_v2_service
 from .returns_api import get_return_source_context_v2 as get_return_source_context_v2_service
@@ -485,6 +488,30 @@ def get_supplier_detail_v2(supplier: str):
 	return _handle_gateway_call(
 		lambda: get_supplier_detail_v2_service(supplier=supplier),
 		success_code="SUPPLIER_DETAIL_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def create_supplier_v2(supplier_name: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: create_supplier_v2_service(supplier_name=supplier_name, **kwargs),
+		success_code="SUPPLIER_CREATED",
+	)
+
+
+@frappe.whitelist()
+def update_supplier_v2(supplier: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: update_supplier_v2_service(supplier=supplier, **kwargs),
+		success_code="SUPPLIER_UPDATED",
+	)
+
+
+@frappe.whitelist()
+def disable_supplier_v2(supplier: str, disabled: bool = True, **kwargs):
+	return _handle_gateway_call(
+		lambda: disable_supplier_v2_service(supplier=supplier, disabled=disabled, **kwargs),
+		success_code="SUPPLIER_DISABLED" if bool(disabled) else "SUPPLIER_ENABLED",
 	)
 
 
