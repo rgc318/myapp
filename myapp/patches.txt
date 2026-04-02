@@ -10,3 +10,5 @@ myapp.patches.add_sales_order_remark_field
 myapp.patches.add_sales_mode_fields
 myapp.patches.fix_sales_mode_field_options
 myapp.patches.add_workbench_query_indexes
+myapp.patches.add_report_query_indexes
+myapp.patches.optimize_report_query_indexes_v2

@@ -37,6 +37,7 @@ from .purchase_service import (
 	update_purchase_order_items_v2,
 	update_purchase_order_v2,
 )
+from .report_service import get_business_report_v1
 from .return_service import get_return_source_context_v2
 from .settlement_service import cancel_payment_entry, confirm_pending_document, process_sales_return, update_payment_status
 from .uom_service import create_uom_v2, delete_uom_v2, disable_uom_v2, get_uom_detail_v2, list_uoms_v2, update_uom_v2
@@ -58,6 +59,7 @@ __all__ = [
 	"create_purchase_invoice_from_receipt",
 	"create_purchase_order",
 	"get_purchase_company_context",
+	"get_business_report_v1",
 	"create_sales_invoice",
 	"create_uom_v2",
 	"disable_customer_v2",

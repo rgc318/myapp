@@ -60,6 +60,7 @@ from .purchase_api import disable_supplier_v2 as disable_supplier_v2_service
 from .purchase_api import update_supplier_v2 as update_supplier_v2_service
 from .purchase_api import update_purchase_order_items_v2 as update_purchase_order_items_v2_service
 from .purchase_api import update_purchase_order_v2 as update_purchase_order_v2_service
+from .reports_api import get_business_report_v1 as get_business_report_v1_service
 from .returns_api import get_return_source_context_v2 as get_return_source_context_v2_service
 from .settlement_api import confirm_pending_document as confirm_pending_document_service
 from .settlement_api import cancel_payment_entry as cancel_payment_entry_service
@@ -120,6 +121,24 @@ def create_order(customer: str, items, immediate: bool = False, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_order_service(customer=customer, items=items, immediate=immediate, **kwargs),
 		success_code="ORDER_CREATED",
+	)
+
+
+@frappe.whitelist()
+def get_business_report_v1(
+	company: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	limit: int = 10,
+):
+	return _handle_gateway_call(
+		lambda: get_business_report_v1_service(
+			company=company,
+			date_from=date_from,
+			date_to=date_to,
+			limit=limit,
+		),
+		success_code="BUSINESS_REPORT_FETCHED",
 	)
 
 

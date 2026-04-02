@@ -1,0 +1,108 @@
+from unittest import TestCase
+from unittest.mock import patch
+
+import frappe
+
+from myapp.services.report_service import get_business_report_v1
+
+
+class TestReportService(TestCase):
+	@patch("myapp.services.report_service.nowdate", return_value="2026-04-02")
+	@patch("myapp.services.report_service._make_payment_type_totals")
+	@patch("myapp.services.report_service._make_scalar_aggregate")
+	@patch("myapp.services.report_service._make_recent_cashflow_rows")
+	@patch("myapp.services.report_service._make_invoice_grouped_rows")
+	@patch("myapp.services.report_service._make_grouped_rows")
+	def test_get_business_report_v1_returns_overview_and_tables(
+		self,
+		mock_make_grouped_rows,
+		mock_make_invoice_grouped_rows,
+		mock_make_recent_cashflow_rows,
+		mock_make_scalar_aggregate,
+		mock_make_payment_type_totals,
+		mock_nowdate,
+	):
+		mock_make_grouped_rows.side_effect = [
+			[
+				frappe._dict({"name": "Customer A", "count": 2, "amount": 2000}),
+				frappe._dict({"name": "Customer B", "count": 1, "amount": 500}),
+			],
+			[
+				frappe._dict({"name": "Supplier A", "count": 1, "amount": 600}),
+				frappe._dict({"name": "Supplier B", "count": 1, "amount": 300}),
+			],
+		]
+		mock_make_invoice_grouped_rows.side_effect = [
+			[
+				frappe._dict({"name": "Customer B", "count": 1, "total_amount": 500, "paid_amount": 0, "outstanding_amount": 500}),
+				frappe._dict({"name": "Customer A", "count": 1, "total_amount": 1000, "paid_amount": 800, "outstanding_amount": 200}),
+			],
+			[
+				frappe._dict({"name": "Supplier A", "count": 1, "total_amount": 700, "paid_amount": 600, "outstanding_amount": 100}),
+			],
+		]
+		mock_make_recent_cashflow_rows.return_value = [
+			frappe._dict(
+				{
+					"name": "PE-0001",
+					"posting_date": "2026-04-02",
+					"payment_type": "Receive",
+					"party_type": "Customer",
+					"party": "Customer A",
+					"mode_of_payment": "Cash",
+					"received_amount": 800,
+					"paid_amount": 800,
+					"reference_no": "RC-001",
+				}
+			),
+			frappe._dict(
+				{
+					"name": "PE-0002",
+					"posting_date": "2026-04-01",
+					"payment_type": "Pay",
+					"party_type": "Supplier",
+					"party": "Supplier A",
+					"mode_of_payment": "Bank",
+					"received_amount": 400,
+					"paid_amount": 400,
+					"reference_no": "PV-001",
+				}
+			),
+		]
+		mock_make_scalar_aggregate.side_effect = [9999, 5555, 777, 333]
+		mock_make_payment_type_totals.return_value = [
+			frappe._dict({"payment_type": "Receive", "total_received_amount": 2500, "total_paid_amount": 2500}),
+			frappe._dict({"payment_type": "Pay", "total_received_amount": 1200, "total_paid_amount": 1200}),
+		]
+
+		result = get_business_report_v1(company="Test Company", limit=10)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["overview"]["sales_amount_total"], 9999)
+		self.assertEqual(result["data"]["overview"]["purchase_amount_total"], 5555)
+		self.assertEqual(result["data"]["overview"]["received_amount_total"], 2500)
+		self.assertEqual(result["data"]["overview"]["paid_amount_total"], 1200)
+		self.assertEqual(result["data"]["overview"]["net_cashflow_total"], 1300)
+		self.assertEqual(result["data"]["overview"]["receivable_outstanding_total"], 777)
+		self.assertEqual(result["data"]["overview"]["payable_outstanding_total"], 333)
+		self.assertEqual(result["data"]["tables"]["sales_summary"][0]["name"], "Customer A")
+		self.assertEqual(result["data"]["tables"]["receivable_summary"][0]["name"], "Customer B")
+		self.assertEqual(result["data"]["tables"]["cashflow_summary"][0]["direction"], "in")
+
+		first_group_args = mock_make_grouped_rows.call_args_list[0].args
+		first_group_kwargs = mock_make_grouped_rows.call_args_list[0].kwargs
+		self.assertEqual(first_group_args[0], "tabSales Order")
+		self.assertEqual(first_group_kwargs["party_field"], "customer")
+		self.assertEqual(first_group_kwargs["date_from"], "2026-03-04")
+		self.assertEqual(first_group_kwargs["date_to"], "2026-04-02")
+		self.assertEqual(first_group_kwargs["company"], "Test Company")
+
+	@patch("myapp.services.report_service.frappe.throw", side_effect=frappe.ValidationError("报表时间范围不能超过 366 天。"))
+	def test_get_business_report_v1_rejects_too_large_date_range(self, mock_throw):
+		with self.assertRaisesRegex(frappe.ValidationError, "报表时间范围不能超过 366 天"):
+			get_business_report_v1(date_from="2024-01-01", date_to="2026-04-02")
+
+	@patch("myapp.services.report_service.frappe.throw", side_effect=frappe.ValidationError("date_from 不能晚于 date_to。"))
+	def test_get_business_report_v1_rejects_invalid_date_range(self, mock_throw):
+		with self.assertRaisesRegex(frappe.ValidationError, "date_from 不能晚于 date_to"):
+			get_business_report_v1(date_from="2026-04-03", date_to="2026-04-02")

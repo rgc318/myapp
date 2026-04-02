@@ -1188,6 +1188,56 @@ class GatewayHttpTestCase(TestCase):
 		self._assert_success(list_status, list_response, code="SUPPLIER_LIST_FETCHED")
 		self.assertTrue(any(row["name"] == supplier_name for row in list_response["message"]["data"]))
 
+	def test_get_business_report_v1_success(self):
+		status_code, response = self._call_gateway(
+			"myapp.api.gateway.get_business_report_v1",
+			{
+				"company": SALES_COMPANY,
+				"date_from": "2026-03-01",
+				"date_to": "2026-04-02",
+				"limit": 5,
+			},
+		)
+
+		self._assert_success(status_code, response, code="BUSINESS_REPORT_FETCHED")
+		data = response["message"]["data"]
+		self.assertIn("overview", data)
+		self.assertIn("tables", data)
+		self.assertIn("meta", data)
+		self.assertEqual(data["meta"]["company"], SALES_COMPANY)
+		self.assertEqual(data["meta"]["limit"], 5)
+		self.assertIn("sales_summary", data["tables"])
+		self.assertIn("purchase_summary", data["tables"])
+		self.assertIn("receivable_summary", data["tables"])
+		self.assertIn("payable_summary", data["tables"])
+		self.assertIn("cashflow_summary", data["tables"])
+
+	def test_get_business_report_v1_rejects_invalid_date_range(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.get_business_report_v1",
+			{
+				"company": SALES_COMPANY,
+				"date_from": "2026-04-03",
+				"date_to": "2026-04-02",
+				"limit": 5,
+			},
+		)
+
+		self._assert_validation_error(status_code, payload)
+
+	def test_get_business_report_v1_rejects_too_large_date_range(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.get_business_report_v1",
+			{
+				"company": SALES_COMPANY,
+				"date_from": "2024-01-01",
+				"date_to": "2026-04-02",
+				"limit": 5,
+			},
+		)
+
+		self._assert_validation_error(status_code, payload)
+
 	def test_process_sales_return_validation_error_shape(self):
 		status_code, payload = self._call_gateway(
 			"myapp.api.gateway.process_sales_return",

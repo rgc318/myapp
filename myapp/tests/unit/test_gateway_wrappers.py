@@ -16,6 +16,7 @@ from myapp.api.gateway import (
 	create_supplier_v2,
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
+	get_business_report_v1,
 	get_purchase_invoice_detail_v2,
 	get_purchase_order_detail_v2,
 	get_purchase_order_status_summary,
@@ -75,6 +76,7 @@ class TestGatewayWrappers(TestCase):
 			create_order,
 			create_purchase_order,
 			quick_create_purchase_order_v2,
+			get_business_report_v1,
 			get_purchase_order_detail_v2,
 			get_purchase_order_status_summary,
 			search_purchase_orders_v2,
@@ -380,6 +382,19 @@ class TestGatewayWrappers(TestCase):
 		cancel_purchase_order_v2("PO-0001", request_id="po-cancel-001")
 
 		mock_cancel_purchase_order_v2_service.assert_called_once_with(order_name="PO-0001", request_id="po-cancel-001")
+
+	@patch("myapp.api.gateway.get_business_report_v1_service")
+	def test_get_business_report_v1_passes_filters_to_service(self, mock_get_business_report_v1_service):
+		mock_get_business_report_v1_service.return_value = {"status": "success", "data": {"overview": {}, "tables": {}}}
+
+		get_business_report_v1(company="Test Company", date_from="2026-03-01", date_to="2026-03-31", limit=8)
+
+		mock_get_business_report_v1_service.assert_called_once_with(
+			company="Test Company",
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+			limit=8,
+		)
 
 	@patch("myapp.api.gateway.quick_create_purchase_order_v2_service")
 	def test_quick_create_purchase_order_v2_passes_payload_to_service(

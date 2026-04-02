@@ -1450,3 +1450,126 @@ OK
 - 结果：
   - 目标用例 `2/2` 通过
   - 回归 `Ran 96 tests ... OK`
+
+### 20.3 经营报表 v1 单元测试
+
+本轮新增了统一经营报表聚合接口 `get_business_report_v1`，第一版覆盖：
+
+- 销售汇总表
+- 采购汇总表
+- 应收账款表
+- 应付账款表
+- 资金流水表
+
+当前验证范围：
+
+- `test_get_business_report_v1_returns_overview_and_tables`
+  - 校验经营总览指标聚合
+  - 校验销售 / 采购 / 应收 / 资金流水表结构
+  - 校验公司与日期范围过滤透传
+- `test_get_business_report_v1_rejects_invalid_date_range`
+  - 校验非法时间范围会被拒绝
+
+执行结果：
+
+- 在后端容器中运行：
+  - `env/bin/python -m unittest apps.myapp.myapp.tests.unit.test_report_service`
+- 结果：
+  - `Ran 2 tests in ...`
+  - `OK`
+
+### 20.4 经营报表后端生产化优化
+
+本轮对 `get_business_report_v1` 做了面向正式环境的后端优化，重点不是新增功能，而是把报表查询方式和口径改到更稳的实现上。
+
+优化点：
+
+- 报表总览不再依赖前端表格 Top N 结果反推
+  - 销售额、采购额、应收未结、应付未结、收入、支出、净现金流都改为独立聚合
+  - 避免“列表只取前几名，导致总览被截断”的错误
+- 由“拉多批明细到 Python 聚合”改为“数据库分组/求和优先”
+  - 销售汇总、采购汇总、应收、应付改为数据库 `group by + sum`
+  - 资金流水保留最近记录列表，同时总览金额使用独立聚合
+- 新增报表边界控制
+  - `limit` 统一限制在 `1..50`
+  - 查询时间跨度上限 `366` 天
+- 新增报表索引补丁
+  - `Sales Invoice(company, posting_date, customer, docstatus)`
+  - `Purchase Invoice(company, posting_date, supplier, docstatus)`
+  - `Payment Entry(company, posting_date, payment_type, docstatus)`
+
+新增 / 更新测试：
+
+- `test_report_service`
+  - 校验总览指标来自独立聚合而不是表格截断结果
+  - 校验按公司 / 日期过滤透传
+  - 校验非法日期范围与超长时间范围被拒绝
+- `test_gateway_wrappers`
+  - 新增 `get_business_report_v1` 网关透传测试
+
+执行结果：
+
+- 在后端容器中运行：
+  - `env/bin/python -m unittest apps.myapp.myapp.tests.unit.test_report_service apps.myapp.myapp.tests.unit.test_gateway_wrappers`
+- 结果：
+  - `Ran 59 tests ...`
+  - `OK`
+
+部署注意：
+
+- 报表查询索引补丁已加入 `patches.txt`，需要在目标环境执行迁移后才会真正生效。
+
+### 20.5 经营报表索引落库与生产验证
+
+本轮继续把经营报表从“功能可用”推进到“生产化验证闭环”，重点补了索引落库、执行计划和真实 HTTP 延迟抽样。
+
+新增优化：
+
+- 新增第二轮报表索引补丁：
+  - `Sales Order(company, docstatus, transaction_date, customer)`
+  - `Purchase Order(company, docstatus, transaction_date, supplier)`
+  - `Sales Invoice(company, docstatus, is_return, posting_date, customer)`
+  - `Purchase Invoice(company, docstatus, is_return, posting_date, supplier)`
+  - `Payment Entry(company, docstatus, posting_date, payment_type)`
+- 报表查询显式使用报表专用索引
+  - 通过 `FORCE INDEX` 将查询计划稳定在报表索引路径
+  - 避免优化器回退到通用单列日期索引
+
+验证结果：
+
+- 索引补丁执行：
+  - `bench --site localhost execute myapp.patches.optimize_report_query_indexes_v2.execute`
+  - 结果：执行成功
+- 单元测试：
+  - `env/bin/python -m unittest apps.myapp.myapp.tests.unit.test_report_service apps.myapp.myapp.tests.unit.test_gateway_wrappers`
+  - 结果：
+    - `Ran 59 tests ...`
+    - `OK`
+- HTTP 集成测试：
+  - `MYAPP_HTTP_ENV_FILE=... python3 -m unittest apps.myapp.myapp.tests.http.test_gateway_http.GatewayHttpTestCase.test_get_business_report_v1_success`
+  - `MYAPP_HTTP_ENV_FILE=... python3 -m unittest apps.myapp.myapp.tests.http.test_gateway_http.GatewayHttpTestCase.test_get_business_report_v1_rejects_invalid_date_range`
+  - `MYAPP_HTTP_ENV_FILE=... python3 -m unittest apps.myapp.myapp.tests.http.test_gateway_http.GatewayHttpTestCase.test_get_business_report_v1_rejects_too_large_date_range`
+  - 结果：
+    - `Ran 3 tests in 0.208s`
+    - `OK`
+- 本机 HTTP 延迟抽样：
+  - `5` 次请求平均约 `19.89ms`
+  - 单次样本：`23.63 / 18.56 / 19.45 / 19.15 / 18.67 ms`
+
+执行计划（`EXPLAIN`）检查：
+
+- `Sales Order` 报表聚合：
+  - 使用 `idx_myapp_so_company_docstatus_date_customer`
+- `Purchase Order` 报表聚合：
+  - 使用 `idx_myapp_po_company_docstatus_date_supplier`
+- `Sales Invoice` 报表聚合：
+  - 使用 `idx_myapp_sinv_company_docstatus_return_date_customer`
+- `Purchase Invoice` 报表聚合：
+  - 使用 `idx_myapp_pinv_company_docstatus_return_date_supplier`
+- `Payment Entry` 报表聚合：
+  - 使用 `idx_myapp_pe_company_docstatus_date_type`
+
+当前结论：
+
+- 经营报表接口的单测、HTTP 集成测试、索引落库验证、执行计划验证和基础延迟抽样都已通过。
+- 这轮报表后端可以视为完成了正式环境前的生产化优化闭环。
