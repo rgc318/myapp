@@ -729,11 +729,20 @@ def _build_purchase_order_financial_summary(order_items, invoice_names: list[str
 
 def _build_purchase_order_action_flags(receiving: dict, payment: dict, *, invoice_names: list[str], receipt_names: list[str], docstatus: int):
 	is_submitted = cint(docstatus) == 1
+	can_cancel_purchase_order = is_submitted and not invoice_names and not receipt_names
+	cancel_purchase_order_hint = None
+	if is_submitted and not can_cancel_purchase_order:
+		cancel_purchase_order_hint = _("当前采购订单已存在收货或开票记录，请先回退下游单据后再作废订单。")
+	elif cint(docstatus) == 0:
+		cancel_purchase_order_hint = _("只有已提交的采购订单才允许作废。")
+
 	return {
 		"can_receive_purchase_order": is_submitted and not receiving.get("is_fully_received"),
 		"can_create_purchase_invoice": is_submitted and not payment.get("is_fully_paid"),
 		"can_record_supplier_payment": is_submitted and payment.get("outstanding_amount", 0) > 0,
 		"can_process_purchase_return": bool(is_submitted and (invoice_names or receipt_names)),
+		"can_cancel_purchase_order": can_cancel_purchase_order,
+		"cancel_purchase_order_hint": cancel_purchase_order_hint,
 	}
 
 

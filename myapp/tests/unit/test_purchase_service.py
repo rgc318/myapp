@@ -744,6 +744,55 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["data"]["purchase_order_name"], "PO-0001")
 		self.assertEqual(result["data"]["receiving"]["status"], "partial")
 		self.assertEqual(result["data"]["references"]["purchase_receipts"], ["PR-0001"])
+		self.assertFalse(result["data"]["actions"]["can_cancel_purchase_order"])
+		self.assertIn("收货或开票记录", result["data"]["actions"]["cancel_purchase_order_hint"])
+
+	@patch("myapp.services.purchase_service._get_latest_purchase_payment_entry_summary")
+	@patch("myapp.services.purchase_service._load_purchase_invoice_rows")
+	@patch("myapp.services.purchase_service._collect_purchase_order_reference_names")
+	@patch("myapp.services.purchase_service.frappe.get_doc")
+	def test_get_purchase_order_detail_v2_actions_allow_cancel_without_downstream_docs(
+		self,
+		mock_get_doc,
+		mock_collect_refs,
+		mock_load_invoices,
+		mock_latest_payment,
+	):
+		po = frappe._dict(
+			{
+				"name": "PO-0002",
+				"docstatus": 1,
+				"supplier": "SUP-001",
+				"supplier_name": "MA Inc.",
+				"company": "Test Company",
+				"currency": "CNY",
+				"transaction_date": "2026-03-26",
+				"schedule_date": "2026-03-27",
+				"rounded_total": 300,
+				"grand_total": 300,
+				"items": [
+					frappe._dict({"name": "POI-002", "item_code": "ITEM-001", "qty": 10, "received_qty": 0, "rate": 30, "amount": 300}),
+				],
+			}
+		)
+		mock_get_doc.return_value = po
+		mock_collect_refs.return_value = ([], [])
+		mock_load_invoices.return_value = []
+		mock_latest_payment.return_value = {
+			"payment_entry": None,
+			"invoice_name": None,
+			"unallocated_amount": 0,
+			"writeoff_amount": 0,
+			"actual_paid_amount": 0,
+			"total_actual_paid_amount": 0,
+			"total_writeoff_amount": 0,
+		}
+
+		result = get_purchase_order_detail_v2("PO-0002")
+
+		self.assertEqual(result["status"], "success")
+		self.assertTrue(result["data"]["actions"]["can_cancel_purchase_order"])
+		self.assertIsNone(result["data"]["actions"]["cancel_purchase_order_hint"])
 
 	@patch("myapp.services.purchase_service._build_purchase_receipt_references")
 	@patch("myapp.services.purchase_service.frappe.get_doc")

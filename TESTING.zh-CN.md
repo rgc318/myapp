@@ -1421,3 +1421,32 @@ OK
 
 - 供应商管理网关方法新增后，如果 HTTP 测试首次返回“找不到 `myapp.api.gateway.create_supplier_v2`”，通常不是代码缺失，而是运行中的 Frappe Web 进程还没有刷新新模块。
 - 当前验证中通过重启 `frappe_docker-backend-1` 后，新的供应商网关方法已被正常加载，后续 HTTP 专项回归全部通过。
+
+### 20.2 采购订单作废判定后端化（与销售链路动作标记对齐）
+
+本轮将采购订单“是否允许直接作废”的判断从前端推断改为后端动作标记输出，避免规则漂移。
+
+后端改动：
+
+- `get_purchase_order_detail_v2` 的 `actions` 新增：
+  - `can_cancel_purchase_order`
+  - `cancel_purchase_order_hint`
+- 判定规则与 `cancel_purchase_order_v2` 保持一致：
+  - 仅 `submitted` 且无已提交收货单/采购发票时允许直接作废
+  - 若已有下游单据，返回不可作废及提示文案
+
+新增/更新单元测试：
+
+- `test_get_purchase_order_detail_v2_returns_aggregated_data`
+  - 断言有下游单据时 `can_cancel_purchase_order=False`
+- `test_get_purchase_order_detail_v2_actions_allow_cancel_without_downstream_docs`
+  - 断言无下游单据时 `can_cancel_purchase_order=True`
+
+执行结果：
+
+- 在后端容器中运行：
+  - `env/bin/python -m unittest apps.myapp.myapp.tests.unit.test_purchase_service.TestPurchaseService.test_get_purchase_order_detail_v2_returns_aggregated_data apps.myapp.myapp.tests.unit.test_purchase_service.TestPurchaseService.test_get_purchase_order_detail_v2_actions_allow_cancel_without_downstream_docs`
+  - `env/bin/python -m unittest apps.myapp.myapp.tests.unit.test_purchase_service apps.myapp.myapp.tests.unit.test_gateway_wrappers`
+- 结果：
+  - 目标用例 `2/2` 通过
+  - 回归 `Ran 96 tests ... OK`
