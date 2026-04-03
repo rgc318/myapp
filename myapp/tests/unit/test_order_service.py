@@ -1450,6 +1450,8 @@ class TestOrderService(TestCase):
 		result = search_sales_orders_v2(
 			search_key="客户",
 			company="Test Company",
+			date_from="2026-03-01",
+			date_to="2026-03-31",
 			status_filter="all",
 			exclude_cancelled=False,
 			sort_by="amount_desc",
@@ -1461,7 +1463,57 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"]["summary"]["total_count"], 2)
 		self.assertEqual(result["data"]["items"][0]["order_name"], "SO-0002")
 		self.assertEqual(mock_get_all.call_args.kwargs["filters"]["company"], "Test Company")
+		self.assertEqual(
+			mock_get_all.call_args.kwargs["filters"]["transaction_date"],
+			["between", ["2026-03-01", "2026-03-31"]],
+		)
 		self.assertEqual(len(mock_get_all.call_args.kwargs["or_filters"]), 5)
+		self.assertEqual(result["data"]["meta"]["filters"]["date_from"], "2026-03-01")
+		self.assertEqual(result["data"]["meta"]["filters"]["date_to"], "2026-03-31")
+
+	@patch("myapp.services.order_service._build_sales_order_summary_rows")
+	@patch("myapp.services.order_service.frappe.get_all")
+	def test_get_sales_order_status_summary_supports_date_range_filters(self, mock_get_all, mock_build_summary_rows):
+		mock_get_all.return_value = [
+			frappe._dict(
+				{
+					"name": "SO-0003",
+					"customer": "Test Customer",
+					"customer_name": "测试客户",
+					"transaction_date": "2026-03-15",
+					"company": "Test Company",
+					"docstatus": 1,
+					"rounded_total": 300,
+					"grand_total": 300,
+					"modified": "2026-03-15 10:00:00",
+				}
+			)
+		]
+		mock_build_summary_rows.return_value = [
+			{
+				"order_name": "SO-0003",
+				"document_status": "submitted",
+				"fulfillment": {"status": "pending", "is_fully_delivered": False},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "open"},
+			}
+		]
+
+		result = get_sales_order_status_summary(
+			customer="Test Customer",
+			company="Test Company",
+			limit=5,
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+		)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["meta"]["filters"]["date_from"], "2026-03-01")
+		self.assertEqual(result["meta"]["filters"]["date_to"], "2026-03-31")
+		self.assertEqual(
+			mock_get_all.call_args.kwargs["filters"]["transaction_date"],
+			["between", ["2026-03-01", "2026-03-31"]],
+		)
 
 	@patch("myapp.services.order_service.get_sales_order_detail")
 	@patch("myapp.services.order_service.create_order_v2")

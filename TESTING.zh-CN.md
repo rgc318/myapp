@@ -1573,3 +1573,79 @@ OK
 
 - 经营报表接口的单测、HTTP 集成测试、索引落库验证、执行计划验证和基础延迟抽样都已通过。
 - 这轮报表后端可以视为完成了正式环境前的生产化优化闭环。
+
+### 20.6 订单与主数据接口自定义时间段验证（2026-04-04）
+
+本轮继续把“自定义时间段”能力从经营报表扩展到工作台与主数据列表接口，并重点验证“结果准确”，而不是只验证接口可调用。
+
+新增能力：
+
+- 销售工作台：
+  - `search_sales_orders_v2`
+  - `get_sales_order_status_summary`
+  - 新增 `date_from/date_to`
+  - 过滤字段：`Sales Order.transaction_date`
+- 采购工作台：
+  - `search_purchase_orders_v2`
+  - `get_purchase_order_status_summary`
+  - 新增 `date_from/date_to`
+  - 过滤字段：`Purchase Order.transaction_date`
+- 主数据列表：
+  - `list_customers_v2`
+  - `list_suppliers_v2`
+  - `list_products_v2`
+  - `list_uoms_v2`
+  - 新增 `date_from/date_to`
+  - 过滤字段：各自主数据的 `creation`
+
+口径说明：
+
+- 主数据列表的日期区间按整天边界处理：
+  - `date_from` -> `00:00:00`
+  - `date_to` -> `23:59:59`
+- 若 `date_from > date_to`，统一返回校验错误
+- 不传时间参数时，保持与旧版本完全兼容
+
+单元测试：
+
+- 在后端容器中运行：
+  - `env/bin/python -m unittest apps.myapp.myapp.tests.unit.test_order_service apps.myapp.myapp.tests.unit.test_purchase_service apps.myapp.myapp.tests.unit.test_customer_service apps.myapp.myapp.tests.unit.test_purchase_service apps.myapp.myapp.tests.unit.test_wholesale_service apps.myapp.myapp.tests.unit.test_uom_service apps.myapp.myapp.tests.unit.test_gateway_wrappers`
+- 结果：
+  - 销售 / 采购工作台日期过滤相关单测通过
+  - 客户 / 供应商 / 商品 / UOM 日期过滤与网关透传单测通过
+  - 本轮相关单测回归均通过
+
+HTTP 精确验证：
+
+- 销售工作台：
+  - 创建同一客户下“昨天一张、今天一张”订单
+  - 查询今天区间仅返回今天单据
+  - 查询跨天区间准确返回两张
+  - 状态摘要在今天区间仅返回今天单据
+- 采购工作台：
+  - 创建同一供应商下“昨天一张、今天一张”采购单
+  - 查询今天区间仅返回今天单据
+  - 查询跨天区间准确返回两张
+  - 状态摘要在今天区间仅返回今天单据
+- 主数据列表：
+  - 当天新建客户 / 供应商 / 商品 / UOM
+  - 用今天区间查询可以命中
+  - 用历史空区间查询返回空结果
+
+HTTP 执行结果：
+
+- 订单日期精确测试：
+  - `Ran 4 tests in 2.294s`
+  - `OK`
+- 主数据创建时间过滤测试：
+  - `Ran 4 tests in 0.814s`
+  - `OK`
+
+当前结论：
+
+- 销售与采购工作台的时间区间筛选已经从“可用”提升到“经真实跨日期数据验证准确”。
+- 客户 / 供应商 / 商品 / UOM 列表已具备统一的主数据创建时间筛选能力。
+- 本轮不仅验证了命中，还验证了：
+  - 空区间不误返回
+  - 汇总计数与列表结果一致
+  - 状态摘要与列表查询口径一致

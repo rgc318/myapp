@@ -34,12 +34,24 @@ class TestUOMService(TestCase):
 			["Box", "Case"],
 		]
 
-		result = list_uoms_v2(search_key="Bo", limit=20, start=0)
+		result = list_uoms_v2(
+			search_key="Bo",
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+			limit=20,
+			start=0,
+		)
 
 		self.assertEqual(result["status"], "success")
 		self.assertEqual(result["data"][0]["uom_name"], "Box")
 		self.assertEqual(result["meta"]["total"], 2)
 		self.assertTrue(result["meta"]["has_more"])
+		self.assertEqual(
+			mock_get_all.call_args_list[0].kwargs["filters"]["creation"],
+			["between", ["2026-03-01 00:00:00", "2026-03-31 23:59:59"]],
+		)
+		self.assertEqual(result["meta"]["filters"]["date_from"], "2026-03-01")
+		self.assertEqual(result["meta"]["filters"]["date_to"], "2026-03-31")
 
 	@patch("myapp.services.uom_service._collect_uom_references")
 	@patch("myapp.services.uom_service.frappe.get_doc")

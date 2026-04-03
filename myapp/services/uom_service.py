@@ -1,6 +1,6 @@
 import frappe
 from frappe import _
-from frappe.utils import cint
+from frappe.utils import cint, getdate
 
 from myapp.utils.idempotency import run_idempotent
 
@@ -27,6 +27,16 @@ def _normalize_bool(value, *, default=0):
 	if value in (None, ""):
 		return cint(default)
 	return cint(value)
+
+
+def _normalize_creation_date_range(date_from: str | None = None, date_to: str | None = None):
+	resolved_date_from = _normalize_text(date_from) or None
+	resolved_date_to = _normalize_text(date_to) or None
+	if not resolved_date_from and not resolved_date_to:
+		return None, None
+	if resolved_date_from and resolved_date_to and getdate(resolved_date_from) > getdate(resolved_date_to):
+		frappe.throw(_("date_from 不能晚于 date_to。"))
+	return resolved_date_from, resolved_date_to
 
 
 def _normalize_sort(sort_by: str | None, sort_order: str | None):
@@ -180,6 +190,8 @@ def list_uoms_v2(
 	search_key: str | None = None,
 	enabled: int | None = None,
 	must_be_whole_number: int | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
 	limit: int = 20,
 	start: int = 0,
 	sort_by: str = "modified",
@@ -188,12 +200,19 @@ def list_uoms_v2(
 	limit = _normalize_limit(limit)
 	start = _normalize_start(start)
 	sort_by, sort_order = _normalize_sort(sort_by, sort_order)
+	resolved_date_from, resolved_date_to = _normalize_creation_date_range(date_from, date_to)
 
 	filters = {}
 	if _normalize_enabled(enabled) is not None:
 		filters["enabled"] = _normalize_enabled(enabled)
 	if _normalize_enabled(must_be_whole_number) is not None:
 		filters["must_be_whole_number"] = _normalize_enabled(must_be_whole_number)
+	if resolved_date_from and resolved_date_to:
+		filters["creation"] = ["between", [f"{resolved_date_from} 00:00:00", f"{resolved_date_to} 23:59:59"]]
+	elif resolved_date_from:
+		filters["creation"] = [">=", f"{resolved_date_from} 00:00:00"]
+	elif resolved_date_to:
+		filters["creation"] = ["<=", f"{resolved_date_to} 23:59:59"]
 
 	search_key = _normalize_text(search_key)
 	or_filters = None
@@ -232,6 +251,15 @@ def list_uoms_v2(
 			"start": start,
 			"limit": limit,
 			"has_more": start + len(rows) < total,
+			"filters": {
+				"search_key": search_key or None,
+				"enabled": _normalize_enabled(enabled),
+				"must_be_whole_number": _normalize_enabled(must_be_whole_number),
+				"date_from": resolved_date_from,
+				"date_to": resolved_date_to,
+				"sort_by": sort_by,
+				"sort_order": sort_order,
+			},
 		},
 	}
 

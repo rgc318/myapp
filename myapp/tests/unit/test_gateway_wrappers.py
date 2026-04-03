@@ -46,6 +46,7 @@ from myapp.api.gateway import (
 	get_supplier_purchase_context,
 	get_uom_detail_v2,
 	list_customers_v2,
+	list_products_v2,
 	list_suppliers_v2,
 	list_uoms_v2,
 	process_purchase_return,
@@ -243,12 +244,20 @@ class TestGatewayWrappers(TestCase):
 	):
 		mock_get_purchase_order_status_summary_service.return_value = {"status": "success", "data": []}
 
-		get_purchase_order_status_summary(supplier="SUP-001", company="Test Company", limit=5)
+		get_purchase_order_status_summary(
+			supplier="SUP-001",
+			company="Test Company",
+			limit=5,
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+		)
 
 		mock_get_purchase_order_status_summary_service.assert_called_once_with(
 			supplier="SUP-001",
 			company="Test Company",
 			limit=5,
+			date_from="2026-03-01",
+			date_to="2026-03-31",
 		)
 
 	@patch("myapp.api.gateway.search_purchase_orders_v2_service")
@@ -259,6 +268,8 @@ class TestGatewayWrappers(TestCase):
 			search_key="PO",
 			supplier="SUP-001",
 			company="Test Company",
+			date_from="2026-03-01",
+			date_to="2026-03-31",
 			status_filter="unfinished",
 			exclude_cancelled=True,
 			sort_by="unfinished_first",
@@ -270,6 +281,8 @@ class TestGatewayWrappers(TestCase):
 			search_key="PO",
 			supplier="SUP-001",
 			company="Test Company",
+			date_from="2026-03-01",
+			date_to="2026-03-31",
 			status_filter="unfinished",
 			exclude_cancelled=True,
 			sort_by="unfinished_first",
@@ -328,12 +341,22 @@ class TestGatewayWrappers(TestCase):
 	def test_list_suppliers_v2_passes_filters_to_service(self, mock_list_suppliers_v2_service):
 		mock_list_suppliers_v2_service.return_value = {"status": "success", "data": []}
 
-		list_suppliers_v2(search_key="MA", supplier_group="Raw", disabled=0, limit=10, start=5)
+		list_suppliers_v2(
+			search_key="MA",
+			supplier_group="Raw",
+			disabled=0,
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+			limit=10,
+			start=5,
+		)
 
 		mock_list_suppliers_v2_service.assert_called_once_with(
 			search_key="MA",
 			supplier_group="Raw",
 			disabled=0,
+			date_from="2026-03-01",
+			date_to="2026-03-31",
 			limit=10,
 			start=5,
 			sort_by="modified",
@@ -604,16 +627,58 @@ class TestGatewayWrappers(TestCase):
 			currency=None,
 		)
 
+	@patch("myapp.api.gateway.list_products_v2_service")
+	def test_list_products_v2_passes_filters_to_service(self, mock_list_products_v2_service):
+		mock_list_products_v2_service.return_value = {"status": "success", "data": []}
+
+		list_products_v2(
+			search_key="SKU",
+			warehouse="Stores - TC",
+			company="Test Company",
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+			limit=10,
+			start=5,
+		)
+
+		mock_list_products_v2_service.assert_called_once_with(
+			search_key="SKU",
+			warehouse="Stores - TC",
+			company="Test Company",
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+			limit=10,
+			start=5,
+			item_group=None,
+			disabled=None,
+			price_list="Standard Selling",
+			currency=None,
+			selling_price_lists=None,
+			buying_price_lists=None,
+			sort_by="modified",
+			sort_order="desc",
+		)
+
 	@patch("myapp.api.gateway.list_customers_v2_service")
 	def test_list_customers_v2_passes_filters_to_service(self, mock_list_customers_v2_service):
 		mock_list_customers_v2_service.return_value = {"status": "success", "data": []}
 
-		list_customers_v2(search_key="Palmer", customer_group="Retail", disabled=0, limit=10, start=5)
+		list_customers_v2(
+			search_key="Palmer",
+			customer_group="Retail",
+			disabled=0,
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+			limit=10,
+			start=5,
+		)
 
 		mock_list_customers_v2_service.assert_called_once_with(
 			search_key="Palmer",
 			customer_group="Retail",
 			disabled=0,
+			date_from="2026-03-01",
+			date_to="2026-03-31",
 			limit=10,
 			start=5,
 			sort_by="modified",
@@ -733,12 +798,22 @@ class TestGatewayWrappers(TestCase):
 	def test_list_uoms_v2_passes_filters_to_service(self, mock_list_uoms_v2_service):
 		mock_list_uoms_v2_service.return_value = {"status": "success", "data": []}
 
-		list_uoms_v2(search_key="Box", enabled=1, must_be_whole_number=1, limit=10, start=5)
+		list_uoms_v2(
+			search_key="Box",
+			enabled=1,
+			must_be_whole_number=1,
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+			limit=10,
+			start=5,
+		)
 
 		mock_list_uoms_v2_service.assert_called_once_with(
 			search_key="Box",
 			enabled=1,
 			must_be_whole_number=1,
+			date_from="2026-03-01",
+			date_to="2026-03-31",
 			limit=10,
 			start=5,
 			sort_by="modified",
@@ -900,6 +975,8 @@ class TestGatewayWrappers(TestCase):
 			search_key="SO",
 			customer="Test Customer",
 			company="Test Company",
+			date_from="2026-03-01",
+			date_to="2026-03-31",
 			status_filter="unfinished",
 			exclude_cancelled=True,
 			sort_by="unfinished_first",
@@ -911,11 +988,35 @@ class TestGatewayWrappers(TestCase):
 			search_key="SO",
 			customer="Test Customer",
 			company="Test Company",
+			date_from="2026-03-01",
+			date_to="2026-03-31",
 			status_filter="unfinished",
 			exclude_cancelled=True,
 			sort_by="unfinished_first",
 			limit=8,
 			start=5,
+		)
+
+	@patch("myapp.api.gateway.get_sales_order_status_summary_service")
+	def test_get_sales_order_status_summary_passes_filters_to_service(
+		self, mock_get_sales_order_status_summary_service
+	):
+		mock_get_sales_order_status_summary_service.return_value = {"status": "success", "data": []}
+
+		get_sales_order_status_summary(
+			customer="Test Customer",
+			company="Test Company",
+			limit=5,
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+		)
+
+		mock_get_sales_order_status_summary_service.assert_called_once_with(
+			customer="Test Customer",
+			company="Test Company",
+			limit=5,
+			date_from="2026-03-01",
+			date_to="2026-03-31",
 		)
 
 	@patch("myapp.api.gateway.update_order_v2_service")

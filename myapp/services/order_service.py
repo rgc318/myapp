@@ -1,7 +1,7 @@
 import frappe
 import heapq
 from frappe import _
-from frappe.utils import cint, flt, nowdate
+from frappe.utils import cint, flt, getdate, nowdate
 
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.uom import resolve_item_quantity_to_stock
@@ -56,6 +56,16 @@ def _normalize_bool_flag(value, default: bool = False):
 	if isinstance(value, str):
 		return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 	return bool(value)
+
+
+def _normalize_order_date_range(date_from: str | None = None, date_to: str | None = None):
+	resolved_date_from = _normalize_text(date_from) or None
+	resolved_date_to = _normalize_text(date_to) or None
+	if not resolved_date_from and not resolved_date_to:
+		return None, None
+	if resolved_date_from and resolved_date_to and getdate(resolved_date_from) > getdate(resolved_date_to):
+		frappe.throw(_("date_from 不能晚于 date_to。"))
+	return resolved_date_from, resolved_date_to
 
 
 def _include_detail_in_response(kwargs: dict | None, *, default: bool = False):
@@ -1757,13 +1767,26 @@ def get_sales_invoice_detail(sales_invoice_name: str):
 		raise
 
 
-def get_sales_order_status_summary(customer: str | None = None, company: str | None = None, limit: int = 20):
+def get_sales_order_status_summary(
+	customer: str | None = None,
+	company: str | None = None,
+	limit: int = 20,
+	date_from: str | None = None,
+	date_to: str | None = None,
+):
 	limit = _normalize_limit(limit)
+	resolved_date_from, resolved_date_to = _normalize_order_date_range(date_from, date_to)
 	filters = {}
 	if customer:
 		filters["customer"] = customer
 	if company:
 		filters["company"] = company
+	if resolved_date_from and resolved_date_to:
+		filters["transaction_date"] = ["between", [resolved_date_from, resolved_date_to]]
+	elif resolved_date_from:
+		filters["transaction_date"] = [">=", resolved_date_from]
+	elif resolved_date_to:
+		filters["transaction_date"] = ["<=", resolved_date_to]
 
 	try:
 		order_rows = frappe.get_all(
@@ -1793,6 +1816,8 @@ def get_sales_order_status_summary(customer: str | None = None, company: str | N
 				"filters": {
 					"customer": customer,
 					"company": company,
+					"date_from": resolved_date_from,
+					"date_to": resolved_date_to,
 					"limit": limit,
 				}
 			},
@@ -1809,6 +1834,8 @@ def search_sales_orders_v2(
 	search_key: str | None = None,
 	customer: str | None = None,
 	company: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
 	status_filter: str | None = None,
 	exclude_cancelled=None,
 	sort_by: str | None = None,
@@ -1821,12 +1848,19 @@ def search_sales_orders_v2(
 	resolved_sort = _normalize_sales_desk_sort(sort_by)
 	resolved_search_key = _normalize_text(search_key)
 	resolved_exclude_cancelled = _normalize_bool_flag(exclude_cancelled, default=False)
+	resolved_date_from, resolved_date_to = _normalize_order_date_range(date_from, date_to)
 
 	filters = {}
 	if customer:
 		filters["customer"] = customer
 	if company:
 		filters["company"] = company
+	if resolved_date_from and resolved_date_to:
+		filters["transaction_date"] = ["between", [resolved_date_from, resolved_date_to]]
+	elif resolved_date_from:
+		filters["transaction_date"] = [">=", resolved_date_from]
+	elif resolved_date_to:
+		filters["transaction_date"] = ["<=", resolved_date_to]
 
 	or_filters = None
 	if resolved_search_key:
@@ -1946,6 +1980,8 @@ def search_sales_orders_v2(
 						"search_key": resolved_search_key or None,
 						"customer": customer,
 						"company": company,
+						"date_from": resolved_date_from,
+						"date_to": resolved_date_to,
 						"status_filter": resolved_status_filter,
 						"exclude_cancelled": resolved_exclude_cancelled,
 						"sort_by": resolved_sort,

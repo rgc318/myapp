@@ -89,8 +89,20 @@ def get_sales_invoice_detail(sales_invoice_name: str):
 
 
 @frappe.whitelist()
-def get_sales_order_status_summary(customer: str | None = None, company: str | None = None, limit: int = 20):
-	return get_sales_order_status_summary_service(customer=customer, company=company, limit=limit)
+def get_sales_order_status_summary(
+	customer: str | None = None,
+	company: str | None = None,
+	limit: int = 20,
+	date_from: str | None = None,
+	date_to: str | None = None,
+):
+	return get_sales_order_status_summary_service(
+		customer=customer,
+		company=company,
+		limit=limit,
+		date_from=date_from,
+		date_to=date_to,
+	)
 
 
 @frappe.whitelist()
@@ -98,6 +110,8 @@ def search_sales_orders_v2(
 	search_key: str | None = None,
 	customer: str | None = None,
 	company: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
 	status_filter: str | None = None,
 	exclude_cancelled=None,
 	sort_by: str | None = None,
@@ -108,6 +122,8 @@ def search_sales_orders_v2(
 		search_key=search_key,
 		customer=customer,
 		company=company,
+		date_from=date_from,
+		date_to=date_to,
 		status_filter=status_filter,
 		exclude_cancelled=exclude_cancelled,
 		sort_by=sort_by,

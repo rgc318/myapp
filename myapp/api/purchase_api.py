@@ -66,8 +66,20 @@ def get_purchase_order_detail_v2(order_name: str):
 
 
 @frappe.whitelist()
-def get_purchase_order_status_summary(supplier: str | None = None, company: str | None = None, limit: int = 20):
-	return get_purchase_order_status_summary_service(supplier=supplier, company=company, limit=cint(limit))
+def get_purchase_order_status_summary(
+	supplier: str | None = None,
+	company: str | None = None,
+	limit: int = 20,
+	date_from: str | None = None,
+	date_to: str | None = None,
+):
+	return get_purchase_order_status_summary_service(
+		supplier=supplier,
+		company=company,
+		limit=cint(limit),
+		date_from=date_from,
+		date_to=date_to,
+	)
 
 
 @frappe.whitelist()
@@ -75,6 +87,8 @@ def search_purchase_orders_v2(
 	search_key: str | None = None,
 	supplier: str | None = None,
 	company: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
 	status_filter: str | None = None,
 	exclude_cancelled=None,
 	sort_by: str | None = None,
@@ -85,6 +99,8 @@ def search_purchase_orders_v2(
 		search_key=search_key,
 		supplier=supplier,
 		company=company,
+		date_from=date_from,
+		date_to=date_to,
 		status_filter=status_filter,
 		exclude_cancelled=exclude_cancelled,
 		sort_by=sort_by,
@@ -113,6 +129,8 @@ def list_suppliers_v2(
 	search_key: str | None = None,
 	supplier_group: str | None = None,
 	disabled: int | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
 	limit: int = 20,
 	start: int = 0,
 	sort_by: str = "modified",
@@ -122,6 +140,8 @@ def list_suppliers_v2(
 		search_key=search_key,
 		supplier_group=supplier_group,
 		disabled=disabled,
+		date_from=date_from,
+		date_to=date_to,
 		limit=cint(limit),
 		start=cint(start),
 		sort_by=sort_by,

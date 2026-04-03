@@ -117,7 +117,7 @@ class TestWholesaleService(TestCase):
 			},
 		]
 
-		result = list_products_v2(search_key="可乐")
+		result = list_products_v2(search_key="可乐", date_from="2026-03-01", date_to="2026-03-31")
 
 		self.assertEqual(len(result["data"]), 1)
 		self.assertEqual(result["data"][0]["item_code"], "ITEM-001")
@@ -128,6 +128,10 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(result["data"][0]["valuation_rate"], 7.5)
 		self.assertEqual(result["data"][0]["total_qty"], 42)
 		self.assertEqual(len(result["data"][0]["warehouse_stock_details"]), 2)
+		self.assertEqual(mock_get_item_rows.call_args.kwargs["date_from"], "2026-03-01")
+		self.assertEqual(mock_get_item_rows.call_args.kwargs["date_to"], "2026-03-31")
+		self.assertEqual(result["filters"]["date_from"], "2026-03-01")
+		self.assertEqual(result["filters"]["date_to"], "2026-03-31")
 
 	@patch("myapp.services.wholesale_service._get_warehouse_stock_detail_map")
 	@patch("myapp.services.wholesale_service._get_primary_barcode")

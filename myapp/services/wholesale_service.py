@@ -1,7 +1,7 @@
 import frappe
 from frappe import _
 from frappe.query_builder.functions import Sum
-from frappe.utils import cint, flt
+from frappe.utils import cint, flt, getdate
 
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.uom import resolve_item_quantity_to_stock
@@ -32,6 +32,16 @@ def _normalize_limit(limit: int | None):
 
 def _normalize_start(start: int | None):
 	return max(0, int(start or 0))
+
+
+def _normalize_master_date_range(date_from: str | None = None, date_to: str | None = None):
+	resolved_date_from = _normalize_text(date_from) or None
+	resolved_date_to = _normalize_text(date_to) or None
+	if not resolved_date_from and not resolved_date_to:
+		return None, None
+	if resolved_date_from and resolved_date_to and getdate(resolved_date_from) > getdate(resolved_date_to):
+		frappe.throw(_("date_from 不能晚于 date_to。"))
+	return resolved_date_from, resolved_date_to
 
 
 def _normalize_search_fields(search_fields):
@@ -234,6 +244,8 @@ def _get_item_rows(
 	search_key: str | None = None,
 	item_group: str | None = None,
 	disabled: int | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
 	limit: int = 20,
 	start: int = 0,
 	sort_by: str = "modified",
@@ -266,6 +278,13 @@ def _get_item_rows(
 		filters["item_group"] = item_group
 	if disabled is not None:
 		filters["disabled"] = cint(disabled)
+	resolved_date_from, resolved_date_to = _normalize_master_date_range(date_from, date_to)
+	if resolved_date_from and resolved_date_to:
+		filters["creation"] = ["between", [f"{resolved_date_from} 00:00:00", f"{resolved_date_to} 23:59:59"]]
+	elif resolved_date_from:
+		filters["creation"] = [">=", f"{resolved_date_from} 00:00:00"]
+	elif resolved_date_to:
+		filters["creation"] = ["<=", f"{resolved_date_to} 23:59:59"]
 
 	or_filters = None
 	barcode_codes = []
@@ -652,6 +671,8 @@ def list_products_v2(
 	search_key: str | None = None,
 	warehouse: str | None = None,
 	company: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
 	limit: int = 20,
 	start: int = 0,
 	item_group: str | None = None,
@@ -680,6 +701,8 @@ def list_products_v2(
 		search_key=search_key,
 		item_group=_normalize_text(item_group) or None,
 		disabled=disabled,
+		date_from=date_from,
+		date_to=date_to,
 		limit=limit,
 		start=start,
 		sort_by=sort_by,
@@ -743,6 +766,8 @@ def list_products_v2(
 			"search_key": _normalize_text(search_key) or None,
 			"warehouse": warehouse,
 			"company": company,
+			"date_from": _normalize_text(date_from) or None,
+			"date_to": _normalize_text(date_to) or None,
 			"limit": limit,
 			"start": start,
 			"item_group": _normalize_text(item_group) or None,

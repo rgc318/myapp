@@ -1,4 +1,5 @@
 import time
+from datetime import date, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
 from .test_gateway_http import (
@@ -52,13 +53,16 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 	def _create_sales_order_v2(
 		self,
 		*,
+		customer=None,
 		item_code=None,
 		qty: float = 1,
 		price: float = 900,
+		transaction_date: str | None = None,
+		delivery_date: str | None = None,
 		request_id: str | None = None,
 	):
 		payload = {
-			"customer": SALES_CUSTOMER,
+			"customer": customer or SALES_CUSTOMER,
 			"items": [
 				{
 					"item_code": item_code or "SKU010",
@@ -82,9 +86,40 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 			},
 			"remarks": "v2 HTTP test order",
 		}
+		if transaction_date is not None:
+			payload["transaction_date"] = transaction_date
+		if delivery_date is not None:
+			payload["delivery_date"] = delivery_date
 		status_code, response = self._call_gateway("myapp.api.gateway.create_order_v2", payload)
 		self._assert_success(status_code, response, code="ORDER_V2_CREATED")
 		return payload, response
+
+	def _create_customer_v2(self, customer_name: str):
+		payload = {
+			"customer_name": customer_name,
+			"request_id": self._unique_request_id("http-v2-create-customer"),
+		}
+		status_code, response = self._call_gateway("myapp.api.gateway.create_customer_v2", payload)
+		self._assert_success(status_code, response, code="CUSTOMER_CREATED")
+		return response["message"]["data"]["name"]
+
+	def _create_supplier_v2(self, supplier_name: str):
+		payload = {
+			"supplier_name": supplier_name,
+			"request_id": self._unique_request_id("http-v2-create-supplier"),
+		}
+		status_code, response = self._call_gateway("myapp.api.gateway.create_supplier_v2", payload)
+		self._assert_success(status_code, response, code="SUPPLIER_CREATED")
+		return response["message"]["data"]["name"]
+
+	def _create_uom_v2(self, uom_name: str):
+		payload = {
+			"uom_name": uom_name,
+			"request_id": self._unique_request_id("http-v2-create-uom"),
+		}
+		status_code, response = self._call_gateway("myapp.api.gateway.create_uom_v2", payload)
+		self._assert_success(status_code, response, code="UOM_CREATED")
+		return response["message"]["data"]["name"]
 
 	def _update_sales_order_v2(self, order_name: str, **kwargs):
 		payload = {
@@ -631,6 +666,274 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		)
 		self._assert_success(second_page_status, second_page_payload, code="SALES_ORDER_SEARCHED")
 		self.assertEqual(second_page_payload["message"]["data"]["items"][0]["order_name"], low_order_name)
+
+	def test_search_sales_orders_v2_supports_date_range_filter(self):
+		_request, order_payload = self._create_sales_order_v2()
+		order_name = order_payload["message"]["data"]["order"]
+		today = time.strftime("%Y-%m-%d")
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"search_key": order_name,
+				"company": SALES_COMPANY,
+				"date_from": today,
+				"date_to": today,
+				"status_filter": "unfinished",
+				"exclude_cancelled": 1,
+				"limit": 20,
+			},
+		)
+
+		self._assert_success(status_code, payload, code="SALES_ORDER_SEARCHED")
+		self.assertTrue(any(row["order_name"] == order_name for row in payload["message"]["data"]["items"]))
+		self.assertEqual(payload["message"]["data"]["meta"]["filters"]["date_from"], today)
+		self.assertEqual(payload["message"]["data"]["meta"]["filters"]["date_to"], today)
+
+		miss_status, miss_payload = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"search_key": order_name,
+				"company": SALES_COMPANY,
+				"date_from": "2000-01-01",
+				"date_to": "2000-01-31",
+				"status_filter": "unfinished",
+				"exclude_cancelled": 1,
+				"limit": 20,
+			},
+		)
+
+		self._assert_success(miss_status, miss_payload, code="SALES_ORDER_SEARCHED")
+		self.assertEqual(miss_payload["message"]["data"]["items"], [])
+
+	def test_sales_order_date_filters_return_accurate_items_and_summary(self):
+		today = date.today()
+		yesterday = today - timedelta(days=1)
+		tomorrow = today + timedelta(days=1)
+		customer_name = f"HTTP Date Customer {time.time_ns()}"
+		customer = self._create_customer_v2(customer_name)
+		_, yesterday_payload = self._create_sales_order_v2(
+			customer=customer,
+			price=901,
+			transaction_date=yesterday.isoformat(),
+			delivery_date=today.isoformat(),
+		)
+		_, today_payload = self._create_sales_order_v2(
+			customer=customer,
+			price=902,
+			transaction_date=today.isoformat(),
+			delivery_date=tomorrow.isoformat(),
+		)
+		yesterday_order = yesterday_payload["message"]["data"]["order"]
+		today_order = today_payload["message"]["data"]["order"]
+
+		status_today, payload_today = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"customer": customer,
+				"company": SALES_COMPANY,
+				"date_from": today.isoformat(),
+				"date_to": today.isoformat(),
+				"status_filter": "unfinished",
+				"exclude_cancelled": 1,
+				"limit": 20,
+			},
+		)
+		self._assert_success(status_today, payload_today, code="SALES_ORDER_SEARCHED")
+		today_items = payload_today["message"]["data"]["items"]
+		self.assertEqual([row["order_name"] for row in today_items], [today_order], payload_today)
+		self.assertEqual(payload_today["message"]["data"]["summary"]["total_count"], 1)
+		self.assertEqual(payload_today["message"]["data"]["summary"]["visible_count"], 1)
+
+		status_range, payload_range = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"customer": customer,
+				"company": SALES_COMPANY,
+				"date_from": yesterday.isoformat(),
+				"date_to": today.isoformat(),
+				"status_filter": "unfinished",
+				"exclude_cancelled": 1,
+				"sort_by": "oldest",
+				"limit": 20,
+			},
+		)
+		self._assert_success(status_range, payload_range, code="SALES_ORDER_SEARCHED")
+		range_items = payload_range["message"]["data"]["items"]
+		self.assertEqual(
+			[row["order_name"] for row in range_items],
+			[yesterday_order, today_order],
+			payload_range,
+		)
+		self.assertEqual(payload_range["message"]["data"]["summary"]["total_count"], 2)
+
+		summary_status, summary_payload = self._call_gateway(
+			"myapp.api.gateway.get_sales_order_status_summary",
+			{
+				"customer": customer,
+				"company": SALES_COMPANY,
+				"date_from": today.isoformat(),
+				"date_to": today.isoformat(),
+				"limit": 20,
+			},
+		)
+		self._assert_success(summary_status, summary_payload, code="ORDER_SUMMARY_FETCHED")
+		summary_items = summary_payload["message"]["data"]
+		self.assertEqual(len(summary_items), 1, summary_payload)
+		self.assertEqual(summary_items[0]["order_name"], today_order, summary_payload)
+
+		miss_status, miss_payload = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"customer": customer,
+				"company": SALES_COMPANY,
+				"date_from": "2000-01-01",
+				"date_to": "2000-01-31",
+				"status_filter": "unfinished",
+				"exclude_cancelled": 1,
+				"limit": 20,
+			},
+		)
+		self._assert_success(miss_status, miss_payload, code="SALES_ORDER_SEARCHED")
+		self.assertEqual(miss_payload["message"]["data"]["items"], [])
+		self.assertEqual(miss_payload["message"]["data"]["summary"]["total_count"], 0)
+
+	def test_list_customers_v2_supports_creation_date_range_filter(self):
+		today = date.today().isoformat()
+		customer_name = f"HTTP Range Customer {time.time_ns()}"
+		customer = self._create_customer_v2(customer_name)
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.list_customers_v2",
+			{
+				"search_key": customer_name,
+				"date_from": today,
+				"date_to": today,
+				"limit": 20,
+				"start": 0,
+			},
+		)
+		self._assert_success(status_code, payload, code="CUSTOMER_LIST_FETCHED")
+		items = payload["message"]["data"]
+		self.assertTrue(any(row["name"] == customer for row in items), payload)
+		self.assertEqual(payload["message"]["meta"]["filters"]["date_from"], today)
+		self.assertEqual(payload["message"]["meta"]["filters"]["date_to"], today)
+
+		miss_status, miss_payload = self._call_gateway(
+			"myapp.api.gateway.list_customers_v2",
+			{
+				"search_key": customer_name,
+				"date_from": "2000-01-01",
+				"date_to": "2000-01-31",
+				"limit": 20,
+				"start": 0,
+			},
+		)
+		self._assert_success(miss_status, miss_payload, code="CUSTOMER_LIST_FETCHED")
+		self.assertEqual(miss_payload["message"]["data"], [])
+		self.assertEqual(miss_payload["message"]["meta"]["total"], 0)
+
+	def test_list_products_v2_supports_creation_date_range_filter(self):
+		today = date.today().isoformat()
+		create_request, create_payload = self._create_product_and_stock(item_name=f"Range Product {time.time_ns()}")
+		item_code = create_payload["message"]["data"]["item_code"]
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.list_products_v2",
+			{
+				"search_key": item_code,
+				"date_from": today,
+				"date_to": today,
+				"limit": 20,
+				"start": 0,
+			},
+		)
+		self._assert_success(status_code, payload, code="PRODUCTS_FETCHED")
+		items = payload["message"]["data"]
+		self.assertTrue(any(row["item_code"] == item_code for row in items), payload)
+		self.assertEqual(payload["message"]["meta"]["filters"]["date_from"], today)
+		self.assertEqual(payload["message"]["meta"]["filters"]["date_to"], today)
+
+		miss_status, miss_payload = self._call_gateway(
+			"myapp.api.gateway.list_products_v2",
+			{
+				"search_key": item_code,
+				"date_from": "2000-01-01",
+				"date_to": "2000-01-31",
+				"limit": 20,
+				"start": 0,
+			},
+		)
+		self._assert_success(miss_status, miss_payload, code="PRODUCTS_FETCHED")
+		self.assertEqual(miss_payload["message"]["data"], [])
+
+	def test_list_suppliers_v2_supports_creation_date_range_filter(self):
+		today = date.today().isoformat()
+		supplier_name = f"HTTP Range Supplier {time.time_ns()}"
+		supplier = self._create_supplier_v2(supplier_name)
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.list_suppliers_v2",
+			{
+				"search_key": supplier_name,
+				"date_from": today,
+				"date_to": today,
+				"limit": 20,
+				"start": 0,
+			},
+		)
+		self._assert_success(status_code, payload, code="SUPPLIER_LIST_FETCHED")
+		items = payload["message"]["data"]
+		self.assertTrue(any(row["name"] == supplier for row in items), payload)
+		self.assertEqual(payload["message"]["meta"]["filters"]["date_from"], today)
+		self.assertEqual(payload["message"]["meta"]["filters"]["date_to"], today)
+
+		miss_status, miss_payload = self._call_gateway(
+			"myapp.api.gateway.list_suppliers_v2",
+			{
+				"search_key": supplier_name,
+				"date_from": "2000-01-01",
+				"date_to": "2000-01-31",
+				"limit": 20,
+				"start": 0,
+			},
+		)
+		self._assert_success(miss_status, miss_payload, code="SUPPLIER_LIST_FETCHED")
+		self.assertEqual(miss_payload["message"]["data"], [])
+
+	def test_list_uoms_v2_supports_creation_date_range_filter(self):
+		today = date.today().isoformat()
+		uom_name = f"HTTP-RANGE-UOM-{time.time_ns()}"
+		uom = self._create_uom_v2(uom_name)
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.list_uoms_v2",
+			{
+				"search_key": uom_name,
+				"date_from": today,
+				"date_to": today,
+				"limit": 20,
+				"start": 0,
+			},
+		)
+		self._assert_success(status_code, payload, code="UOM_LIST_FETCHED")
+		items = payload["message"]["data"]
+		self.assertTrue(any(row["name"] == uom for row in items), payload)
+		self.assertEqual(payload["message"]["meta"]["filters"]["date_from"], today)
+		self.assertEqual(payload["message"]["meta"]["filters"]["date_to"], today)
+
+		miss_status, miss_payload = self._call_gateway(
+			"myapp.api.gateway.list_uoms_v2",
+			{
+				"search_key": uom_name,
+				"date_from": "2000-01-01",
+				"date_to": "2000-01-31",
+				"limit": 20,
+				"start": 0,
+			},
+		)
+		self._assert_success(miss_status, miss_payload, code="UOM_LIST_FETCHED")
+		self.assertEqual(miss_payload["message"]["data"], [])
 
 	def test_create_product_and_stock_idempotent_replay(self):
 		request_id = self._unique_request_id("http-v2-product-idem")

@@ -8,6 +8,13 @@ from myapp.services.report_service import get_business_report_v1
 
 class TestReportService(TestCase):
 	@patch("myapp.services.report_service.nowdate", return_value="2026-04-02")
+	@patch("myapp.services.report_service._make_purchase_hourly_rows")
+	@patch("myapp.services.report_service._make_sales_hourly_rows")
+	@patch("myapp.services.report_service._make_cashflow_trend_rows")
+	@patch("myapp.services.report_service._make_purchase_product_rows")
+	@patch("myapp.services.report_service._make_purchase_trend_rows")
+	@patch("myapp.services.report_service._make_sales_product_rows")
+	@patch("myapp.services.report_service._make_sales_trend_rows")
 	@patch("myapp.services.report_service._make_payment_type_totals")
 	@patch("myapp.services.report_service._make_scalar_aggregate")
 	@patch("myapp.services.report_service._make_recent_cashflow_rows")
@@ -20,6 +27,13 @@ class TestReportService(TestCase):
 		mock_make_recent_cashflow_rows,
 		mock_make_scalar_aggregate,
 		mock_make_payment_type_totals,
+		mock_make_sales_trend_rows,
+		mock_make_sales_product_rows,
+		mock_make_purchase_trend_rows,
+		mock_make_purchase_product_rows,
+		mock_make_cashflow_trend_rows,
+		mock_make_sales_hourly_rows,
+		mock_make_purchase_hourly_rows,
 		mock_nowdate,
 	):
 		mock_make_grouped_rows.side_effect = [
@@ -74,6 +88,30 @@ class TestReportService(TestCase):
 			frappe._dict({"payment_type": "Receive", "total_received_amount": 2500, "total_paid_amount": 2500}),
 			frappe._dict({"payment_type": "Pay", "total_received_amount": 1200, "total_paid_amount": 1200}),
 		]
+		mock_make_sales_trend_rows.return_value = [
+			frappe._dict({"trend_date": "2026-04-01", "count": 2, "amount": 1000}),
+			frappe._dict({"trend_date": "2026-04-02", "count": 1, "amount": 500}),
+		]
+		mock_make_sales_product_rows.return_value = [
+			frappe._dict({"item_key": "SKU-1", "item_name": "Product A", "qty": 5, "amount": 900}),
+		]
+		mock_make_purchase_trend_rows.return_value = [
+			frappe._dict({"trend_date": "2026-04-01", "count": 1, "amount": 600}),
+			frappe._dict({"trend_date": "2026-04-02", "count": 2, "amount": 1200}),
+		]
+		mock_make_purchase_product_rows.return_value = [
+			frappe._dict({"item_key": "MAT-1", "item_name": "Material A", "qty": 8, "amount": 700}),
+		]
+		mock_make_sales_hourly_rows.return_value = [
+			frappe._dict({"trend_hour": 10, "count": 1, "amount": 100}),
+		]
+		mock_make_purchase_hourly_rows.return_value = [
+			frappe._dict({"trend_hour": 11, "count": 1, "amount": 200}),
+		]
+		mock_make_cashflow_trend_rows.return_value = [
+			frappe._dict({"trend_date": "2026-04-01", "count": 1, "in_amount": 500, "out_amount": 0}),
+			frappe._dict({"trend_date": "2026-04-02", "count": 2, "in_amount": 800, "out_amount": 400}),
+		]
 
 		result = get_business_report_v1(company="Test Company", limit=10)
 
@@ -86,8 +124,16 @@ class TestReportService(TestCase):
 		self.assertEqual(result["data"]["overview"]["receivable_outstanding_total"], 777)
 		self.assertEqual(result["data"]["overview"]["payable_outstanding_total"], 333)
 		self.assertEqual(result["data"]["tables"]["sales_summary"][0]["name"], "Customer A")
+		self.assertEqual(result["data"]["tables"]["sales_trend"][0]["trend_date"], "2026-04-01")
+		self.assertEqual(result["data"]["tables"]["sales_trend_hourly"][0]["trend_hour"], 10)
+		self.assertEqual(result["data"]["tables"]["sales_product_summary"][0]["item_key"], "SKU-1")
+		self.assertEqual(result["data"]["tables"]["purchase_trend"][0]["trend_date"], "2026-04-01")
+		self.assertEqual(result["data"]["tables"]["purchase_trend_hourly"][0]["trend_hour"], 11)
+		self.assertEqual(result["data"]["tables"]["purchase_product_summary"][0]["item_key"], "MAT-1")
 		self.assertEqual(result["data"]["tables"]["receivable_summary"][0]["name"], "Customer B")
 		self.assertEqual(result["data"]["tables"]["cashflow_summary"][0]["direction"], "in")
+		self.assertEqual(result["data"]["tables"]["cashflow_trend"][0]["trend_date"], "2026-04-01")
+		self.assertEqual(result["data"]["tables"]["cashflow_trend"][1]["in_amount"], 800)
 
 		first_group_args = mock_make_grouped_rows.call_args_list[0].args
 		first_group_kwargs = mock_make_grouped_rows.call_args_list[0].kwargs

@@ -204,6 +204,40 @@ def _make_recent_cashflow_rows(*, company: str | None, date_from: str, date_to: 
 	)
 
 
+def _make_cashflow_trend_rows(*, company: str | None, date_from: str, date_to: str):
+	where_sql, params = _build_where_clause(
+		date_field="posting_date",
+		company=company,
+		date_from=date_from,
+		date_to=date_to,
+	)
+	return frappe.db.sql(
+		f"""
+		SELECT
+			posting_date AS trend_date,
+			COUNT(name) AS count,
+			SUM(
+				CASE
+					WHEN payment_type = 'Receive' THEN IFNULL(received_amount, IFNULL(paid_amount, 0))
+					ELSE 0
+				END
+			) AS in_amount,
+			SUM(
+				CASE
+					WHEN payment_type = 'Pay' THEN IFNULL(paid_amount, IFNULL(received_amount, 0))
+					ELSE 0
+				END
+			) AS out_amount
+		FROM {_get_report_table_sql("tabPayment Entry")}
+		WHERE {where_sql}
+		GROUP BY posting_date
+		ORDER BY posting_date ASC
+		""",
+		params,
+		as_dict=True,
+	)
+
+
 def _make_payment_type_totals(*, company: str | None, date_from: str, date_to: str):
 	where_sql, params = _build_where_clause(
 		date_field="posting_date",
@@ -226,6 +260,156 @@ def _make_payment_type_totals(*, company: str | None, date_from: str, date_to: s
 	)
 
 
+def _make_sales_trend_rows(*, company: str | None, date_from: str, date_to: str, limit: int):
+	where_sql, params = _build_where_clause(
+		date_field="transaction_date",
+		company=company,
+		date_from=date_from,
+		date_to=date_to,
+	)
+	return frappe.db.sql(
+		f"""
+		SELECT
+			transaction_date AS trend_date,
+			COUNT(name) AS count,
+			SUM(ifnull(rounded_total, ifnull(grand_total, 0))) AS amount
+		FROM {_get_report_table_sql("tabSales Order")}
+		WHERE {where_sql}
+		GROUP BY transaction_date
+		ORDER BY transaction_date ASC
+		LIMIT %s
+		""",
+		(*params, max(7, limit * 4)),
+		as_dict=True,
+	)
+
+
+def _make_sales_product_rows(*, company: str | None, date_from: str, date_to: str, limit: int):
+	params = [date_from, date_to]
+	company_sql = ""
+	if company:
+		company_sql = " AND so.company = %s"
+		params.append(company)
+	return frappe.db.sql(
+		f"""
+		SELECT
+			COALESCE(soi.item_code, soi.item_name) AS item_key,
+			MAX(COALESCE(soi.item_name, soi.item_code, "未命名商品")) AS item_name,
+			SUM(ifnull(soi.qty, 0)) AS qty,
+			SUM(ifnull(soi.base_amount, ifnull(soi.amount, 0))) AS amount
+		FROM `tabSales Order Item` soi
+		INNER JOIN `tabSales Order` so FORCE INDEX (`idx_myapp_so_company_docstatus_date_customer`) ON so.name = soi.parent
+		WHERE so.docstatus = 1
+			AND so.transaction_date between %s and %s
+			{company_sql}
+		GROUP BY COALESCE(soi.item_code, soi.item_name)
+		ORDER BY amount DESC
+		LIMIT %s
+		""",
+		(*params, limit),
+		as_dict=True,
+	)
+
+
+def _make_purchase_trend_rows(*, company: str | None, date_from: str, date_to: str, limit: int):
+	where_sql, params = _build_where_clause(
+		date_field="transaction_date",
+		company=company,
+		date_from=date_from,
+		date_to=date_to,
+	)
+	return frappe.db.sql(
+		f"""
+		SELECT
+			transaction_date AS trend_date,
+			COUNT(name) AS count,
+			SUM(ifnull(rounded_total, ifnull(grand_total, 0))) AS amount
+		FROM {_get_report_table_sql("tabPurchase Order")}
+		WHERE {where_sql}
+		GROUP BY transaction_date
+		ORDER BY transaction_date ASC
+		LIMIT %s
+		""",
+		(*params, max(7, limit * 4)),
+		as_dict=True,
+	)
+
+
+def _make_purchase_product_rows(*, company: str | None, date_from: str, date_to: str, limit: int):
+	params = [date_from, date_to]
+	company_sql = ""
+	if company:
+		company_sql = " AND po.company = %s"
+		params.append(company)
+	return frappe.db.sql(
+		f"""
+		SELECT
+			COALESCE(poi.item_code, poi.item_name) AS item_key,
+			MAX(COALESCE(poi.item_name, poi.item_code, "未命名商品")) AS item_name,
+			SUM(ifnull(poi.qty, 0)) AS qty,
+			SUM(ifnull(poi.base_amount, ifnull(poi.amount, 0))) AS amount
+		FROM `tabPurchase Order Item` poi
+		INNER JOIN `tabPurchase Order` po FORCE INDEX (`idx_myapp_po_company_docstatus_date_supplier`) ON po.name = poi.parent
+		WHERE po.docstatus = 1
+			AND po.transaction_date between %s and %s
+			{company_sql}
+		GROUP BY COALESCE(poi.item_code, poi.item_name)
+		ORDER BY amount DESC
+		LIMIT %s
+		""",
+		(*params, limit),
+		as_dict=True,
+	)
+
+
+def _make_sales_hourly_rows(*, company: str | None, trend_date: str):
+	params = [trend_date]
+	company_sql = ""
+	if company:
+		company_sql = " AND company = %s"
+		params.append(company)
+	return frappe.db.sql(
+		f"""
+		SELECT
+			HOUR(creation) AS trend_hour,
+			COUNT(name) AS count,
+			SUM(ifnull(rounded_total, ifnull(grand_total, 0))) AS amount
+		FROM {_get_report_table_sql("tabSales Order")}
+		WHERE docstatus = 1
+			AND DATE(creation) = %s
+			{company_sql}
+		GROUP BY HOUR(creation)
+		ORDER BY trend_hour ASC
+		""",
+		params,
+		as_dict=True,
+	)
+
+
+def _make_purchase_hourly_rows(*, company: str | None, trend_date: str):
+	params = [trend_date]
+	company_sql = ""
+	if company:
+		company_sql = " AND company = %s"
+		params.append(company)
+	return frappe.db.sql(
+		f"""
+		SELECT
+			HOUR(creation) AS trend_hour,
+			COUNT(name) AS count,
+			SUM(ifnull(rounded_total, ifnull(grand_total, 0))) AS amount
+		FROM {_get_report_table_sql("tabPurchase Order")}
+		WHERE docstatus = 1
+			AND DATE(creation) = %s
+			{company_sql}
+		GROUP BY HOUR(creation)
+		ORDER BY trend_hour ASC
+		""",
+		params,
+		as_dict=True,
+	)
+
+
 def _serialize_amount_group_rows(rows):
 	serialized = []
 	for row in rows or []:
@@ -237,6 +421,80 @@ def _serialize_amount_group_rows(rows):
 				"name": name,
 				"count": cint(getattr(row, "count", 0) or 0),
 				"amount": flt(getattr(row, "amount", 0) or 0),
+			}
+		)
+	return serialized
+
+
+def _serialize_sales_trend_rows(rows):
+	serialized = []
+	for row in rows or []:
+		trend_date = getattr(row, "trend_date", None)
+		if not trend_date:
+			continue
+		serialized.append(
+			{
+				"trend_date": str(trend_date),
+				"count": cint(getattr(row, "count", 0) or 0),
+				"amount": flt(getattr(row, "amount", 0) or 0),
+			}
+		)
+	return serialized
+
+
+def _serialize_sales_product_rows(rows):
+	serialized = []
+	for row in rows or []:
+		item_key = getattr(row, "item_key", None)
+		if not item_key:
+			continue
+		serialized.append(
+			{
+				"item_key": item_key,
+				"item_name": getattr(row, "item_name", item_key),
+				"qty": flt(getattr(row, "qty", 0) or 0),
+				"amount": flt(getattr(row, "amount", 0) or 0),
+			}
+		)
+	return serialized
+
+
+def _serialize_purchase_trend_rows(rows):
+	return _serialize_sales_trend_rows(rows)
+
+
+def _serialize_purchase_product_rows(rows):
+	return _serialize_sales_product_rows(rows)
+
+
+def _serialize_hourly_rows(rows):
+	serialized = []
+	for row in rows or []:
+		hour = getattr(row, "trend_hour", None)
+		if hour is None:
+			continue
+		serialized.append(
+			{
+				"trend_hour": cint(hour),
+				"count": cint(getattr(row, "count", 0) or 0),
+				"amount": flt(getattr(row, "amount", 0) or 0),
+			}
+		)
+	return serialized
+
+
+def _serialize_cashflow_trend_rows(rows):
+	serialized = []
+	for row in rows or []:
+		trend_date = getattr(row, "trend_date", None)
+		if not trend_date:
+			continue
+		serialized.append(
+			{
+				"trend_date": str(trend_date),
+				"count": cint(getattr(row, "count", 0) or 0),
+				"in_amount": flt(getattr(row, "in_amount", 0) or 0),
+				"out_amount": flt(getattr(row, "out_amount", 0) or 0),
 			}
 		)
 	return serialized
@@ -360,12 +618,63 @@ def get_business_report_v1(
 			limit=resolved_limit,
 		)
 	)
+	sales_trend_rows = _serialize_sales_trend_rows(
+		_make_sales_trend_rows(
+			company=resolved_company,
+			date_from=resolved_date_from,
+			date_to=resolved_date_to,
+			limit=resolved_limit,
+		)
+	)
+	sales_product_rows = _serialize_sales_product_rows(
+		_make_sales_product_rows(
+			company=resolved_company,
+			date_from=resolved_date_from,
+			date_to=resolved_date_to,
+			limit=resolved_limit,
+		)
+	)
+	purchase_trend_rows = _serialize_purchase_trend_rows(
+		_make_purchase_trend_rows(
+			company=resolved_company,
+			date_from=resolved_date_from,
+			date_to=resolved_date_to,
+			limit=resolved_limit,
+		)
+	)
+	purchase_product_rows = _serialize_purchase_product_rows(
+		_make_purchase_product_rows(
+			company=resolved_company,
+			date_from=resolved_date_from,
+			date_to=resolved_date_to,
+			limit=resolved_limit,
+		)
+	)
+	sales_hourly_rows = _serialize_hourly_rows(
+		_make_sales_hourly_rows(
+			company=resolved_company,
+			trend_date=resolved_date_to,
+		)
+	)
+	purchase_hourly_rows = _serialize_hourly_rows(
+		_make_purchase_hourly_rows(
+			company=resolved_company,
+			trend_date=resolved_date_to,
+		)
+	)
 	cashflow_rows = _serialize_cashflow_rows(
 		_make_recent_cashflow_rows(
 			company=resolved_company,
 			date_from=resolved_date_from,
 			date_to=resolved_date_to,
 			limit=resolved_limit,
+		)
+	)
+	cashflow_trend_rows = _serialize_cashflow_trend_rows(
+		_make_cashflow_trend_rows(
+			company=resolved_company,
+			date_from=resolved_date_from,
+			date_to=resolved_date_to,
 		)
 	)
 
@@ -426,10 +735,17 @@ def get_business_report_v1(
 			},
 			"tables": {
 				"sales_summary": sales_rows,
+				"sales_trend": sales_trend_rows,
+				"sales_trend_hourly": sales_hourly_rows,
+				"sales_product_summary": sales_product_rows,
 				"purchase_summary": purchase_rows,
+				"purchase_trend": purchase_trend_rows,
+				"purchase_trend_hourly": purchase_hourly_rows,
+				"purchase_product_summary": purchase_product_rows,
 				"receivable_summary": receivable_rows,
 				"payable_summary": payable_rows,
 				"cashflow_summary": cashflow_rows,
+				"cashflow_trend": cashflow_trend_rows,
 			},
 			"meta": {
 				"company": resolved_company,

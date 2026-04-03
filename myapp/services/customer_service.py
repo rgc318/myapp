@@ -1,6 +1,6 @@
 import frappe
 from frappe import _
-from frappe.utils import cint
+from frappe.utils import cint, getdate
 
 from myapp.services.order_service import (
 	_extract_first_non_empty,
@@ -29,6 +29,16 @@ def _normalize_disabled(value):
 	if value in (None, ""):
 		return None
 	return cint(value)
+
+
+def _normalize_creation_date_range(date_from: str | None = None, date_to: str | None = None):
+	resolved_date_from = _normalize_text(date_from) or None
+	resolved_date_to = _normalize_text(date_to) or None
+	if not resolved_date_from and not resolved_date_to:
+		return None, None
+	if resolved_date_from and resolved_date_to and getdate(resolved_date_from) > getdate(resolved_date_to):
+		frappe.throw(_("date_from 不能晚于 date_to。"))
+	return resolved_date_from, resolved_date_to
 
 
 def _new_doc(doctype: str):
@@ -210,6 +220,8 @@ def list_customers_v2(
 	search_key: str | None = None,
 	customer_group: str | None = None,
 	disabled: int | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
 	limit: int = 20,
 	start: int = 0,
 	sort_by: str = "modified",
@@ -218,12 +230,19 @@ def list_customers_v2(
 	limit = _normalize_limit(limit)
 	start = _normalize_start(start)
 	sort_by, sort_order = _normalize_sort(sort_by, sort_order)
+	resolved_date_from, resolved_date_to = _normalize_creation_date_range(date_from, date_to)
 
 	filters = {}
 	if _normalize_text(customer_group):
 		filters["customer_group"] = _normalize_text(customer_group)
 	if _normalize_disabled(disabled) is not None:
 		filters["disabled"] = _normalize_disabled(disabled)
+	if resolved_date_from and resolved_date_to:
+		filters["creation"] = ["between", [f"{resolved_date_from} 00:00:00", f"{resolved_date_to} 23:59:59"]]
+	elif resolved_date_from:
+		filters["creation"] = [">=", f"{resolved_date_from} 00:00:00"]
+	elif resolved_date_to:
+		filters["creation"] = ["<=", f"{resolved_date_to} 23:59:59"]
 
 	search_key = _normalize_text(search_key)
 	or_filters = None
@@ -281,6 +300,15 @@ def list_customers_v2(
 			"start": start,
 			"limit": limit,
 			"has_more": start + len(rows) < total_count,
+			"filters": {
+				"search_key": search_key or None,
+				"customer_group": _normalize_text(customer_group) or None,
+				"disabled": _normalize_disabled(disabled),
+				"date_from": resolved_date_from,
+				"date_to": resolved_date_to,
+				"sort_by": sort_by,
+				"sort_order": sort_order,
+			},
 		},
 	}
 

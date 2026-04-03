@@ -1000,6 +1000,8 @@ class TestPurchaseService(TestCase):
 		result = search_purchase_orders_v2(
 			search_key="MA",
 			company="Test Company",
+			date_from="2026-03-01",
+			date_to="2026-03-31",
 			status_filter="all",
 			exclude_cancelled=False,
 			sort_by="amount_desc",
@@ -1011,7 +1013,57 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["data"]["summary"]["total_count"], 2)
 		self.assertEqual(result["data"]["items"][0]["purchase_order_name"], "PO-0002")
 		self.assertEqual(mock_get_all.call_args.kwargs["filters"]["company"], "Test Company")
+		self.assertEqual(
+			mock_get_all.call_args.kwargs["filters"]["transaction_date"],
+			["between", ["2026-03-01", "2026-03-31"]],
+		)
 		self.assertEqual(len(mock_get_all.call_args.kwargs["or_filters"]), 5)
+		self.assertEqual(result["data"]["meta"]["filters"]["date_from"], "2026-03-01")
+		self.assertEqual(result["data"]["meta"]["filters"]["date_to"], "2026-03-31")
+
+	@patch("myapp.services.purchase_service._build_purchase_order_summary_rows")
+	@patch("myapp.services.purchase_service.frappe.get_all")
+	def test_get_purchase_order_status_summary_supports_date_range_filters(self, mock_get_all, mock_build_summary_rows):
+		mock_get_all.return_value = [
+			frappe._dict(
+				{
+					"name": "PO-0003",
+					"supplier": "SUP-001",
+					"supplier_name": "MA Inc.",
+					"transaction_date": "2026-03-15",
+					"company": "Test Company",
+					"docstatus": 1,
+					"rounded_total": 300,
+					"grand_total": 300,
+					"modified": "2026-03-15 10:00:00",
+				}
+			)
+		]
+		mock_build_summary_rows.return_value = [
+			{
+				"purchase_order_name": "PO-0003",
+				"document_status": "submitted",
+				"receiving": {"status": "pending", "is_fully_received": False},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "open"},
+			}
+		]
+
+		result = get_purchase_order_status_summary(
+			supplier="SUP-001",
+			company="Test Company",
+			limit=5,
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+		)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["meta"]["filters"]["date_from"], "2026-03-01")
+		self.assertEqual(result["meta"]["filters"]["date_to"], "2026-03-31")
+		self.assertEqual(
+			mock_get_all.call_args.kwargs["filters"]["transaction_date"],
+			["between", ["2026-03-01", "2026-03-31"]],
+		)
 
 	@patch("myapp.services.purchase_service._get_recent_purchase_order_addresses")
 	@patch("myapp.services.purchase_service._serialize_address_doc")
@@ -1129,12 +1181,24 @@ class TestPurchaseService(TestCase):
 		mock_serialize_contact_doc.return_value = {"name": "CONT-001", "display_name": "张三"}
 		mock_serialize_address_doc.return_value = {"name": "ADDR-001", "address_line1": "测试路 100 号"}
 
-		result = list_suppliers_v2(search_key="MA", limit=20, start=0)
+		result = list_suppliers_v2(
+			search_key="MA",
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+			limit=20,
+			start=0,
+		)
 
 		self.assertEqual(result["status"], "success")
 		self.assertEqual(len(result["data"]), 1)
 		self.assertEqual(result["data"][0]["name"], "SUP-001")
 		self.assertEqual(result["meta"]["total"], 2)
+		self.assertEqual(
+			mock_get_all.call_args_list[0].kwargs["filters"]["creation"],
+			["between", ["2026-03-01 00:00:00", "2026-03-31 23:59:59"]],
+		)
+		self.assertEqual(result["meta"]["filters"]["date_from"], "2026-03-01")
+		self.assertEqual(result["meta"]["filters"]["date_to"], "2026-03-31")
 
 	@patch("myapp.services.purchase_service.run_idempotent")
 	def test_create_supplier_v2_uses_idempotent_runner(self, mock_run_idempotent):

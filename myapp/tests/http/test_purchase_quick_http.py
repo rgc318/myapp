@@ -8,6 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.cookiejar import CookieJar
+from datetime import date, timedelta
 
 
 DEFAULT_ENV_FILE = pathlib.Path(__file__).resolve().parents[3] / ".env.http-test"
@@ -151,9 +152,16 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			return status_code, response
 		return last_status, last_response
 
-	def _create_purchase_order(self, *, qty: float | None = None):
+	def _create_purchase_order(
+		self,
+		*,
+		supplier: str | None = None,
+		qty: float | None = None,
+		transaction_date: str | None = None,
+		schedule_date: str | None = None,
+	):
 		payload = {
-			"supplier": PURCHASE_SUPPLIER,
+			"supplier": supplier or PURCHASE_SUPPLIER,
 			"items": [
 				{
 					"item_code": PURCHASE_ITEM_CODE,
@@ -164,6 +172,10 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			"company": PURCHASE_COMPANY,
 			"request_id": self._unique_request_id("purchase-order"),
 		}
+		if transaction_date is not None:
+			payload["transaction_date"] = transaction_date
+		if schedule_date is not None:
+			payload["schedule_date"] = schedule_date
 		status_code, response = self._post_method_with_retry(
 			"myapp.api.gateway.create_purchase_order",
 			payload,
@@ -171,6 +183,15 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		)
 		self._assert_success(status_code, response, code="PURCHASE_ORDER_CREATED")
 		return response["message"]["data"]["purchase_order"]
+
+	def _create_supplier_v2(self, supplier_name: str):
+		payload = {
+			"supplier_name": supplier_name,
+			"request_id": self._unique_request_id("purchase-create-supplier"),
+		}
+		status_code, response = self._post_method("myapp.api.gateway.create_supplier_v2", payload)
+		self._assert_success(status_code, response, code="SUPPLIER_CREATED")
+		return response["message"]["data"]["name"]
 
 	def _receive_purchase_order(self, order_name: str, purchase_order_item: str, qty: float):
 		payload = {
@@ -433,6 +454,143 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			self._cancel_purchase_invoice(data["purchase_invoice"])
 			self._cancel_purchase_receipt(data["purchase_receipt"])
 			self._cancel_purchase_order(data["purchase_order"])
+
+	def test_search_purchase_orders_v2_supports_date_range_filter(self):
+		order_name = self._create_purchase_order()
+		today = time.strftime("%Y-%m-%d")
+
+		try:
+			status_code, response = self._post_method(
+				"myapp.api.gateway.search_purchase_orders_v2",
+				{
+					"search_key": order_name,
+					"company": PURCHASE_COMPANY,
+					"date_from": today,
+					"date_to": today,
+					"status_filter": "unfinished",
+					"exclude_cancelled": 1,
+					"limit": 20,
+					"start": 0,
+				},
+			)
+			self._assert_success(status_code, response, code="PURCHASE_ORDER_SEARCHED")
+			self.assertTrue(any(row["purchase_order_name"] == order_name for row in response["message"]["data"]["items"]))
+			self.assertEqual(response["message"]["data"]["meta"]["filters"]["date_from"], today)
+			self.assertEqual(response["message"]["data"]["meta"]["filters"]["date_to"], today)
+
+			miss_status, miss_response = self._post_method(
+				"myapp.api.gateway.search_purchase_orders_v2",
+				{
+					"search_key": order_name,
+					"company": PURCHASE_COMPANY,
+					"date_from": "2000-01-01",
+					"date_to": "2000-01-31",
+					"status_filter": "unfinished",
+					"exclude_cancelled": 1,
+					"limit": 20,
+					"start": 0,
+				},
+			)
+			self._assert_success(miss_status, miss_response, code="PURCHASE_ORDER_SEARCHED")
+			self.assertEqual(miss_response["message"]["data"]["items"], [])
+		finally:
+			self._cancel_purchase_order(order_name)
+
+	def test_purchase_order_date_filters_return_accurate_items_and_summary(self):
+		today = date.today()
+		yesterday = today - timedelta(days=1)
+		supplier_name = f"HTTP Date Supplier {time.time_ns()}"
+		supplier = self._create_supplier_v2(supplier_name)
+		yesterday_order = self._create_purchase_order(
+			supplier=supplier,
+			qty=2,
+			transaction_date=yesterday.isoformat(),
+			schedule_date=today.isoformat(),
+		)
+		today_order = self._create_purchase_order(
+			supplier=supplier,
+			qty=3,
+			transaction_date=today.isoformat(),
+			schedule_date=today.isoformat(),
+		)
+
+		try:
+			status_today, payload_today = self._post_method(
+				"myapp.api.gateway.search_purchase_orders_v2",
+				{
+					"supplier": supplier,
+					"company": PURCHASE_COMPANY,
+					"date_from": today.isoformat(),
+					"date_to": today.isoformat(),
+					"status_filter": "unfinished",
+					"exclude_cancelled": 1,
+					"limit": 20,
+					"start": 0,
+				},
+			)
+			self._assert_success(status_today, payload_today, code="PURCHASE_ORDER_SEARCHED")
+			today_items = payload_today["message"]["data"]["items"]
+			self.assertEqual([row["purchase_order_name"] for row in today_items], [today_order], payload_today)
+			self.assertEqual(payload_today["message"]["data"]["summary"]["total_count"], 1)
+			self.assertEqual(payload_today["message"]["data"]["summary"]["visible_count"], 1)
+
+			status_range, payload_range = self._post_method(
+				"myapp.api.gateway.search_purchase_orders_v2",
+				{
+					"supplier": supplier,
+					"company": PURCHASE_COMPANY,
+					"date_from": yesterday.isoformat(),
+					"date_to": today.isoformat(),
+					"status_filter": "unfinished",
+					"exclude_cancelled": 1,
+					"sort_by": "oldest",
+					"limit": 20,
+					"start": 0,
+				},
+			)
+			self._assert_success(status_range, payload_range, code="PURCHASE_ORDER_SEARCHED")
+			range_items = payload_range["message"]["data"]["items"]
+			self.assertEqual(
+				[row["purchase_order_name"] for row in range_items],
+				[yesterday_order, today_order],
+				payload_range,
+			)
+			self.assertEqual(payload_range["message"]["data"]["summary"]["total_count"], 2)
+
+			summary_status, summary_payload = self._post_method(
+				"myapp.api.gateway.get_purchase_order_status_summary",
+				{
+					"supplier": supplier,
+					"company": PURCHASE_COMPANY,
+					"date_from": today.isoformat(),
+					"date_to": today.isoformat(),
+					"limit": 20,
+				},
+			)
+			self._assert_success(summary_status, summary_payload, code="PURCHASE_ORDER_STATUS_SUMMARY_FETCHED")
+			summary_items = summary_payload["message"]["data"]
+			self.assertEqual(len(summary_items), 1, summary_payload)
+			self.assertEqual(summary_items[0]["purchase_order_name"], today_order, summary_payload)
+
+			miss_status, miss_payload = self._post_method(
+				"myapp.api.gateway.search_purchase_orders_v2",
+				{
+					"supplier": supplier,
+					"company": PURCHASE_COMPANY,
+					"date_from": "2000-01-01",
+					"date_to": "2000-01-31",
+					"status_filter": "unfinished",
+					"exclude_cancelled": 1,
+					"limit": 20,
+					"start": 0,
+				},
+			)
+			self._assert_success(miss_status, miss_payload, code="PURCHASE_ORDER_SEARCHED")
+			self.assertEqual(miss_payload["message"]["data"]["items"], [])
+			self.assertEqual(miss_payload["message"]["data"]["summary"]["total_count"], 0)
+		finally:
+			self._cancel_purchase_order(today_order)
+			self._cancel_purchase_order(yesterday_order)
 
 	def test_quick_cancel_purchase_order_after_partial_payment_restores_editable_order(self):
 		data = self._quick_create_purchase_order(

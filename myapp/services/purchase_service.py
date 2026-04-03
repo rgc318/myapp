@@ -1,7 +1,7 @@
 import frappe
 import heapq
 from frappe import _
-from frappe.utils import cint, flt, nowdate
+from frappe.utils import cint, flt, getdate, nowdate
 
 from myapp.services.order_service import (
 	_build_payment_summary,
@@ -53,6 +53,26 @@ def _normalize_disabled(value):
 	if value in (None, ""):
 		return None
 	return cint(value)
+
+
+def _normalize_master_date_range(date_from: str | None = None, date_to: str | None = None):
+	resolved_date_from = _normalize_text(date_from) or None
+	resolved_date_to = _normalize_text(date_to) or None
+	if not resolved_date_from and not resolved_date_to:
+		return None, None
+	if resolved_date_from and resolved_date_to and getdate(resolved_date_from) > getdate(resolved_date_to):
+		frappe.throw(_("date_from 不能晚于 date_to。"))
+	return resolved_date_from, resolved_date_to
+
+
+def _normalize_purchase_date_range(date_from: str | None = None, date_to: str | None = None):
+	resolved_date_from = _normalize_text(date_from) or None
+	resolved_date_to = _normalize_text(date_to) or None
+	if not resolved_date_from and not resolved_date_to:
+		return None, None
+	if resolved_date_from and resolved_date_to and getdate(resolved_date_from) > getdate(resolved_date_to):
+		frappe.throw(_("date_from 不能晚于 date_to。"))
+	return resolved_date_from, resolved_date_to
 
 
 def _normalize_payload(payload):
@@ -1079,13 +1099,26 @@ def get_purchase_invoice_detail_v2(invoice_name: str):
 		raise
 
 
-def get_purchase_order_status_summary(supplier: str | None = None, company: str | None = None, limit: int = 20):
+def get_purchase_order_status_summary(
+	supplier: str | None = None,
+	company: str | None = None,
+	limit: int = 20,
+	date_from: str | None = None,
+	date_to: str | None = None,
+):
 	limit = _normalize_limit(limit)
+	resolved_date_from, resolved_date_to = _normalize_purchase_date_range(date_from, date_to)
 	filters = {}
 	if supplier:
 		filters["supplier"] = supplier
 	if company:
 		filters["company"] = company
+	if resolved_date_from and resolved_date_to:
+		filters["transaction_date"] = ["between", [resolved_date_from, resolved_date_to]]
+	elif resolved_date_from:
+		filters["transaction_date"] = [">=", resolved_date_from]
+	elif resolved_date_to:
+		filters["transaction_date"] = ["<=", resolved_date_to]
 
 	try:
 		order_rows = frappe.get_all(
@@ -1115,6 +1148,8 @@ def get_purchase_order_status_summary(supplier: str | None = None, company: str 
 				"filters": {
 					"supplier": supplier,
 					"company": company,
+					"date_from": resolved_date_from,
+					"date_to": resolved_date_to,
 					"limit": limit,
 				}
 			},
@@ -1131,6 +1166,8 @@ def search_purchase_orders_v2(
 	search_key: str | None = None,
 	supplier: str | None = None,
 	company: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
 	status_filter: str | None = None,
 	exclude_cancelled=None,
 	sort_by: str | None = None,
@@ -1143,12 +1180,19 @@ def search_purchase_orders_v2(
 	resolved_sort = _normalize_purchase_desk_sort(sort_by)
 	resolved_search_key = _normalize_text(search_key)
 	resolved_exclude_cancelled = _normalize_bool_flag(exclude_cancelled, default=False)
+	resolved_date_from, resolved_date_to = _normalize_purchase_date_range(date_from, date_to)
 
 	filters = {}
 	if supplier:
 		filters["supplier"] = supplier
 	if company:
 		filters["company"] = company
+	if resolved_date_from and resolved_date_to:
+		filters["transaction_date"] = ["between", [resolved_date_from, resolved_date_to]]
+	elif resolved_date_from:
+		filters["transaction_date"] = [">=", resolved_date_from]
+	elif resolved_date_to:
+		filters["transaction_date"] = ["<=", resolved_date_to]
 
 	or_filters = None
 	if resolved_search_key:
@@ -1268,6 +1312,8 @@ def search_purchase_orders_v2(
 						"search_key": resolved_search_key or None,
 						"supplier": supplier,
 						"company": company,
+						"date_from": resolved_date_from,
+						"date_to": resolved_date_to,
 						"status_filter": resolved_status_filter,
 						"exclude_cancelled": resolved_exclude_cancelled,
 						"sort_by": resolved_sort,
@@ -1404,6 +1450,8 @@ def list_suppliers_v2(
 	search_key: str | None = None,
 	supplier_group: str | None = None,
 	disabled: int | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
 	limit: int = 20,
 	start: int = 0,
 	sort_by: str = "modified",
@@ -1412,12 +1460,19 @@ def list_suppliers_v2(
 	limit = _normalize_limit(limit)
 	start = _normalize_start(start)
 	sort_by, sort_order = _normalize_sort(sort_by, sort_order)
+	resolved_date_from, resolved_date_to = _normalize_master_date_range(date_from, date_to)
 
 	filters = {}
 	if _normalize_text(supplier_group):
 		filters["supplier_group"] = _normalize_text(supplier_group)
 	if _normalize_disabled(disabled) is not None and _safe_doc_field("Supplier", "disabled"):
 		filters["disabled"] = _normalize_disabled(disabled)
+	if resolved_date_from and resolved_date_to:
+		filters["creation"] = ["between", [f"{resolved_date_from} 00:00:00", f"{resolved_date_to} 23:59:59"]]
+	elif resolved_date_from:
+		filters["creation"] = [">=", f"{resolved_date_from} 00:00:00"]
+	elif resolved_date_to:
+		filters["creation"] = ["<=", f"{resolved_date_to} 23:59:59"]
 
 	search_key = _normalize_text(search_key)
 	or_filters = None
@@ -1472,6 +1527,15 @@ def list_suppliers_v2(
 			"start": start,
 			"limit": limit,
 			"has_more": start + len(rows) < total_count,
+			"filters": {
+				"search_key": search_key or None,
+				"supplier_group": _normalize_text(supplier_group) or None,
+				"disabled": _normalize_disabled(disabled),
+				"date_from": resolved_date_from,
+				"date_to": resolved_date_to,
+				"sort_by": sort_by,
+				"sort_order": sort_order,
+			},
 		},
 	}
 

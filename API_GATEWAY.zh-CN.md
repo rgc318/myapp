@@ -942,6 +942,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `search_key: str | None`
 - `customer_group: str | None`
 - `disabled: int | None`
+- `date_from: str | None`
+- `date_to: str | None`
 - `limit: int = 20`
 - `start: int = 0`
 - `sort_by: str = "modified"`
@@ -952,6 +954,10 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 返回客户主数据列表
 - 聚合默认联系人与默认地址摘要，便于移动端直接展示
 - 支持按客户名称 / 编码 / 手机 / 邮箱模糊搜索
+- 支持按客户主数据创建时间 `creation` 做日期区间过滤
+- 日期区间按整天处理：
+  - `date_from` -> `00:00:00`
+  - `date_to` -> `23:59:59`
 
 返回重点字段：
 
@@ -1047,6 +1053,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `search_key: str | None`
 - `enabled: int | None`
 - `must_be_whole_number: int | None`
+- `date_from: str | None`
+- `date_to: str | None`
 - `limit: int = 20`
 - `start: int = 0`
 - `sort_by: str = "modified"`
@@ -1057,6 +1065,10 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 返回单位主数据列表
 - 支持按单位名称 / 符号 / 描述模糊搜索
 - 支持按启停状态、是否必须整数筛选
+- 支持按单位主数据创建时间 `creation` 做日期区间过滤
+- 日期区间按整天处理：
+  - `date_from` -> `00:00:00`
+  - `date_to` -> `23:59:59`
 
 返回重点字段：
 
@@ -1229,6 +1241,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `search_key: str | None`
 - `warehouse: str | None`
 - `company: str | None`
+- `date_from: str | None`
+- `date_to: str | None`
 - `limit: int = 20`
 - `start: int = 0`
 - `item_group: str | None`
@@ -1243,6 +1257,10 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 行为：
 
 - 返回商品列表工作台所需的基础摘要
+- 支持按商品主数据创建时间 `creation` 做日期区间过滤
+- 日期区间按整天处理：
+  - `date_from` -> `00:00:00`
+  - `date_to` -> `23:59:59`
 - 当前返回重点包括：
   - 商品基础信息
   - 启停状态
@@ -1575,6 +1593,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 
 - `customer: str | None`
 - `company: str | None`
+- `date_from: str | None`
+- `date_to: str | None`
 - `limit: int = 20`
 
 行为：
@@ -1583,6 +1603,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 复用销售详情聚合状态口径
 - 适合首页待办、列表卡片和最近订单展示
 - 该接口更适合“摘要卡片 / 状态概览”，不建议再把它当作销售工作台的真实搜索接口使用
+- 若传入 `date_from/date_to`，会按 `Sales Order.transaction_date` 过滤摘要范围
 
 当前返回重点字段：
 
@@ -1608,6 +1629,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `search_key: str | None`
 - `customer: str | None`
 - `company: str | None`
+- `date_from: str | None`
+- `date_to: str | None`
 - `status_filter: str | None`
 - `exclude_cancelled: bool | None`
 - `sort_by: str | None`
@@ -1617,7 +1640,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 行为：
 
 - 面向销售工作台的真实检索接口
-- 支持关键词、客户、公司、状态、排序、分页联动查询
+- 支持关键词、客户、公司、日期区间、状态、排序、分页联动查询
 - 支持默认排除已作废订单，避免未来销售工作台把历史作废单据混入有效订单列表
 - 当前实现已改为批量聚合订单、订单明细、发票和付款引用数据
 - 不再为工作台列表中的每一条订单逐条调用 `get_sales_order_detail`
@@ -1628,6 +1651,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 返回两层数据：
   - `items`：当前命中的销售订单摘要列表
   - `summary`：当前检索口径下的未完成 / 待发货 / 待收款 / 已完成 / 已作废计数
+- 日期区间过滤作用于 `Sales Order.transaction_date`
 
 ### get_delivery_note_detail_v2
 
@@ -2273,6 +2297,8 @@ frappe.call({
 
 - `supplier: str | None`
 - `company: str | None`
+- `date_from: str | None`
+- `date_to: str | None`
 - `limit: int | None = 20`
 
 行为：
@@ -2280,6 +2306,7 @@ frappe.call({
 - 返回采购订单列表页可直接使用的状态摘要
 - 每条记录都基于详情聚合口径构造，避免前端自己推导“已收货 / 已开票 / 已付款 / 是否完成”
 - 该接口更适合“摘要卡片 / 状态概览”，不建议再把它当作采购工作台的真实搜索接口使用
+- 若传入 `date_from/date_to`，会按 `Purchase Order.transaction_date` 过滤摘要范围
 
 ### search_purchase_orders_v2
 
@@ -2292,6 +2319,8 @@ frappe.call({
 - `search_key: str | None`
 - `supplier: str | None`
 - `company: str | None`
+- `date_from: str | None`
+- `date_to: str | None`
 - `status_filter: str | None`
 - `exclude_cancelled: bool | None`
 - `sort_by: str | None`
@@ -2301,7 +2330,7 @@ frappe.call({
 行为：
 
 - 面向采购工作台的真实检索接口
-- 支持关键词、公司、状态、排序、分页联动查询
+- 支持关键词、公司、日期区间、状态、排序、分页联动查询
 - 支持默认排除已作废订单，避免有效订单列表被历史作废单据淹没
 - 当前实现已改为批量聚合订单、订单明细、发票和付款引用数据
 - 不再为工作台列表中的每一条采购订单逐条调用 `get_purchase_order_detail_v2`
@@ -2312,6 +2341,7 @@ frappe.call({
 - 返回两层数据：
   - `items`：当前命中的采购订单摘要列表
   - `summary`：当前检索口径下的未完成 / 待收货 / 待付款 / 已完成 / 已作废计数
+- 日期区间过滤作用于 `Purchase Order.transaction_date`
 
 ### get_purchase_receipt_detail_v2
 
@@ -2375,6 +2405,8 @@ frappe.call({
 - `search_key: str | None`
 - `supplier_group: str | None`
 - `disabled: int | bool | None`
+- `date_from: str | None`
+- `date_to: str | None`
 - `limit: int | None = 20`
 - `start: int | None = 0`
 - `sort_by: str | None = "modified"`
@@ -2384,6 +2416,10 @@ frappe.call({
 
 - 返回供应商列表摘要
 - 支持模糊搜索、分组筛选、启停状态筛选和分页
+- 支持按供应商主数据创建时间 `creation` 做日期区间过滤
+- 日期区间按整天处理：
+  - `date_from` -> `00:00:00`
+  - `date_to` -> `23:59:59`
 - 每条记录包含默认联系人、默认地址和最近采购摘要
 
 ### get_supplier_detail_v2
