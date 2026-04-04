@@ -67,7 +67,7 @@
 - 采购快捷链路（规划中）：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
 - 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`、`create_supplier_v2`、`update_supplier_v2`、`disable_supplier_v2`
 - 采购更新与作废：`update_purchase_order_v2`、`update_purchase_order_items_v2`、`cancel_purchase_order_v2`、`cancel_purchase_receipt_v2`、`cancel_purchase_invoice_v2`、`cancel_supplier_payment`
-- 报表与分析：`get_business_report_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`
+- 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`
 - 通用辅助：`confirm_pending_document`
 
 ### 统一成功响应格式
@@ -132,12 +132,18 @@
 - `get_business_report_v1`
   - 统一经营报表聚合接口
   - 保留总览、销售、采购、应收应付和资金趋势等整包数据
+- `get_business_report_overview_v1`
+  - 只返回首页经营总览 KPI
+  - 适合总览卡片区按需加载，不再携带明细表
 - `get_sales_report_v1`
   - 只返回销售分析所需总览、趋势、商品排行与小时分布
   - 适合销售分析页按需加载，不再重复拉取采购与资金明细
 - `get_purchase_report_v1`
   - 只返回采购分析所需总览、趋势、商品排行与小时分布
   - 适合采购分析页按需加载，不再重复拉取销售与资金明细
+- `get_receivable_payable_report_v1`
+  - 只返回应收应付总览与客户/供应商聚合表
+  - 适合应收账款表、应付账款表按需加载
 - `get_cashflow_report_v1`
   - 只返回资金总览和资金趋势
   - 适合移动端资金趋势图或资金模块首页

@@ -4,15 +4,69 @@ from unittest.mock import patch
 import frappe
 
 from myapp.services.report_service import (
+	get_business_report_overview_v1,
 	get_business_report_v1,
 	get_cashflow_report_v1,
 	get_purchase_report_v1,
+	get_receivable_payable_report_v1,
 	get_sales_report_v1,
 	list_cashflow_entries_v1,
 )
 
 
 class TestReportService(TestCase):
+	@patch("myapp.services.report_service._build_business_report_overview_v1_data")
+	def test_get_business_report_overview_v1_returns_overview_and_meta(self, mock_build_business_report_overview_v1_data):
+		mock_build_business_report_overview_v1_data.return_value = {
+			"overview": {
+				"sales_amount_total": 1200,
+				"purchase_amount_total": 900,
+				"received_amount_total": 700,
+				"paid_amount_total": 300,
+				"net_cashflow_total": 400,
+				"receivable_outstanding_total": 100,
+				"payable_outstanding_total": 80,
+			}
+		}
+
+		result = get_business_report_overview_v1(company="Test Company", date_from="2026-04-01", date_to="2026-04-02")
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["overview"]["sales_amount_total"], 1200)
+		self.assertEqual(result["data"]["overview"]["net_cashflow_total"], 400)
+		self.assertEqual(result["data"]["meta"]["company"], "Test Company")
+		mock_build_business_report_overview_v1_data.assert_called_once_with(
+			company="Test Company",
+			date_from="2026-04-01",
+			date_to="2026-04-02",
+		)
+
+	@patch("myapp.services.report_service._build_receivable_payable_report_v1_data")
+	def test_get_receivable_payable_report_v1_returns_tables_and_meta(self, mock_build_receivable_payable_report_v1_data):
+		mock_build_receivable_payable_report_v1_data.return_value = {
+			"overview": {
+				"receivable_outstanding_total": 500,
+				"payable_outstanding_total": 260,
+			},
+			"tables": {
+				"receivable_summary": [{"name": "Customer A", "count": 2, "total_amount": 1000, "paid_amount": 500, "outstanding_amount": 500}],
+				"payable_summary": [{"name": "Supplier A", "count": 1, "total_amount": 260, "paid_amount": 0, "outstanding_amount": 260}],
+			},
+		}
+
+		result = get_receivable_payable_report_v1(company="Test Company", date_from="2026-04-01", date_to="2026-04-02", limit=9)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["overview"]["receivable_outstanding_total"], 500)
+		self.assertEqual(result["data"]["tables"]["payable_summary"][0]["name"], "Supplier A")
+		self.assertEqual(result["data"]["meta"]["limit"], 9)
+		mock_build_receivable_payable_report_v1_data.assert_called_once_with(
+			company="Test Company",
+			date_from="2026-04-01",
+			date_to="2026-04-02",
+			limit=9,
+		)
+
 	@patch("myapp.services.report_service._build_sales_report_v1_data")
 	def test_get_sales_report_v1_returns_sales_tables_and_meta(self, mock_build_sales_report_v1_data):
 		mock_build_sales_report_v1_data.return_value = {

@@ -60,9 +60,11 @@ from .purchase_api import disable_supplier_v2 as disable_supplier_v2_service
 from .purchase_api import update_supplier_v2 as update_supplier_v2_service
 from .purchase_api import update_purchase_order_items_v2 as update_purchase_order_items_v2_service
 from .purchase_api import update_purchase_order_v2 as update_purchase_order_v2_service
+from .reports_api import get_business_report_overview_v1 as get_business_report_overview_v1_service
 from .reports_api import get_business_report_v1 as get_business_report_v1_service
 from .reports_api import get_cashflow_report_v1 as get_cashflow_report_v1_service
 from .reports_api import get_purchase_report_v1 as get_purchase_report_v1_service
+from .reports_api import get_receivable_payable_report_v1 as get_receivable_payable_report_v1_service
 from .reports_api import get_sales_report_v1 as get_sales_report_v1_service
 from .reports_api import list_cashflow_entries_v1 as list_cashflow_entries_v1_service
 from .returns_api import get_return_source_context_v2 as get_return_source_context_v2_service
@@ -147,6 +149,22 @@ def get_business_report_v1(
 
 
 @frappe.whitelist()
+def get_business_report_overview_v1(
+	company: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: get_business_report_overview_v1_service(
+			company=company,
+			date_from=date_from,
+			date_to=date_to,
+		),
+		success_code="BUSINESS_REPORT_OVERVIEW_FETCHED",
+	)
+
+
+@frappe.whitelist()
 def get_cashflow_report_v1(
 	company: str | None = None,
 	date_from: str | None = None,
@@ -159,6 +177,24 @@ def get_cashflow_report_v1(
 			date_to=date_to,
 		),
 		success_code="CASHFLOW_REPORT_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_receivable_payable_report_v1(
+	company: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	limit: int = 10,
+):
+	return _handle_gateway_call(
+		lambda: get_receivable_payable_report_v1_service(
+			company=company,
+			date_from=date_from,
+			date_to=date_to,
+			limit=limit,
+		),
+		success_code="RECEIVABLE_PAYABLE_REPORT_FETCHED",
 	)
 
 

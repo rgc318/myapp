@@ -16,6 +16,7 @@ from myapp.api.gateway import (
 	create_supplier_v2,
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
+	get_business_report_overview_v1,
 	get_business_report_v1,
 	get_cashflow_report_v1,
 	get_purchase_report_v1,
@@ -23,6 +24,7 @@ from myapp.api.gateway import (
 	get_purchase_order_detail_v2,
 	get_purchase_order_status_summary,
 	get_purchase_receipt_detail_v2,
+	get_receivable_payable_report_v1,
 	get_return_source_context_v2,
 	get_sales_report_v1,
 	list_cashflow_entries_v1,
@@ -81,10 +83,12 @@ class TestGatewayWrappers(TestCase):
 			create_order,
 			create_purchase_order,
 			quick_create_purchase_order_v2,
+			get_business_report_overview_v1,
 			get_business_report_v1,
 			get_cashflow_report_v1,
 			get_sales_report_v1,
 			get_purchase_report_v1,
+			get_receivable_payable_report_v1,
 			list_cashflow_entries_v1,
 			get_purchase_order_detail_v2,
 			get_purchase_order_status_summary,
@@ -427,6 +431,18 @@ class TestGatewayWrappers(TestCase):
 			limit=8,
 		)
 
+	@patch("myapp.api.gateway.get_business_report_overview_v1_service")
+	def test_get_business_report_overview_v1_passes_filters_to_service(self, mock_get_business_report_overview_v1_service):
+		mock_get_business_report_overview_v1_service.return_value = {"status": "success", "data": {"overview": {}}}
+
+		get_business_report_overview_v1(company="Test Company", date_from="2026-03-01", date_to="2026-03-31")
+
+		mock_get_business_report_overview_v1_service.assert_called_once_with(
+			company="Test Company",
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+		)
+
 	@patch("myapp.api.gateway.get_sales_report_v1_service")
 	def test_get_sales_report_v1_passes_filters_to_service(self, mock_get_sales_report_v1_service):
 		mock_get_sales_report_v1_service.return_value = {"status": "success", "data": {"overview": {}, "tables": {}}}
@@ -451,6 +467,19 @@ class TestGatewayWrappers(TestCase):
 			date_from="2026-03-01",
 			date_to="2026-03-31",
 			limit=7,
+		)
+
+	@patch("myapp.api.gateway.get_receivable_payable_report_v1_service")
+	def test_get_receivable_payable_report_v1_passes_filters_to_service(self, mock_get_receivable_payable_report_v1_service):
+		mock_get_receivable_payable_report_v1_service.return_value = {"status": "success", "data": {"overview": {}, "tables": {}}}
+
+		get_receivable_payable_report_v1(company="Test Company", date_from="2026-03-01", date_to="2026-03-31", limit=5)
+
+		mock_get_receivable_payable_report_v1_service.assert_called_once_with(
+			company="Test Company",
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+			limit=5,
 		)
 
 	@patch("myapp.api.gateway.quick_create_purchase_order_v2_service")

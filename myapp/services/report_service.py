@@ -614,6 +614,107 @@ def _build_cashflow_overview(*, company: str | None, date_from: str, date_to: st
 	}
 
 
+def _build_business_report_overview_v1_data(*, company: str | None, date_from: str, date_to: str):
+	order_amount_expr = "ifnull(rounded_total, ifnull(grand_total, 0))"
+	invoice_outstanding_expr = "ifnull(outstanding_amount, 0)"
+	cashflow_overview = _build_cashflow_overview(
+		company=company,
+		date_from=date_from,
+		date_to=date_to,
+	)
+
+	return {
+		"overview": {
+			"sales_amount_total": _make_scalar_aggregate(
+				"tabSales Order",
+				date_field="transaction_date",
+				aggregate_field_sql=order_amount_expr,
+				company=company,
+				date_from=date_from,
+				date_to=date_to,
+			),
+			"purchase_amount_total": _make_scalar_aggregate(
+				"tabPurchase Order",
+				date_field="transaction_date",
+				aggregate_field_sql=order_amount_expr,
+				company=company,
+				date_from=date_from,
+				date_to=date_to,
+			),
+			"received_amount_total": cashflow_overview["received_amount_total"],
+			"paid_amount_total": cashflow_overview["paid_amount_total"],
+			"net_cashflow_total": cashflow_overview["net_cashflow_total"],
+			"receivable_outstanding_total": _make_scalar_aggregate(
+				"tabSales Invoice",
+				date_field="posting_date",
+				aggregate_field_sql=invoice_outstanding_expr,
+				company=company,
+				date_from=date_from,
+				date_to=date_to,
+				extra_sql="is_return = 0",
+			),
+			"payable_outstanding_total": _make_scalar_aggregate(
+				"tabPurchase Invoice",
+				date_field="posting_date",
+				aggregate_field_sql=invoice_outstanding_expr,
+				company=company,
+				date_from=date_from,
+				date_to=date_to,
+				extra_sql="is_return = 0",
+			),
+		},
+	}
+
+
+def _build_receivable_payable_report_v1_data(*, company: str | None, date_from: str, date_to: str, limit: int):
+	return {
+		"overview": {
+			"receivable_outstanding_total": _make_scalar_aggregate(
+				"tabSales Invoice",
+				date_field="posting_date",
+				aggregate_field_sql="ifnull(outstanding_amount, 0)",
+				company=company,
+				date_from=date_from,
+				date_to=date_to,
+				extra_sql="is_return = 0",
+			),
+			"payable_outstanding_total": _make_scalar_aggregate(
+				"tabPurchase Invoice",
+				date_field="posting_date",
+				aggregate_field_sql="ifnull(outstanding_amount, 0)",
+				company=company,
+				date_from=date_from,
+				date_to=date_to,
+				extra_sql="is_return = 0",
+			),
+		},
+		"tables": {
+			"receivable_summary": _serialize_invoice_group_rows(
+				_make_invoice_grouped_rows(
+					"tabSales Invoice",
+					party_field="customer",
+					date_field="posting_date",
+					company=company,
+					date_from=date_from,
+					date_to=date_to,
+					limit=limit,
+				)
+			),
+			"payable_summary": _serialize_invoice_group_rows(
+				_make_invoice_grouped_rows(
+					"tabPurchase Invoice",
+					party_field="supplier",
+					date_field="posting_date",
+					company=company,
+					date_from=date_from,
+					date_to=date_to,
+					limit=limit,
+				)
+			),
+		},
+	}
+
+
 def _build_sales_report_v1_data(*, company: str | None, date_from: str, date_to: str, limit: int):
 	order_amount_expr = "ifnull(rounded_total, ifnull(grand_total, 0))"
 	invoice_outstanding_expr = "ifnull(outstanding_amount, 0)"
@@ -796,6 +897,32 @@ def get_cashflow_report_v1(
 	}
 
 
+def get_business_report_overview_v1(
+	company: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+):
+	resolved_company = _normalize_company(company)
+	resolved_date_from, resolved_date_to = _resolve_report_date_range(date_from, date_to)
+	report_data = _build_business_report_overview_v1_data(
+		company=resolved_company,
+		date_from=resolved_date_from,
+		date_to=resolved_date_to,
+	)
+	return {
+		"status": "success",
+		"message": _("经营总览获取成功。"),
+		"data": {
+			**report_data,
+			"meta": {
+				"company": resolved_company,
+				"date_from": resolved_date_from,
+				"date_to": resolved_date_to,
+			},
+		},
+	}
+
+
 def get_sales_report_v1(
 	company: str | None = None,
 	date_from: str | None = None,
@@ -844,6 +971,36 @@ def get_purchase_report_v1(
 	return {
 		"status": "success",
 		"message": _("采购分析报表获取成功。"),
+		"data": {
+			**report_data,
+			"meta": {
+				"company": resolved_company,
+				"date_from": resolved_date_from,
+				"date_to": resolved_date_to,
+				"limit": resolved_limit,
+			},
+		},
+	}
+
+
+def get_receivable_payable_report_v1(
+	company: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	limit: int = DEFAULT_REPORT_LIMIT,
+):
+	resolved_limit = _resolve_report_limit(limit)
+	resolved_company = _normalize_company(company)
+	resolved_date_from, resolved_date_to = _resolve_report_date_range(date_from, date_to)
+	report_data = _build_receivable_payable_report_v1_data(
+		company=resolved_company,
+		date_from=resolved_date_from,
+		date_to=resolved_date_to,
+		limit=resolved_limit,
+	)
+	return {
+		"status": "success",
+		"message": _("往来账款报表获取成功。"),
 		"data": {
 			**report_data,
 			"meta": {

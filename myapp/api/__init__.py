@@ -38,9 +38,11 @@ from .purchase_api import (
 	update_purchase_order_v2,
 )
 from .reports_api import (
+	get_business_report_overview_v1,
 	get_business_report_v1,
 	get_cashflow_report_v1,
 	get_purchase_report_v1,
+	get_receivable_payable_report_v1,
 	get_sales_report_v1,
 	list_cashflow_entries_v1,
 )
@@ -65,9 +67,11 @@ __all__ = [
 	"create_purchase_invoice_from_receipt",
 	"create_purchase_order",
 	"get_purchase_company_context",
+	"get_business_report_overview_v1",
 	"get_business_report_v1",
 	"get_cashflow_report_v1",
 	"get_purchase_report_v1",
+	"get_receivable_payable_report_v1",
 	"get_sales_report_v1",
 	"create_sales_invoice",
 	"create_uom_v2",

@@ -1281,6 +1281,60 @@ class GatewayHttpTestCase(TestCase):
 
 		self._assert_validation_error(status_code, payload)
 
+	def test_get_business_report_overview_v1_matches_business_report_overview(self):
+		request_payload = {
+			"company": SALES_COMPANY,
+			"date_from": "2026-03-01",
+			"date_to": "2026-04-02",
+		}
+		status_code, response = self._call_gateway("myapp.api.gateway.get_business_report_overview_v1", request_payload)
+		self._assert_success(status_code, response, code="BUSINESS_REPORT_OVERVIEW_FETCHED")
+
+		business_status, business_response = self._call_gateway(
+			"myapp.api.gateway.get_business_report_v1",
+			{**request_payload, "limit": 5},
+		)
+		self._assert_success(business_status, business_response, code="BUSINESS_REPORT_FETCHED")
+
+		overview_data = response["message"]["data"]
+		business_overview = business_response["message"]["data"]["overview"]
+		self.assertEqual(overview_data["overview"], business_overview)
+
+	def test_get_receivable_payable_report_v1_matches_business_report_tables(self):
+		request_payload = {
+			"company": SALES_COMPANY,
+			"date_from": "2026-03-01",
+			"date_to": "2026-04-02",
+			"limit": 5,
+		}
+		status_code, response = self._call_gateway("myapp.api.gateway.get_receivable_payable_report_v1", request_payload)
+		self._assert_success(status_code, response, code="RECEIVABLE_PAYABLE_REPORT_FETCHED")
+
+		business_status, business_response = self._call_gateway(
+			"myapp.api.gateway.get_business_report_v1",
+			request_payload,
+		)
+		self._assert_success(business_status, business_response, code="BUSINESS_REPORT_FETCHED")
+
+		report_data = response["message"]["data"]
+		business_data = business_response["message"]["data"]
+		self.assertEqual(
+			report_data["overview"]["receivable_outstanding_total"],
+			business_data["overview"]["receivable_outstanding_total"],
+		)
+		self.assertEqual(
+			report_data["overview"]["payable_outstanding_total"],
+			business_data["overview"]["payable_outstanding_total"],
+		)
+		self.assertEqual(
+			sorted(report_data["tables"]["receivable_summary"], key=lambda row: (row["outstanding_amount"], row["name"])),
+			sorted(business_data["tables"]["receivable_summary"], key=lambda row: (row["outstanding_amount"], row["name"])),
+		)
+		self.assertEqual(
+			sorted(report_data["tables"]["payable_summary"], key=lambda row: (row["outstanding_amount"], row["name"])),
+			sorted(business_data["tables"]["payable_summary"], key=lambda row: (row["outstanding_amount"], row["name"])),
+		)
+
 	def test_list_cashflow_entries_v1_returns_paginated_rows(self):
 		status_code, response = self._call_gateway(
 			"myapp.api.gateway.list_cashflow_entries_v1",

@@ -52,6 +52,27 @@
 
 ### 本期新增接口
 
+#### `get_business_report_overview_v1`
+
+用途：
+
+- 提供报表首页卡片区所需 KPI
+
+建议返回：
+
+- `overview`
+  - `sales_amount_total`
+  - `purchase_amount_total`
+  - `received_amount_total`
+  - `paid_amount_total`
+  - `net_cashflow_total`
+  - `receivable_outstanding_total`
+  - `payable_outstanding_total`
+- `meta`
+  - `company`
+  - `date_from`
+  - `date_to`
+
 #### `get_sales_report_v1`
 
 用途：
@@ -147,6 +168,26 @@
   - `date_from`
   - `date_to`
 
+#### `get_receivable_payable_report_v1`
+
+用途：
+
+- 提供应收账款表和应付账款表所需总览与聚合表
+
+建议返回：
+
+- `overview`
+  - `receivable_outstanding_total`
+  - `payable_outstanding_total`
+- `tables`
+  - `receivable_summary`
+  - `payable_summary`
+- `meta`
+  - `company`
+  - `date_from`
+  - `date_to`
+  - `limit`
+
 ## 统计口径
 
 ### 统一过滤规则
@@ -192,6 +233,7 @@
 1. `get_business_report_overview_v1`
 2. `get_sales_report_v1`
 3. `get_purchase_report_v1`
+4. `get_receivable_payable_report_v1`
 
 拆分原则：
 
@@ -222,6 +264,8 @@
 
 - 销售分析请求 `get_sales_report_v1`
 - 采购分析请求 `get_purchase_report_v1`
+- 总览卡片请求 `get_business_report_overview_v1`
+- 应收/应付表请求 `get_receivable_payable_report_v1`
 - 趋势图请求 `get_cashflow_report_v1`
 - 明细列表请求 `list_cashflow_entries_v1`
 
