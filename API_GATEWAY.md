@@ -51,7 +51,7 @@ This document only covers custom APIs from this app. ERPNext / Frappe native API
 
 - Sales and product: `search_product`, `create_order`, `submit_delivery`, `create_sales_invoice`, `update_payment_status`, `process_sales_return`
 - Purchase and settlement: `create_purchase_order`, `receive_purchase_order`, `create_purchase_invoice`, `create_purchase_invoice_from_receipt`, `record_supplier_payment`, `process_purchase_return`, `get_purchase_order_detail_v2`, `get_purchase_order_status_summary`, `get_purchase_receipt_detail_v2`, `get_purchase_invoice_detail_v2`, `get_supplier_purchase_context`, `list_suppliers_v2`, `get_supplier_detail_v2`, `create_supplier_v2`, `update_supplier_v2`, `disable_supplier_v2`, `update_purchase_order_v2`, `update_purchase_order_items_v2`, `cancel_purchase_order_v2`, `cancel_purchase_receipt_v2`, `cancel_purchase_invoice_v2`, `cancel_supplier_payment`
-- Reports and analytics: `get_business_report_v1`, `get_cashflow_report_v1`, `list_cashflow_entries_v1`
+- Reports and analytics: `get_business_report_v1`, `get_sales_report_v1`, `get_purchase_report_v1`, `get_cashflow_report_v1`, `list_cashflow_entries_v1`
 - Shared utilities: `confirm_pending_document`
 
 ### Unified Success Response
@@ -116,6 +116,12 @@ The current first-stage production split for reporting adds:
 - `get_business_report_v1`
   - unified business report payload
   - still returns overview, sales, purchase, receivable/payable, and cashflow-related aggregates in one response
+- `get_sales_report_v1`
+  - returns only sales-analysis overview, trends, product ranking, and hourly distribution
+  - intended for sales-analysis pages that should not re-fetch purchase or cashflow detail
+- `get_purchase_report_v1`
+  - returns only purchase-analysis overview, trends, product ranking, and hourly distribution
+  - intended for purchase-analysis pages that should not re-fetch sales or cashflow detail
 - `get_cashflow_report_v1`
   - returns only cashflow overview and trend data
   - intended for dedicated cashflow dashboards

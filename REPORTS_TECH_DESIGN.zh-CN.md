@@ -52,6 +52,54 @@
 
 ### 本期新增接口
 
+#### `get_sales_report_v1`
+
+用途：
+
+- 提供销售分析页所需的总览 KPI
+- 提供销售趋势、商品排行与小时分布
+
+建议返回：
+
+- `overview`
+  - `sales_amount_total`
+  - `received_amount_total`
+  - `receivable_outstanding_total`
+- `tables`
+  - `sales_summary`
+  - `sales_trend`
+  - `sales_trend_hourly`
+  - `sales_product_summary`
+- `meta`
+  - `company`
+  - `date_from`
+  - `date_to`
+  - `limit`
+
+#### `get_purchase_report_v1`
+
+用途：
+
+- 提供采购分析页所需的总览 KPI
+- 提供采购趋势、商品排行与小时分布
+
+建议返回：
+
+- `overview`
+  - `purchase_amount_total`
+  - `paid_amount_total`
+  - `payable_outstanding_total`
+- `tables`
+  - `purchase_summary`
+  - `purchase_trend`
+  - `purchase_trend_hourly`
+  - `purchase_product_summary`
+- `meta`
+  - `company`
+  - `date_from`
+  - `date_to`
+  - `limit`
+
 #### `get_cashflow_report_v1`
 
 用途：
@@ -172,7 +220,9 @@
 
 在后端现金流接口拆分完成后，移动端应改为：
 
+- 销售分析请求 `get_sales_report_v1`
+- 采购分析请求 `get_purchase_report_v1`
 - 趋势图请求 `get_cashflow_report_v1`
 - 明细列表请求 `list_cashflow_entries_v1`
 
-不要再通过提高 `limit` 来模拟“全量明细”。
+不要再通过提高 `limit` 来模拟“全量明细”，也不要继续让销售/采购分析页重复拉取整包经营报表。

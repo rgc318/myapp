@@ -3,10 +3,74 @@ from unittest.mock import patch
 
 import frappe
 
-from myapp.services.report_service import get_business_report_v1, get_cashflow_report_v1, list_cashflow_entries_v1
+from myapp.services.report_service import (
+	get_business_report_v1,
+	get_cashflow_report_v1,
+	get_purchase_report_v1,
+	get_sales_report_v1,
+	list_cashflow_entries_v1,
+)
 
 
 class TestReportService(TestCase):
+	@patch("myapp.services.report_service._build_sales_report_v1_data")
+	def test_get_sales_report_v1_returns_sales_tables_and_meta(self, mock_build_sales_report_v1_data):
+		mock_build_sales_report_v1_data.return_value = {
+			"overview": {
+				"sales_amount_total": 1200,
+				"received_amount_total": 800,
+				"receivable_outstanding_total": 400,
+			},
+			"tables": {
+				"sales_summary": [{"name": "Customer A", "count": 2, "amount": 1200}],
+				"sales_trend": [{"trend_date": "2026-04-01", "count": 2, "amount": 1200}],
+				"sales_trend_hourly": [{"trend_hour": 9, "count": 2, "amount": 1200}],
+				"sales_product_summary": [{"item_key": "SKU-1", "item_name": "Item A", "qty": 3, "amount": 1200}],
+			},
+		}
+
+		result = get_sales_report_v1(company="Test Company", date_from="2026-04-01", date_to="2026-04-02", limit=8)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["overview"]["sales_amount_total"], 1200)
+		self.assertEqual(result["data"]["tables"]["sales_summary"][0]["name"], "Customer A")
+		self.assertEqual(result["data"]["meta"]["limit"], 8)
+		mock_build_sales_report_v1_data.assert_called_once_with(
+			company="Test Company",
+			date_from="2026-04-01",
+			date_to="2026-04-02",
+			limit=8,
+		)
+
+	@patch("myapp.services.report_service._build_purchase_report_v1_data")
+	def test_get_purchase_report_v1_returns_purchase_tables_and_meta(self, mock_build_purchase_report_v1_data):
+		mock_build_purchase_report_v1_data.return_value = {
+			"overview": {
+				"purchase_amount_total": 900,
+				"paid_amount_total": 300,
+				"payable_outstanding_total": 600,
+			},
+			"tables": {
+				"purchase_summary": [{"name": "Supplier A", "count": 2, "amount": 900}],
+				"purchase_trend": [{"trend_date": "2026-04-01", "count": 2, "amount": 900}],
+				"purchase_trend_hourly": [{"trend_hour": 10, "count": 2, "amount": 900}],
+				"purchase_product_summary": [{"item_key": "MAT-1", "item_name": "Material A", "qty": 6, "amount": 900}],
+			},
+		}
+
+		result = get_purchase_report_v1(company="Test Company", date_from="2026-04-01", date_to="2026-04-02", limit=6)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["overview"]["purchase_amount_total"], 900)
+		self.assertEqual(result["data"]["tables"]["purchase_summary"][0]["name"], "Supplier A")
+		self.assertEqual(result["data"]["meta"]["limit"], 6)
+		mock_build_purchase_report_v1_data.assert_called_once_with(
+			company="Test Company",
+			date_from="2026-04-01",
+			date_to="2026-04-02",
+			limit=6,
+		)
+
 	@patch("myapp.services.report_service.nowdate", return_value="2026-04-02")
 	@patch("myapp.services.report_service._make_payment_type_totals")
 	@patch("myapp.services.report_service._make_cashflow_trend_rows")

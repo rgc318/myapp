@@ -37,7 +37,13 @@ from .purchase_api import (
 	update_purchase_order_items_v2,
 	update_purchase_order_v2,
 )
-from .reports_api import get_business_report_v1, get_cashflow_report_v1, list_cashflow_entries_v1
+from .reports_api import (
+	get_business_report_v1,
+	get_cashflow_report_v1,
+	get_purchase_report_v1,
+	get_sales_report_v1,
+	list_cashflow_entries_v1,
+)
 from .returns_api import get_return_source_context_v2
 from .settlement_api import cancel_payment_entry, confirm_pending_document, process_sales_return, update_payment_status
 from .uoms_api import create_uom_v2, delete_uom_v2, disable_uom_v2, get_uom_detail_v2, list_uoms_v2, update_uom_v2
@@ -61,6 +67,8 @@ __all__ = [
 	"get_purchase_company_context",
 	"get_business_report_v1",
 	"get_cashflow_report_v1",
+	"get_purchase_report_v1",
+	"get_sales_report_v1",
 	"create_sales_invoice",
 	"create_uom_v2",
 	"disable_customer_v2",
