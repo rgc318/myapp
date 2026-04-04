@@ -67,6 +67,7 @@
 - 采购快捷链路（规划中）：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
 - 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`、`create_supplier_v2`、`update_supplier_v2`、`disable_supplier_v2`
 - 采购更新与作废：`update_purchase_order_v2`、`update_purchase_order_items_v2`、`cancel_purchase_order_v2`、`cancel_purchase_receipt_v2`、`cancel_purchase_invoice_v2`、`cancel_supplier_payment`
+- 报表与分析：`get_business_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`
 - 通用辅助：`confirm_pending_document`
 
 ### 统一成功响应格式
@@ -123,6 +124,37 @@
 - `409` 重复、工作流冲突、库存不足
 - `422` 参数或业务校验失败
 - `500` 系统内部错误
+
+### 报表与分析接口补充说明
+
+当前报表域的一期正式化拆分包含：
+
+- `get_business_report_v1`
+  - 统一经营报表聚合接口
+  - 保留总览、销售、采购、应收应付和资金趋势等整包数据
+- `get_cashflow_report_v1`
+  - 只返回资金总览和资金趋势
+  - 适合移动端资金趋势图或资金模块首页
+- `list_cashflow_entries_v1`
+  - 只返回资金流水明细
+  - 支持分页参数：
+    - `page`
+    - `page_size`
+  - 返回分页信息：
+    - `page`
+    - `page_size`
+    - `total_count`
+    - `has_more`
+
+当前资金口径：
+
+- 基于 `Payment Entry`
+- 日期字段使用 `posting_date`
+- `payment_type = 'Receive'` 计入收入
+- `payment_type = 'Pay'` 计入支出
+- 其他类型当前归类为 `transfer`
+
+更完整的拆分思路与正式化边界，请参见 `REPORTS_TECH_DESIGN.zh-CN.md`。
 
 ### 调用示例
 

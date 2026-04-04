@@ -1574,7 +1574,110 @@ OK
 - 经营报表接口的单测、HTTP 集成测试、索引落库验证、执行计划验证和基础延迟抽样都已通过。
 - 这轮报表后端可以视为完成了正式环境前的生产化优化闭环。
 
-### 20.6 订单与主数据接口自定义时间段验证（2026-04-04）
+### 20.6 报表现金流接口拆分与结果一致性验证（2026-04-04）
+
+本轮继续推进报表模块正式化，重点不是新增图表，而是先把“资金趋势”和“资金明细列表”从统一大接口中拆出来，并验证拆分后结果与原报表口径一致。
+
+新增文档：
+
+- `REPORTS_TECH_DESIGN.zh-CN.md`
+  - 明确报表正式化目标
+  - 明确现金流模块拆分边界
+  - 明确一期新增接口与分页策略
+
+新增接口：
+
+- `myapp.api.gateway.get_cashflow_report_v1`
+  - 返回：
+    - `overview`
+      - `received_amount_total`
+      - `paid_amount_total`
+      - `net_cashflow_total`
+    - `trend`
+      - 按 `Payment Entry.posting_date` 聚合的收入 / 支出趋势
+- `myapp.api.gateway.list_cashflow_entries_v1`
+  - 返回：
+    - `rows`
+    - `pagination`
+      - `page`
+      - `page_size`
+      - `total_count`
+      - `has_more`
+
+本轮重点验证：
+
+- 新接口不会破坏原 `get_business_report_v1`
+- 新增现金流总览与趋势结果，和原 `get_business_report_v1` 中的资金口径完全一致
+- 资金流水明细改为分页返回，不再依赖单个 `limit` 假装拉全量
+- 这次改动不会影响销售 / 采购工作台查询接口
+
+新增 / 更新单元测试：
+
+- `apps.myapp.myapp.tests.unit.test_report_service`
+  - `test_get_cashflow_report_v1_returns_overview_and_trend`
+  - `test_list_cashflow_entries_v1_returns_paginated_rows`
+  - `test_list_cashflow_entries_v1_clamps_page_size`
+- `apps.myapp.myapp.tests.unit.test_gateway_wrappers`
+  - 新增新接口的网关暴露与非 guest 约束覆盖
+
+容器内单元测试执行：
+
+- `env/bin/python -m unittest apps.myapp.myapp.tests.unit.test_report_service apps.myapp.myapp.tests.unit.test_gateway_wrappers`
+- 结果：
+  - `Ran 63 tests ...`
+  - `OK`
+
+额外回归验证：
+
+- `env/bin/python -m unittest`
+  - `apps.myapp.myapp.tests.unit.test_order_service.TestOrderService.test_get_sales_order_status_summary_returns_list`
+  - `apps.myapp.myapp.tests.unit.test_order_service.TestOrderService.test_search_sales_orders_v2_filters_out_cancelled_by_default`
+  - `apps.myapp.myapp.tests.unit.test_order_service.TestOrderService.test_search_sales_orders_v2_passes_search_filters_and_sorts`
+  - `apps.myapp.myapp.tests.unit.test_order_service.TestOrderService.test_get_sales_order_status_summary_supports_date_range_filters`
+  - `apps.myapp.myapp.tests.unit.test_purchase_service.TestPurchaseService.test_get_purchase_order_status_summary_uses_summary_rows`
+  - `apps.myapp.myapp.tests.unit.test_purchase_service.TestPurchaseService.test_search_purchase_orders_v2_filters_out_cancelled_by_default`
+  - `apps.myapp.myapp.tests.unit.test_purchase_service.TestPurchaseService.test_search_purchase_orders_v2_passes_search_filters_and_sorts`
+  - `apps.myapp.myapp.tests.unit.test_purchase_service.TestPurchaseService.test_get_purchase_order_status_summary_supports_date_range_filters`
+- 结果：
+  - `Ran 8 tests ...`
+  - `OK`
+
+新增 HTTP 集成测试：
+
+- `GatewayHttpTestCase.test_get_cashflow_report_v1_matches_business_report_cashflow_totals`
+- `GatewayHttpTestCase.test_get_cashflow_report_v1_rejects_invalid_date_range`
+- `GatewayHttpTestCase.test_list_cashflow_entries_v1_returns_paginated_rows`
+- `GatewayHttpTestCase.test_list_cashflow_entries_v1_rejects_invalid_date_range`
+
+HTTP 执行结果：
+
+- `MYAPP_HTTP_ENV_FILE=... python3 -m unittest ...`
+- 结果：
+  - `Ran 5 tests in 0.392s`
+  - `OK`
+
+本轮真实结果校验样本：
+
+- `get_business_report_v1`
+  - `received_amount_total = 601739.0`
+  - `paid_amount_total = 122267.0`
+  - `net_cashflow_total = 479472.0`
+- `get_cashflow_report_v1`
+  - `received_amount_total = 601739.0`
+  - `paid_amount_total = 122267.0`
+  - `net_cashflow_total = 479472.0`
+- 结论：
+  - 新拆分的现金流总览结果与原经营报表完全一致
+  - `get_cashflow_report_v1.trend` 与 `get_business_report_v1.tables.cashflow_trend` 一致
+  - `list_cashflow_entries_v1(page=1, page_size=3)` 返回 `3` 条记录，`total_count = 268`，`has_more = true`
+
+当前结论：
+
+- 本轮报表现金流拆分结果正确，不只是接口可调用。
+- 原经营报表未被破坏。
+- 销售 / 采购工作台查询回归通过，未发现被报表改动误伤。
+
+### 20.7 订单与主数据接口自定义时间段验证（2026-04-04）
 
 本轮继续把“自定义时间段”能力从经营报表扩展到工作台与主数据列表接口，并重点验证“结果准确”，而不是只验证接口可调用。
 

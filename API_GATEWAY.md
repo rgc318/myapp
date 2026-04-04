@@ -51,6 +51,7 @@ This document only covers custom APIs from this app. ERPNext / Frappe native API
 
 - Sales and product: `search_product`, `create_order`, `submit_delivery`, `create_sales_invoice`, `update_payment_status`, `process_sales_return`
 - Purchase and settlement: `create_purchase_order`, `receive_purchase_order`, `create_purchase_invoice`, `create_purchase_invoice_from_receipt`, `record_supplier_payment`, `process_purchase_return`, `get_purchase_order_detail_v2`, `get_purchase_order_status_summary`, `get_purchase_receipt_detail_v2`, `get_purchase_invoice_detail_v2`, `get_supplier_purchase_context`, `list_suppliers_v2`, `get_supplier_detail_v2`, `create_supplier_v2`, `update_supplier_v2`, `disable_supplier_v2`, `update_purchase_order_v2`, `update_purchase_order_items_v2`, `cancel_purchase_order_v2`, `cancel_purchase_receipt_v2`, `cancel_purchase_invoice_v2`, `cancel_supplier_payment`
+- Reports and analytics: `get_business_report_v1`, `get_cashflow_report_v1`, `list_cashflow_entries_v1`
 - Shared utilities: `confirm_pending_document`
 
 ### Unified Success Response
@@ -107,6 +108,37 @@ For these custom gateway APIs, HTTP status code is also aligned where possible:
 - `409` duplicate, workflow conflict, insufficient stock
 - `422` validation error
 - `500` internal error
+
+### Report And Analytics Addendum
+
+The current first-stage production split for reporting adds:
+
+- `get_business_report_v1`
+  - unified business report payload
+  - still returns overview, sales, purchase, receivable/payable, and cashflow-related aggregates in one response
+- `get_cashflow_report_v1`
+  - returns only cashflow overview and trend data
+  - intended for dedicated cashflow dashboards
+- `list_cashflow_entries_v1`
+  - returns paginated cashflow entry rows
+  - supports:
+    - `page`
+    - `page_size`
+  - returns pagination info:
+    - `page`
+    - `page_size`
+    - `total_count`
+    - `has_more`
+
+Current cashflow semantics:
+
+- based on `Payment Entry`
+- date field: `posting_date`
+- `payment_type = 'Receive'` counts as inbound cashflow
+- `payment_type = 'Pay'` counts as outbound cashflow
+- other payment types are currently classified as `transfer`
+
+See `REPORTS_TECH_DESIGN.zh-CN.md` for the current productionization plan and module boundaries.
 
 ### Client Call Examples
 

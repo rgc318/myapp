@@ -6,6 +6,8 @@ from frappe.utils import add_days, cint, flt, getdate, nowdate
 MAX_REPORT_LIMIT = 50
 DEFAULT_REPORT_LIMIT = 10
 MAX_REPORT_RANGE_DAYS = 366
+DEFAULT_CASHFLOW_ENTRY_PAGE_SIZE = 20
+MAX_CASHFLOW_ENTRY_PAGE_SIZE = 100
 REPORT_INDEX_HINTS = {
 	"tabSales Order": "idx_myapp_so_company_docstatus_date_customer",
 	"tabPurchase Order": "idx_myapp_po_company_docstatus_date_supplier",
@@ -33,6 +35,13 @@ def _resolve_report_date_range(date_from: str | None = None, date_to: str | None
 def _normalize_company(company: str | None):
 	resolved = (company or "").strip()
 	return resolved or None
+
+
+def _resolve_positive_int(value: int | str | None, *, default: int, minimum: int = 1, maximum: int | None = None):
+	resolved = cint(value) if str(value).strip() else default
+	if maximum is not None:
+		resolved = min(maximum, resolved)
+	return max(minimum, resolved)
 
 
 def _build_where_clause(*, date_field: str, company: str | None, date_from: str, date_to: str, extra_sql: str | None = None):
@@ -176,6 +185,16 @@ def _make_scalar_aggregate(
 
 
 def _make_recent_cashflow_rows(*, company: str | None, date_from: str, date_to: str, limit: int):
+	return _make_cashflow_entry_rows(
+		company=company,
+		date_from=date_from,
+		date_to=date_to,
+		limit=limit,
+		offset=0,
+	)
+
+
+def _make_cashflow_entry_rows(*, company: str | None, date_from: str, date_to: str, limit: int, offset: int):
 	where_sql, params = _build_where_clause(
 		date_field="posting_date",
 		company=company,
@@ -197,11 +216,32 @@ def _make_recent_cashflow_rows(*, company: str | None, date_from: str, date_to: 
 		FROM {_get_report_table_sql("tabPayment Entry")}
 		WHERE {where_sql}
 		ORDER BY posting_date DESC, modified DESC
-		LIMIT %s
+		LIMIT %s OFFSET %s
 		""",
-		(*params, limit),
+		(*params, limit, offset),
 		as_dict=True,
 	)
+
+
+def _count_cashflow_entries(*, company: str | None, date_from: str, date_to: str):
+	where_sql, params = _build_where_clause(
+		date_field="posting_date",
+		company=company,
+		date_from=date_from,
+		date_to=date_to,
+	)
+	rows = frappe.db.sql(
+		f"""
+		SELECT COUNT(name) AS total_count
+		FROM {_get_report_table_sql("tabPayment Entry")}
+		WHERE {where_sql}
+		""",
+		params,
+		as_dict=True,
+	)
+	if not rows:
+		return 0
+	return cint(getattr(rows[0], "total_count", 0) or 0)
 
 
 def _make_cashflow_trend_rows(*, company: str | None, date_from: str, date_to: str):
@@ -559,6 +599,107 @@ def _extract_cashflow_overview(rows):
 	return received_amount_total, paid_amount_total
 
 
+def _build_cashflow_overview(*, company: str | None, date_from: str, date_to: str):
+	received_amount_total, paid_amount_total = _extract_cashflow_overview(
+		_make_payment_type_totals(
+			company=company,
+			date_from=date_from,
+			date_to=date_to,
+		)
+	)
+	return {
+		"received_amount_total": received_amount_total,
+		"paid_amount_total": paid_amount_total,
+		"net_cashflow_total": received_amount_total - paid_amount_total,
+	}
+
+
+def get_cashflow_report_v1(
+	company: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+):
+	resolved_company = _normalize_company(company)
+	resolved_date_from, resolved_date_to = _resolve_report_date_range(date_from, date_to)
+	cashflow_trend_rows = _serialize_cashflow_trend_rows(
+		_make_cashflow_trend_rows(
+			company=resolved_company,
+			date_from=resolved_date_from,
+			date_to=resolved_date_to,
+		)
+	)
+
+	return {
+		"status": "success",
+		"message": _("资金报表获取成功。"),
+		"data": {
+			"overview": _build_cashflow_overview(
+				company=resolved_company,
+				date_from=resolved_date_from,
+				date_to=resolved_date_to,
+			),
+			"trend": cashflow_trend_rows,
+			"meta": {
+				"company": resolved_company,
+				"date_from": resolved_date_from,
+				"date_to": resolved_date_to,
+			},
+		},
+	}
+
+
+def list_cashflow_entries_v1(
+	company: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	page: int | str | None = 1,
+	page_size: int | str | None = DEFAULT_CASHFLOW_ENTRY_PAGE_SIZE,
+):
+	resolved_company = _normalize_company(company)
+	resolved_date_from, resolved_date_to = _resolve_report_date_range(date_from, date_to)
+	resolved_page = _resolve_positive_int(page, default=1, minimum=1)
+	resolved_page_size = _resolve_positive_int(
+		page_size,
+		default=DEFAULT_CASHFLOW_ENTRY_PAGE_SIZE,
+		minimum=1,
+		maximum=MAX_CASHFLOW_ENTRY_PAGE_SIZE,
+	)
+	offset = (resolved_page - 1) * resolved_page_size
+	total_count = _count_cashflow_entries(
+		company=resolved_company,
+		date_from=resolved_date_from,
+		date_to=resolved_date_to,
+	)
+	rows = _serialize_cashflow_rows(
+		_make_cashflow_entry_rows(
+			company=resolved_company,
+			date_from=resolved_date_from,
+			date_to=resolved_date_to,
+			limit=resolved_page_size,
+			offset=offset,
+		)
+	)
+
+	return {
+		"status": "success",
+		"message": _("资金流水列表获取成功。"),
+		"data": {
+			"rows": rows,
+			"pagination": {
+				"page": resolved_page,
+				"page_size": resolved_page_size,
+				"total_count": total_count,
+				"has_more": offset + len(rows) < total_count,
+			},
+			"meta": {
+				"company": resolved_company,
+				"date_from": resolved_date_from,
+				"date_to": resolved_date_to,
+			},
+		},
+	}
+
+
 def get_business_report_v1(
 	company: str | None = None,
 	date_from: str | None = None,
@@ -712,12 +853,10 @@ def get_business_report_v1(
 		date_to=resolved_date_to,
 		extra_sql="is_return = 0",
 	)
-	received_amount_total, paid_amount_total = _extract_cashflow_overview(
-		_make_payment_type_totals(
-			company=resolved_company,
-			date_from=resolved_date_from,
-			date_to=resolved_date_to,
-		)
+	cashflow_overview = _build_cashflow_overview(
+		company=resolved_company,
+		date_from=resolved_date_from,
+		date_to=resolved_date_to,
 	)
 
 	return {
@@ -727,9 +866,9 @@ def get_business_report_v1(
 			"overview": {
 				"sales_amount_total": sales_amount_total,
 				"purchase_amount_total": purchase_amount_total,
-				"received_amount_total": received_amount_total,
-				"paid_amount_total": paid_amount_total,
-				"net_cashflow_total": received_amount_total - paid_amount_total,
+				"received_amount_total": cashflow_overview["received_amount_total"],
+				"paid_amount_total": cashflow_overview["paid_amount_total"],
+				"net_cashflow_total": cashflow_overview["net_cashflow_total"],
 				"receivable_outstanding_total": receivable_outstanding_total,
 				"payable_outstanding_total": payable_outstanding_total,
 			},

@@ -1238,6 +1238,89 @@ class GatewayHttpTestCase(TestCase):
 
 		self._assert_validation_error(status_code, payload)
 
+	def test_get_cashflow_report_v1_matches_business_report_cashflow_totals(self):
+		request_payload = {
+			"company": SALES_COMPANY,
+			"date_from": "2026-03-01",
+			"date_to": "2026-04-02",
+		}
+		status_code, response = self._call_gateway("myapp.api.gateway.get_cashflow_report_v1", request_payload)
+		self._assert_success(status_code, response, code="CASHFLOW_REPORT_FETCHED")
+
+		business_status, business_response = self._call_gateway(
+			"myapp.api.gateway.get_business_report_v1",
+			{**request_payload, "limit": 5},
+		)
+		self._assert_success(business_status, business_response, code="BUSINESS_REPORT_FETCHED")
+
+		cashflow_data = response["message"]["data"]
+		business_data = business_response["message"]["data"]
+		self.assertEqual(
+			cashflow_data["overview"]["received_amount_total"],
+			business_data["overview"]["received_amount_total"],
+		)
+		self.assertEqual(
+			cashflow_data["overview"]["paid_amount_total"],
+			business_data["overview"]["paid_amount_total"],
+		)
+		self.assertEqual(
+			cashflow_data["overview"]["net_cashflow_total"],
+			business_data["overview"]["net_cashflow_total"],
+		)
+		self.assertEqual(cashflow_data["trend"], business_data["tables"]["cashflow_trend"])
+
+	def test_get_cashflow_report_v1_rejects_invalid_date_range(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.get_cashflow_report_v1",
+			{
+				"company": SALES_COMPANY,
+				"date_from": "2026-04-03",
+				"date_to": "2026-04-02",
+			},
+		)
+
+		self._assert_validation_error(status_code, payload)
+
+	def test_list_cashflow_entries_v1_returns_paginated_rows(self):
+		status_code, response = self._call_gateway(
+			"myapp.api.gateway.list_cashflow_entries_v1",
+			{
+				"company": SALES_COMPANY,
+				"date_from": "2026-03-01",
+				"date_to": "2026-04-02",
+				"page": 1,
+				"page_size": 3,
+			},
+		)
+
+		self._assert_success(status_code, response, code="CASHFLOW_ENTRIES_FETCHED")
+		data = response["message"]["data"]
+		self.assertIn("rows", data)
+		self.assertIn("pagination", data)
+		self.assertLessEqual(len(data["rows"]), 3)
+		self.assertEqual(data["pagination"]["page"], 1)
+		self.assertEqual(data["pagination"]["page_size"], 3)
+		self.assertGreaterEqual(data["pagination"]["total_count"], len(data["rows"]))
+		for row in data["rows"]:
+			self.assertIn(row["direction"], {"in", "out", "transfer"})
+			if row.get("posting_date"):
+				self.assertGreaterEqual(row["posting_date"], "2026-03-01")
+				self.assertLessEqual(row["posting_date"], "2026-04-02")
+
+	def test_list_cashflow_entries_v1_rejects_invalid_date_range(self):
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.list_cashflow_entries_v1",
+			{
+				"company": SALES_COMPANY,
+				"date_from": "2026-04-03",
+				"date_to": "2026-04-02",
+				"page": 1,
+				"page_size": 5,
+			},
+		)
+
+		self._assert_validation_error(status_code, payload)
+
 	def test_process_sales_return_validation_error_shape(self):
 		status_code, payload = self._call_gateway(
 			"myapp.api.gateway.process_sales_return",

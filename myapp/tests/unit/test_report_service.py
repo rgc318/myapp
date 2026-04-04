@@ -3,10 +3,128 @@ from unittest.mock import patch
 
 import frappe
 
-from myapp.services.report_service import get_business_report_v1
+from myapp.services.report_service import get_business_report_v1, get_cashflow_report_v1, list_cashflow_entries_v1
 
 
 class TestReportService(TestCase):
+	@patch("myapp.services.report_service.nowdate", return_value="2026-04-02")
+	@patch("myapp.services.report_service._make_payment_type_totals")
+	@patch("myapp.services.report_service._make_cashflow_trend_rows")
+	def test_get_cashflow_report_v1_returns_overview_and_trend(
+		self,
+		mock_make_cashflow_trend_rows,
+		mock_make_payment_type_totals,
+		mock_nowdate,
+	):
+		mock_make_payment_type_totals.return_value = [
+			frappe._dict({"payment_type": "Receive", "total_received_amount": 900, "total_paid_amount": 900}),
+			frappe._dict({"payment_type": "Pay", "total_received_amount": 250, "total_paid_amount": 250}),
+		]
+		mock_make_cashflow_trend_rows.return_value = [
+			frappe._dict({"trend_date": "2026-04-01", "count": 1, "in_amount": 500, "out_amount": 0}),
+			frappe._dict({"trend_date": "2026-04-02", "count": 2, "in_amount": 400, "out_amount": 250}),
+		]
+
+		result = get_cashflow_report_v1(company="Test Company")
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["overview"]["received_amount_total"], 900)
+		self.assertEqual(result["data"]["overview"]["paid_amount_total"], 250)
+		self.assertEqual(result["data"]["overview"]["net_cashflow_total"], 650)
+		self.assertEqual(result["data"]["trend"][0]["trend_date"], "2026-04-01")
+		self.assertEqual(result["data"]["meta"]["company"], "Test Company")
+		mock_make_payment_type_totals.assert_called_once_with(
+			company="Test Company",
+			date_from="2026-03-04",
+			date_to="2026-04-02",
+		)
+
+	@patch("myapp.services.report_service.nowdate", return_value="2026-04-02")
+	@patch("myapp.services.report_service._count_cashflow_entries")
+	@patch("myapp.services.report_service._make_cashflow_entry_rows")
+	def test_list_cashflow_entries_v1_returns_paginated_rows(
+		self,
+		mock_make_cashflow_entry_rows,
+		mock_count_cashflow_entries,
+		mock_nowdate,
+	):
+		mock_count_cashflow_entries.return_value = 45
+		mock_make_cashflow_entry_rows.return_value = [
+			frappe._dict(
+				{
+					"name": "PE-0002",
+					"posting_date": "2026-04-02",
+					"payment_type": "Pay",
+					"party_type": "Supplier",
+					"party": "Supplier A",
+					"mode_of_payment": "Bank",
+					"paid_amount": 200,
+					"received_amount": 0,
+					"reference_no": "PV-001",
+				}
+			),
+			frappe._dict(
+				{
+					"name": "PE-0001",
+					"posting_date": "2026-04-01",
+					"payment_type": "Receive",
+					"party_type": "Customer",
+					"party": "Customer A",
+					"mode_of_payment": "Cash",
+					"paid_amount": 0,
+					"received_amount": 300,
+					"reference_no": "RC-001",
+				}
+			),
+		]
+
+		result = list_cashflow_entries_v1(company="Test Company", page=2, page_size=2)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(len(result["data"]["rows"]), 2)
+		self.assertEqual(result["data"]["rows"][0]["direction"], "out")
+		self.assertEqual(result["data"]["rows"][1]["direction"], "in")
+		self.assertEqual(result["data"]["pagination"]["page"], 2)
+		self.assertEqual(result["data"]["pagination"]["page_size"], 2)
+		self.assertEqual(result["data"]["pagination"]["total_count"], 45)
+		self.assertTrue(result["data"]["pagination"]["has_more"])
+		mock_count_cashflow_entries.assert_called_once_with(
+			company="Test Company",
+			date_from="2026-03-04",
+			date_to="2026-04-02",
+		)
+		mock_make_cashflow_entry_rows.assert_called_once_with(
+			company="Test Company",
+			date_from="2026-03-04",
+			date_to="2026-04-02",
+			limit=2,
+			offset=2,
+		)
+
+	@patch("myapp.services.report_service.nowdate", return_value="2026-04-02")
+	@patch("myapp.services.report_service._count_cashflow_entries")
+	@patch("myapp.services.report_service._make_cashflow_entry_rows")
+	def test_list_cashflow_entries_v1_clamps_page_size(
+		self,
+		mock_make_cashflow_entry_rows,
+		mock_count_cashflow_entries,
+		mock_nowdate,
+	):
+		mock_count_cashflow_entries.return_value = 0
+		mock_make_cashflow_entry_rows.return_value = []
+
+		result = list_cashflow_entries_v1(page=1, page_size=1000)
+
+		self.assertEqual(result["data"]["pagination"]["page_size"], 100)
+		self.assertFalse(result["data"]["pagination"]["has_more"])
+		mock_make_cashflow_entry_rows.assert_called_once_with(
+			company=None,
+			date_from="2026-03-04",
+			date_to="2026-04-02",
+			limit=100,
+			offset=0,
+		)
+
 	@patch("myapp.services.report_service.nowdate", return_value="2026-04-02")
 	@patch("myapp.services.report_service._make_purchase_hourly_rows")
 	@patch("myapp.services.report_service._make_sales_hourly_rows")
