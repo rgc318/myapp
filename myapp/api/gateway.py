@@ -60,6 +60,9 @@ from .purchase_api import disable_supplier_v2 as disable_supplier_v2_service
 from .purchase_api import update_supplier_v2 as update_supplier_v2_service
 from .purchase_api import update_purchase_order_items_v2 as update_purchase_order_items_v2_service
 from .purchase_api import update_purchase_order_v2 as update_purchase_order_v2_service
+from .printing_api import build_print_file_download_v1 as build_print_file_download_v1_service
+from .printing_api import get_print_file_v1 as get_print_file_v1_service
+from .printing_api import get_print_preview_v1 as get_print_preview_v1_service
 from .reports_api import get_business_report_overview_v1 as get_business_report_overview_v1_service
 from .reports_api import get_business_report_v1 as get_business_report_v1_service
 from .reports_api import get_cashflow_report_v1 as get_cashflow_report_v1_service
@@ -146,6 +149,63 @@ def get_business_report_v1(
 		),
 		success_code="BUSINESS_REPORT_FETCHED",
 	)
+
+
+@frappe.whitelist()
+def get_print_preview_v1(
+	doctype: str,
+	docname: str,
+	template: str | None = None,
+	output: str = "html",
+):
+	return _handle_gateway_call(
+		lambda: get_print_preview_v1_service(
+			doctype=doctype,
+			docname=docname,
+			template=template,
+			output=output,
+		),
+		success_code="PRINT_PREVIEW_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_print_file_v1(
+	doctype: str,
+	docname: str,
+	template: str | None = None,
+	filename: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: get_print_file_v1_service(
+			doctype=doctype,
+			docname=docname,
+			template=template,
+			filename=filename,
+		),
+		success_code="PRINT_FILE_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def download_print_file_v1(
+	doctype: str,
+	docname: str,
+	template: str | None = None,
+	filename: str | None = None,
+):
+	payload = build_print_file_download_v1_service(
+		doctype=doctype,
+		docname=docname,
+		template=template,
+		filename=filename,
+	)
+	frappe.local.response.filename = payload["filename"]
+	frappe.local.response.filecontent = payload["content"]
+	frappe.local.response.type = "download"
+	frappe.local.response.display_content_as = "attachment"
+	frappe.local.response["content_type"] = "application/pdf"
+	return None
 
 
 @frappe.whitelist()

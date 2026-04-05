@@ -16,6 +16,9 @@ from myapp.api.gateway import (
 	create_supplier_v2,
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
+	download_print_file_v1,
+	get_print_file_v1,
+	get_print_preview_v1,
 	get_business_report_overview_v1,
 	get_business_report_v1,
 	get_cashflow_report_v1,
@@ -83,6 +86,9 @@ class TestGatewayWrappers(TestCase):
 			create_order,
 			create_purchase_order,
 			quick_create_purchase_order_v2,
+			download_print_file_v1,
+			get_print_file_v1,
+			get_print_preview_v1,
 			get_business_report_overview_v1,
 			get_business_report_v1,
 			get_cashflow_report_v1,
@@ -481,6 +487,56 @@ class TestGatewayWrappers(TestCase):
 			date_to="2026-03-31",
 			limit=5,
 		)
+
+	@patch("myapp.api.gateway.get_print_preview_v1_service")
+	def test_get_print_preview_v1_passes_filters_to_service(self, mock_get_print_preview_v1_service):
+		mock_get_print_preview_v1_service.return_value = {"status": "success", "data": {"html": "<html />"}}
+
+		get_print_preview_v1(doctype="Sales Invoice", docname="SINV-0001", template="standard", output="html")
+
+		mock_get_print_preview_v1_service.assert_called_once_with(
+			doctype="Sales Invoice",
+			docname="SINV-0001",
+			template="standard",
+			output="html",
+		)
+
+	@patch("myapp.api.gateway.get_print_file_v1_service")
+	def test_get_print_file_v1_passes_filters_to_service(self, mock_get_print_file_v1_service):
+		mock_get_print_file_v1_service.return_value = {"status": "success", "data": {"filename": "Sales Invoice-SINV-0001-standard.pdf"}}
+
+		get_print_file_v1(doctype="Sales Invoice", docname="SINV-0001", template="standard", filename="invoice.pdf")
+
+		mock_get_print_file_v1_service.assert_called_once_with(
+			doctype="Sales Invoice",
+			docname="SINV-0001",
+			template="standard",
+			filename="invoice.pdf",
+		)
+
+	@patch("myapp.api.gateway.build_print_file_download_v1_service")
+	def test_download_print_file_v1_sets_download_response(self, mock_build_print_file_download_v1_service):
+		mock_build_print_file_download_v1_service.return_value = {
+			"filename": "invoice.pdf",
+			"content": b"%PDF-download",
+			"doctype": "Sales Invoice",
+			"docname": "SINV-0001",
+			"template": "standard",
+		}
+
+		response = frappe._dict()
+		with patch("myapp.api.gateway.frappe.local", frappe._dict(response=response)):
+			result = download_print_file_v1(
+				doctype="Sales Invoice",
+				docname="SINV-0001",
+				template="standard",
+				filename="invoice.pdf",
+			)
+
+		self.assertIsNone(result)
+		self.assertEqual(response.filename, "invoice.pdf")
+		self.assertEqual(response.filecontent, b"%PDF-download")
+		self.assertEqual(response.type, "download")
 
 	@patch("myapp.api.gateway.quick_create_purchase_order_v2_service")
 	def test_quick_create_purchase_order_v2_passes_payload_to_service(

@@ -37,6 +37,7 @@ from .purchase_api import (
 	update_purchase_order_items_v2,
 	update_purchase_order_v2,
 )
+from .printing_api import build_print_file_download_v1, get_print_file_v1, get_print_preview_v1
 from .reports_api import (
 	get_business_report_overview_v1,
 	get_business_report_v1,
@@ -67,6 +68,9 @@ __all__ = [
 	"create_purchase_invoice_from_receipt",
 	"create_purchase_order",
 	"get_purchase_company_context",
+	"build_print_file_download_v1",
+	"get_print_file_v1",
+	"get_print_preview_v1",
 	"get_business_report_overview_v1",
 	"get_business_report_v1",
 	"get_cashflow_report_v1",
