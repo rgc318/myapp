@@ -138,6 +138,7 @@ class TestWholesaleService(TestCase):
 	@patch("myapp.services.wholesale_service._get_uom_map")
 	@patch("myapp.services.wholesale_service._get_multi_price_map")
 	@patch("myapp.services.wholesale_service._get_price_map")
+	@patch("myapp.services.wholesale_service._get_item_specification_field")
 	@patch("myapp.services.wholesale_service._get_qty_map")
 	@patch("myapp.services.wholesale_service._get_item_nickname_field")
 	@patch("myapp.services.wholesale_service.frappe.get_doc")
@@ -146,6 +147,7 @@ class TestWholesaleService(TestCase):
 		mock_get_doc,
 		mock_get_item_nickname_field,
 		mock_get_qty_map,
+		mock_get_item_specification_field,
 		mock_get_price_map,
 		mock_get_multi_price_map,
 		mock_get_uom_map,
@@ -153,6 +155,7 @@ class TestWholesaleService(TestCase):
 		mock_get_warehouse_stock_detail_map,
 	):
 		mock_get_item_nickname_field.return_value = "custom_nickname"
+		mock_get_item_specification_field.return_value = "custom_specification"
 		mock_get_doc.return_value = frappe._dict(
 			{
 				"name": "ITEM-001",
@@ -161,6 +164,7 @@ class TestWholesaleService(TestCase):
 				"stock_uom": "Nos",
 				"image": "/files/a.png",
 				"custom_nickname": "冰可乐",
+				"custom_specification": "500ml",
 				"custom_wholesale_default_uom": "Box",
 				"custom_retail_default_uom": "Bottle",
 				"description": "标准描述",
@@ -193,6 +197,7 @@ class TestWholesaleService(TestCase):
 
 		self.assertEqual(result["data"]["item_code"], "ITEM-001")
 		self.assertEqual(result["data"]["nickname"], "冰可乐")
+		self.assertEqual(result["data"]["specification"], "500ml")
 		self.assertEqual(result["data"]["image"], "/files/a.png")
 		self.assertEqual(result["data"]["price"], 15)
 		self.assertEqual(result["data"]["qty"], 8)
@@ -211,10 +216,12 @@ class TestWholesaleService(TestCase):
 	@patch("myapp.services.wholesale_service._get_price_map")
 	@patch("myapp.services.wholesale_service._get_item_data_map")
 	@patch("myapp.services.wholesale_service._search_item_codes")
+	@patch("myapp.services.wholesale_service._get_item_specification_field")
 	@patch("myapp.services.wholesale_service._get_item_nickname_field")
 	def test_search_product_v2_filters_in_stock_and_sorts_by_price_desc(
 		self,
 		mock_get_item_nickname_field,
+		mock_get_item_specification_field,
 		mock_search_item_codes,
 		mock_get_item_data_map,
 		mock_get_price_map,
@@ -224,6 +231,7 @@ class TestWholesaleService(TestCase):
 		mock_get_warehouse_stock_detail_map,
 	):
 		mock_get_item_nickname_field.return_value = "custom_nickname"
+		mock_get_item_specification_field.return_value = "custom_specification"
 		mock_search_item_codes.return_value = ["ITEM-001", "ITEM-002"]
 		mock_get_item_data_map.return_value = {
 			"ITEM-001": frappe._dict(
@@ -233,6 +241,7 @@ class TestWholesaleService(TestCase):
 					"stock_uom": "Nos",
 					"image": None,
 					"custom_nickname": "昵称一",
+					"custom_specification": "500ml",
 					"custom_wholesale_default_uom": "Box",
 					"custom_retail_default_uom": "Bottle",
 					"description": "别名一",
@@ -247,6 +256,7 @@ class TestWholesaleService(TestCase):
 					"stock_uom": "Nos",
 					"image": None,
 					"custom_nickname": "昵称二",
+					"custom_specification": "1000ml",
 					"custom_wholesale_default_uom": "Case",
 					"custom_retail_default_uom": "Pair",
 					"description": "别名二",
@@ -290,6 +300,7 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(len(result["data"]), 1)
 		self.assertEqual(result["data"][0]["item_code"], "ITEM-002")
 		self.assertEqual(result["data"][0]["nickname"], "昵称二")
+		self.assertEqual(result["data"][0]["specification"], "1000ml")
 		self.assertEqual(result["data"][0]["retail_default_uom"], "Pair")
 		self.assertEqual(result["data"][0]["price_summary"]["wholesale_rate"], 22)
 		self.assertEqual(result["data"][0]["total_qty"], 12)
@@ -466,12 +477,14 @@ class TestWholesaleService(TestCase):
 	@patch("myapp.services.wholesale_service._normalize_mode_default_uom")
 	@patch("myapp.services.wholesale_service._validate_mode_default_uoms_against_stock_uom")
 	@patch("myapp.services.wholesale_service._resolve_default_uom")
+	@patch("myapp.services.wholesale_service._get_item_specification_field")
 	@patch("myapp.services.wholesale_service._get_item_nickname_field")
 	@patch("myapp.services.wholesale_service.frappe.new_doc")
 	def test_create_product_v2_creates_item_without_stock_entry(
 		self,
 		mock_new_doc,
 		mock_get_item_nickname_field,
+		mock_get_item_specification_field,
 		mock_resolve_default_uom,
 		mock_validate_mode_default_uoms_against_stock_uom,
 		mock_normalize_mode_default_uom,
@@ -482,6 +495,7 @@ class TestWholesaleService(TestCase):
 		mock_build_product_detail_payload,
 	):
 		mock_get_item_nickname_field.return_value = "custom_nickname"
+		mock_get_item_specification_field.return_value = "custom_specification"
 		mock_resolve_default_uom.return_value = "Nos"
 		mock_normalize_mode_default_uom.side_effect = ["Box", "Bottle"]
 		mock_resolve_default_item_group.return_value = "All Item Groups"
@@ -495,6 +509,7 @@ class TestWholesaleService(TestCase):
 		result = create_product_v2(
 			item_name="新商品",
 			nickname="新品",
+			specification="500ml",
 			wholesale_default_uom="Box",
 			retail_default_uom="Bottle",
 			standard_rate=19,
@@ -502,6 +517,7 @@ class TestWholesaleService(TestCase):
 		)
 
 		mock_new_doc.assert_called_once_with("Item")
+		self.assertEqual(item.custom_specification, "500ml")
 		self.assertEqual(item.custom_wholesale_default_uom, "Box")
 		self.assertEqual(item.custom_retail_default_uom, "Bottle")
 		mock_validate_mode_default_uoms_against_stock_uom.assert_called_once()
@@ -583,12 +599,14 @@ class TestWholesaleService(TestCase):
 		}.get(mode),
 	)
 	@patch("myapp.services.wholesale_service._normalize_mode_default_uom")
+	@patch("myapp.services.wholesale_service._get_item_specification_field")
 	@patch("myapp.services.wholesale_service._get_item_nickname_field")
 	@patch("myapp.services.wholesale_service.frappe.get_doc")
 	def test_update_product_v2_updates_basic_fields(
 		self,
 		mock_get_doc,
 		mock_get_item_nickname_field,
+		mock_get_item_specification_field,
 		mock_normalize_mode_default_uom,
 		mock_get_item_mode_default_uom_field,
 		mock_resolve_default_item_group,
@@ -608,6 +626,7 @@ class TestWholesaleService(TestCase):
 		item.valuation_rate = 9
 		mock_get_doc.return_value = item
 		mock_get_item_nickname_field.return_value = "custom_nickname"
+		mock_get_item_specification_field.return_value = "custom_specification"
 		mock_resolve_default_item_group.return_value = "饮料"
 		mock_normalize_mode_default_uom.side_effect = ["Case", "Piece"]
 		mock_resolve_company_from_warehouse.return_value = "rgc (Demo)"
@@ -623,6 +642,7 @@ class TestWholesaleService(TestCase):
 			barcode="BAR-NEW",
 			description="新描述",
 			nickname="新昵称",
+			specification="1000ml",
 			image="/files/new.png",
 			wholesale_default_uom="Case",
 			retail_default_uom="Piece",
@@ -637,6 +657,7 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(item.brand, "可口可乐")
 		self.assertEqual(item.description, "新描述")
 		self.assertEqual(item.custom_nickname, "新昵称")
+		self.assertEqual(item.custom_specification, "1000ml")
 		self.assertEqual(item.image, "/files/new.png")
 		mock_apply_item_uom_updates.assert_called_once()
 		mock_validate_mode_default_uoms_against_stock_uom.assert_called_once()

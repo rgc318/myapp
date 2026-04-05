@@ -23,6 +23,7 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		request_id: str | None = None,
 		description: str = "HTTP v2 test product",
 		nickname: str | None = None,
+		specification: str | None = None,
 	):
 		unique_suffix = str(time.time_ns())
 		payload = {
@@ -37,6 +38,8 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		}
 		if nickname is not None:
 			payload["nickname"] = nickname
+		if specification is not None:
+			payload["specification"] = specification
 		return payload
 
 	def _post_create_product_and_stock(self, payload: dict):
@@ -187,6 +190,27 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self._assert_success(status_code, response, code="PRODUCT_UPDATED")
 		return payload, response
 
+	def _create_product_v2(self, **kwargs):
+		payload = {
+			"item_name": kwargs.pop("item_name", f"HTTP-V2-纯建档商品-{time.time_ns()}"),
+			"request_id": kwargs.pop("request_id", self._unique_request_id("http-v2-create-product-only")),
+		}
+		payload.update(kwargs)
+		status_code, response = self._call_gateway("myapp.api.gateway.create_product_v2", payload)
+		self._assert_success(status_code, response, code="PRODUCT_CREATED")
+		return payload, response
+
+	def _disable_product_v2(self, item_code: str, disabled: int = 1, **kwargs):
+		payload = {
+			"item_code": item_code,
+			"disabled": disabled,
+			"request_id": kwargs.pop("request_id", self._unique_request_id("http-v2-disable-product")),
+		}
+		payload.update(kwargs)
+		status_code, response = self._call_gateway("myapp.api.gateway.disable_product_v2", payload)
+		self._assert_success(status_code, response, code="PRODUCT_UPDATED")
+		return payload, response
+
 	def test_search_product_v2_success(self):
 		status_code, payload = self._call_gateway(
 			"myapp.api.gateway.search_product_v2",
@@ -268,6 +292,211 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		)
 		self._assert_success(nickname_status, nickname_payload, code="PRODUCTS_FETCHED")
 		self.assertTrue(any(row["item_code"] == nickname_item_code for row in nickname_payload["message"]["data"]))
+
+	def test_product_specification_crud_and_search(self):
+		specification = f"500ml-{time.time_ns()}"
+		create_request = self._build_product_payload(
+			item_name=f"HTTP-V2-规格商品-{time.time_ns()}",
+			nickname=f"规格昵称-{time.time_ns()}",
+			specification=specification,
+			standard_rate=22,
+		)
+		create_status, create_payload = self._post_create_product_and_stock(create_request)
+		self._assert_success(create_status, create_payload, code="PRODUCT_CREATED")
+		create_data = create_payload["message"]["data"]
+		item_code = create_data["item_code"]
+
+		self.assertEqual(create_data["specification"], specification)
+
+		_detail_request, detail_payload = self._get_product_detail_v2(item_code, warehouse=SALES_WAREHOUSE)
+		detail_data = detail_payload["message"]["data"]
+		self.assertEqual(detail_data["specification"], specification)
+
+		new_specification = f"1000ml-{time.time_ns()}"
+		_update_request, update_payload = self._update_product_v2(
+			item_code,
+			specification=new_specification,
+			warehouse=SALES_WAREHOUSE,
+		)
+		update_data = update_payload["message"]["data"]
+		self.assertEqual(update_data["specification"], new_specification)
+
+		spec_status, spec_payload = self._call_gateway(
+			"myapp.api.gateway.search_product_v2",
+			{
+				"search_key": new_specification,
+				"search_fields": ["specification"],
+				"limit": 10,
+			},
+		)
+		self._assert_success(spec_status, spec_payload, code="PRODUCTS_FETCHED")
+		self.assertTrue(any(row["item_code"] == item_code for row in spec_payload["message"]["data"]))
+
+	def test_same_item_name_different_specifications_are_distinct_products(self):
+		item_name = f"HTTP-V2-同名商品-{time.time_ns()}"
+		first_spec = f"500ml-{time.time_ns()}"
+		second_spec = f"1000ml-{time.time_ns()}"
+
+		first_request = self._build_product_payload(item_name=item_name, specification=first_spec)
+		first_status, first_payload = self._post_create_product_and_stock(first_request)
+		self._assert_success(first_status, first_payload, code="PRODUCT_CREATED")
+		first_item_code = first_payload["message"]["data"]["item_code"]
+
+		second_request = self._build_product_payload(item_name=item_name, specification=second_spec)
+		second_status, second_payload = self._post_create_product_and_stock(second_request)
+		self._assert_success(second_status, second_payload, code="PRODUCT_CREATED")
+		second_item_code = second_payload["message"]["data"]["item_code"]
+
+		self.assertNotEqual(first_item_code, second_item_code)
+		self.assertEqual(first_payload["message"]["data"]["item_name"], item_name)
+		self.assertEqual(second_payload["message"]["data"]["item_name"], item_name)
+		self.assertEqual(first_payload["message"]["data"]["specification"], first_spec)
+		self.assertEqual(second_payload["message"]["data"]["specification"], second_spec)
+
+		name_status, name_payload = self._call_gateway(
+			"myapp.api.gateway.list_products_v2",
+			{
+				"search_key": item_name,
+				"limit": 20,
+			},
+		)
+		self._assert_success(name_status, name_payload, code="PRODUCTS_FETCHED")
+		rows = name_payload["message"]["data"]
+		matched_rows = [row for row in rows if row["item_code"] in {first_item_code, second_item_code}]
+		self.assertEqual(len(matched_rows), 2)
+		self.assertEqual(
+			{row["specification"] for row in matched_rows},
+			{first_spec, second_spec},
+		)
+
+	def test_disable_product_v2_and_list_products_v2_distinguishes_status(self):
+		create_request, create_payload = self._create_product_and_stock(
+			item_name=f"HTTP-V2-停用商品-{time.time_ns()}",
+			standard_rate=12,
+		)
+		item_code = create_payload["message"]["data"]["item_code"]
+
+		_disable_request, disable_payload = self._disable_product_v2(item_code, disabled=1)
+		self.assertEqual(disable_payload["message"]["data"]["item_code"], item_code)
+		self.assertTrue(bool(disable_payload["message"]["data"]["disabled"]))
+
+		active_status, active_payload = self._call_gateway(
+			"myapp.api.gateway.list_products_v2",
+			{
+				"search_key": item_code,
+				"disabled": 0,
+				"limit": 10,
+			},
+		)
+		self._assert_success(active_status, active_payload, code="PRODUCTS_FETCHED")
+		self.assertFalse(any(row["item_code"] == item_code for row in active_payload["message"]["data"]))
+
+		disabled_status, disabled_payload = self._call_gateway(
+			"myapp.api.gateway.list_products_v2",
+			{
+				"search_key": item_code,
+				"disabled": 1,
+				"limit": 10,
+			},
+		)
+		self._assert_success(disabled_status, disabled_payload, code="PRODUCTS_FETCHED")
+		self.assertTrue(any(row["item_code"] == item_code for row in disabled_payload["message"]["data"]))
+
+	def test_create_product_v2_without_stock_supports_specification(self):
+		specification = f"规格-{time.time_ns()}"
+		create_request, create_payload = self._create_product_v2(
+			item_name=f"HTTP-V2-纯建档规格商品-{time.time_ns()}",
+			specification=specification,
+			nickname=f"纯建档昵称-{time.time_ns()}",
+			description="纯建档描述",
+			stock_uom="Nos",
+		)
+		data = create_payload["message"]["data"]
+		item_code = data["item_code"]
+
+		self.assertEqual(data["specification"], specification)
+		self.assertEqual(data["qty"], 0.0)
+		self.assertEqual(data["total_qty"], 0.0)
+
+		_detail_request, detail_payload = self._get_product_detail_v2(item_code)
+		detail_data = detail_payload["message"]["data"]
+		self.assertEqual(detail_data["specification"], specification)
+		self.assertEqual(detail_data["description"], "纯建档描述")
+
+	def test_update_product_v2_replaces_searchable_specification_value(self):
+		old_specification = f"旧规格-{time.time_ns()}"
+		new_specification = f"新规格-{time.time_ns()}"
+		create_request = self._build_product_payload(
+			item_name=f"HTTP-V2-规格替换商品-{time.time_ns()}",
+			specification=old_specification,
+		)
+		create_status, create_payload = self._post_create_product_and_stock(create_request)
+		self._assert_success(create_status, create_payload, code="PRODUCT_CREATED")
+		item_code = create_payload["message"]["data"]["item_code"]
+
+		self._update_product_v2(item_code, specification=new_specification, warehouse=SALES_WAREHOUSE)
+
+		old_status, old_payload = self._call_gateway(
+			"myapp.api.gateway.search_product_v2",
+			{
+				"search_key": old_specification,
+				"search_fields": ["specification"],
+				"limit": 10,
+			},
+		)
+		self._assert_success(old_status, old_payload, code="PRODUCTS_FETCHED")
+		self.assertFalse(any(row["item_code"] == item_code for row in old_payload["message"]["data"]))
+
+		new_status, new_payload = self._call_gateway(
+			"myapp.api.gateway.search_product_v2",
+			{
+				"search_key": new_specification,
+				"search_fields": ["specification"],
+				"limit": 10,
+			},
+		)
+		self._assert_success(new_status, new_payload, code="PRODUCTS_FETCHED")
+		self.assertTrue(any(row["item_code"] == item_code for row in new_payload["message"]["data"]))
+
+	def test_same_name_multi_spec_disable_only_affects_target_product(self):
+		item_name = f"HTTP-V2-同名多规格商品-{time.time_ns()}"
+		specifications = [f"330ml-{time.time_ns()}", f"500ml-{time.time_ns()}", f"1000ml-{time.time_ns()}"]
+		item_codes = []
+
+		for specification in specifications:
+			payload = self._build_product_payload(item_name=item_name, specification=specification)
+			status_code, response = self._post_create_product_and_stock(payload)
+			self._assert_success(status_code, response, code="PRODUCT_CREATED")
+			item_codes.append(response["message"]["data"]["item_code"])
+
+		target_item_code = item_codes[1]
+		self._disable_product_v2(target_item_code, disabled=1)
+
+		active_status, active_payload = self._call_gateway(
+			"myapp.api.gateway.list_products_v2",
+			{
+				"search_key": item_name,
+				"disabled": 0,
+				"limit": 20,
+			},
+		)
+		self._assert_success(active_status, active_payload, code="PRODUCTS_FETCHED")
+		active_rows = [row for row in active_payload["message"]["data"] if row["item_code"] in item_codes]
+		self.assertEqual(len(active_rows), 2)
+		self.assertFalse(any(row["item_code"] == target_item_code for row in active_rows))
+
+		disabled_status, disabled_payload = self._call_gateway(
+			"myapp.api.gateway.list_products_v2",
+			{
+				"search_key": item_name,
+				"disabled": 1,
+				"limit": 20,
+			},
+		)
+		self._assert_success(disabled_status, disabled_payload, code="PRODUCTS_FETCHED")
+		disabled_rows = [row for row in disabled_payload["message"]["data"] if row["item_code"] in item_codes]
+		self.assertEqual(len(disabled_rows), 1)
+		self.assertEqual(disabled_rows[0]["item_code"], target_item_code)
 
 	def test_get_product_detail_v2_success(self):
 		create_request = self._build_product_payload(nickname=f"详情昵称 {time.time_ns()}", standard_rate=16)

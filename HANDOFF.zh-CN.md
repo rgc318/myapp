@@ -639,13 +639,45 @@ docker exec frappe_docker-backend-1 bash -lc '
     - 销售单 / 采购单按 `qty + uom` 录入后自动换算到库存基准单位
     - 商品建档入库 / 单仓库存调整按指定业务单位录入后自动换算到库存基准单位
   - 当前后端仍未支持：
-    - 商品规格 / 变体能力的正式网关化
+    - ERPNext `Item Variant` 级别的正式变体建模
   - 当前结论：
     - 若仅做前端展示与规则解释，后端现有接口已基本够用
     - “单位与换算”写入能力已补到 `create_product_v2 / update_product_v2`
     - 交易侧已补“服务层统一换算”，前端不再需要自己决定最终库存口径
     - 下一步主要是前端把这套能力接到正式配置界面
     - 若要支持 500ml / 750ml / 1L 这类规格经营，建议优先走“独立 SKU / 变体”路线，不建议仅靠商品名硬编码
+
+### 6.1.1 商品规格字段第一版已落地（2026-04-05）
+
+本轮已按“展示字段优先、独立 SKU 建模”的方案，完成商品规格第一版落地：
+
+- 新增 `Item.custom_specification`
+- 已通过 patch 与站点迁移落库
+- 商品接口已统一支持：
+  - `create_product_v2`
+  - `create_product_and_stock`
+  - `update_product_v2`
+  - `get_product_detail_v2`
+  - `list_products_v2`
+  - `search_product_v2`
+- 销售发票打印模板“规格型号”列已优先读取 `custom_specification`
+
+本轮新增并通过的验证重点：
+
+- 规格字段 CRUD
+- 按规格搜索
+- 同一 `item_name`、不同 `specification` 时生成不同 `item_code`
+- 同名多规格商品在列表中并存
+- 停用其中一个规格商品后，只影响目标商品，不影响其他规格商品
+- `create_product_v2` 纯建档与 `create_product_and_stock` 建档入库两条链路均已验证
+
+当前结论已经从“需要明确规格方案”推进为：
+
+- 第一版规格字段方案已正式落地
+- 当前业务口径是：
+  - 不同规格视为不同商品
+  - `custom_specification` 用于展示、搜索、打印和管理页区分
+  - 若以后规格要参与更深层的模板-变体管理，再考虑升级到 ERPNext `Item Variant`
 
 - 单位换算交易规则补强
 - 批次与保质期管理

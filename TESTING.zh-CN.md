@@ -633,6 +633,52 @@ v2 轻链路内容：
 - 但不能创建商品
 - 或不能完成入库
 
+### 7.1 商品规格字段与同名多规格专项回归（2026-04-05）
+
+本轮围绕 `Item.custom_specification` 新字段，新增并执行了更细粒度的商品专项验证。
+
+本轮新增 / 更新的测试重点：
+
+- 服务层单元测试：
+  - `apps.myapp.myapp.tests.unit.test_wholesale_service`
+  - 已补充规格字段断言，覆盖：
+    - 商品详情返回 `specification`
+    - 商品搜索结果返回 `specification`
+    - `create_product_v2` 写入 `specification`
+    - `update_product_v2` 更新 `specification`
+- 真实 HTTP 回归：
+  - `test_product_specification_crud_and_search`
+  - `test_same_item_name_different_specifications_are_distinct_products`
+  - `test_disable_product_v2_and_list_products_v2_distinguishes_status`
+  - `test_create_product_v2_without_stock_supports_specification`
+  - `test_update_product_v2_replaces_searchable_specification_value`
+  - `test_same_name_multi_spec_disable_only_affects_target_product`
+
+本轮真实验证结论：
+
+- `create_product_and_stock` 已支持写入并返回 `specification`
+- `create_product_v2` 纯建档场景已支持 `specification`
+- `get_product_detail_v2` / `list_products_v2` / `search_product_v2` 已统一返回 `specification`
+- 按 `search_fields=["specification"]` 可命中规格搜索
+- 更新规格后，旧规格值不会继续命中新商品；新规格值可正常搜索到目标商品
+- 同一 `item_name` 下，不同 `specification` 会生成不同 `item_code`，并在列表中作为不同商品并存
+- 当前商品“删除”业务语义仍是停用 / 启用；停用某一个同名多规格商品后，不会影响其他规格商品继续出现在启用列表中
+
+本轮执行结果：
+
+- backend 容器 bench 环境单元测试：
+  - `env/bin/python -m unittest apps.myapp.myapp.tests.unit.test_wholesale_service`
+  - `Ran 17 tests in 0.019s ... OK`
+- 宿主机真实 HTTP 定向回归：
+  - 规格 CRUD + 搜索 3 个用例：`Ran 3 tests in 1.227s ... OK`
+  - 规格更新替换 + 纯建档 + 同名多规格停用隔离 3 个用例：`Ran 3 tests in 0.816s ... OK`
+
+当前阶段的建模结论：
+
+- `custom_specification` 当前定位是“商品主数据展示字段”，不是 ERPNext `Item Variant`
+- 现阶段若要经营 `500ml / 1000ml` 这类规格，应按独立商品 / 独立 SKU 建档
+- 当前已证明：即使 `item_name` 相同，只要建成不同商品记录并写入不同 `specification`，列表、搜索、停用筛选和打印展示都能正确区分
+
 ## 8. 本轮执行结果摘要
 
 本轮最新一次真实执行结果：

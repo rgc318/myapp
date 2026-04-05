@@ -7,6 +7,7 @@ from myapp.utils.idempotency import run_idempotent
 from myapp.utils.uom import resolve_item_quantity_to_stock
 
 ITEM_NICKNAME_FIELD = "custom_nickname"
+ITEM_SPECIFICATION_FIELD = "custom_specification"
 WHOLESALE_DEFAULT_UOM_FIELD = "custom_wholesale_default_uom"
 RETAIL_DEFAULT_UOM_FIELD = "custom_retail_default_uom"
 DEFAULT_SELLING_PRICE_LISTS = ("Standard Selling", "Wholesale", "Retail")
@@ -65,6 +66,8 @@ def _normalize_search_fields(search_fields):
 		"name": "item_name",
 		"nickname": "nickname",
 		"alias": "nickname",
+		"specification": "specification",
+		"spec": "specification",
 	}
 
 	normalized = []
@@ -109,6 +112,10 @@ def _has_item_field(fieldname: str):
 
 def _get_item_nickname_field():
 	return ITEM_NICKNAME_FIELD if _has_item_field(ITEM_NICKNAME_FIELD) else None
+
+
+def _get_item_specification_field():
+	return ITEM_SPECIFICATION_FIELD if _has_item_field(ITEM_SPECIFICATION_FIELD) else None
 
 
 def _get_item_mode_default_uom_field(mode: str):
@@ -214,6 +221,18 @@ def _search_item_codes(search_key: str, *, search_fields: list[str], limit: int)
 		)
 		_extend(codes)
 
+	if "specification" in search_fields:
+		specification_field = _get_item_specification_field()
+		if specification_field:
+			codes = frappe.get_all(
+				"Item",
+				filters={**item_filters, specification_field: ["like", f"%{search_key}%"]},
+				pluck="name",
+				limit_page_length=limit,
+				order_by="modified desc",
+			)
+			_extend(codes)
+
 	return matched_codes[:limit]
 
 
@@ -225,6 +244,9 @@ def _get_item_data_map(item_codes: list[str]):
 	nickname_field = _get_item_nickname_field()
 	if nickname_field:
 		fields.append(nickname_field)
+	specification_field = _get_item_specification_field()
+	if specification_field:
+		fields.append(specification_field)
 	for fieldname in (WHOLESALE_DEFAULT_UOM_FIELD, RETAIL_DEFAULT_UOM_FIELD):
 		if _has_item_field(fieldname):
 			fields.append(fieldname)
@@ -269,6 +291,9 @@ def _get_item_rows(
 	nickname_field = _get_item_nickname_field()
 	if nickname_field:
 		fields.append(nickname_field)
+	specification_field = _get_item_specification_field()
+	if specification_field:
+		fields.append(specification_field)
 	for fieldname in (WHOLESALE_DEFAULT_UOM_FIELD, RETAIL_DEFAULT_UOM_FIELD):
 		if _has_item_field(fieldname):
 			fields.append(fieldname)
@@ -300,6 +325,8 @@ def _get_item_rows(
 		}
 		if nickname_field:
 			or_filters[nickname_field] = ["like", f"%{search_key}%"]
+		if specification_field:
+			or_filters[specification_field] = ["like", f"%{search_key}%"]
 
 	rows = frappe.get_all(
 		"Item",
@@ -482,6 +509,15 @@ def _extract_item_nickname(item):
 	return _normalize_text(getattr(item, "description", None)) or None
 
 
+def _extract_item_specification(item):
+	specification_field = _get_item_specification_field()
+	if specification_field:
+		specification = _normalize_text(getattr(item, specification_field, None))
+		if specification:
+			return specification
+	return None
+
+
 def _build_price_summary(
 	item,
 	*,
@@ -636,6 +672,7 @@ def _build_product_detail_payload(
 		"all_uoms": uom_map.get(item.name, []),
 		"image": item.image,
 		"nickname": _extract_item_nickname(item),
+		"specification": _extract_item_specification(item),
 		"description": item.description,
 		"disabled": cint(item.disabled),
 		"is_sales_item": cint(getattr(item, "is_sales_item", 0)),
@@ -731,6 +768,7 @@ def list_products_v2(
 				"stock_uom": row.stock_uom,
 				"image": row.image,
 				"nickname": _extract_item_nickname(row),
+				"specification": _extract_item_specification(row),
 				"description": row.description,
 				"disabled": cint(row.disabled),
 				"is_sales_item": cint(getattr(row, "is_sales_item", 0)),
@@ -958,6 +996,7 @@ def search_product_v2(
 				"price": flt(price_map.get(code, 0) or 0),
 				"image": item.image,
 				"nickname": _extract_item_nickname(item),
+				"specification": _extract_item_specification(item),
 				"description": item.description,
 				"price_summary": _build_price_summary(
 					item,
@@ -1309,6 +1348,7 @@ def update_product_v2(
 	def _update_product():
 		item = frappe.get_doc("Item", item_code)
 		nickname_field = _get_item_nickname_field()
+		specification_field = _get_item_specification_field()
 
 		item_name = kwargs.get("item_name")
 		if item_name is not None:
@@ -1348,6 +1388,10 @@ def update_product_v2(
 				setattr(item, nickname_field, normalized_nickname)
 			elif description is None and normalized_nickname:
 				item.description = normalized_nickname
+
+		specification = kwargs.get("specification")
+		if specification is not None and specification_field:
+			setattr(item, specification_field, _normalize_text(specification))
 
 		wholesale_default_uom = kwargs.get("wholesale_default_uom")
 		if wholesale_default_uom is not None:
@@ -1469,6 +1513,10 @@ def create_product_v2(
 			nickname_field = _get_item_nickname_field()
 			if nickname_field:
 				setattr(item, nickname_field, _normalize_text(kwargs.get("nickname")))
+		if kwargs.get("specification") is not None:
+			specification_field = _get_item_specification_field()
+			if specification_field:
+				setattr(item, specification_field, _normalize_text(kwargs.get("specification")))
 		for mode in ("wholesale", "retail"):
 			fieldname = _get_item_mode_default_uom_field(mode)
 			if fieldname:
@@ -1600,6 +1648,10 @@ def create_product_and_stock(
 					if item.description
 					else kwargs["nickname"]
 				)
+		if kwargs.get("specification"):
+			specification_field = _get_item_specification_field()
+			if specification_field:
+				setattr(item, specification_field, _normalize_text(kwargs["specification"]))
 		_apply_item_uom_updates(
 			item=item,
 			stock_uom=resolved_uom,
@@ -1653,6 +1705,7 @@ def create_product_and_stock(
 				"warehouse": resolved_warehouse,
 				"image": item.image,
 				"nickname": _extract_item_nickname(item),
+				"specification": _extract_item_specification(item),
 				"description": item.description,
 				"item_group": item_group,
 				"stock_entry": stock_entry.name if stock_entry else None,
