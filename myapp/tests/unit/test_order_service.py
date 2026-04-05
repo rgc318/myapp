@@ -220,6 +220,7 @@ class TestOrderService(TestCase):
 			{
 				"item_code": "SKU010",
 				"item_name": "Camera",
+				"specification": "500ml",
 				"qty": 3,
 				"rate": 900,
 				"amount": 2700,
@@ -235,6 +236,7 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"]["references"]["sales_orders"], ["SO-0001"])
 		self.assertEqual(result["data"]["references"]["sales_invoices"], ["ACC-SINV-0001"])
 		self.assertEqual(result["data"]["items"][0]["item_code"], "SKU010")
+		self.assertEqual(result["data"]["items"][0]["specification"], "500ml")
 		self.assertEqual(result["data"]["customer"]["contact_display_name"], "张三")
 
 	@patch("myapp.services.order_service.frappe.get_all")
@@ -319,6 +321,7 @@ class TestOrderService(TestCase):
 			{
 				"item_code": "SKU010",
 				"item_name": "Camera",
+				"specification": "500ml",
 				"qty": 3,
 				"rate": 900,
 				"amount": 2700,
@@ -346,6 +349,7 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"]["references"]["sales_orders"], ["SO-0001"])
 		self.assertEqual(result["data"]["references"]["delivery_notes"], ["MAT-DN-0001"])
 		self.assertEqual(result["data"]["items"][0]["item_code"], "SKU010")
+		self.assertEqual(result["data"]["items"][0]["specification"], "500ml")
 
 	@patch("myapp.services.order_service.frappe.get_all")
 	def test_build_sales_invoice_references_falls_back_to_sales_order_delivery_notes(self, mock_get_all):
@@ -1188,8 +1192,9 @@ class TestOrderService(TestCase):
 		mock_run_idempotent.assert_called_once()
 
 	@patch("myapp.services.order_service.frappe.get_all")
+	@patch("myapp.services.order_service._get_item_specification_field", return_value="custom_specification")
 	@patch("myapp.services.order_service.frappe.get_doc")
-	def test_get_sales_order_detail_aggregates_statuses(self, mock_get_doc, mock_get_all):
+	def test_get_sales_order_detail_aggregates_statuses(self, mock_get_doc, mock_get_item_specification_field, mock_get_all):
 		so = frappe._dict(
 			{
 				"name": "SO-0001",
@@ -1285,7 +1290,7 @@ class TestOrderService(TestCase):
 					}
 				)
 			],
-			[frappe._dict({"name": "ITEM-001", "image": "/files/item-001.png"})],
+			[frappe._dict({"name": "ITEM-001", "image": "/files/item-001.png", "custom_specification": "500ml"})],
 		]
 
 		result = get_sales_order_detail("SO-0001")
@@ -1303,6 +1308,7 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"]["customer"]["contact_display_name"], "张三")
 		self.assertEqual(result["data"]["shipping"]["city"], "测试市")
 		self.assertEqual(result["data"]["items"][0]["image"], "/files/item-001.png")
+		self.assertEqual(result["data"]["items"][0]["specification"], "500ml")
 
 	@patch("myapp.services.order_service._build_sales_order_summary_rows")
 	@patch("myapp.services.order_service.frappe.get_all")

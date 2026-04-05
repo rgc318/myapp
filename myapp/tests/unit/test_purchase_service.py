@@ -696,16 +696,20 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(mock_run_idempotent.call_count, 2)
 		mock_get_purchase_order_detail.assert_not_called()
 
+	@patch("myapp.services.purchase_service._get_item_specification_field", return_value="custom_specification")
 	@patch("myapp.services.purchase_service._get_latest_purchase_payment_entry_summary")
 	@patch("myapp.services.purchase_service._load_purchase_invoice_rows")
 	@patch("myapp.services.purchase_service._collect_purchase_order_reference_names")
+	@patch("myapp.services.purchase_service.frappe.get_all")
 	@patch("myapp.services.purchase_service.frappe.get_doc")
 	def test_get_purchase_order_detail_v2_returns_aggregated_data(
 		self,
 		mock_get_doc,
+		mock_get_all,
 		mock_collect_refs,
 		mock_load_invoices,
 		mock_latest_payment,
+		mock_get_item_specification_field,
 	):
 		po = frappe._dict(
 			{
@@ -726,6 +730,7 @@ class TestPurchaseService(TestCase):
 			}
 		)
 		mock_get_doc.return_value = po
+		mock_get_all.return_value = [frappe._dict({"name": "ITEM-001", "custom_specification": "500ml"})]
 		mock_collect_refs.return_value = (["PR-0001"], ["PINV-0001"])
 		mock_load_invoices.return_value = [frappe._dict({"name": "PINV-0001", "rounded_total": 300, "outstanding_amount": 120})]
 		mock_latest_payment.return_value = {
@@ -746,6 +751,7 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["data"]["references"]["purchase_receipts"], ["PR-0001"])
 		self.assertFalse(result["data"]["actions"]["can_cancel_purchase_order"])
 		self.assertIn("收货或开票记录", result["data"]["actions"]["cancel_purchase_order_hint"])
+		self.assertEqual(result["data"]["items"][0]["specification"], "500ml")
 
 	@patch("myapp.services.purchase_service._get_latest_purchase_payment_entry_summary")
 	@patch("myapp.services.purchase_service._load_purchase_invoice_rows")
@@ -794,9 +800,17 @@ class TestPurchaseService(TestCase):
 		self.assertTrue(result["data"]["actions"]["can_cancel_purchase_order"])
 		self.assertIsNone(result["data"]["actions"]["cancel_purchase_order_hint"])
 
+	@patch("myapp.services.purchase_service._get_item_specification_field", return_value="custom_specification")
 	@patch("myapp.services.purchase_service._build_purchase_receipt_references")
+	@patch("myapp.services.purchase_service.frappe.get_all")
 	@patch("myapp.services.purchase_service.frappe.get_doc")
-	def test_get_purchase_receipt_detail_v2_returns_detail(self, mock_get_doc, mock_build_references):
+	def test_get_purchase_receipt_detail_v2_returns_detail(
+		self,
+		mock_get_doc,
+		mock_get_all,
+		mock_build_references,
+		mock_get_item_specification_field,
+	):
 		pr = frappe._dict(
 			{
 				"name": "PR-0001",
@@ -812,6 +826,7 @@ class TestPurchaseService(TestCase):
 			}
 		)
 		mock_get_doc.return_value = pr
+		mock_get_all.return_value = [frappe._dict({"name": "ITEM-001", "custom_specification": "500ml"})]
 		mock_build_references.return_value = {"purchase_orders": ["PO-0001"], "purchase_invoices": ["PINV-0001"]}
 
 		result = get_purchase_receipt_detail_v2("PR-0001")
@@ -819,10 +834,19 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["status"], "success")
 		self.assertEqual(result["data"]["purchase_receipt_name"], "PR-0001")
 		self.assertEqual(result["data"]["references"]["purchase_orders"], ["PO-0001"])
+		self.assertEqual(result["data"]["items"][0]["specification"], "500ml")
 
+	@patch("myapp.services.purchase_service._get_item_specification_field", return_value="custom_specification")
 	@patch("myapp.services.purchase_service._get_latest_purchase_payment_entry_summary")
+	@patch("myapp.services.purchase_service.frappe.get_all")
 	@patch("myapp.services.purchase_service.frappe.get_doc")
-	def test_get_purchase_invoice_detail_v2_returns_detail(self, mock_get_doc, mock_latest_payment):
+	def test_get_purchase_invoice_detail_v2_returns_detail(
+		self,
+		mock_get_doc,
+		mock_get_all,
+		mock_latest_payment,
+		mock_get_item_specification_field,
+	):
 		pi = frappe._dict(
 			{
 				"name": "PINV-0001",
@@ -839,6 +863,7 @@ class TestPurchaseService(TestCase):
 			}
 		)
 		mock_get_doc.return_value = pi
+		mock_get_all.return_value = [frappe._dict({"name": "ITEM-001", "custom_specification": "500ml"})]
 		mock_latest_payment.return_value = {
 			"payment_entry": "PAY-0001",
 			"invoice_name": "PINV-0001",
@@ -854,6 +879,7 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["status"], "success")
 		self.assertEqual(result["data"]["purchase_invoice_name"], "PINV-0001")
 		self.assertEqual(result["data"]["payment"]["outstanding_amount"], 50)
+		self.assertEqual(result["data"]["items"][0]["specification"], "500ml")
 
 	@patch("myapp.services.purchase_service._build_purchase_order_summary_rows")
 	@patch("myapp.services.purchase_service.frappe.get_all")

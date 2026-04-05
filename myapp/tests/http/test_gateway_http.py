@@ -223,12 +223,19 @@ class GatewayHttpTestCase(TestCase):
 		self.assertTrue(doc.get("items"))
 		return doc["items"][0]
 
-	def _create_sales_order(self, *, qty: float | None = None, price: float | None = None, request_id: str | None = None):
+	def _create_sales_order(
+		self,
+		*,
+		item_code: str | None = None,
+		qty: float | None = None,
+		price: float | None = None,
+		request_id: str | None = None,
+	):
 		payload = {
 			"customer": SALES_CUSTOMER,
 			"items": [
 				{
-					"item_code": SALES_ITEM_CODE,
+					"item_code": item_code or SALES_ITEM_CODE,
 					"qty": qty if qty is not None else SALES_QTY,
 					"warehouse": SALES_WAREHOUSE,
 				}
@@ -322,6 +329,7 @@ class GatewayHttpTestCase(TestCase):
 	def _create_purchase_order(
 		self,
 		*,
+		item_code: str | None = None,
 		qty: float | None = None,
 		price: float | None = None,
 		request_id: str | None = None,
@@ -330,7 +338,7 @@ class GatewayHttpTestCase(TestCase):
 			"supplier": PURCHASE_SUPPLIER,
 			"items": [
 				{
-					"item_code": PURCHASE_ITEM_CODE,
+					"item_code": item_code or PURCHASE_ITEM_CODE,
 					"qty": qty if qty is not None else PURCHASE_QTY,
 					"warehouse": PURCHASE_WAREHOUSE,
 				}
@@ -485,6 +493,33 @@ class GatewayHttpTestCase(TestCase):
 		self._assert_success(status_code, payload, code="PRODUCTS_FETCHED")
 		self.assertTrue(payload["message"]["data"])
 		self.assertEqual(payload["message"]["data"][0]["item_code"], SALES_ITEM_CODE)
+
+	def test_search_product_returns_specification_for_new_item(self):
+		specification = f"老搜索规格-{time.time_ns()}"
+		create_status, create_payload = self._post_method(
+			"myapp.api.gateway.create_product_and_stock",
+			{
+				"item_name": f"HTTP-老搜索商品-{time.time_ns()}",
+				"default_warehouse": SALES_WAREHOUSE,
+				"opening_qty": 1,
+				"standard_rate": 11,
+				"barcode": f"LEGACY{time.time_ns()}"[-16:],
+				"specification": specification,
+				"request_id": self._unique_request_id("http-legacy-product-spec"),
+			},
+		)
+		self._assert_success(create_status, create_payload, code="PRODUCT_CREATED")
+		item_code = create_payload["message"]["data"]["item_code"]
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.search_product",
+			{"search_key": specification, "limit": 5},
+		)
+
+		self._assert_success(status_code, payload, code="PRODUCTS_FETCHED")
+		rows = [row for row in payload["message"]["data"] if row["item_code"] == item_code]
+		self.assertTrue(rows)
+		self.assertEqual(rows[0]["specification"], specification)
 
 	def test_create_order_success(self):
 		_request, payload = self._create_sales_order()
@@ -1212,6 +1247,45 @@ class GatewayHttpTestCase(TestCase):
 		self.assertIn("payable_summary", data["tables"])
 		self.assertIn("cashflow_summary", data["tables"])
 
+	def test_get_business_report_v1_product_rows_include_specification(self):
+		specification = f"报表规格-{time.time_ns()}"
+		create_status, create_payload = self._post_method(
+			"myapp.api.gateway.create_product_and_stock",
+			{
+				"item_name": f"HTTP-报表规格商品-{time.time_ns()}",
+				"default_warehouse": SALES_WAREHOUSE,
+				"opening_qty": 10,
+				"standard_rate": 18,
+				"barcode": f"REPORT{time.time_ns()}"[-16:],
+				"specification": specification,
+				"request_id": self._unique_request_id("http-report-product-spec"),
+			},
+		)
+		self._assert_success(create_status, create_payload, code="PRODUCT_CREATED")
+		item_code = create_payload["message"]["data"]["item_code"]
+
+		self._create_sales_order(item_code=item_code, price=18)
+		self._create_purchase_order(item_code=item_code, price=12)
+
+		status_code, response = self._call_gateway(
+			"myapp.api.gateway.get_business_report_v1",
+			{
+				"company": SALES_COMPANY,
+				"date_from": "2026-04-05",
+				"date_to": "2026-04-05",
+				"limit": 10,
+			},
+		)
+
+		self._assert_success(status_code, response, code="BUSINESS_REPORT_FETCHED")
+		data = response["message"]["data"]["tables"]
+		sales_rows = [row for row in data["sales_product_summary"] if row["item_key"] == item_code]
+		purchase_rows = [row for row in data["purchase_product_summary"] if row["item_key"] == item_code]
+		self.assertTrue(sales_rows)
+		self.assertTrue(purchase_rows)
+		self.assertEqual(sales_rows[0]["specification"], specification)
+		self.assertEqual(purchase_rows[0]["specification"], specification)
+
 	def test_get_business_report_v1_rejects_invalid_date_range(self):
 		status_code, payload = self._call_gateway(
 			"myapp.api.gateway.get_business_report_v1",
@@ -1706,6 +1780,33 @@ class GatewayHttpTestCase(TestCase):
 		self.assertEqual(data["actions"]["detail_submit_key"], "sales_invoice_item")
 		self.assertTrue(data["items"])
 
+	def test_get_return_source_context_sales_invoice_includes_item_specification(self):
+		specification = f"退货销售规格-{time.time_ns()}"
+		create_status, create_payload = self._post_method(
+			"myapp.api.gateway.create_product_and_stock",
+			{
+				"item_name": f"HTTP-退货销售商品-{time.time_ns()}",
+				"default_warehouse": SALES_WAREHOUSE,
+				"opening_qty": 2,
+				"standard_rate": 16,
+				"barcode": f"RETSALE{time.time_ns()}"[-16:],
+				"specification": specification,
+				"request_id": self._unique_request_id("http-return-sales-spec"),
+			},
+		)
+		self._assert_success(create_status, create_payload, code="PRODUCT_CREATED")
+		item_code = create_payload["message"]["data"]["item_code"]
+
+		_order_request, order_payload = self._create_sales_order(item_code=item_code, price=16)
+		order_name = order_payload["message"]["data"]["order"]
+		_invoice_request, invoice_payload = self._create_sales_invoice(order_name)
+		invoice_name = invoice_payload["message"]["data"]["sales_invoice"]
+
+		_request, payload = self._get_return_source_context("Sales Invoice", invoice_name)
+		rows = payload["message"]["data"]["items"]
+		self.assertTrue(rows)
+		self.assertEqual(rows[0]["specification"], specification)
+
 	def test_get_return_source_context_delivery_note_success(self):
 		_order_request, order_payload = self._create_sales_order()
 		order_name = order_payload["message"]["data"]["order"]
@@ -1747,6 +1848,33 @@ class GatewayHttpTestCase(TestCase):
 		self.assertEqual(data["source_name"], receipt_name)
 		self.assertEqual(data["actions"]["detail_submit_key"], "purchase_receipt_item")
 		self.assertTrue(data["items"])
+
+	def test_get_return_source_context_purchase_receipt_includes_item_specification(self):
+		specification = f"退货采购规格-{time.time_ns()}"
+		create_status, create_payload = self._post_method(
+			"myapp.api.gateway.create_product_and_stock",
+			{
+				"item_name": f"HTTP-退货采购商品-{time.time_ns()}",
+				"default_warehouse": PURCHASE_WAREHOUSE,
+				"opening_qty": 1,
+				"standard_rate": 12,
+				"barcode": f"RETPUR{time.time_ns()}"[-16:],
+				"specification": specification,
+				"request_id": self._unique_request_id("http-return-purchase-spec"),
+			},
+		)
+		self._assert_success(create_status, create_payload, code="PRODUCT_CREATED")
+		item_code = create_payload["message"]["data"]["item_code"]
+
+		_order_request, order_payload = self._create_purchase_order(item_code=item_code, price=12)
+		order_name = order_payload["message"]["data"]["purchase_order"]
+		_receipt_request, receipt_payload = self._receive_purchase_order(order_name)
+		receipt_name = receipt_payload["message"]["data"]["purchase_receipt"]
+
+		_request, payload = self._get_return_source_context("Purchase Receipt", receipt_name)
+		rows = payload["message"]["data"]["items"]
+		self.assertTrue(rows)
+		self.assertEqual(rows[0]["specification"], specification)
 
 	def test_process_sales_return_after_paid_invoice_requires_followup_refund(self):
 		_order_request, order_payload = self._create_sales_order(price=900)

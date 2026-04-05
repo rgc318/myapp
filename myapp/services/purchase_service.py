@@ -13,6 +13,7 @@ from myapp.services.order_service import (
 	_serialize_contact_doc,
 	_sum_row_values,
 )
+from myapp.services.wholesale_service import _get_item_specification_field
 from myapp.services.return_service import build_return_submission_payload
 from myapp.services.settlement_service import cancel_payment_entry
 from myapp.utils.idempotency import run_idempotent
@@ -808,11 +809,13 @@ def _build_purchase_invoice_action_flags(*, docstatus: int, latest_payment_entry
 
 
 def _serialize_purchase_order_items(order_items):
+	item_specification_map = _get_item_specification_map(order_items)
 	return [
 		{
 			"purchase_order_item": getattr(item, "name", None),
 			"item_code": getattr(item, "item_code", None),
 			"item_name": getattr(item, "item_name", None),
+			"specification": item_specification_map.get(getattr(item, "item_code", None)),
 			"uom": getattr(item, "uom", None),
 			"warehouse": getattr(item, "warehouse", None),
 			"qty": flt(getattr(item, "qty", 0) or 0),
@@ -827,11 +830,13 @@ def _serialize_purchase_order_items(order_items):
 
 
 def _serialize_purchase_receipt_items(receipt_items):
+	item_specification_map = _get_item_specification_map(receipt_items)
 	return [
 		{
 			"purchase_receipt_item": getattr(item, "name", None),
 			"item_code": getattr(item, "item_code", None),
 			"item_name": getattr(item, "item_name", None),
+			"specification": item_specification_map.get(getattr(item, "item_code", None)),
 			"uom": getattr(item, "uom", None),
 			"warehouse": getattr(item, "warehouse", None),
 			"qty": flt(getattr(item, "qty", 0) or 0),
@@ -845,11 +850,13 @@ def _serialize_purchase_receipt_items(receipt_items):
 
 
 def _serialize_purchase_invoice_items(invoice_items):
+	item_specification_map = _get_item_specification_map(invoice_items)
 	return [
 		{
 			"purchase_invoice_item": getattr(item, "name", None),
 			"item_code": getattr(item, "item_code", None),
 			"item_name": getattr(item, "item_name", None),
+			"specification": item_specification_map.get(getattr(item, "item_code", None)),
 			"uom": getattr(item, "uom", None),
 			"warehouse": getattr(item, "warehouse", None),
 			"qty": flt(getattr(item, "qty", 0) or 0),
@@ -862,6 +869,30 @@ def _serialize_purchase_invoice_items(invoice_items):
 		}
 		for item in invoice_items or []
 	]
+
+
+def _get_item_specification_map(items):
+	item_codes = []
+	for item in items or []:
+		item_code = getattr(item, "item_code", None)
+		if isinstance(item_code, str) and item_code and item_code not in item_codes:
+			item_codes.append(item_code)
+
+	specification_map = {}
+	specification_field = _get_item_specification_field()
+	if not item_codes or not specification_field:
+		return specification_map
+
+	for row in frappe.get_all(
+		"Item",
+		filters={"name": ["in", item_codes]},
+		fields=["name", specification_field],
+		limit_page_length=len(item_codes),
+	):
+		item_code = getattr(row, "name", None)
+		if item_code:
+			specification_map[item_code] = getattr(row, specification_field, None)
+	return specification_map
 
 
 def _collect_purchase_order_reference_names(order_name: str):

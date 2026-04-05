@@ -848,7 +848,7 @@ def search_product(
 
 	item_codes = _search_item_codes(
 		search_key,
-		search_fields=["barcode", "item_code", "item_name"],
+		search_fields=["barcode", "item_code", "item_name", "specification"],
 		limit=limit,
 	)
 
@@ -863,6 +863,7 @@ def search_product(
 	buying_price_map = _get_multi_price_map(item_codes, price_lists=list(DEFAULT_BUYING_PRICE_LISTS), currency=currency)
 
 	results = []
+	specification_field = _get_item_specification_field()
 	for code in item_codes:
 		item = items_data.get(code)
 		if not item:
@@ -877,6 +878,7 @@ def search_product(
 				"qty": qty_map.get(code, 0),
 				"price": price_map.get(code, 0),
 				"image": item.image,
+				"specification": getattr(item, specification_field, None) if specification_field else None,
 			}
 		)
 

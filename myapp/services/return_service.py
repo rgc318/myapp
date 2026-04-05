@@ -89,6 +89,7 @@ def _map_item_rows(items: list[dict], *, detail_name_key: str):
                 "detail_submit_key": detail_name_key,
                 "item_code": item.get("item_code"),
                 "item_name": item.get("item_name"),
+                "specification": item.get("specification"),
                 "uom": item.get("uom"),
                 "warehouse": item.get("warehouse"),
                 "rate": flt(item.get("rate") or 0),

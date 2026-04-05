@@ -561,6 +561,88 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self.assertIn("completion", data)
 		self.assertIn("actions", data)
 
+	def test_sales_document_details_include_item_specification(self):
+		specification = f"销售规格-{time.time_ns()}"
+		create_payload = self._build_product_payload(
+			item_name=f"HTTP-V2-销售规格商品-{time.time_ns()}",
+			standard_rate=37,
+			opening_qty=8,
+			warehouse=SALES_WAREHOUSE,
+			specification=specification,
+		)
+		create_status, create_response = self._post_create_product_and_stock(create_payload)
+		self._assert_success(create_status, create_response, code="PRODUCT_CREATED")
+		item_code = create_response["message"]["data"]["item_code"]
+
+		_order_request, order_payload = self._create_sales_order_v2(item_code=item_code, qty=2, price=37)
+		order_name = order_payload["message"]["data"]["order"]
+
+		order_status, order_detail = self._call_gateway(
+			"myapp.api.gateway.get_sales_order_detail",
+			{"order_name": order_name},
+		)
+		self._assert_success(order_status, order_detail, code="ORDER_DETAIL_FETCHED")
+		self.assertEqual(order_detail["message"]["data"]["items"][0]["specification"], specification)
+
+		_delivery_request, delivery_payload = self._submit_sales_delivery(order_name)
+		delivery_name = delivery_payload["message"]["data"]["delivery_note"]
+		delivery_status, delivery_detail = self._call_gateway(
+			"myapp.api.gateway.get_delivery_note_detail_v2",
+			{"delivery_note_name": delivery_name},
+		)
+		self._assert_success(delivery_status, delivery_detail, code="DELIVERY_NOTE_DETAIL_FETCHED")
+		self.assertEqual(delivery_detail["message"]["data"]["items"][0]["specification"], specification)
+
+		_invoice_request, invoice_payload = self._create_sales_invoice(order_name)
+		invoice_name = invoice_payload["message"]["data"]["sales_invoice"]
+		invoice_status, invoice_detail = self._call_gateway(
+			"myapp.api.gateway.get_sales_invoice_detail_v2",
+			{"sales_invoice_name": invoice_name},
+		)
+		self._assert_success(invoice_status, invoice_detail, code="SALES_INVOICE_DETAIL_FETCHED")
+		self.assertEqual(invoice_detail["message"]["data"]["items"][0]["specification"], specification)
+
+	def test_purchase_document_details_include_item_specification(self):
+		specification = f"采购规格-{time.time_ns()}"
+		create_payload = self._build_product_payload(
+			item_name=f"HTTP-V2-采购规格商品-{time.time_ns()}",
+			standard_rate=21,
+			opening_qty=4,
+			warehouse=SALES_WAREHOUSE,
+			specification=specification,
+		)
+		create_status, create_response = self._post_create_product_and_stock(create_payload)
+		self._assert_success(create_status, create_response, code="PRODUCT_CREATED")
+		item_code = create_response["message"]["data"]["item_code"]
+
+		_order_request, order_payload = self._create_purchase_order(item_code=item_code, qty=3, price=21)
+		order_name = order_payload["message"]["data"]["purchase_order"]
+
+		order_status, order_detail = self._call_gateway(
+			"myapp.api.gateway.get_purchase_order_detail_v2",
+			{"order_name": order_name},
+		)
+		self._assert_success(order_status, order_detail, code="PURCHASE_ORDER_DETAIL_FETCHED")
+		self.assertEqual(order_detail["message"]["data"]["items"][0]["specification"], specification)
+
+		_receipt_request, receipt_payload = self._receive_purchase_order(order_name)
+		receipt_name = receipt_payload["message"]["data"]["purchase_receipt"]
+		receipt_status, receipt_detail = self._call_gateway(
+			"myapp.api.gateway.get_purchase_receipt_detail_v2",
+			{"receipt_name": receipt_name},
+		)
+		self._assert_success(receipt_status, receipt_detail, code="PURCHASE_RECEIPT_DETAIL_FETCHED")
+		self.assertEqual(receipt_detail["message"]["data"]["items"][0]["specification"], specification)
+
+		_invoice_request, invoice_payload = self._create_purchase_invoice(order_name)
+		invoice_name = invoice_payload["message"]["data"]["purchase_invoice"]
+		invoice_status, invoice_detail = self._call_gateway(
+			"myapp.api.gateway.get_purchase_invoice_detail_v2",
+			{"invoice_name": invoice_name},
+		)
+		self._assert_success(invoice_status, invoice_detail, code="PURCHASE_INVOICE_DETAIL_FETCHED")
+		self.assertEqual(invoice_detail["message"]["data"]["items"][0]["specification"], specification)
+
 	def test_create_order_v2_success(self):
 		_request, payload = self._create_sales_order_v2()
 		self.assertIn("order", payload["message"]["data"])

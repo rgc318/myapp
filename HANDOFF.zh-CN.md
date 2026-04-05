@@ -1,6 +1,6 @@
 # 开发交接摘要
 
-更新时间：2026-03-23
+更新时间：2026-04-05
 
 ## 1. 当前已完成
 
@@ -258,6 +258,64 @@
     - `wholesale_default_uom`
     - `retail_default_uom`
     - `sales_profiles`
+
+## 2026-04-05 商品规格字段后端主链路已补齐
+
+本轮已将 `Item.custom_specification` 从“商品主数据字段”扩展到后端主要展示与聚合链路。
+
+当前已覆盖：
+
+- 商品主数据接口
+  - `create_product_v2`
+  - `create_product_and_stock`
+  - `update_product_v2`
+  - `get_product_detail_v2`
+  - `list_products_v2`
+  - `search_product_v2`
+  - 旧版 `search_product`
+- 销售详情聚合
+  - `get_sales_order_detail`
+  - `get_delivery_note_detail_v2`
+  - `get_sales_invoice_detail_v2`
+- 采购详情聚合
+  - `get_purchase_order_detail_v2`
+  - `get_purchase_receipt_detail_v2`
+  - `get_purchase_invoice_detail_v2`
+- 退货来源上下文
+  - `get_return_source_context_v2`
+- 打印主链路
+  - 销售发票标准打印模板
+- 报表聚合
+  - `get_business_report_v1`
+  - `get_sales_report_v1`
+  - `get_purchase_report_v1`
+
+当前商品规格建模口径已明确：
+
+- 不同规格视为不同商品
+- 每个规格对应独立 `Item / item_code`
+- 报表继续按独立商品统计，不做“同名不同规格合并”
+- 报表商品汇总行新增返回 `specification`，仅用于展示，不改变现有按商品粒度统计的规则
+
+本轮实际验证结果：
+
+- 服务层单测累计通过：
+  - `test_wholesale_service`
+  - `test_order_service`
+  - `test_purchase_service`
+  - `test_report_service`
+- 容器内本轮相关单测累计 `119` 条通过
+- 真实 HTTP 回归已确认以下链路返回 `specification`
+  - 旧商品搜索
+  - 销售订单 / 发货单 / 销售发票详情
+  - 采购订单 / 收货单 / 采购发票详情
+  - 退货来源上下文
+  - 经营报表中的销售商品汇总 / 采购商品汇总
+
+当前结论：
+
+- 规格字段相关后端主链路已完成
+- 当前若继续推进，可将重心切到前端 / 移动端展示细化，或后续单独规划 ERPNext Variant 方案
   - 商品创建 / 更新已支持保存批发默认单位与零售默认单位
   - 新增 patch：
     - `myapp.patches.add_item_sales_mode_uom_fields`

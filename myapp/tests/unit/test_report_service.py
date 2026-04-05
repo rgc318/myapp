@@ -79,7 +79,9 @@ class TestReportService(TestCase):
 				"sales_summary": [{"name": "Customer A", "count": 2, "amount": 1200}],
 				"sales_trend": [{"trend_date": "2026-04-01", "count": 2, "amount": 1200}],
 				"sales_trend_hourly": [{"trend_hour": 9, "count": 2, "amount": 1200}],
-				"sales_product_summary": [{"item_key": "SKU-1", "item_name": "Item A", "qty": 3, "amount": 1200}],
+				"sales_product_summary": [
+					{"item_key": "SKU-1", "item_name": "Item A", "specification": "500ml", "qty": 3, "amount": 1200}
+				],
 			},
 		}
 
@@ -108,7 +110,9 @@ class TestReportService(TestCase):
 				"purchase_summary": [{"name": "Supplier A", "count": 2, "amount": 900}],
 				"purchase_trend": [{"trend_date": "2026-04-01", "count": 2, "amount": 900}],
 				"purchase_trend_hourly": [{"trend_hour": 10, "count": 2, "amount": 900}],
-				"purchase_product_summary": [{"item_key": "MAT-1", "item_name": "Material A", "qty": 6, "amount": 900}],
+				"purchase_product_summary": [
+					{"item_key": "MAT-1", "item_name": "Material A", "specification": "20kg", "qty": 6, "amount": 900}
+				],
 			},
 		}
 
@@ -329,14 +333,14 @@ class TestReportService(TestCase):
 			frappe._dict({"trend_date": "2026-04-02", "count": 1, "amount": 500}),
 		]
 		mock_make_sales_product_rows.return_value = [
-			frappe._dict({"item_key": "SKU-1", "item_name": "Product A", "qty": 5, "amount": 900}),
+			frappe._dict({"item_key": "SKU-1", "item_name": "Product A", "specification": "500ml", "qty": 5, "amount": 900}),
 		]
 		mock_make_purchase_trend_rows.return_value = [
 			frappe._dict({"trend_date": "2026-04-01", "count": 1, "amount": 600}),
 			frappe._dict({"trend_date": "2026-04-02", "count": 2, "amount": 1200}),
 		]
 		mock_make_purchase_product_rows.return_value = [
-			frappe._dict({"item_key": "MAT-1", "item_name": "Material A", "qty": 8, "amount": 700}),
+			frappe._dict({"item_key": "MAT-1", "item_name": "Material A", "specification": "20kg", "qty": 8, "amount": 700}),
 		]
 		mock_make_sales_hourly_rows.return_value = [
 			frappe._dict({"trend_hour": 10, "count": 1, "amount": 100}),
@@ -363,9 +367,11 @@ class TestReportService(TestCase):
 		self.assertEqual(result["data"]["tables"]["sales_trend"][0]["trend_date"], "2026-04-01")
 		self.assertEqual(result["data"]["tables"]["sales_trend_hourly"][0]["trend_hour"], 10)
 		self.assertEqual(result["data"]["tables"]["sales_product_summary"][0]["item_key"], "SKU-1")
+		self.assertEqual(result["data"]["tables"]["sales_product_summary"][0]["specification"], "500ml")
 		self.assertEqual(result["data"]["tables"]["purchase_trend"][0]["trend_date"], "2026-04-01")
 		self.assertEqual(result["data"]["tables"]["purchase_trend_hourly"][0]["trend_hour"], 11)
 		self.assertEqual(result["data"]["tables"]["purchase_product_summary"][0]["item_key"], "MAT-1")
+		self.assertEqual(result["data"]["tables"]["purchase_product_summary"][0]["specification"], "20kg")
 		self.assertEqual(result["data"]["tables"]["receivable_summary"][0]["name"], "Customer B")
 		self.assertEqual(result["data"]["tables"]["cashflow_summary"][0]["direction"], "in")
 		self.assertEqual(result["data"]["tables"]["cashflow_trend"][0]["trend_date"], "2026-04-01")
@@ -378,6 +384,18 @@ class TestReportService(TestCase):
 		self.assertEqual(first_group_kwargs["date_from"], "2026-03-04")
 		self.assertEqual(first_group_kwargs["date_to"], "2026-04-02")
 		self.assertEqual(first_group_kwargs["company"], "Test Company")
+
+	def test_report_product_row_serializers_include_specification(self):
+		from myapp.services.report_service import _serialize_purchase_product_rows, _serialize_sales_product_rows
+
+		sales_rows = [frappe._dict({"item_key": "SKU-500", "item_name": "可乐", "specification": "500ml", "qty": 5, "amount": 50})]
+		purchase_rows = [frappe._dict({"item_key": "SKU-1000", "item_name": "可乐", "specification": "1000ml", "qty": 3, "amount": 45})]
+
+		sales_result = _serialize_sales_product_rows(sales_rows)
+		purchase_result = _serialize_purchase_product_rows(purchase_rows)
+
+		self.assertEqual(sales_result[0]["specification"], "500ml")
+		self.assertEqual(purchase_result[0]["specification"], "1000ml")
 
 	@patch("myapp.services.report_service.frappe.throw", side_effect=frappe.ValidationError("报表时间范围不能超过 366 天。"))
 	def test_get_business_report_v1_rejects_too_large_date_range(self, mock_throw):

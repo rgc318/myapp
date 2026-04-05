@@ -2,6 +2,8 @@ import frappe
 from frappe import _
 from frappe.utils import add_days, cint, flt, getdate, nowdate
 
+from myapp.services.wholesale_service import _get_item_specification_field
+
 
 MAX_REPORT_LIMIT = 50
 DEFAULT_REPORT_LIMIT = 10
@@ -330,15 +332,23 @@ def _make_sales_product_rows(*, company: str | None, date_from: str, date_to: st
 	if company:
 		company_sql = " AND so.company = %s"
 		params.append(company)
+	specification_field = _get_item_specification_field()
+	select_specification_sql = ""
+	item_join_sql = ""
+	if specification_field:
+		item_join_sql = " LEFT JOIN `tabItem` item ON item.name = soi.item_code"
+		select_specification_sql = f'\n\t\t\tMAX(ifnull(item.`{specification_field}`, "")) AS specification,'
 	return frappe.db.sql(
 		f"""
 		SELECT
 			COALESCE(soi.item_code, soi.item_name) AS item_key,
 			MAX(COALESCE(soi.item_name, soi.item_code, "未命名商品")) AS item_name,
+			{select_specification_sql}
 			SUM(ifnull(soi.qty, 0)) AS qty,
 			SUM(ifnull(soi.base_amount, ifnull(soi.amount, 0))) AS amount
 		FROM `tabSales Order Item` soi
 		INNER JOIN `tabSales Order` so FORCE INDEX (`idx_myapp_so_company_docstatus_date_customer`) ON so.name = soi.parent
+		{item_join_sql}
 		WHERE so.docstatus = 1
 			AND so.transaction_date between %s and %s
 			{company_sql}
@@ -381,15 +391,23 @@ def _make_purchase_product_rows(*, company: str | None, date_from: str, date_to:
 	if company:
 		company_sql = " AND po.company = %s"
 		params.append(company)
+	specification_field = _get_item_specification_field()
+	select_specification_sql = ""
+	item_join_sql = ""
+	if specification_field:
+		item_join_sql = " LEFT JOIN `tabItem` item ON item.name = poi.item_code"
+		select_specification_sql = f'\n\t\t\tMAX(ifnull(item.`{specification_field}`, "")) AS specification,'
 	return frappe.db.sql(
 		f"""
 		SELECT
 			COALESCE(poi.item_code, poi.item_name) AS item_key,
 			MAX(COALESCE(poi.item_name, poi.item_code, "未命名商品")) AS item_name,
+			{select_specification_sql}
 			SUM(ifnull(poi.qty, 0)) AS qty,
 			SUM(ifnull(poi.base_amount, ifnull(poi.amount, 0))) AS amount
 		FROM `tabPurchase Order Item` poi
 		INNER JOIN `tabPurchase Order` po FORCE INDEX (`idx_myapp_po_company_docstatus_date_supplier`) ON po.name = poi.parent
+		{item_join_sql}
 		WHERE po.docstatus = 1
 			AND po.transaction_date between %s and %s
 			{company_sql}
@@ -492,6 +510,7 @@ def _serialize_sales_product_rows(rows):
 			{
 				"item_key": item_key,
 				"item_name": getattr(row, "item_name", item_key),
+				"specification": getattr(row, "specification", None) or None,
 				"qty": flt(getattr(row, "qty", 0) or 0),
 				"amount": flt(getattr(row, "amount", 0) or 0),
 			}

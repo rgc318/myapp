@@ -1,6 +1,6 @@
 # 测试说明
 
-更新时间：2026-04-02
+更新时间：2026-04-05
 
 ## 1. 测试原则
 
@@ -238,6 +238,53 @@ docker exec frappe_docker-backend-1 bash -lc '
 - 采购主链路成功测试
 - 采购顺序幂等
 - 采购不同数据测试
+
+### 5.2 商品规格字段贯通专项回归（2026-04-05）
+
+本轮新增并完成了“商品规格字段”专项回归，目标是确认 `Item.custom_specification` 不仅存在于商品主数据，还能稳定出现在各条后端展示链路中。
+
+已完成的服务层 / 单元测试：
+
+- `apps.myapp.myapp.tests.unit.test_wholesale_service`
+- `apps.myapp.myapp.tests.unit.test_order_service`
+- `apps.myapp.myapp.tests.unit.test_purchase_service`
+- `apps.myapp.myapp.tests.unit.test_report_service`
+
+容器内汇总结果：
+
+- 相关单测累计 `119` 条通过
+
+已完成的真实 HTTP 回归：
+
+- 商品主数据与搜索
+  - 旧版 `search_product` 返回 `specification`
+  - `create_product_v2` / `create_product_and_stock` / `update_product_v2` / `get_product_detail_v2`
+- 销售详情聚合
+  - `get_sales_order_detail`
+  - `get_delivery_note_detail_v2`
+  - `get_sales_invoice_detail_v2`
+- 采购详情聚合
+  - `get_purchase_order_detail_v2`
+  - `get_purchase_receipt_detail_v2`
+  - `get_purchase_invoice_detail_v2`
+- 退货来源上下文
+  - `get_return_source_context_v2`
+- 报表聚合
+  - `get_business_report_v1`
+    - `sales_product_summary[].specification`
+    - `purchase_product_summary[].specification`
+
+本轮确认的业务口径：
+
+- 不同规格视为不同商品
+- 不同规格使用不同 `item_code`
+- 报表按独立商品粒度统计
+- 不做“可口可乐 500ml / 1000ml”这类同名不同规格的自动合并统计
+
+当前专项结论：
+
+- 规格字段已完成后端主链路贯通
+- 当前后端使用商品展示信息的核心模块均已能稳定返回 `specification`
 - 采购并发幂等
 - 部分发货
 - 部分开票

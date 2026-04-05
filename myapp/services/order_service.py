@@ -3,6 +3,7 @@ import heapq
 from frappe import _
 from frappe.utils import cint, flt, getdate, nowdate
 
+from myapp.services.wholesale_service import _get_item_specification_field
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.uom import resolve_item_quantity_to_stock
 
@@ -970,13 +971,14 @@ def _build_sales_invoice_action_flags(*, docstatus: int, latest_payment_entry: s
 
 
 def _serialize_order_items(order_items):
-	item_image_map = _get_item_image_map(order_items)
+	item_meta_map = _get_item_meta_map(order_items)
 	sales_mode_field = _get_order_item_sales_mode_field()
 	return [
 		{
 			"sales_order_item": getattr(item, "name", None),
 			"item_code": getattr(item, "item_code", None),
 			"item_name": getattr(item, "item_name", None),
+			"specification": (item_meta_map.get(getattr(item, "item_code", None)) or {}).get("specification"),
 			"uom": getattr(item, "uom", None),
 			"warehouse": getattr(item, "warehouse", None),
 			"qty": flt(getattr(item, "qty", 0) or 0),
@@ -984,46 +986,54 @@ def _serialize_order_items(order_items):
 			"rate": flt(getattr(item, "rate", 0) or 0),
 			"amount": flt(getattr(item, "amount", 0) or 0),
 			"sales_mode": getattr(item, sales_mode_field, None) if sales_mode_field else None,
-			"image": item_image_map.get(getattr(item, "item_code", None)),
+			"image": (item_meta_map.get(getattr(item, "item_code", None)) or {}).get("image"),
 		}
 		for item in order_items or []
 	]
 
 
-def _get_item_image_map(items):
+def _get_item_meta_map(items):
 	item_codes = []
 	for item in items or []:
 		item_code = getattr(item, "item_code", None)
 		if isinstance(item_code, str) and item_code and item_code not in item_codes:
 			item_codes.append(item_code)
 
-	item_image_map = {}
+	item_meta_map = {}
 	if item_codes:
+		specification_field = _get_item_specification_field()
+		fields = ["name", "image"]
+		if specification_field:
+			fields.append(specification_field)
 		for row in frappe.get_all(
 			"Item",
 			filters={"name": ["in", item_codes]},
-			fields=["name", "image"],
+			fields=fields,
 			limit_page_length=len(item_codes),
 		):
 			item_name = getattr(row, "name", None)
 			if item_name:
-				item_image_map[item_name] = getattr(row, "image", None)
-	return item_image_map
+				item_meta_map[item_name] = {
+					"image": getattr(row, "image", None),
+					"specification": getattr(row, specification_field, None) if specification_field else None,
+				}
+	return item_meta_map
 
 
 def _serialize_delivery_note_items(delivery_items):
-	item_image_map = _get_item_image_map(delivery_items)
+	item_meta_map = _get_item_meta_map(delivery_items)
 	return [
 		{
 			"delivery_note_item": getattr(item, "name", None),
 			"item_code": getattr(item, "item_code", None),
 			"item_name": getattr(item, "item_name", None),
+			"specification": (item_meta_map.get(getattr(item, "item_code", None)) or {}).get("specification"),
 			"uom": getattr(item, "uom", None),
 			"warehouse": getattr(item, "warehouse", None),
 			"qty": flt(getattr(item, "qty", 0) or 0),
 			"rate": flt(getattr(item, "rate", 0) or 0),
 			"amount": flt(getattr(item, "amount", 0) or 0),
-			"image": item_image_map.get(getattr(item, "item_code", None)),
+			"image": (item_meta_map.get(getattr(item, "item_code", None)) or {}).get("image"),
 			"sales_order": getattr(item, "against_sales_order", None),
 			"sales_order_item": getattr(item, "so_detail", None),
 		}
@@ -1032,18 +1042,19 @@ def _serialize_delivery_note_items(delivery_items):
 
 
 def _serialize_sales_invoice_items(invoice_items):
-	item_image_map = _get_item_image_map(invoice_items)
+	item_meta_map = _get_item_meta_map(invoice_items)
 	return [
 		{
 			"sales_invoice_item": getattr(item, "name", None),
 			"item_code": getattr(item, "item_code", None),
 			"item_name": getattr(item, "item_name", None),
+			"specification": (item_meta_map.get(getattr(item, "item_code", None)) or {}).get("specification"),
 			"uom": getattr(item, "uom", None),
 			"warehouse": getattr(item, "warehouse", None),
 			"qty": flt(getattr(item, "qty", 0) or 0),
 			"rate": flt(getattr(item, "rate", 0) or 0),
 			"amount": flt(getattr(item, "amount", 0) or 0),
-			"image": item_image_map.get(getattr(item, "item_code", None)),
+			"image": (item_meta_map.get(getattr(item, "item_code", None)) or {}).get("image"),
 			"sales_order": getattr(item, "sales_order", None),
 			"sales_order_item": getattr(item, "so_detail", None),
 			"delivery_note": getattr(item, "delivery_note", None),
