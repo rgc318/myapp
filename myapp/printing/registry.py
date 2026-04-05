@@ -52,6 +52,15 @@ _PRINT_TEMPLATE_REGISTRY: dict[str, tuple[PrintTemplateDefinition, ...]] = {
 			source="myapp",
 		),
 	),
+	"Purchase Order": (
+		PrintTemplateDefinition(
+			key="standard",
+			label="标准采购订单",
+			print_format="myapp Purchase Order Standard",
+			is_default=True,
+			source="myapp",
+		),
+	),
 	"Delivery Note": (
 		PrintTemplateDefinition(
 			key="standard",

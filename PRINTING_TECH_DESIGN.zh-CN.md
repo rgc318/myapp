@@ -247,6 +247,9 @@
 - 模板名：`myapp Sales Order Standard`
 - 模板源码：
   - `/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/printing/templates/sales_order_standard.html`
+- 模板名：`myapp Purchase Order Standard`
+- 模板源码：
+  - `/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/printing/templates/purchase_order_standard.html`
 
 当前这套标准发票模板的版式原则是：
 
@@ -408,6 +411,38 @@
 当前规格字段取值约定：
 
 - 销售订单模板按以下顺序取规格：
+  - `item.custom_specification`
+  - `item.specification`
+  - `frappe.db.get_value("Item", item.item_code, "custom_specification")`
+  - 最终回退 `-`
+
+### 8.1.4 当前已落地的 `Purchase Order / standard`
+
+当前采购订单也已经切换为 `myapp` 托管标准模板：
+
+- 模板名：`myapp Purchase Order Standard`
+- 适用场景：
+  - 供应商确认
+  - 采购内部确认
+  - 仓库到货准备
+
+当前版式原则：
+
+- 整体按“正式确认单据”设计，而不是按仓库执行单据或财务票据设计
+- 供应商信息、商品明细、订单金额是主要区域
+- `规格型号` 在采购订单中继续作为独立列展示
+- 正式采购订单不展示内部商品编码
+
+当前商品名称展示约定：
+
+- 若商品存在内部昵称，商品名称列展示为：
+  - `（昵称）正式商品名`
+- 若无昵称，则仅显示正式商品名
+- `昵称` 作为商品识别辅助信息，放在商品名称列内，不单独拆列
+
+当前规格字段取值约定：
+
+- 采购订单模板按以下顺序取规格：
   - `item.custom_specification`
   - `item.specification`
   - `frappe.db.get_value("Item", item.item_code, "custom_specification")`
