@@ -238,6 +238,9 @@
 - 模板名：`myapp Purchase Invoice Standard`
 - 模板源码：
   - `/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/printing/templates/purchase_invoice_standard.html`
+- 模板名：`myapp Delivery Note Standard`
+- 模板源码：
+  - `/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/printing/templates/delivery_note_standard.html`
 
 当前这套标准发票模板的版式原则是：
 
@@ -288,6 +291,47 @@
   - `frappe.db.get_value("Item", item.item_code, "custom_specification")`
   - 最终回退 `-`
 - 标准采购发票模板也采用同一取值顺序
+
+### 8.1.1 当前已落地的 `Delivery Note / standard`
+
+当前销售发货单也已经切换为 `myapp` 托管标准模板：
+
+- 模板名：`myapp Delivery Note Standard`
+- 适用场景：
+  - 仓库取货
+  - 出货复核
+  - 对外随货留档
+
+当前版式原则：
+
+- 整体按“仓库执行单据”设计，而不是按财务票据设计
+- 客户信息与商品明细是页面重点，字号和字重均高于普通说明区
+- 商品明细区中的：
+  - `商品名称`
+  - `规格型号`
+  - `单位`
+  - `数量`
+  - `单价`
+  - `金额`
+  都会统一加粗加大，方便仓库快速扫读
+- `金额大写` 已从发货单模板中移除
+  - 原因是发货单的主要用途是拣货与复核，不是财务留档
+
+当前商品名称展示约定：
+
+- 若商品存在内部昵称，商品名称列展示为：
+  - `（昵称）正式商品名`
+- 若无昵称，则仅显示正式商品名
+- `昵称` 不单独拆列
+  - 原因是发货单表格列数已经较多，昵称更适合作为商品名称前缀辅助识别
+
+当前规格字段取值约定：
+
+- 发货单模板与发票模板保持一致，按以下顺序取规格：
+  - `item.custom_specification`
+  - `item.specification`
+  - `frappe.db.get_value("Item", item.item_code, "custom_specification")`
+  - 最终回退 `-`
 
 这样做的原因是：
 

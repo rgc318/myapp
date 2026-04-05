@@ -46,8 +46,9 @@ _PRINT_TEMPLATE_REGISTRY: dict[str, tuple[PrintTemplateDefinition, ...]] = {
 		PrintTemplateDefinition(
 			key="standard",
 			label="标准发货单",
-			print_format=None,
+			print_format="myapp Delivery Note Standard",
 			is_default=True,
+			source="myapp",
 		),
 	),
 }

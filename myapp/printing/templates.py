@@ -34,6 +34,12 @@ _MANAGED_PRINT_FORMATS: dict[str, ManagedPrintFormatDefinition] = {
 		module="myapp",
 		html_path="purchase_invoice_standard.html",
 	),
+	"myapp Delivery Note Standard": ManagedPrintFormatDefinition(
+		name="myapp Delivery Note Standard",
+		doctype="Delivery Note",
+		module="myapp",
+		html_path="delivery_note_standard.html",
+	),
 }
 
 
