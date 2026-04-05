@@ -261,8 +261,26 @@
 其中：
 
 - 不再在正式发票上直接输出商品编码
+- `规格型号` 在正式发票中必须作为独立列展示，不能退化成商品名称下方的附属说明
 - 单位会做中文映射，如 `Nos -> 件`、`Box -> 箱`
 - 金额大写会使用中文财务大写，而不是 ERPNext 默认的英文 `in_words`
+
+当前规格字段取值约定：
+
+- 商品主数据的规格字段来源是 `Item.custom_specification`
+- 移动端发票详情页与打印预览页都按独立 `规格` 列展示
+- PDF / HTML 打印模板不能假设 `Sales Invoice Item` 子表行天然带有 `custom_specification`
+- 标准销售发票模板当前按以下顺序取规格：
+  - `item.custom_specification`
+  - `item.specification`
+  - `frappe.db.get_value("Item", item.item_code, "custom_specification")`
+  - 最终回退 `-`
+
+这样做的原因是：
+
+- 销售发票行项目本身通常只保证 `item_code / item_name / qty / rate / amount` 等交易字段
+- `规格` 属于商品主数据展示字段，不应依赖前端拼接后再传回打印模块
+- 打印模板必须能够直接依据 `item_code` 回查商品主数据，才能保证正式 PDF 与移动端详情页展示一致
 
 ### 8.2 当前已知边界
 

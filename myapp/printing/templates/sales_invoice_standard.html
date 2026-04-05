@@ -277,7 +277,8 @@
 					<td>
 						{{ item.item_name or item.item_code or "-" }}
 					</td>
-						<td>{{ item.custom_specification or item.description or "-" }}</td>
+					{% set item_specification = item.custom_specification or item.specification or (frappe.db.get_value("Item", item.item_code, "custom_specification") if item.item_code else None) %}
+					<td>{{ item_specification or "-" }}</td>
 					<td class="text-center">{{ uom_labels.get(item.uom, item.uom or "-") }}</td>
 					<td class="text-right">{{ frappe.utils.fmt_money(item.qty, currency="", precision=0) }}</td>
 					<td class="text-right">{{ frappe.utils.fmt_money(item.rate, currency=doc.currency) }}</td>
