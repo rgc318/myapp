@@ -25,6 +25,15 @@ _PRINT_TEMPLATE_REGISTRY: dict[str, tuple[PrintTemplateDefinition, ...]] = {
 			source="myapp",
 		),
 	),
+	"Purchase Invoice": (
+		PrintTemplateDefinition(
+			key="standard",
+			label="标准采购发票",
+			print_format="myapp Purchase Invoice Standard",
+			is_default=True,
+			source="myapp",
+		),
+	),
 	"Sales Order": (
 		PrintTemplateDefinition(
 			key="standard",

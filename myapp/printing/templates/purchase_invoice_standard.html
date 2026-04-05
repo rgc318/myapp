@@ -1,0 +1,323 @@
+{%- set company_name = doc.company or "我方" -%}
+{%- set company_doc = frappe.get_cached_doc("Company", doc.company) if doc.company else None -%}
+{%- set company_display_name = company_doc.company_name if company_doc and company_doc.company_name else company_name -%}
+{%- set company_phone = company_doc.phone_no if company_doc and company_doc.phone_no else "-" -%}
+{%- set supplier_name = doc.supplier_name or doc.supplier or "-" -%}
+{%- set supplier_phone = doc.contact_phone or doc.contact_mobile or "-" -%}
+{%- set supplier_address = doc.shipping_address_display or doc.address_display or doc.supplier_address_display or "未配置供应商地址" -%}
+{%- set total_amount = doc.rounded_total or doc.grand_total or 0 -%}
+{%- set first_item = doc.items[0] if doc.items and doc.items|length else None -%}
+{%- set source_order = first_item.purchase_order if first_item and first_item.purchase_order else "-" -%}
+{%- set source_receipt = first_item.purchase_receipt if first_item and first_item.purchase_receipt else "-" -%}
+{%- set normalized_remarks = (doc.remarks or "").strip() -%}
+{%- if not normalized_remarks or normalized_remarks in ["No Remarks", "No Remark", "No remarks", "No remark"] -%}
+	{%- set normalized_remarks = "无备注" -%}
+{%- endif -%}
+{%- set uom_labels = {
+	"Nos": "件",
+	"Box": "箱",
+	"Kg": "千克",
+	"Gm": "克",
+	"Litre": "升",
+	"Meter": "米",
+	"Day": "天",
+	"Hour": "小时",
+	"Unit": "个",
+	"Set": "套",
+	"Pair": "双"
+} -%}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>{{ doc.name }}</title>
+	<style>
+		@page {
+			size: A4;
+			margin: 12mm 12mm 14mm;
+		}
+
+		* {
+			box-sizing: border-box;
+		}
+
+		body {
+			margin: 0;
+			color: #111;
+			font-family: "SimHei", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", SimSun, sans-serif;
+			font-size: 12px;
+			line-height: 1.45;
+			background: #fff;
+			-webkit-print-color-adjust: exact;
+			print-color-adjust: exact;
+		}
+
+		.print-format-gutter {
+			background: #fff !important;
+			padding: 0 !important;
+		}
+
+		.action-banner,
+		.print-preview-toolbar,
+		.page-actions,
+		.print-hide {
+			display: none !important;
+			visibility: hidden !important;
+			height: 0 !important;
+			overflow: hidden !important;
+		}
+
+		.print-format {
+			box-shadow: none !important;
+			border: 0 !important;
+			max-width: none !important;
+			min-height: auto !important;
+			padding: 0 !important;
+		}
+
+		.visible-pdf,
+		.visible-pdf-inline,
+		.btn,
+		a[href*="pdf"],
+		a[href*="print"] {
+			display: none !important;
+		}
+
+		.invoice {
+			width: 100%;
+			max-width: 760px;
+			margin: 0 auto;
+		}
+
+		.invoice-title {
+			margin: 0 0 8px;
+			text-align: center;
+			font-size: 20px;
+			font-weight: 700;
+			letter-spacing: 1px;
+		}
+
+		.items-table {
+			width: 100%;
+			border-collapse: collapse;
+			table-layout: fixed;
+			page-break-inside: auto;
+		}
+
+		.items-table td,
+		.items-table th,
+		.summary-table td {
+			border: 1px solid #333;
+			padding: 8px 10px;
+			vertical-align: top;
+			word-break: break-word;
+		}
+
+		.meta-label {
+			width: 84px;
+			font-weight: 700;
+			white-space: nowrap;
+		}
+
+		.meta-grid {
+			width: 100%;
+			border-collapse: collapse;
+			margin-bottom: 6px;
+		}
+
+		.meta-grid td {
+			padding: 2px 0;
+			vertical-align: top;
+		}
+
+		.info-block {
+			margin-bottom: 4px;
+		}
+
+		.info-heading {
+			margin: 0 0 2px;
+			font-size: 12px;
+			font-weight: 700;
+		}
+
+		.info-line {
+			margin: 0 0 1px;
+		}
+
+		.party-grid {
+			width: 100%;
+			border-collapse: collapse;
+		}
+
+		.party-grid td {
+			width: 50%;
+			padding: 0;
+			vertical-align: top;
+		}
+
+		.items-table th {
+			font-weight: 700;
+			text-align: center;
+			background: #f5f5f5;
+		}
+
+		.items-table thead {
+			display: table-header-group;
+		}
+
+		.items-table tbody {
+			display: table-row-group;
+		}
+
+		.items-table tr {
+			page-break-inside: avoid;
+			page-break-after: auto;
+		}
+
+		.text-center {
+			text-align: center;
+		}
+
+		.text-right {
+			text-align: right;
+		}
+
+		.summary-block {
+			margin-top: 6px;
+			page-break-inside: avoid;
+			break-inside: avoid;
+		}
+
+		.summary-table {
+			width: 100%;
+			border-collapse: collapse;
+		}
+
+		.summary-label {
+			width: 140px;
+			font-weight: 700;
+			background: #fafafa;
+		}
+
+		.summary-table tr:first-child td:last-child {
+			text-align: left;
+		}
+
+		.summary-table tr:last-child td:last-child {
+			text-align: right;
+		}
+
+		.footer-block {
+			margin-top: 8px;
+			padding-top: 6px;
+			border-top: 1px solid #999;
+			page-break-inside: avoid;
+			break-inside: avoid;
+		}
+
+		.footer-grid {
+			width: 100%;
+			border-collapse: collapse;
+		}
+
+		.footer-grid td {
+			width: 50%;
+			padding: 1px 0;
+			vertical-align: top;
+		}
+
+		.footer-label {
+			display: inline-block;
+			min-width: 58px;
+			font-weight: 700;
+		}
+	</style>
+</head>
+<body>
+	<div class="invoice">
+		<h1 class="invoice-title">采购发票</h1>
+
+		<table class="meta-grid">
+			<tr>
+				<td class="meta-label">发票单号：</td>
+				<td>{{ doc.name }}</td>
+				<td class="meta-label">登记日期：</td>
+				<td>{{ frappe.utils.formatdate(doc.posting_date) }}</td>
+			</tr>
+		</table>
+
+		<div class="info-block">
+			<p class="info-heading">供应商信息</p>
+			<table class="party-grid">
+				<tr>
+					<td><p class="info-line"><strong>名称：</strong>{{ supplier_name }}</p></td>
+					<td><p class="info-line"><strong>电话：</strong>{{ supplier_phone }}</p></td>
+				</tr>
+				<tr>
+					<td colspan="2"><p class="info-line"><strong>地址：</strong>{{ supplier_address }}</p></td>
+				</tr>
+			</table>
+		</div>
+
+		<table class="items-table">
+			<thead>
+				<tr>
+					<th style="width: 7%;">序号</th>
+					<th style="width: 26%;">商品名称</th>
+					<th style="width: 20%;">规格型号</th>
+					<th style="width: 10%;">单位</th>
+					<th style="width: 10%;">数量</th>
+					<th style="width: 13%;">单价</th>
+					<th style="width: 14%;">金额</th>
+				</tr>
+			</thead>
+			<tbody>
+				{% for item in doc.items %}
+				<tr>
+					<td class="text-center">{{ item.idx }}</td>
+					<td>{{ item.item_name or item.item_code or "-" }}</td>
+					{% set item_specification = item.custom_specification or item.specification or (frappe.db.get_value("Item", item.item_code, "custom_specification") if item.item_code else None) %}
+					<td>{{ item_specification or "-" }}</td>
+					<td class="text-center">{{ uom_labels.get(item.uom, item.uom or "-") }}</td>
+					<td class="text-right">{{ frappe.utils.fmt_money(item.qty, currency="", precision=0) }}</td>
+					<td class="text-right">{{ frappe.utils.fmt_money(item.rate, currency=doc.currency) }}</td>
+					<td class="text-right">{{ frappe.utils.fmt_money(item.amount, currency=doc.currency) }}</td>
+				</tr>
+				{% endfor %}
+			</tbody>
+		</table>
+
+		<div class="summary-block">
+			<table class="summary-table">
+				<tr>
+					<td class="summary-label">金额大写</td>
+					<td>{{ doc.myapp_amount_in_words_zh or "-" }}</td>
+				</tr>
+				<tr>
+					<td class="summary-label">发票金额</td>
+					<td>{{ frappe.utils.fmt_money(total_amount, currency=doc.currency) }}</td>
+				</tr>
+			</table>
+		</div>
+
+		<div class="footer-block">
+			<p class="info-heading">我方信息</p>
+			<table class="footer-grid">
+				<tr>
+					<td><span class="footer-label">名称：</span>{{ company_display_name }}</td>
+					<td><span class="footer-label">到期日期：</span>{{ frappe.utils.formatdate(doc.due_date) if doc.due_date else "-" }}</td>
+				</tr>
+				<tr>
+					<td><span class="footer-label">电话：</span>{{ company_phone }}</td>
+					<td><span class="footer-label">备注：</span>{{ normalized_remarks }}</td>
+				</tr>
+				<tr>
+					<td><span class="footer-label">来源订单：</span>{{ source_order }}</td>
+					<td><span class="footer-label">来源收货：</span>{{ source_receipt }}</td>
+				</tr>
+			</table>
+		</div>
+	</div>
+</body>
+</html>

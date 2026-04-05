@@ -201,6 +201,15 @@
 - 采购发票
 - 付款单
 
+补充说明：
+
+- `Purchase Invoice` 当前已接入与 `Sales Invoice` 相同的正式 PDF 打印链路
+- 当前优先级定义里的 `P1` 保留其业务优先级含义，但不再表示“采购发票尚未具备打印能力”
+- 之所以仍保留在 `P1`，是因为采购侧后续还会继续补：
+  - 更完整的模板文案细化
+  - 采购侧独有票据字段审校
+  - 与付款链路联动的补打入口
+
 ## 8. 模板策略
 
 模板策略建议：
@@ -226,6 +235,9 @@
 - 模板名：`myapp Sales Invoice Standard`
 - 模板源码：
   - `/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/printing/templates/sales_invoice_standard.html`
+- 模板名：`myapp Purchase Invoice Standard`
+- 模板源码：
+  - `/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/printing/templates/purchase_invoice_standard.html`
 
 当前这套标准发票模板的版式原则是：
 
@@ -268,13 +280,14 @@
 当前规格字段取值约定：
 
 - 商品主数据的规格字段来源是 `Item.custom_specification`
-- 移动端发票详情页与打印预览页都按独立 `规格` 列展示
-- PDF / HTML 打印模板不能假设 `Sales Invoice Item` 子表行天然带有 `custom_specification`
+- 移动端销售/采购发票详情页与打印预览页都按独立 `规格` 列展示
+- PDF / HTML 打印模板不能假设 `Sales Invoice Item` 或 `Purchase Invoice Item` 子表行天然带有 `custom_specification`
 - 标准销售发票模板当前按以下顺序取规格：
   - `item.custom_specification`
   - `item.specification`
   - `frappe.db.get_value("Item", item.item_code, "custom_specification")`
   - 最终回退 `-`
+- 标准采购发票模板也采用同一取值顺序
 
 这样做的原因是：
 
