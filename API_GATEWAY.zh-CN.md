@@ -1685,6 +1685,12 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 
 - 面向销售工作台的真实检索接口
 - 支持关键词、客户、公司、日期区间、状态、排序、分页联动查询
+- 当前排序值支持：
+  - `latest`
+  - `oldest`
+  - `amount_desc`
+  - `amount_asc`
+  - `unfinished_first`
 - 支持默认排除已作废订单，避免未来销售工作台把历史作废单据混入有效订单列表
 - 当前实现已改为批量聚合订单、订单明细、发票和付款引用数据
 - 不再为工作台列表中的每一条订单逐条调用 `get_sales_order_detail`
@@ -2375,6 +2381,12 @@ frappe.call({
 
 - 面向采购工作台的真实检索接口
 - 支持关键词、公司、日期区间、状态、排序、分页联动查询
+- 当前排序值支持：
+  - `latest`
+  - `oldest`
+  - `amount_desc`
+  - `amount_asc`
+  - `unfinished_first`
 - 支持默认排除已作废订单，避免有效订单列表被历史作废单据淹没
 - 当前实现已改为批量聚合订单、订单明细、发票和付款引用数据
 - 不再为工作台列表中的每一条采购订单逐条调用 `get_purchase_order_detail_v2`

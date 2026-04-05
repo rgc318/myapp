@@ -41,7 +41,7 @@ def _normalize_sales_status_filter(status_filter: str | None):
 
 
 def _normalize_sales_desk_sort(sort_by: str | None):
-	allowed_sorts = {"unfinished_first", "latest", "oldest", "amount_desc"}
+	allowed_sorts = {"unfinished_first", "latest", "oldest", "amount_desc", "amount_asc"}
 	resolved = (_normalize_text(sort_by) or "unfinished_first").lower()
 	if resolved not in allowed_sorts:
 		return "unfinished_first"
@@ -208,6 +208,11 @@ def _get_sales_summary_transaction_time(summary_row: dict):
 
 def _sort_sales_summary_rows(rows: list[dict], sort_by: str):
 	resolved_sort = _normalize_sales_desk_sort(sort_by)
+	if resolved_sort == "amount_asc":
+		return sorted(
+			rows,
+			key=lambda row: (flt(row.get("order_amount_estimate") or 0), _get_sales_summary_modified_time(row)),
+		)
 	if resolved_sort == "amount_desc":
 		return sorted(
 			rows,
@@ -232,6 +237,8 @@ def _sales_search_batch_size(limit: int, start: int):
 def _sales_summary_rank(summary_row: dict, sort_by: str):
 	resolved_sort = _normalize_sales_desk_sort(sort_by)
 	modified_ts = _get_sales_summary_modified_time(summary_row).timestamp()
+	if resolved_sort == "amount_asc":
+		return (-flt(summary_row.get("order_amount_estimate") or 0), -modified_ts)
 	if resolved_sort == "amount_desc":
 		return (flt(summary_row.get("order_amount_estimate") or 0), modified_ts)
 	if resolved_sort == "unfinished_first":
@@ -243,7 +250,13 @@ def _finalize_sales_ranked_page(heap_rows: list[tuple], sort_by: str, start: int
 	if not heap_rows:
 		return []
 
-	if _normalize_sales_desk_sort(sort_by) == "amount_desc":
+	resolved_sort = _normalize_sales_desk_sort(sort_by)
+	if resolved_sort == "amount_asc":
+		sorted_rows = sorted(
+			[row for _, _, row in heap_rows],
+			key=lambda row: (flt(row.get("order_amount_estimate") or 0), _get_sales_summary_modified_time(row)),
+		)
+	elif resolved_sort == "amount_desc":
 		sorted_rows = sorted(
 			[row for _, _, row in heap_rows],
 			key=lambda row: (flt(row.get("order_amount_estimate") or 0), _get_sales_summary_modified_time(row)),
@@ -1959,7 +1972,7 @@ def search_sales_orders_v2(
 			if len(order_rows) < batch_size:
 				break
 
-		if resolved_sort in {"amount_desc", "unfinished_first"}:
+		if resolved_sort in {"amount_asc", "amount_desc", "unfinished_first"}:
 			paged_rows = _finalize_sales_ranked_page(ranked_rows, resolved_sort, start, limit)
 
 		return {

@@ -496,6 +496,27 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 		finally:
 			self._cancel_purchase_order(order_name)
 
+	def test_search_purchase_orders_v2_supports_amount_asc_sort(self):
+		low_order = self._create_purchase_order(qty=2)
+		high_order = self._create_purchase_order(qty=3)
+
+		try:
+			payload = self._search_purchase_orders(
+				company=PURCHASE_COMPANY,
+				status_filter="unfinished",
+				exclude_cancelled=True,
+				sort_by="amount_asc",
+				limit=120,
+			)
+			items = payload["items"]
+			order_positions = {row["purchase_order_name"]: index for index, row in enumerate(items)}
+			self.assertIn(low_order, order_positions)
+			self.assertIn(high_order, order_positions)
+			self.assertLess(order_positions[low_order], order_positions[high_order])
+		finally:
+			self._cancel_purchase_order(high_order)
+			self._cancel_purchase_order(low_order)
+
 	def test_purchase_order_date_filters_return_accurate_items_and_summary(self):
 		today = date.today()
 		yesterday = today - timedelta(days=1)

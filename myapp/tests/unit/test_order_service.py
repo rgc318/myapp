@@ -1473,6 +1473,73 @@ class TestOrderService(TestCase):
 
 	@patch("myapp.services.order_service._build_sales_order_summary_rows")
 	@patch("myapp.services.order_service.frappe.get_all")
+	def test_search_sales_orders_v2_supports_amount_asc_sort(self, mock_get_all, mock_build_summary_rows):
+		mock_get_all.return_value = [
+			frappe._dict(
+				{
+					"name": "SO-0001",
+					"customer": "Test Customer",
+					"customer_name": "测试客户",
+					"transaction_date": "2026-03-17",
+					"company": "Test Company",
+					"docstatus": 1,
+					"rounded_total": 200,
+					"grand_total": 200,
+					"modified": "2026-03-17 10:00:00",
+				}
+			),
+			frappe._dict(
+				{
+					"name": "SO-0002",
+					"customer": "Test Customer",
+					"customer_name": "测试客户",
+					"transaction_date": "2026-03-18",
+					"company": "Test Company",
+					"docstatus": 1,
+					"rounded_total": 600,
+					"grand_total": 600,
+					"modified": "2026-03-18 11:00:00",
+				}
+			),
+		]
+		mock_build_summary_rows.return_value = [
+			{
+				"order_name": "SO-0001",
+				"document_status": "submitted",
+				"order_amount_estimate": 200,
+				"transaction_date": "2026-03-17",
+				"modified": "2026-03-17 10:00:00",
+				"fulfillment": {"status": "pending", "is_fully_delivered": False},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "open"},
+			},
+			{
+				"order_name": "SO-0002",
+				"document_status": "submitted",
+				"order_amount_estimate": 600,
+				"transaction_date": "2026-03-18",
+				"modified": "2026-03-18 11:00:00",
+				"fulfillment": {"status": "pending", "is_fully_delivered": False},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "open"},
+			},
+		]
+
+		result = search_sales_orders_v2(
+			company="Test Company",
+			status_filter="all",
+			exclude_cancelled=False,
+			sort_by="amount_asc",
+			limit=10,
+			start=0,
+		)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["items"][0]["order_name"], "SO-0001")
+		self.assertEqual(result["data"]["items"][1]["order_name"], "SO-0002")
+
+	@patch("myapp.services.order_service._build_sales_order_summary_rows")
+	@patch("myapp.services.order_service.frappe.get_all")
 	def test_get_sales_order_status_summary_supports_date_range_filters(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(

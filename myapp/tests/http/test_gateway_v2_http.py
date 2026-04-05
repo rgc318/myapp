@@ -667,6 +667,30 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self._assert_success(second_page_status, second_page_payload, code="SALES_ORDER_SEARCHED")
 		self.assertEqual(second_page_payload["message"]["data"]["items"][0]["order_name"], low_order_name)
 
+	def test_search_sales_orders_v2_supports_amount_asc_sort(self):
+		_low_request, low_payload = self._create_sales_order_v2(price=8888888)
+		_high_request, high_payload = self._create_sales_order_v2(price=9999999)
+		low_order_name = low_payload["message"]["data"]["order"]
+		high_order_name = high_payload["message"]["data"]["order"]
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.search_sales_orders_v2",
+			{
+				"customer": SALES_CUSTOMER,
+				"company": SALES_COMPANY,
+				"status_filter": "unfinished",
+				"exclude_cancelled": 1,
+				"sort_by": "amount_asc",
+				"limit": 20,
+			},
+		)
+		self._assert_success(status_code, payload, code="SALES_ORDER_SEARCHED")
+		items = payload["message"]["data"]["items"]
+		order_positions = {row["order_name"]: index for index, row in enumerate(items)}
+		self.assertIn(high_order_name, order_positions)
+		self.assertIn(low_order_name, order_positions)
+		self.assertLess(order_positions[low_order_name], order_positions[high_order_name])
+
 	def test_search_sales_orders_v2_supports_date_range_filter(self):
 		_request, order_payload = self._create_sales_order_v2()
 		order_name = order_payload["message"]["data"]["order"]

@@ -1023,6 +1023,73 @@ class TestPurchaseService(TestCase):
 
 	@patch("myapp.services.purchase_service._build_purchase_order_summary_rows")
 	@patch("myapp.services.purchase_service.frappe.get_all")
+	def test_search_purchase_orders_v2_supports_amount_asc_sort(self, mock_get_all, mock_build_summary_rows):
+		mock_get_all.return_value = [
+			frappe._dict(
+				{
+					"name": "PO-0001",
+					"supplier": "SUP-001",
+					"supplier_name": "MA Inc.",
+					"transaction_date": "2026-03-25",
+					"company": "Test Company",
+					"docstatus": 1,
+					"rounded_total": 200,
+					"grand_total": 200,
+					"modified": "2026-03-25 11:00:00",
+				}
+			),
+			frappe._dict(
+				{
+					"name": "PO-0002",
+					"supplier": "SUP-001",
+					"supplier_name": "MA Inc.",
+					"transaction_date": "2026-03-26",
+					"company": "Test Company",
+					"docstatus": 1,
+					"rounded_total": 500,
+					"grand_total": 500,
+					"modified": "2026-03-26 12:00:00",
+				}
+			),
+		]
+		mock_build_summary_rows.return_value = [
+			{
+				"purchase_order_name": "PO-0001",
+				"document_status": "submitted",
+				"order_amount_estimate": 200,
+				"transaction_date": "2026-03-25",
+				"modified": "2026-03-25 11:00:00",
+				"receiving": {"status": "pending", "is_fully_received": False},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "open"},
+			},
+			{
+				"purchase_order_name": "PO-0002",
+				"document_status": "submitted",
+				"order_amount_estimate": 500,
+				"transaction_date": "2026-03-26",
+				"modified": "2026-03-26 12:00:00",
+				"receiving": {"status": "pending", "is_fully_received": False},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "open"},
+			},
+		]
+
+		result = search_purchase_orders_v2(
+			company="Test Company",
+			status_filter="all",
+			exclude_cancelled=False,
+			sort_by="amount_asc",
+			limit=10,
+			start=0,
+		)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["items"][0]["purchase_order_name"], "PO-0001")
+		self.assertEqual(result["data"]["items"][1]["purchase_order_name"], "PO-0002")
+
+	@patch("myapp.services.purchase_service._build_purchase_order_summary_rows")
+	@patch("myapp.services.purchase_service.frappe.get_all")
 	def test_get_purchase_order_status_summary_supports_date_range_filters(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
