@@ -59,6 +59,8 @@ from myapp.api.gateway import (
 	list_products_v2,
 	list_suppliers_v2,
 	list_uoms_v2,
+	replace_item_image,
+	upload_item_image,
 	process_purchase_return,
 	process_sales_return,
 	receive_purchase_order,
@@ -135,6 +137,8 @@ class TestGatewayWrappers(TestCase):
 			get_supplier_detail_v2,
 			get_delivery_note_detail_v2,
 			get_sales_invoice_detail_v2,
+			replace_item_image,
+			upload_item_image,
 			update_product_v2,
 			list_customers_v2,
 				list_suppliers_v2,
@@ -1093,6 +1097,50 @@ class TestGatewayWrappers(TestCase):
 			standard_rate=18,
 			warehouse="Stores - RD",
 			warehouse_stock_qty=25,
+		)
+
+	@patch("myapp.api.gateway.upload_item_image_service")
+	def test_upload_item_image_passes_fields_to_service(self, mock_upload_item_image_service):
+		mock_upload_item_image_service.return_value = {
+			"status": "success",
+			"data": {"file_url": "/files/item.png"},
+		}
+
+		upload_item_image(
+			filename="item.png",
+			file_content_base64="ZmFrZS1pbWFnZQ==",
+			content_type="image/png",
+			item_code="ITEM-001",
+		)
+
+		mock_upload_item_image_service.assert_called_once_with(
+			filename="item.png",
+			file_content_base64="ZmFrZS1pbWFnZQ==",
+			content_type="image/png",
+			item_code="ITEM-001",
+			is_private=False,
+		)
+
+	@patch("myapp.api.gateway.replace_item_image_service")
+	def test_replace_item_image_passes_fields_to_service(self, mock_replace_item_image_service):
+		mock_replace_item_image_service.return_value = {
+			"status": "success",
+			"data": {"file_url": "/files/item-new.png"},
+		}
+
+		replace_item_image(
+			item_code="ITEM-001",
+			filename="item-new.png",
+			file_content_base64="ZmFrZS1pbWFnZQ==",
+			content_type="image/png",
+		)
+
+		mock_replace_item_image_service.assert_called_once_with(
+			item_code="ITEM-001",
+			filename="item-new.png",
+			file_content_base64="ZmFrZS1pbWFnZQ==",
+			content_type="image/png",
+			is_private=False,
 		)
 
 	@patch("myapp.api.gateway.get_sales_order_status_summary_service")

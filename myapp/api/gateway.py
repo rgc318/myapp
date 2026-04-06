@@ -1,5 +1,7 @@
 import frappe
 
+from .media_api import upload_item_image as upload_item_image_service
+from .media_api import replace_item_image as replace_item_image_service
 from .customers_api import create_customer_v2 as create_customer_v2_service
 from .customers_api import disable_customer_v2 as disable_customer_v2_service
 from .customers_api import get_customer_detail_v2 as get_customer_detail_v2_service
@@ -1032,6 +1034,46 @@ def disable_product_v2(item_code: str, disabled: bool = True, **kwargs):
 	return _handle_gateway_call(
 		lambda: disable_product_v2_service(item_code=item_code, disabled=disabled, **kwargs),
 		success_code="PRODUCT_UPDATED",
+	)
+
+
+@frappe.whitelist()
+def upload_item_image(
+	filename: str,
+	file_content_base64: str,
+	content_type: str | None = None,
+	item_code: str | None = None,
+	is_private: bool = False,
+):
+	return _handle_gateway_call(
+		lambda: upload_item_image_service(
+			filename=filename,
+			file_content_base64=file_content_base64,
+			content_type=content_type,
+			item_code=item_code,
+			is_private=is_private,
+		),
+		success_code="ITEM_IMAGE_UPLOADED",
+	)
+
+
+@frappe.whitelist()
+def replace_item_image(
+	item_code: str,
+	filename: str,
+	file_content_base64: str,
+	content_type: str | None = None,
+	is_private: bool = False,
+):
+	return _handle_gateway_call(
+		lambda: replace_item_image_service(
+			item_code=item_code,
+			filename=filename,
+			file_content_base64=file_content_base64,
+			content_type=content_type,
+			is_private=is_private,
+		),
+		success_code="ITEM_IMAGE_REPLACED",
 	)
 
 
