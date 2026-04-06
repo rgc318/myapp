@@ -13,6 +13,7 @@ Documentation:
 - Chinese API reference: `API_GATEWAY.zh-CN.md`
 - Technical design baseline: `WHOLESALE_TECH_DESIGN.zh-CN.md`
 - Purchasing and inbound flow design: `PURCHASE_TECH_DESIGN.zh-CN.md`
+- Barcode scanning and multi-source lookup design: `BARCODE_SCANNING_TECH_DESIGN.zh-CN.md`
 
 ### Installation
 
