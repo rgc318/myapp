@@ -125,7 +125,11 @@
   - 前端传 `warehouse + warehouse_stock_qty`
   - 后端会先读取当前仓库存，再按差额创建正式库存调整单
   - 不直接覆写 `Bin.actual_qty`
-- 新增 `create_product_v2`，用于标准商品建档，不自动创建入库单
+- `create_product_v2` 当前已支持原子化“标准商品建档 + 指定仓库库存初始化”
+  - 不传 `warehouse_stock_qty` 时，保持原来的“纯建档”语义
+  - 传入 `warehouse + warehouse_stock_qty + warehouse_stock_uom` 时
+  - 在同一次请求内完成商品创建与库存初始化
+  - 移动端无需再自行分两次调用“建商品 + 调整库存”
 - 新增 `disable_product_v2`，用于显式停用 / 启用商品
 - 新增 `cancel_order_v2`，用于按 v2 语义作废销售订单，并统一屏蔽 ERPNext 原生取消动作细节
 - 新增 `update_order_v2`，用于按 v2 模型更新销售订单头信息、联系人快照、收货快照与交货日期
@@ -728,6 +732,10 @@ docker exec frappe_docker-backend-1 bash -lc '
 - 同名多规格商品在列表中并存
 - 停用其中一个规格商品后，只影响目标商品，不影响其他规格商品
 - `create_product_v2` 纯建档与 `create_product_and_stock` 建档入库两条链路均已验证
+- `create_product_v2` 已新增真实 HTTP 回归：
+  - 在带 `warehouse + warehouse_stock_qty + warehouse_stock_uom` 的情况下
+  - 网关会直接返回已初始化库存的商品详情
+  - 后续 `get_product_detail_v2` 查询结果与创建响应保持一致
 
 当前结论已经从“需要明确规格方案”推进为：
 

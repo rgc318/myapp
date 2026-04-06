@@ -13,6 +13,7 @@ from myapp.api.gateway import (
 	cancel_sales_invoice,
 	cancel_supplier_payment,
 	create_customer_v2,
+	create_product_v2,
 	create_supplier_v2,
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
@@ -688,6 +689,31 @@ class TestGatewayWrappers(TestCase):
 			default_warehouse="Stores - RD",
 			standard_rate=12,
 			request_id="product-001",
+		)
+
+	@patch("myapp.api.gateway.create_product_v2_service")
+	def test_create_product_v2_passes_stock_initialization_fields_to_service(self, mock_create_product_v2_service):
+		mock_create_product_v2_service.return_value = {
+			"status": "success",
+			"data": {"item_code": "ITEM-NEW"},
+		}
+
+		create_product_v2(
+			"新商品",
+			stock_uom="Nos",
+			warehouse="Stores - RD",
+			warehouse_stock_qty=12,
+			warehouse_stock_uom="Box",
+			standard_rate=19,
+		)
+
+		mock_create_product_v2_service.assert_called_once_with(
+			item_name="新商品",
+			stock_uom="Nos",
+			warehouse="Stores - RD",
+			warehouse_stock_qty=12,
+			warehouse_stock_uom="Box",
+			standard_rate=19,
 		)
 
 	@patch("myapp.api.gateway.get_sales_order_detail_service")

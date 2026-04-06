@@ -423,6 +423,41 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self.assertEqual(detail_data["specification"], specification)
 		self.assertEqual(detail_data["description"], "纯建档描述")
 
+	def test_create_product_v2_can_initialize_stock_atomically(self):
+		item_name = f"HTTP-V2-原子建档库存商品-{time.time_ns()}"
+		specification = f"24瓶装-{time.time_ns()}"
+		create_request, create_payload = self._create_product_v2(
+			item_name=item_name,
+			specification=specification,
+			nickname=f"原子建档昵称-{time.time_ns()}",
+			description="原子建档描述",
+			stock_uom="Nos",
+			warehouse=SALES_WAREHOUSE,
+			warehouse_stock_qty=12,
+			warehouse_stock_uom="Nos",
+			standard_rate=18,
+		)
+		data = create_payload["message"]["data"]
+		item_code = data["item_code"]
+
+		self.assertEqual(data["specification"], specification)
+		self.assertEqual(data["warehouse"], SALES_WAREHOUSE)
+		self.assertEqual(data["qty"], 12.0)
+		self.assertEqual(data["total_qty"], 12.0)
+
+		_detail_request, detail_payload = self._get_product_detail_v2(item_code, warehouse=SALES_WAREHOUSE)
+		detail_data = detail_payload["message"]["data"]
+		self.assertEqual(detail_data["specification"], specification)
+		self.assertEqual(detail_data["warehouse"], SALES_WAREHOUSE)
+		self.assertEqual(detail_data["qty"], 12.0)
+		self.assertTrue(
+			any(
+				row["warehouse"] == SALES_WAREHOUSE and float(row["qty"]) == 12.0
+				for row in detail_data["warehouse_stock_details"]
+			),
+			create_request,
+		)
+
 	def test_update_product_v2_replaces_searchable_specification_value(self):
 		old_specification = f"旧规格-{time.time_ns()}"
 		new_specification = f"新规格-{time.time_ns()}"

@@ -464,6 +464,10 @@ class TestWholesaleService(TestCase):
 		mock_run_idempotent.assert_called_once()
 
 	@patch("myapp.services.wholesale_service._build_product_detail_payload")
+	@patch("myapp.services.wholesale_service._create_stock_adjustment_entry")
+	@patch("myapp.services.wholesale_service._resolve_company_from_warehouse")
+	@patch("myapp.services.wholesale_service._resolve_default_warehouse")
+	@patch("myapp.services.wholesale_service.resolve_item_quantity_to_stock")
 	@patch("myapp.services.wholesale_service._apply_item_price_updates")
 	@patch("myapp.services.wholesale_service._build_item_code")
 	@patch("myapp.services.wholesale_service._resolve_default_item_group")
@@ -492,11 +496,18 @@ class TestWholesaleService(TestCase):
 		mock_resolve_default_item_group,
 		mock_build_item_code,
 		mock_apply_item_price_updates,
+		mock_resolve_item_quantity_to_stock,
+		mock_resolve_default_warehouse,
+		mock_resolve_company_from_warehouse,
+		mock_create_stock_adjustment_entry,
 		mock_build_product_detail_payload,
 	):
 		mock_get_item_nickname_field.return_value = "custom_nickname"
 		mock_get_item_specification_field.return_value = "custom_specification"
 		mock_resolve_default_uom.return_value = "Nos"
+		mock_resolve_item_quantity_to_stock.return_value = {"qty": 0, "uom": "Nos", "stock_qty": 0}
+		mock_resolve_default_warehouse.return_value = "Stores - RD"
+		mock_resolve_company_from_warehouse.return_value = "rgc (Demo)"
 		mock_normalize_mode_default_uom.side_effect = ["Box", "Bottle"]
 		mock_resolve_default_item_group.return_value = "All Item Groups"
 		mock_build_item_code.return_value = "ITEM-NEW"
@@ -523,6 +534,96 @@ class TestWholesaleService(TestCase):
 		mock_validate_mode_default_uoms_against_stock_uom.assert_called_once()
 		item.insert.assert_called_once()
 		mock_apply_item_price_updates.assert_called_once()
+		mock_create_stock_adjustment_entry.assert_not_called()
+		self.assertEqual(result["data"]["item_code"], "ITEM-NEW")
+
+	@patch("myapp.services.wholesale_service._build_product_detail_payload")
+	@patch("myapp.services.wholesale_service._create_stock_adjustment_entry")
+	@patch("myapp.services.wholesale_service._resolve_company_from_warehouse")
+	@patch("myapp.services.wholesale_service._resolve_default_warehouse")
+	@patch("myapp.services.wholesale_service.resolve_item_quantity_to_stock")
+	@patch("myapp.services.wholesale_service._apply_item_price_updates")
+	@patch("myapp.services.wholesale_service._build_item_code")
+	@patch("myapp.services.wholesale_service._resolve_default_item_group")
+	@patch(
+		"myapp.services.wholesale_service._get_item_mode_default_uom_field",
+		side_effect=lambda mode: {
+			"wholesale": "custom_wholesale_default_uom",
+			"retail": "custom_retail_default_uom",
+		}.get(mode),
+	)
+	@patch("myapp.services.wholesale_service._normalize_mode_default_uom")
+	@patch("myapp.services.wholesale_service._validate_mode_default_uoms_against_stock_uom")
+	@patch("myapp.services.wholesale_service._resolve_default_uom")
+	@patch("myapp.services.wholesale_service._get_item_specification_field")
+	@patch("myapp.services.wholesale_service._get_item_nickname_field")
+	@patch("myapp.services.wholesale_service.frappe.new_doc")
+	def test_create_product_v2_can_initialize_stock_atomically(
+		self,
+		mock_new_doc,
+		mock_get_item_nickname_field,
+		mock_get_item_specification_field,
+		mock_resolve_default_uom,
+		mock_validate_mode_default_uoms_against_stock_uom,
+		mock_normalize_mode_default_uom,
+		mock_get_item_mode_default_uom_field,
+		mock_resolve_default_item_group,
+		mock_build_item_code,
+		mock_apply_item_price_updates,
+		mock_resolve_item_quantity_to_stock,
+		mock_resolve_default_warehouse,
+		mock_resolve_company_from_warehouse,
+		mock_create_stock_adjustment_entry,
+		mock_build_product_detail_payload,
+	):
+		mock_get_item_nickname_field.return_value = "custom_nickname"
+		mock_get_item_specification_field.return_value = "custom_specification"
+		mock_resolve_default_uom.return_value = "Nos"
+		mock_normalize_mode_default_uom.side_effect = ["Box", "Bottle"]
+		mock_resolve_default_item_group.return_value = "All Item Groups"
+		mock_build_item_code.return_value = "ITEM-NEW"
+		mock_resolve_item_quantity_to_stock.return_value = {"qty": 12, "uom": "Box", "stock_qty": 24}
+		mock_resolve_default_warehouse.return_value = "Stores - RD"
+		mock_resolve_company_from_warehouse.return_value = "rgc (Demo)"
+		item = MagicMock()
+		item.item_code = "ITEM-NEW"
+		item.item_name = "新商品"
+		item.name = "ITEM-NEW"
+		item.valuation_rate = 0
+		item.standard_rate = 0
+		mock_new_doc.return_value = item
+		mock_build_product_detail_payload.return_value = {"item_code": "ITEM-NEW", "warehouse": "Stores - RD"}
+
+		result = create_product_v2(
+			item_name="新商品",
+			stock_uom="Nos",
+			warehouse="Stores - RD",
+			warehouse_stock_qty=12,
+			warehouse_stock_uom="Box",
+			standard_rate=19,
+		)
+
+		mock_resolve_default_warehouse.assert_called_once_with("Stores - RD", None)
+		mock_resolve_item_quantity_to_stock.assert_called_once_with(
+			item_code="ITEM-NEW",
+			qty=12,
+			uom="Box",
+		)
+		mock_create_stock_adjustment_entry.assert_called_once_with(
+			item_code="ITEM-NEW",
+			warehouse="Stores - RD",
+			qty_delta=24.0,
+			company="rgc (Demo)",
+			valuation_rate=19.0,
+			posting_date=None,
+		)
+		mock_build_product_detail_payload.assert_called_once_with(
+			item,
+			warehouse="Stores - RD",
+			company=None,
+			price_list="Standard Selling",
+			currency=None,
+		)
 		self.assertEqual(result["data"]["item_code"], "ITEM-NEW")
 
 	@patch("myapp.services.wholesale_service._build_item_code")

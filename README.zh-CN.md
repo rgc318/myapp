@@ -139,6 +139,18 @@ docker exec frappe_docker-backend-1 bash -lc '
 
 也就是说，它不只检查“订单里算得对”，还会检查“发货后真实库存是否按库存单位准确结算”。
 
+当前商品创建接口补充说明：
+
+- `create_product_v2` 已支持原子化“建商品 + 初始化库存”
+- 当前可在一次请求内同时提交：
+  - 商品主数据
+  - `warehouse`
+  - `warehouse_stock_qty`
+  - `warehouse_stock_uom`
+- 若同时传入仓库与初始库存，后端会在创建商品后立即完成该仓库存初始化
+- 若不传库存初始化字段，则仍保持原来的“纯建档”语义
+- 因此移动端当前不需要再分两次调用“先建商品、再调库存调整”，可以直接一次提交完成
+
 ### 服务验收
 
 `myapp/api/` 下的服务层已经在 VS Code devcontainer / ERPNext v16 环境中通过 `bench console` 做过真实验证。

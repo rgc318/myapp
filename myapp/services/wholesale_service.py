@@ -1493,6 +1493,8 @@ def create_product_v2(
 		item_group = _resolve_default_item_group(kwargs.get("item_group"))
 		item_code = _build_item_code(item_name, kwargs.get("item_code"))
 		barcode = _normalize_text(kwargs.get("barcode"))
+		warehouse_stock_qty = kwargs.get("warehouse_stock_qty")
+		resolved_warehouse = None
 		if barcode and frappe.db.exists("Item Barcode", {"barcode": barcode}):
 			frappe.throw(_("条码 {0} 已存在。").format(barcode))
 
@@ -1554,13 +1556,48 @@ def create_product_v2(
 			buying_prices=kwargs.get("buying_prices"),
 		)
 
+		if warehouse_stock_qty not in (None, "") or kwargs.get("warehouse") or kwargs.get("default_warehouse"):
+			resolved_warehouse = _resolve_default_warehouse(
+				_normalize_text(kwargs.get("warehouse")) or None,
+				kwargs.get("default_warehouse"),
+			)
+
+		if warehouse_stock_qty not in (None, ""):
+			input_qty = flt(warehouse_stock_qty)
+			if input_qty < 0:
+				frappe.throw(_("初始库存数量不能为负数。"))
+
+			target_qty_context = resolve_item_quantity_to_stock(
+				item_code=item.name,
+				qty=warehouse_stock_qty,
+				uom=kwargs.get("warehouse_stock_uom"),
+			)
+			target_qty = flt(target_qty_context["stock_qty"])
+			if target_qty:
+				company = _resolve_company_from_warehouse(resolved_warehouse)
+				valuation_rate = flt(
+					kwargs.get("valuation_rate")
+					or kwargs.get("standard_rate")
+					or item.valuation_rate
+					or item.standard_rate
+					or 0
+				)
+				_create_stock_adjustment_entry(
+					item_code=item.name,
+					warehouse=resolved_warehouse,
+					qty_delta=target_qty,
+					company=company,
+					valuation_rate=valuation_rate,
+					posting_date=kwargs.get("posting_date"),
+				)
+
 		item.reload()
 		return {
 			"status": "success",
 			"message": _("商品 {0} 已创建。").format(item.item_name),
 			"data": _build_product_detail_payload(
 				item,
-				warehouse=_normalize_text(kwargs.get("warehouse")) or None,
+				warehouse=resolved_warehouse,
 				company=_normalize_text(kwargs.get("company")) or None,
 				price_list=_normalize_text(kwargs.get("price_list")) or "Standard Selling",
 				currency=_normalize_currency(kwargs.get("currency")),
