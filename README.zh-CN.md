@@ -163,10 +163,18 @@ docker exec frappe_docker-backend-1 bash -lc '
 
 当前主数据补充说明：
 
-- 单位模块接下来会进入一轮“临时统一性优化”
+- 单位模块已进入一轮“临时统一性优化”
 - 当前问题主要是部分页面仍依赖前端本地英文单位映射，容易出现中英文混用
-- 这一轮会优先从后端接口补统一的单位显示字段，先收敛商品与 UOM 主数据相关页面的显示混乱
-- 这次优化以“先统一显示契约”为目标，暂不做大范围历史主数据重构
+- 本轮第一阶段已先完成后端统一显示契约补充，不改历史 UOM 主键
+- 当前后端已补充：
+  - UOM 主数据：`display_name`
+  - 商品接口：`stock_uom_display`
+  - 商品接口：`uom_display`
+  - 商品接口：`all_uoms[].uom_display`
+  - 商品接口：`wholesale_default_uom_display`
+  - 商品接口：`retail_default_uom_display`
+  - 商品接口：`sales_profiles[].default_uom_display`
+- 当前策略是“系统内部继续使用稳定单位编码，界面优先消费后端 display 字段”，暂不做大范围历史主数据重构
 
 ### 服务验收
 

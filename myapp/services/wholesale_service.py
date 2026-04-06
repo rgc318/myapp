@@ -4,6 +4,7 @@ from frappe.query_builder.functions import Sum
 from frappe.utils import cint, flt, getdate
 
 from myapp.utils.idempotency import run_idempotent
+from myapp.utils.uom_display import build_uom_display_map
 from myapp.utils.uom import resolve_item_quantity_to_stock
 
 ITEM_NICKNAME_FIELD = "custom_nickname"
@@ -160,6 +161,43 @@ def _build_sales_profiles(item):
 			"default_uom": default_uoms["retail_default_uom"],
 		},
 	]
+
+
+def _collect_item_uom_names(*, item=None, all_uoms=None):
+	names = []
+	for value in (
+		getattr(item, "stock_uom", None) if item is not None else None,
+		(_extract_mode_default_uoms(item).get("wholesale_default_uom") if item is not None else None),
+		(_extract_mode_default_uoms(item).get("retail_default_uom") if item is not None else None),
+	):
+		name = _normalize_text(value) if isinstance(value, str) else None
+		if name and name not in names:
+			names.append(name)
+
+	for row in all_uoms or []:
+		name = _normalize_text(getattr(row, "uom", None) if hasattr(row, "uom") else row.get("uom") if isinstance(row, dict) else None)
+		if name and name not in names:
+			names.append(name)
+
+	return names
+
+
+def _build_sales_profiles_with_display(item, uom_display_map: dict[str, str]):
+	profiles = _build_sales_profiles(item)
+	for row in profiles:
+		default_uom = _normalize_text(row.get("default_uom"))
+		row["default_uom_display"] = uom_display_map.get(default_uom) if default_uom else None
+	return profiles
+
+
+def _decorate_uom_rows_with_display(rows, uom_display_map: dict[str, str]):
+	decorated = []
+	for row in rows or []:
+		uom = _normalize_text(row.get("uom") if isinstance(row, dict) else getattr(row, "uom", None))
+		next_row = dict(row)
+		next_row["uom_display"] = uom_display_map.get(uom) if uom else None
+		decorated.append(next_row)
+	return decorated
 
 
 def _search_item_codes(search_key: str, *, search_fields: list[str], limit: int):
@@ -388,11 +426,14 @@ def _get_uom_map(item_codes: list[str]):
 	if not item_codes:
 		return {}
 
-	uom_data = frappe.get_all(
-		"UOM Conversion Detail",
-		filters={"parent": ["in", item_codes]},
-		fields=["parent", "uom", "conversion_factor"],
-	)
+	try:
+		uom_data = frappe.get_all(
+			"UOM Conversion Detail",
+			filters={"parent": ["in", item_codes]},
+			fields=["parent", "uom", "conversion_factor"],
+		)
+	except Exception:
+		uom_data = []
 	uom_map = {}
 	for u in uom_data:
 		uom_map.setdefault(u.parent, []).append({"uom": u.uom, "conversion_factor": u.conversion_factor})
@@ -658,9 +699,10 @@ def _build_product_detail_payload(
 		price_lists=list(DEFAULT_BUYING_PRICE_LISTS),
 		currency=currency,
 	).get(item.name, {})
-	uom_map = _get_uom_map([item.name])
+	uom_rows = _get_uom_map([item.name]).get(item.name, [])
 	current_rate = flt(price_map.get(item.name, 0) or 0)
 	mode_default_uoms = _extract_mode_default_uoms(item)
+	uom_display_map = build_uom_display_map(_collect_item_uom_names(item=item, all_uoms=uom_rows))
 
 	return {
 		"item_code": item.name,
@@ -668,8 +710,10 @@ def _build_product_detail_payload(
 		"item_group": item.item_group,
 		"brand": getattr(item, "brand", None),
 		"stock_uom": item.stock_uom,
+		"stock_uom_display": uom_display_map.get(_normalize_text(item.stock_uom)),
 		"uom": item.stock_uom,
-		"all_uoms": uom_map.get(item.name, []),
+		"uom_display": uom_display_map.get(_normalize_text(item.stock_uom)),
+		"all_uoms": _decorate_uom_rows_with_display(uom_rows, uom_display_map),
 		"image": item.image,
 		"nickname": _extract_item_nickname(item),
 		"specification": _extract_item_specification(item),
@@ -695,8 +739,10 @@ def _build_product_detail_payload(
 			buying_price_map=buying_prices,
 		),
 		"wholesale_default_uom": mode_default_uoms["wholesale_default_uom"],
+		"wholesale_default_uom_display": uom_display_map.get(_normalize_text(mode_default_uoms["wholesale_default_uom"])),
 		"retail_default_uom": mode_default_uoms["retail_default_uom"],
-		"sales_profiles": _build_sales_profiles(item),
+		"retail_default_uom_display": uom_display_map.get(_normalize_text(mode_default_uoms["retail_default_uom"])),
+		"sales_profiles": _build_sales_profiles_with_display(item, uom_display_map),
 		"warehouse": warehouse,
 		"company": company,
 		"creation": getattr(item, "creation", None),
@@ -755,17 +801,26 @@ def list_products_v2(
 	current_price_map = _get_price_map(item_codes, price_list=price_list, currency=currency)
 	selling_price_map = _get_multi_price_map(item_codes, price_lists=selling_price_lists, currency=currency)
 	buying_price_map = _get_multi_price_map(item_codes, price_lists=buying_price_lists, currency=currency)
+	uom_map = _get_uom_map(item_codes)
+	uom_names = []
+	for row in rows:
+		for name in _collect_item_uom_names(item=row, all_uoms=uom_map.get(row.name, [])):
+			if name not in uom_names:
+				uom_names.append(name)
+	uom_display_map = build_uom_display_map(uom_names)
 
 	items = []
 	for row in rows:
 		current_rate = flt(current_price_map.get(row.name, 0) or 0)
 		mode_default_uoms = _extract_mode_default_uoms(row)
+		row_uoms = uom_map.get(row.name, [])
 		items.append(
 			{
 				"item_code": row.name,
 				"item_name": row.item_name,
 				"item_group": row.item_group,
 				"stock_uom": row.stock_uom,
+				"stock_uom_display": uom_display_map.get(_normalize_text(row.stock_uom)),
 				"image": row.image,
 				"nickname": _extract_item_nickname(row),
 				"specification": _extract_item_specification(row),
@@ -780,6 +835,9 @@ def list_products_v2(
 				"global_warehouse_stock_details": global_warehouse_stock_map.get(row.name, []),
 				"price": current_rate,
 				"price_list": price_list,
+				"uom": row.stock_uom,
+				"uom_display": uom_display_map.get(_normalize_text(row.stock_uom)),
+				"all_uoms": _decorate_uom_rows_with_display(row_uoms, uom_display_map),
 				"standard_rate": flt(getattr(row, "standard_rate", 0) or 0),
 				"valuation_rate": flt(getattr(row, "valuation_rate", 0) or 0),
 				"price_summary": _build_price_summary(
@@ -790,8 +848,10 @@ def list_products_v2(
 					buying_price_map=buying_price_map.get(row.name, {}),
 				),
 				"wholesale_default_uom": mode_default_uoms["wholesale_default_uom"],
+				"wholesale_default_uom_display": uom_display_map.get(_normalize_text(mode_default_uoms["wholesale_default_uom"])),
 				"retail_default_uom": mode_default_uoms["retail_default_uom"],
-				"sales_profiles": _build_sales_profiles(row),
+				"retail_default_uom_display": uom_display_map.get(_normalize_text(mode_default_uoms["retail_default_uom"])),
+				"sales_profiles": _build_sales_profiles_with_display(row, uom_display_map),
 				"creation": row.creation,
 				"modified": row.modified,
 			}
@@ -861,6 +921,12 @@ def search_product(
 	qty_map = _get_qty_map(item_codes, warehouse=warehouse, company=company)
 	selling_price_map = _get_multi_price_map(item_codes, price_lists=list(DEFAULT_SELLING_PRICE_LISTS), currency=currency)
 	buying_price_map = _get_multi_price_map(item_codes, price_lists=list(DEFAULT_BUYING_PRICE_LISTS), currency=currency)
+	uom_names = []
+	for code in item_codes:
+		for name in _collect_item_uom_names(item=items_data.get(code), all_uoms=uom_map.get(code, [])):
+			if name not in uom_names:
+				uom_names.append(name)
+	uom_display_map = build_uom_display_map(uom_names)
 
 	results = []
 	specification_field = _get_item_specification_field()
@@ -874,7 +940,8 @@ def search_product(
 				"item_code": item.name,
 				"item_name": item.item_name,
 				"uom": item.stock_uom,
-				"all_uoms": uom_map.get(code, []),
+				"uom_display": uom_display_map.get(_normalize_text(item.stock_uom)),
+				"all_uoms": _decorate_uom_rows_with_display(uom_map.get(code, []), uom_display_map),
 				"qty": qty_map.get(code, 0),
 				"price": price_map.get(code, 0),
 				"image": item.image,
@@ -973,6 +1040,12 @@ def search_product_v2(
 		price_lists=list(DEFAULT_BUYING_PRICE_LISTS),
 		currency=currency,
 	)
+	uom_names = []
+	for code in item_codes:
+		for name in _collect_item_uom_names(item=items_data.get(code), all_uoms=uom_map.get(code, [])):
+			if name not in uom_names:
+				uom_names.append(name)
+	uom_display_map = build_uom_display_map(uom_names)
 
 	results = []
 	for code in item_codes:
@@ -989,7 +1062,8 @@ def search_product_v2(
 				"item_code": item.name,
 				"item_name": item.item_name,
 				"uom": item.stock_uom,
-				"all_uoms": uom_map.get(code, []),
+				"uom_display": uom_display_map.get(_normalize_text(item.stock_uom)),
+				"all_uoms": _decorate_uom_rows_with_display(uom_map.get(code, []), uom_display_map),
 				"qty": qty,
 				"total_qty": flt(total_qty_map.get(code, 0) or 0),
 				"warehouse_stock_details": warehouse_stock_map.get(code, []),
@@ -1008,8 +1082,14 @@ def search_product_v2(
 					buying_price_map=buying_price_map.get(code, {}),
 				),
 				"wholesale_default_uom": _extract_mode_default_uoms(item)["wholesale_default_uom"],
+				"wholesale_default_uom_display": uom_display_map.get(
+					_normalize_text(_extract_mode_default_uoms(item)["wholesale_default_uom"])
+				),
 				"retail_default_uom": _extract_mode_default_uoms(item)["retail_default_uom"],
-				"sales_profiles": _build_sales_profiles(item),
+				"retail_default_uom_display": uom_display_map.get(
+					_normalize_text(_extract_mode_default_uoms(item)["retail_default_uom"])
+				),
+				"sales_profiles": _build_sales_profiles_with_display(item, uom_display_map),
 				"creation": item.creation,
 				"modified": item.modified,
 			}
@@ -1709,6 +1789,7 @@ def create_product_and_stock(
 			qty=input_qty,
 			uom=kwargs.get("opening_uom"),
 		)
+		uom_display_map = build_uom_display_map(_collect_item_uom_names(item=item))
 
 		selling_price_list = (kwargs.get("selling_price_list") or "Standard Selling").strip()
 		currency = (kwargs.get("currency") or frappe.defaults.get_user_default("currency") or "").strip() or None
@@ -1737,6 +1818,7 @@ def create_product_and_stock(
 				"item_code": item.item_code,
 				"item_name": item.item_name,
 				"uom": item.stock_uom,
+				"uom_display": uom_display_map.get(_normalize_text(item.stock_uom)),
 				"qty": opening_qty_context["stock_qty"],
 				"input_qty": opening_qty_context["qty"],
 				"input_uom": opening_qty_context["uom"],
@@ -1747,6 +1829,14 @@ def create_product_and_stock(
 				"specification": _extract_item_specification(item),
 				"description": item.description,
 				"item_group": item_group,
+				"wholesale_default_uom": _extract_mode_default_uoms(item)["wholesale_default_uom"],
+				"wholesale_default_uom_display": uom_display_map.get(
+					_normalize_text(_extract_mode_default_uoms(item)["wholesale_default_uom"])
+				),
+				"retail_default_uom": _extract_mode_default_uoms(item)["retail_default_uom"],
+				"retail_default_uom_display": uom_display_map.get(
+					_normalize_text(_extract_mode_default_uoms(item)["retail_default_uom"])
+				),
 				"stock_entry": stock_entry.name if stock_entry else None,
 			},
 		}

@@ -3,6 +3,7 @@ from frappe import _
 from frappe.utils import cint, getdate
 
 from myapp.utils.idempotency import run_idempotent
+from myapp.utils.uom_display import resolve_uom_display_name
 
 
 def _normalize_text(value: str | None):
@@ -52,9 +53,15 @@ def _normalize_sort(sort_by: str | None, sort_order: str | None):
 
 
 def _build_uom_payload(doc, *, usage_summary=None):
+	display_name = resolve_uom_display_name(
+		doc.name,
+		uom_name=getattr(doc, "uom_name", None),
+		symbol=getattr(doc, "symbol", None),
+	)
 	data = {
 		"name": doc.name,
 		"uom_name": doc.uom_name or doc.name,
+		"display_name": display_name,
 		"symbol": getattr(doc, "symbol", None),
 		"description": getattr(doc, "description", None),
 		"enabled": cint(getattr(doc, "enabled", 0)),

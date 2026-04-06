@@ -44,6 +44,7 @@ class TestUOMService(TestCase):
 
 		self.assertEqual(result["status"], "success")
 		self.assertEqual(result["data"][0]["uom_name"], "Box")
+		self.assertEqual(result["data"][0]["display_name"], "箱")
 		self.assertEqual(result["meta"]["total"], 2)
 		self.assertTrue(result["meta"]["has_more"])
 		self.assertEqual(
@@ -74,6 +75,7 @@ class TestUOMService(TestCase):
 		result = get_uom_detail_v2("Box")
 
 		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["display_name"], "箱")
 		self.assertEqual(result["data"]["usage_summary"]["total_references"], 2)
 
 	@patch("myapp.services.uom_service.run_idempotent")
