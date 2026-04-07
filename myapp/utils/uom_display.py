@@ -4,6 +4,8 @@ import re
 
 import frappe
 
+from myapp.utils.standard_uoms import STANDARD_UOM_DISPLAY_ALIASES
+
 
 _CJK_PATTERN = re.compile(r"[\u3400-\u9fff]")
 _COMMON_UOM_DISPLAY_NAMES = {
@@ -46,6 +48,7 @@ _COMMON_UOM_DISPLAY_NAMES = {
 	"ROLL": "卷",
 	"ROLLS": "卷",
 }
+_COMMON_UOM_DISPLAY_NAMES.update(STANDARD_UOM_DISPLAY_ALIASES)
 
 
 def normalize_uom_text(value: str | None) -> str | None:

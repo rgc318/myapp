@@ -175,6 +175,21 @@ docker exec frappe_docker-backend-1 bash -lc '
   - 商品接口：`retail_default_uom_display`
   - 商品接口：`sales_profiles[].default_uom_display`
 - 当前策略是“系统内部继续使用稳定单位编码，界面优先消费后端 display 字段”，暂不做大范围历史主数据重构
+- 单位标准目录与同步脚本已补充：
+  - 标准目录文档：
+    - `/home/rgc318/python-project/frappe_docker/apps/myapp/UOM_STANDARD_CATALOG.zh-CN.md`
+  - 标准单位定义：
+    - `myapp.utils.standard_uoms`
+  - 单位展示映射：
+    - `myapp.utils.uom_display`
+  - 数据库同步脚本：
+    - `myapp.scripts.sync_standard_uoms`
+- 当前已完成一轮实际落库整理：
+  - 正式常用单位已批量写入数据库
+  - 既有常用单位已补齐 `symbol`、`must_be_whole_number` 等规范字段
+  - `HTTP-*` 测试单位已清理
+  - 最后一个仍被商品引用的测试单位已先迁移到正式单位后再删除
+- 当前数据库里的测试单位已清空；ERPNext 默认科学 / 工业单位暂时保留，但后续不建议继续在常规业务选择器中暴露
 - 商品搜索默认只返回启用商品：
   - `search_product_v2` 默认按 `disabled=0` 过滤
   - 只有显式传入 `disabled=1` 等条件时，才返回已停用商品
