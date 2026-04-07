@@ -5,6 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 import frappe
 from frappe import _
+from frappe.core.api.file import create_new_folder
 from frappe.utils.file_manager import save_file
 
 from myapp.printing.registry import get_print_template_options, resolve_print_template
@@ -14,6 +15,9 @@ from myapp.printing.templates import ensure_managed_print_format
 PRINT_OUTPUT_HTML = "html"
 PRINT_OUTPUT_PDF = "pdf"
 SUPPORTED_PRINT_OUTPUTS = (PRINT_OUTPUT_HTML, PRINT_OUTPUT_PDF)
+PRINT_ARCHIVE_FOLDER = "Home/Attachments/MyApp Print Files/Archive"
+PRINT_STORAGE_STREAM = "stream"
+PRINT_STORAGE_ARCHIVE = "archive"
 
 
 def get_print_preview_v1(
@@ -52,9 +56,11 @@ def get_print_file_v1(
 	docname: str,
 	template: str | None = None,
 	filename: str | None = None,
+	archive: bool | int | str = False,
 ):
 	resolved_doctype = _normalize_required_str(doctype, field_label="doctype")
 	resolved_docname = _normalize_required_str(docname, field_label="docname")
+	should_archive = _coerce_bool_flag(archive)
 	template_info = resolve_print_template(resolved_doctype, template)
 	_ensure_template_ready(template_info)
 	document = _load_print_document(resolved_doctype, resolved_docname)
@@ -65,16 +71,18 @@ def get_print_file_v1(
 		filename=filename,
 	)
 	pdf_bytes = _render_print_pdf(document=document, template_info=template_info)
-	file_doc = _save_print_pdf_file(
-		doctype=resolved_doctype,
-		docname=resolved_docname,
-		filename=file_name,
-		pdf_bytes=pdf_bytes,
-	)
+	file_doc = None
+	if should_archive:
+		file_doc = _save_print_pdf_file(
+			doctype=resolved_doctype,
+			docname=resolved_docname,
+			filename=file_name,
+			pdf_bytes=pdf_bytes,
+		)
 
 	return {
 		"status": "success",
-		"message": _("打印文件已生成。"),
+		"message": _("打印文件已归档。") if should_archive else _("打印文件元数据已生成。"),
 		"data": {
 			"doctype": resolved_doctype,
 			"docname": resolved_docname,
@@ -84,16 +92,19 @@ def get_print_file_v1(
 			"output": PRINT_OUTPUT_PDF,
 			"filename": file_name,
 			"mime_type": "application/pdf",
-			"file_url": file_doc.file_url,
-			"is_private": bool(file_doc.is_private),
-			"status": "ready",
+			"file_url": file_doc.file_url if file_doc else None,
+			"is_private": bool(file_doc.is_private) if file_doc else True,
+			"status": "archived" if should_archive else "ready",
 			"file_size": len(pdf_bytes),
+			"archived": should_archive,
+			"storage_mode": PRINT_STORAGE_ARCHIVE if should_archive else PRINT_STORAGE_STREAM,
 		},
 		"meta": {
 			"doctype": resolved_doctype,
 			"docname": resolved_docname,
 			"template": template_info["key"],
 			"output": PRINT_OUTPUT_PDF,
+			"storage_mode": PRINT_STORAGE_ARCHIVE if should_archive else PRINT_STORAGE_STREAM,
 		},
 	}
 
@@ -138,6 +149,12 @@ def _resolve_output(output: str | None):
 	if resolved not in SUPPORTED_PRINT_OUTPUTS:
 		frappe.throw(_("仅支持 html 或 pdf 输出。"))
 	return resolved
+
+
+def _coerce_bool_flag(value) -> bool:
+	if isinstance(value, bool):
+		return value
+	return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _load_print_document(doctype: str, docname: str):
@@ -355,10 +372,26 @@ def _section_to_chinese(section: int) -> str:
 
 
 def _save_print_pdf_file(*, doctype: str, docname: str, filename: str, pdf_bytes: bytes):
+	folder = _ensure_folder_path(PRINT_ARCHIVE_FOLDER)
 	return save_file(
 		fname=filename,
 		content=pdf_bytes,
 		dt=doctype,
 		dn=docname,
+		folder=folder,
 		is_private=1,
 	)
+
+
+def _ensure_folder_path(folder_path: str) -> str:
+	segments = [segment for segment in folder_path.split("/") if segment]
+	if not segments:
+		return "Home"
+
+	current = segments[0]
+	for segment in segments[1:]:
+		next_folder = f"{current}/{segment}"
+		if not frappe.db.exists("File", next_folder):
+			create_new_folder(segment, current)
+		current = next_folder
+	return current

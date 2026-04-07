@@ -512,13 +512,20 @@ class TestGatewayWrappers(TestCase):
 	def test_get_print_file_v1_passes_filters_to_service(self, mock_get_print_file_v1_service):
 		mock_get_print_file_v1_service.return_value = {"status": "success", "data": {"filename": "Sales Invoice-SINV-0001-standard.pdf"}}
 
-		get_print_file_v1(doctype="Sales Invoice", docname="SINV-0001", template="standard", filename="invoice.pdf")
+		get_print_file_v1(
+			doctype="Sales Invoice",
+			docname="SINV-0001",
+			template="standard",
+			filename="invoice.pdf",
+			archive=1,
+		)
 
 		mock_get_print_file_v1_service.assert_called_once_with(
 			doctype="Sales Invoice",
 			docname="SINV-0001",
 			template="standard",
 			filename="invoice.pdf",
+			archive=1,
 		)
 
 	@patch("myapp.api.gateway.build_print_file_download_v1_service")

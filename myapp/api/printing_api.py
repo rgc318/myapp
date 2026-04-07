@@ -22,12 +22,14 @@ def get_print_file_v1(
 	docname: str,
 	template: str | None = None,
 	filename: str | None = None,
+	archive: bool | int | str = False,
 ):
 	return get_print_file_v1_service(
 		doctype=doctype,
 		docname=docname,
 		template=template,
 		filename=filename,
+		archive=archive,
 	)
 
 

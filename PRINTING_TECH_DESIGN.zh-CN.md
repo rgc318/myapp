@@ -163,6 +163,22 @@
 - `mime_type`
 - `expires_at`
 
+当前实现补充：
+
+- `get_print_file_v1` 现已默认只生成 PDF 元数据，不自动保存后端 `File`
+- 普通预览、分享、下载优先走流式链路，避免把每次查看都沉淀成永久附件
+- 仅在显式传 `archive=1` 时，后端才会把 PDF 归档为私有 `File`
+- 归档目录统一为 `Home/Attachments/MyApp Print Files/Archive`
+- 归档目录会在首次使用时自动创建，不需要提前手工建目录
+- `download_print_file_v1` 继续只返回字节流，不负责后端落盘
+
+联调验证：
+
+- 真实站点单据验证已确认：
+  - 默认 `stream` 模式不会新增后端 `File`
+  - `archive=1` 会生成挂到业务单据上的私有 `File`
+  - 归档文件会落到 `Home/Attachments/MyApp Print Files/Archive`
+
 ## 6. 打印数据流
 
 建议链路：

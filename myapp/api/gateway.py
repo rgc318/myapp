@@ -178,6 +178,7 @@ def get_print_file_v1(
 	docname: str,
 	template: str | None = None,
 	filename: str | None = None,
+	archive: bool | int | str = False,
 ):
 	return _handle_gateway_call(
 		lambda: get_print_file_v1_service(
@@ -185,6 +186,7 @@ def get_print_file_v1(
 			docname=docname,
 			template=template,
 			filename=filename,
+			archive=archive,
 		),
 		success_code="PRINT_FILE_FETCHED",
 	)

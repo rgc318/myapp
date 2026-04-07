@@ -52,11 +52,38 @@ class TestPrintingService(TestCase):
 		mock_ensure_template_ready.assert_called_once()
 		mock_load_print_document.assert_called_once_with("Sales Invoice", "SINV-0001")
 
+	@patch("myapp.services.printing_service._render_print_pdf")
+	@patch("myapp.services.printing_service._load_print_document")
+	@patch("myapp.services.printing_service._ensure_template_ready")
+	def test_get_print_file_v1_returns_stream_metadata_by_default(
+		self,
+		mock_ensure_template_ready,
+		mock_load_print_document,
+		mock_render_print_pdf,
+	):
+		document = frappe._dict({"doctype": "Sales Invoice", "name": "SINV-0001"})
+		mock_load_print_document.return_value = document
+		mock_render_print_pdf.return_value = b"%PDF-test"
+
+		result = get_print_file_v1(doctype="Sales Invoice", docname="SINV-0001")
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["output"], "pdf")
+		self.assertEqual(result["data"]["mime_type"], "application/pdf")
+		self.assertEqual(result["data"]["filename"], "Sales Invoice-SINV-0001-standard.pdf")
+		self.assertEqual(result["data"]["status"], "ready")
+		self.assertEqual(result["data"]["file_size"], 9)
+		self.assertIsNone(result["data"]["file_url"])
+		self.assertTrue(result["data"]["is_private"])
+		self.assertFalse(result["data"]["archived"])
+		self.assertEqual(result["data"]["storage_mode"], "stream")
+		mock_ensure_template_ready.assert_called_once()
+
 	@patch("myapp.services.printing_service._save_print_pdf_file")
 	@patch("myapp.services.printing_service._render_print_pdf")
 	@patch("myapp.services.printing_service._load_print_document")
 	@patch("myapp.services.printing_service._ensure_template_ready")
-	def test_get_print_file_v1_returns_file_metadata(
+	def test_get_print_file_v1_archives_file_when_requested(
 		self,
 		mock_ensure_template_ready,
 		mock_load_print_document,
@@ -68,17 +95,13 @@ class TestPrintingService(TestCase):
 		mock_render_print_pdf.return_value = b"%PDF-test"
 		mock_save_print_pdf_file.return_value = frappe._dict({"file_url": "/private/files/invoice.pdf", "is_private": 1})
 
-		result = get_print_file_v1(doctype="Sales Invoice", docname="SINV-0001")
+		result = get_print_file_v1(doctype="Sales Invoice", docname="SINV-0001", archive=1)
 
-		self.assertEqual(result["status"], "success")
-		self.assertEqual(result["data"]["output"], "pdf")
-		self.assertEqual(result["data"]["mime_type"], "application/pdf")
-		self.assertEqual(result["data"]["filename"], "Sales Invoice-SINV-0001-standard.pdf")
-		self.assertEqual(result["data"]["status"], "ready")
-		self.assertEqual(result["data"]["file_size"], 9)
 		self.assertEqual(result["data"]["file_url"], "/private/files/invoice.pdf")
-		self.assertTrue(result["data"]["is_private"])
-		mock_ensure_template_ready.assert_called_once()
+		self.assertEqual(result["data"]["status"], "archived")
+		self.assertTrue(result["data"]["archived"])
+		self.assertEqual(result["data"]["storage_mode"], "archive")
+		mock_save_print_pdf_file.assert_called_once()
 
 	def test_get_print_preview_v1_rejects_unsupported_output(self):
 		with patch("myapp.services.printing_service.frappe.throw", side_effect=frappe.ValidationError):
@@ -109,6 +132,15 @@ class TestPrintingService(TestCase):
 		self.assertEqual(result["template"], "standard")
 		self.assertEqual(result["content"], b"%PDF-download")
 		mock_ensure_template_ready.assert_called_once()
+
+	def test_coerce_bool_flag_handles_common_truthy_values(self):
+		from myapp.services.printing_service import _coerce_bool_flag
+
+		self.assertTrue(_coerce_bool_flag(True))
+		self.assertTrue(_coerce_bool_flag("1"))
+		self.assertTrue(_coerce_bool_flag("true"))
+		self.assertFalse(_coerce_bool_flag(False))
+		self.assertFalse(_coerce_bool_flag("0"))
 
 	def test_load_print_document_checks_permission(self):
 		from myapp.services.printing_service import _load_print_document
