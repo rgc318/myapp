@@ -348,6 +348,58 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(len(result["data"]), 1)
 		self.assertEqual(mock_get_multi_price_map.call_count, 2)
 
+	@patch("myapp.services.wholesale_service._get_multi_price_map")
+	@patch("myapp.services.wholesale_service._get_warehouse_stock_detail_map")
+	@patch("myapp.services.wholesale_service._get_qty_map")
+	@patch("myapp.services.wholesale_service._get_uom_map")
+	@patch("myapp.services.wholesale_service._get_price_map")
+	@patch("myapp.services.wholesale_service._get_item_data_map")
+	@patch("myapp.services.wholesale_service._search_item_codes")
+	def test_search_product_excludes_disabled_items_by_default(
+		self,
+		mock_search_item_codes,
+		mock_get_item_data_map,
+		mock_get_price_map,
+		mock_get_uom_map,
+		mock_get_qty_map,
+		mock_get_warehouse_stock_detail_map,
+		mock_get_multi_price_map,
+	):
+		mock_search_item_codes.return_value = ["ITEM-ENABLED", "ITEM-DISABLED"]
+		mock_get_item_data_map.return_value = {
+			"ITEM-ENABLED": frappe._dict(
+				{
+					"name": "ITEM-ENABLED",
+					"item_name": "启用商品",
+					"stock_uom": "Nos",
+					"image": None,
+					"disabled": 0,
+				}
+			),
+			"ITEM-DISABLED": frappe._dict(
+				{
+					"name": "ITEM-DISABLED",
+					"item_name": "停用商品",
+					"stock_uom": "Nos",
+					"image": None,
+					"disabled": 1,
+				}
+			),
+		}
+		mock_get_price_map.return_value = {"ITEM-ENABLED": 10, "ITEM-DISABLED": 20}
+		mock_get_uom_map.return_value = {"ITEM-ENABLED": [], "ITEM-DISABLED": []}
+		mock_get_multi_price_map.return_value = {"ITEM-ENABLED": {}, "ITEM-DISABLED": {}}
+		mock_get_qty_map.return_value = {"ITEM-ENABLED": 5, "ITEM-DISABLED": 8}
+		mock_get_warehouse_stock_detail_map.return_value = {"ITEM-ENABLED": [], "ITEM-DISABLED": []}
+
+		default_result = search_product_v2(search_key="商品")
+		self.assertEqual([row["item_code"] for row in default_result["data"]], ["ITEM-ENABLED"])
+		self.assertEqual(default_result["filters"]["disabled"], 0)
+
+		disabled_result = search_product_v2(search_key="商品", disabled=1)
+		self.assertEqual([row["item_code"] for row in disabled_result["data"]], ["ITEM-DISABLED"])
+		self.assertEqual(disabled_result["filters"]["disabled"], 1)
+
 	@patch(
 		"myapp.services.wholesale_service.frappe.throw",
 		side_effect=frappe.ValidationError("请先选择仓库，或在当前用户默认值中配置 warehouse。"),

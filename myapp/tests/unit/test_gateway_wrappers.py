@@ -753,6 +753,7 @@ class TestGatewayWrappers(TestCase):
 			warehouse=None,
 			company=None,
 			limit=20,
+			disabled=0,
 			search_fields=["item_name", "nickname"],
 			sort_by="price",
 			sort_order="desc",

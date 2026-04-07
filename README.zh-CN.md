@@ -175,6 +175,11 @@ docker exec frappe_docker-backend-1 bash -lc '
   - 商品接口：`retail_default_uom_display`
   - 商品接口：`sales_profiles[].default_uom_display`
 - 当前策略是“系统内部继续使用稳定单位编码，界面优先消费后端 display 字段”，暂不做大范围历史主数据重构
+- 商品搜索默认只返回启用商品：
+  - `search_product_v2` 默认按 `disabled=0` 过滤
+  - 只有显式传入 `disabled=1` 等条件时，才返回已停用商品
+  - 业务语义上“已停用商品”视为逻辑删除，不应继续出现在销售下单、采购建单、选商品等常规入口
+  - 这样可以避免前端选中停用商品后，在建单阶段才触发“物料已禁用”的迟滞校验
 
 ### 服务验收
 

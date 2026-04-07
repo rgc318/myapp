@@ -998,6 +998,7 @@ def search_product_v2(
 	warehouse: str | None = None,
 	company: str | None = None,
 	limit: int = 20,
+	disabled: int | None = 0,
 	search_fields=None,
 	sort_by: str = "relevance",
 	sort_order: str = "asc",
@@ -1016,6 +1017,7 @@ def search_product_v2(
 	sort_by = _normalize_text(sort_by).lower() or "relevance"
 	sort_order = "desc" if _normalize_text(sort_order).lower() == "desc" else "asc"
 	in_stock_only = bool(cint(in_stock_only))
+	disabled = cint(disabled) if disabled is not None else None
 
 	item_codes = _search_item_codes(search_key, search_fields=search_fields, limit=limit * 3)
 	if not item_codes:
@@ -1051,6 +1053,8 @@ def search_product_v2(
 	for code in item_codes:
 		item = items_data.get(code)
 		if not item:
+			continue
+		if disabled is not None and cint(getattr(item, "disabled", 0)) != disabled:
 			continue
 
 		qty = flt(qty_map.get(code, 0))
@@ -1110,6 +1114,7 @@ def search_product_v2(
 			"sort_by": sort_by,
 			"sort_order": sort_order,
 			"in_stock_only": in_stock_only,
+			"disabled": disabled,
 		},
 	}
 
