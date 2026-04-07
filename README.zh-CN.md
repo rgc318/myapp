@@ -156,9 +156,22 @@ docker exec frappe_docker-backend-1 bash -lc '
 - 商品主数据仍继续使用 ERPNext 标准字段 `Item.image`
 - 新增统一媒体上传入口：`myapp.api.gateway.upload_item_image`
 - 新增安全替换入口：`myapp.api.gateway.replace_item_image`
+- 新增删除入口：`myapp.api.gateway.delete_item_image`
 - 当前上传实现先走 Frappe / ERPNext 自带 `File` 存储，并返回 `file_url`
 - 商品创建 / 编辑接口仍只接收 `image` 字段，不直接感知底层存储提供方
 - 替换商品图片时，后端会优先只清理“由当前商品 `image` 字段托管且未被其他商品复用”的旧文件，降低幽灵文件和误删风险
+- 新增商品时若先上传图片、后创建商品：
+  - 图片会先落到 `Home/Attachments/MyApp Item Images/Temporary`
+  - 商品创建成功后，后端会把临时 `File` 正式绑定到 `Item.image`，并移动到 `Home/Attachments/MyApp Item Images`
+  - 商品创建失败回滚后，会自动清理该临时图片，降低幽灵文件风险
+- 商品图片当前有双层大小控制：
+  - 移动端前置限制 5MB
+  - 后端 `media_service` 也会拒绝超过 5MB 的图片
+- 已增加定时清理策略：
+  - `myapp.tasks.cleanup_temporary_item_images`
+  - 每小时清理一次超过 24 小时仍未绑定的临时商品图片
+- 如需手工清理，可运行：
+  - `python -m myapp.scripts.cleanup_temporary_item_images --site <site> --older-than-hours 24 --commit`
 - 后续若切换 MinIO / OSS / S3，优先只替换媒体服务内部实现，尽量不改商品业务接口契约
 
 当前主数据补充说明：

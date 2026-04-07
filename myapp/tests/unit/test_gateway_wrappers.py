@@ -59,6 +59,7 @@ from myapp.api.gateway import (
 	list_products_v2,
 	list_suppliers_v2,
 	list_uoms_v2,
+	delete_item_image,
 	replace_item_image,
 	upload_item_image,
 	process_purchase_return,
@@ -137,6 +138,7 @@ class TestGatewayWrappers(TestCase):
 			get_supplier_detail_v2,
 			get_delivery_note_detail_v2,
 			get_sales_invoice_detail_v2,
+			delete_item_image,
 			replace_item_image,
 			upload_item_image,
 			update_product_v2,
@@ -1143,6 +1145,17 @@ class TestGatewayWrappers(TestCase):
 			content_type="image/png",
 			is_private=False,
 		)
+
+	@patch("myapp.api.gateway.delete_item_image_service")
+	def test_delete_item_image_passes_fields_to_service(self, mock_delete_item_image_service):
+		mock_delete_item_image_service.return_value = {
+			"status": "success",
+			"data": {"deleted": True},
+		}
+
+		delete_item_image(item_code="ITEM-001")
+
+		mock_delete_item_image_service.assert_called_once_with(item_code="ITEM-001")
 
 	@patch("myapp.api.gateway.get_sales_order_status_summary_service")
 	def test_get_sales_order_status_summary_passes_filters_to_service(

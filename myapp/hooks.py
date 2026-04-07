@@ -143,23 +143,11 @@ app_license = "mit"
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-# 	"all": [
-# 		"myapp.tasks.all"
-# 	],
-# 	"daily": [
-# 		"myapp.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"myapp.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"myapp.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"myapp.tasks.monthly"
-# 	],
-# }
+scheduler_events = {
+	"hourly": [
+		"myapp.tasks.cleanup_temporary_item_images"
+	],
+}
 
 # Testing
 # -------
@@ -249,4 +237,3 @@ app_license = "mit"
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-

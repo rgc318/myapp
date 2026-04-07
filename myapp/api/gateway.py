@@ -1,5 +1,6 @@
 import frappe
 
+from .media_api import delete_item_image as delete_item_image_service
 from .media_api import upload_item_image as upload_item_image_service
 from .media_api import replace_item_image as replace_item_image_service
 from .customers_api import create_customer_v2 as create_customer_v2_service
@@ -1076,6 +1077,14 @@ def replace_item_image(
 			is_private=is_private,
 		),
 		success_code="ITEM_IMAGE_REPLACED",
+	)
+
+
+@frappe.whitelist()
+def delete_item_image(item_code: str):
+	return _handle_gateway_call(
+		lambda: delete_item_image_service(item_code=item_code),
+		success_code="ITEM_IMAGE_DELETED",
 	)
 
 

@@ -1,5 +1,6 @@
 import frappe
 
+from myapp.services.media_service import delete_item_image as delete_item_image_service
 from myapp.services.media_service import replace_item_image as replace_item_image_service
 from myapp.services.media_service import upload_item_image as upload_item_image_service
 
@@ -36,3 +37,8 @@ def replace_item_image(
 		content_type=content_type,
 		is_private=is_private,
 	)
+
+
+@frappe.whitelist()
+def delete_item_image(item_code: str):
+	return delete_item_image_service(item_code=item_code)

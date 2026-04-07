@@ -309,7 +309,7 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(result["data"][0]["nickname"], "昵称二")
 		self.assertEqual(result["data"][0]["specification"], "1000ml")
 		self.assertEqual(result["data"][0]["retail_default_uom"], "Pair")
-		self.assertEqual(result["data"][0]["retail_default_uom_display"], "Pair")
+		self.assertEqual(result["data"][0]["retail_default_uom_display"], "对")
 		self.assertEqual(result["data"][0]["uom_display"], "件")
 		self.assertEqual(result["data"][0]["price_summary"]["wholesale_rate"], 22)
 		self.assertEqual(result["data"][0]["total_qty"], 12)
@@ -436,6 +436,7 @@ class TestWholesaleService(TestCase):
 	@patch("myapp.services.wholesale_service._upsert_item_price")
 	@patch("myapp.services.wholesale_service.resolve_item_quantity_to_stock")
 	@patch("myapp.services.wholesale_service.frappe.new_doc")
+	@patch("myapp.services.wholesale_service.bind_uploaded_item_image")
 	@patch("myapp.services.wholesale_service._build_item_code")
 	@patch("myapp.services.wholesale_service._resolve_default_item_group")
 	@patch("myapp.services.wholesale_service._resolve_default_uom")
@@ -448,6 +449,7 @@ class TestWholesaleService(TestCase):
 		mock_resolve_default_uom,
 		mock_resolve_default_item_group,
 		mock_build_item_code,
+		mock_bind_uploaded_item_image,
 		mock_new_doc,
 		mock_resolve_qty,
 		mock_upsert_item_price,
@@ -465,6 +467,7 @@ class TestWholesaleService(TestCase):
 		item = MagicMock()
 		item.item_code = "TEST-COLA"
 		item.item_name = "测试可乐"
+		item.name = "TEST-COLA"
 		item.stock_uom = "Nos"
 		item.image = "/files/cola.png"
 		mock_new_doc.return_value = item
@@ -477,6 +480,7 @@ class TestWholesaleService(TestCase):
 
 		fake_db = MagicMock()
 		fake_db.exists.return_value = False
+		fake_db.after_rollback = MagicMock()
 
 		with patch.object(wholesale_service.frappe, "db", fake_db):
 			result = create_product_and_stock(
@@ -493,6 +497,11 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(item.custom_nickname, "冰可乐")
 		item.insert.assert_called_once()
 		item.append.assert_called_once_with("barcodes", {"barcode": "BAR-001X"})
+		fake_db.after_rollback.add.assert_called_once()
+		mock_bind_uploaded_item_image.assert_called_once_with(
+			file_url="/files/cola.png",
+			item_code="TEST-COLA",
+		)
 		mock_upsert_item_price.assert_called_once()
 		mock_create_stock_entry.assert_called_once()
 		self.assertEqual(result["data"]["item_code"], "TEST-COLA")
@@ -530,6 +539,7 @@ class TestWholesaleService(TestCase):
 	@patch("myapp.services.wholesale_service._resolve_default_warehouse")
 	@patch("myapp.services.wholesale_service.resolve_item_quantity_to_stock")
 	@patch("myapp.services.wholesale_service._apply_item_price_updates")
+	@patch("myapp.services.wholesale_service.bind_uploaded_item_image")
 	@patch("myapp.services.wholesale_service._build_item_code")
 	@patch("myapp.services.wholesale_service._resolve_default_item_group")
 	@patch(
@@ -556,6 +566,7 @@ class TestWholesaleService(TestCase):
 		mock_get_item_mode_default_uom_field,
 		mock_resolve_default_item_group,
 		mock_build_item_code,
+		mock_bind_uploaded_item_image,
 		mock_apply_item_price_updates,
 		mock_resolve_item_quantity_to_stock,
 		mock_resolve_default_warehouse,
@@ -575,18 +586,27 @@ class TestWholesaleService(TestCase):
 		item = MagicMock()
 		item.item_code = "ITEM-NEW"
 		item.item_name = "新商品"
+		item.name = "ITEM-NEW"
 		mock_new_doc.return_value = item
 		mock_build_product_detail_payload.return_value = {"item_code": "ITEM-NEW", "nickname": "新品"}
 
-		result = create_product_v2(
-			item_name="新商品",
-			nickname="新品",
-			specification="500ml",
-			wholesale_default_uom="Box",
-			retail_default_uom="Bottle",
-			standard_rate=19,
-			selling_prices=[{"price_list": "Wholesale", "rate": 16}],
-		)
+		from myapp.services import wholesale_service
+
+		fake_db = MagicMock()
+		fake_db.exists.return_value = False
+		fake_db.after_rollback = MagicMock()
+
+		with patch.object(wholesale_service.frappe, "db", fake_db):
+			result = create_product_v2(
+				item_name="新商品",
+				nickname="新品",
+				specification="500ml",
+				wholesale_default_uom="Box",
+				retail_default_uom="Bottle",
+				standard_rate=19,
+				selling_prices=[{"price_list": "Wholesale", "rate": 16}],
+				image="/files/new-item.png",
+			)
 
 		mock_new_doc.assert_called_once_with("Item")
 		self.assertEqual(item.custom_specification, "500ml")
@@ -594,6 +614,11 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(item.custom_retail_default_uom, "Bottle")
 		mock_validate_mode_default_uoms_against_stock_uom.assert_called_once()
 		item.insert.assert_called_once()
+		fake_db.after_rollback.add.assert_called_once()
+		mock_bind_uploaded_item_image.assert_called_once_with(
+			file_url="/files/new-item.png",
+			item_code="ITEM-NEW",
+		)
 		mock_apply_item_price_updates.assert_called_once()
 		mock_create_stock_adjustment_entry.assert_not_called()
 		self.assertEqual(result["data"]["item_code"], "ITEM-NEW")

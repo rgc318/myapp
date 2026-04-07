@@ -3,6 +3,7 @@ from frappe import _
 from frappe.query_builder.functions import Sum
 from frappe.utils import cint, flt, getdate
 
+from myapp.services.media_service import bind_uploaded_item_image, cleanup_temporary_item_image
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.uom_display import build_uom_display_map
 from myapp.utils.uom import resolve_item_quantity_to_stock
@@ -1578,6 +1579,7 @@ def create_product_v2(
 		item_group = _resolve_default_item_group(kwargs.get("item_group"))
 		item_code = _build_item_code(item_name, kwargs.get("item_code"))
 		barcode = _normalize_text(kwargs.get("barcode"))
+		image_url = _normalize_text(kwargs.get("image")) or None
 		warehouse_stock_qty = kwargs.get("warehouse_stock_qty")
 		resolved_warehouse = None
 		if barcode and frappe.db.exists("Item Barcode", {"barcode": barcode}):
@@ -1597,7 +1599,7 @@ def create_product_v2(
 		if kwargs.get("description") is not None:
 			item.description = kwargs.get("description")
 		if kwargs.get("image") is not None:
-			item.image = kwargs.get("image")
+			item.image = image_url
 		if kwargs.get("nickname") is not None:
 			nickname_field = _get_item_nickname_field()
 			if nickname_field:
@@ -1630,7 +1632,11 @@ def create_product_v2(
 			item.valuation_rate = flt(kwargs.get("valuation_rate"))
 		if barcode:
 			item.append("barcodes", {"barcode": barcode})
+		if image_url:
+			frappe.db.after_rollback.add(lambda file_url=image_url: cleanup_temporary_item_image(file_url=file_url))
 		item.insert()
+		if image_url:
+			bind_uploaded_item_image(file_url=image_url, item_code=item.name)
 
 		_apply_item_price_updates(
 			item_code=item.item_code,
@@ -1748,6 +1754,7 @@ def create_product_and_stock(
 			frappe.throw(_("初始入库数量不能为负数。"))
 
 		barcode = (kwargs.get("barcode") or "").strip()
+		image_url = _normalize_text(kwargs.get("image")) or None
 		if barcode and frappe.db.exists("Item Barcode", {"barcode": barcode}):
 			frappe.throw(_("条码 {0} 已存在。").format(barcode))
 
@@ -1761,7 +1768,7 @@ def create_product_and_stock(
 		if kwargs.get("description"):
 			item.description = kwargs["description"]
 		if kwargs.get("image"):
-			item.image = kwargs["image"]
+			item.image = image_url
 		if kwargs.get("nickname"):
 			nickname_field = _get_item_nickname_field()
 			if nickname_field:
@@ -1788,7 +1795,11 @@ def create_product_and_stock(
 		)
 		if barcode:
 			item.append("barcodes", {"barcode": barcode})
+		if image_url:
+			frappe.db.after_rollback.add(lambda file_url=image_url: cleanup_temporary_item_image(file_url=file_url))
 		item.insert()
+		if image_url:
+			bind_uploaded_item_image(file_url=image_url, item_code=item.name)
 		opening_qty_context = resolve_item_quantity_to_stock(
 			item_code=item.item_code,
 			qty=input_qty,
