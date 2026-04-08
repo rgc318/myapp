@@ -18,6 +18,7 @@ from myapp.api.gateway import (
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
 	download_print_file_v1,
+	get_current_user_workspace_preferences_v1,
 	get_print_file_v1,
 	get_print_preview_v1,
 	get_business_report_overview_v1,
@@ -73,6 +74,7 @@ from myapp.api.gateway import (
 	update_purchase_order_v2,
 	update_supplier_v2,
 	update_customer_v2,
+	update_current_user_workspace_preferences_v1,
 	update_product_v2,
 	update_uom_v2,
 	update_order_items_v2,
@@ -91,6 +93,7 @@ class TestGatewayWrappers(TestCase):
 			create_purchase_order,
 			quick_create_purchase_order_v2,
 			download_print_file_v1,
+			get_current_user_workspace_preferences_v1,
 			get_print_file_v1,
 			get_print_preview_v1,
 			get_business_report_overview_v1,
@@ -155,11 +158,44 @@ class TestGatewayWrappers(TestCase):
 				update_purchase_order_v2,
 				update_purchase_order_items_v2,
 				update_supplier_v2,
-				record_supplier_payment,
+			record_supplier_payment,
+			update_current_user_workspace_preferences_v1,
 			process_sales_return,
 			process_purchase_return,
 		):
 			self.assertNotIn(method, frappe.guest_methods)
+
+	@patch("myapp.api.gateway.get_current_user_workspace_preferences_v1_service")
+	def test_get_current_user_workspace_preferences_passes_through_service(
+		self, mock_get_preferences_service
+	):
+		mock_get_preferences_service.return_value = {
+			"status": "success",
+			"data": {"default_company": "Test Company", "default_warehouse": "Stores - RD"},
+		}
+
+		get_current_user_workspace_preferences_v1()
+
+		mock_get_preferences_service.assert_called_once_with()
+
+	@patch("myapp.api.gateway.update_current_user_workspace_preferences_v1_service")
+	def test_update_current_user_workspace_preferences_passes_through_service(
+		self, mock_update_preferences_service
+	):
+		mock_update_preferences_service.return_value = {
+			"status": "success",
+			"data": {"default_company": "Test Company", "default_warehouse": "Stores - RD"},
+		}
+
+		update_current_user_workspace_preferences_v1(
+			default_company="Test Company",
+			default_warehouse="Stores - RD",
+		)
+
+		mock_update_preferences_service.assert_called_once_with(
+			default_company="Test Company",
+			default_warehouse="Stores - RD",
+		)
 
 	@patch("myapp.api.gateway.submit_delivery_service")
 	def test_submit_delivery_passes_top_level_request_id_to_service(self, mock_submit_delivery_service):

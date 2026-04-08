@@ -88,6 +88,12 @@ from .wholesale_api import search_product_v2 as search_product_v2_service
 from .wholesale_api import update_product_v2 as update_product_v2_service
 from .customers_api import update_customer_v2 as update_customer_v2_service
 from .uoms_api import update_uom_v2 as update_uom_v2_service
+from .user_preferences_api import (
+	get_current_user_workspace_preferences_v1 as get_current_user_workspace_preferences_v1_service,
+)
+from .user_preferences_api import (
+	update_current_user_workspace_preferences_v1 as update_current_user_workspace_preferences_v1_service,
+)
 from myapp.utils.api_response import (
 	error_response,
 	map_exception_to_error,
@@ -211,6 +217,28 @@ def download_print_file_v1(
 	frappe.local.response.display_content_as = "attachment"
 	frappe.local.response["content_type"] = "application/pdf"
 	return None
+
+
+@frappe.whitelist()
+def get_current_user_workspace_preferences_v1():
+	return _handle_gateway_call(
+		lambda: get_current_user_workspace_preferences_v1_service(),
+		success_code="USER_WORKSPACE_PREFERENCES_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def update_current_user_workspace_preferences_v1(
+	default_company: str | None = None,
+	default_warehouse: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: update_current_user_workspace_preferences_v1_service(
+			default_company=default_company,
+			default_warehouse=default_warehouse,
+		),
+		success_code="USER_WORKSPACE_PREFERENCES_UPDATED",
+	)
 
 
 @frappe.whitelist()

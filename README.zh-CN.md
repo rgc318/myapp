@@ -209,6 +209,31 @@ docker exec frappe_docker-backend-1 bash -lc '
   - 业务语义上“已停用商品”视为逻辑删除，不应继续出现在销售下单、采购建单、选商品等常规入口
   - 这样可以避免前端选中停用商品后，在建单阶段才触发“物料已禁用”的迟滞校验
 
+当前用户工作偏好补充说明：
+
+- 移动端“环境设置”已拆分为：
+  - 账号级工作偏好
+  - 设备级联调环境
+- 当前账号级工作偏好已接入后端统一读写：
+  - `myapp.api.gateway.get_current_user_workspace_preferences_v1`
+  - `myapp.api.gateway.update_current_user_workspace_preferences_v1`
+- 当前保存到 Frappe 用户默认值的字段包括：
+  - `company`
+  - `warehouse`
+  - `default_warehouse`
+- 当前移动端默认公司、默认仓库已经改为“跟账号走”：
+  - 同一账号换设备后可继续读取同一组工作上下文
+  - 不同账号共用同一台设备时，不再互相污染默认公司 / 默认仓库
+- 当前后端地址仍继续保留为设备级设置，不跟账号同步
+- 当前保存账号级工作偏好时会做正式校验：
+  - 公司必须存在
+  - 仓库必须存在
+  - 仓库必须属于当前所选公司
+- 当前移动端设置页已补充公司与仓库联动规则：
+  - 先选公司，再筛仓库
+  - 仓库候选会按当前公司过滤
+  - 若切换公司后旧仓库不再属于该公司，前端会自动清空旧仓库并提示重新选择
+
 ### 服务验收
 
 `myapp/api/` 下的服务层已经在 VS Code devcontainer / ERPNext v16 环境中通过 `bench console` 做过真实验证。
