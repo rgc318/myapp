@@ -94,6 +94,7 @@ from .user_preferences_api import (
 from .user_preferences_api import (
 	update_current_user_workspace_preferences_v1 as update_current_user_workspace_preferences_v1_service,
 )
+from myapp.services.mobile_release_service import get_mobile_release_info as get_mobile_release_info_service
 from myapp.utils.api_response import (
 	error_response,
 	map_exception_to_error,
@@ -238,6 +239,20 @@ def update_current_user_workspace_preferences_v1(
 			default_warehouse=default_warehouse,
 		),
 		success_code="USER_WORKSPACE_PREFERENCES_UPDATED",
+	)
+
+
+@frappe.whitelist()
+def get_mobile_release_info_v1(
+	current_version: str | None = None,
+	current_build_number: int | str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: get_mobile_release_info_service(
+			current_version=current_version,
+			current_build_number=current_build_number,
+		),
+		success_code="MOBILE_RELEASE_INFO_FETCHED",
 	)
 
 

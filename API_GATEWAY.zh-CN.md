@@ -11,6 +11,7 @@
 - `myapp.api.gateway.list_products_v2`
 - `myapp.api.gateway.update_product_v2`
 - `myapp.api.gateway.disable_product_v2`
+- `myapp.api.gateway.get_mobile_release_info_v1`
 - `myapp.api.gateway.create_order`
 - `myapp.api.gateway.create_order_v2`
 - `myapp.api.gateway.quick_create_order_v2`
@@ -49,6 +50,7 @@
 
 - 通用辅助：
 - `myapp.api.gateway.confirm_pending_document`
+- `myapp.api.gateway.get_mobile_release_info_v1`
 
 本文档主结构按业务模块划分，而不是按“自定义接口 / 官方接口”二分。
 
@@ -68,7 +70,7 @@
 - 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`、`create_supplier_v2`、`update_supplier_v2`、`disable_supplier_v2`
 - 采购更新与作废：`update_purchase_order_v2`、`update_purchase_order_items_v2`、`cancel_purchase_order_v2`、`cancel_purchase_receipt_v2`、`cancel_purchase_invoice_v2`、`cancel_supplier_payment`
 - 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`
-- 通用辅助：`confirm_pending_document`
+- 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
 
 ### 统一成功响应格式
 
@@ -1085,6 +1087,48 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 
 - `customer: str`
 - `disabled: bool = True`
+
+### get_mobile_release_info_v1
+
+方法：
+
+- `myapp.api.gateway.get_mobile_release_info_v1`
+
+参数：
+
+- `current_version: str | None`
+- `current_build_number: int | None`
+
+行为：
+
+- 返回移动端当前可用的最新 release 信息
+- 当前由后端统一读取 GitHub Releases，而不是让 App 直接请求 GitHub API
+- 当前主要给 `myapp-mobile` 设置页 / 帮助页的“检查更新”入口使用
+
+返回重点字段：
+
+- `enabled`
+- `provider`
+- `repo`
+- `current_version`
+- `latest_version`
+- `latest_build_number`
+- `latest_tag`
+- `release_name`
+- `release_notes`
+- `published_at`
+- `download_url`
+- `release_page_url`
+- `has_update`
+- `force_update`
+
+当前站点配置：
+
+- `myapp_mobile_release_repo`
+- `myapp_mobile_release_api_url`（可选）
+- `myapp_mobile_release_token`（可选）
+- `myapp_mobile_release_asset_suffix`（可选，默认 `.apk`）
+- `myapp_mobile_release_include_prerelease`（可选）
 
 ### list_uoms_v2
 
