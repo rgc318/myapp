@@ -1497,6 +1497,10 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `selling_prices` 支持补充 selling 类价格表
 - `buying_prices` 支持补充 buying 类价格表
 - `warehouse_stock_qty` 有值时，按当前 `warehouse` 计算库存差额并生成正式库存调整单据，使该仓商品库存调整到目标值
+- 当传入 `warehouse + warehouse_stock_qty = 0`，且该 `item_code + warehouse` 尚无 `Bin` 记录时：
+  - 后端会创建正式的零库存 `Bin`
+  - 不会生成库存调整单据
+  - 语义是“该商品已在该仓库初始化，当前库存为 0”
 - `warehouse_stock_uom` 有值时，后端会先把目标库存换算到库存基准单位，再计算差额
 - 返回更新后的商品详情快照，便于前端直接回显
 - 当前仍不支持：
@@ -1562,6 +1566,10 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
   - `selling_prices`
   - `buying_prices`
   则会同步补齐对应 `Item Price`
+- 若同时传入 `warehouse + warehouse_stock_qty + warehouse_stock_uom`：
+  - 正库存会按正式库存调整链路写入
+  - `warehouse_stock_qty = 0` 时也会创建零库存 `Bin`
+  - 不传这些库存字段时，仍保持“纯建商品主数据”语义
 
 与 `create_product_and_stock` 的区别：
 
