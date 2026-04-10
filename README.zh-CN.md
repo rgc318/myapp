@@ -151,6 +151,17 @@ docker exec frappe_docker-backend-1 bash -lc '
 - 若不传库存初始化字段，则仍保持原来的“纯建档”语义
 - 因此移动端当前不需要再分两次调用“先建商品、再调库存调整”，可以直接一次提交完成
 
+库存补录脚本补充说明：
+
+- 若历史数据已经存在“商品主数据已建档，但没有任何分仓库存记录”的情况，可使用：
+  - `python -m myapp.scripts.bootstrap_default_item_stock --site <site> --warehouse "<warehouse>" --final-qty 0 --seed-qty 1`
+- 这条脚本会优先筛出“当前没有 `tabBin` 记录”的商品
+- 当 `final_qty = 0` 时，脚本会先补一笔临时正库存，再回调到 `0`
+  - 目的不是伪造有货，而是把商品从“没有库存记录”切换到“已有库存记录、当前库存为 0”
+- 若想直接给一批测试商品补成正库存，也可以例如：
+  - `python -m myapp.scripts.bootstrap_default_item_stock --site <site> --warehouse "Stores - RD" --final-qty 20 --commit`
+- 默认是 dry-run；只有带 `--commit` 才会真正写库
+
 当前商品图片上传约定：
 
 - 商品主数据仍继续使用 ERPNext 标准字段 `Item.image`
