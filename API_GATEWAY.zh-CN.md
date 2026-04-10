@@ -1125,6 +1125,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 当前站点配置：
 
 - `myapp_mobile_release_repo`
+  - 例如：`rgc318/myapp-mobile`
 - `myapp_mobile_release_api_url`（可选）
 - `myapp_mobile_release_token`（可选）
 - `myapp_mobile_release_asset_suffix`（可选，默认 `.apk`）
