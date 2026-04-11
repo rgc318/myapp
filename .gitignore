@@ -54,3 +54,7 @@ jspm_packages/
 
 # Aider AI Chat
 .aider*
+
+# Local test artifacts
+http-test-results.json
+print-artifacts/
