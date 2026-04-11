@@ -1430,6 +1430,7 @@ def _build_supplier_payload(supplier_doc, *, include_recent_addresses: bool = Fa
 def get_purchase_company_context(company: str | None = None):
 	resolved_company = _normalize_text(company) or _extract_first_non_empty(frappe.defaults.get_user_default("company"))
 	warehouse = _get_purchase_default_warehouse_for_company(resolved_company)
+	currency = frappe.db.get_value("Company", resolved_company, "default_currency") if resolved_company else None
 
 	return {
 		"status": "success",
@@ -1437,8 +1438,48 @@ def get_purchase_company_context(company: str | None = None):
 		"data": {
 			"company": resolved_company,
 			"warehouse": warehouse,
+			"currency": currency,
 		},
 	}
+
+
+def _get_supplier_party_account_currency(supplier: str, company: str | None):
+	if not supplier or not company:
+		return None
+
+	try:
+		from erpnext.accounts.party import get_party_account_currency
+
+		return _normalize_text(get_party_account_currency("Supplier", supplier, company)) or None
+	except Exception:
+		return None
+
+
+def _resolve_purchase_transaction_currency(supplier: str, company: str | None, requested_currency: str | None = None):
+	requested = _normalize_text(requested_currency) or None
+	party_account_currency = _get_supplier_party_account_currency(supplier, company)
+	if party_account_currency and requested and requested != party_account_currency:
+		allow_multi_currency = cint(
+			frappe.db.get_single_value(
+				"Accounts Settings",
+				"allow_multi_currency_invoices_against_single_party_account",
+			)
+		)
+		if not allow_multi_currency:
+			frappe.throw(
+				_(
+					"供应商 {0} 在公司 {1} 下的应付账户币种是 {2}，但本次采购币种是 {3}。"
+					"请切换公司/供应商账户，或启用 ERPNext 多币种往来账户配置。"
+				).format(supplier, company, party_account_currency, requested)
+			)
+
+	return (
+		requested
+		or party_account_currency
+		or (frappe.db.get_value("Company", company, "default_currency") if company else None)
+		or _normalize_text(frappe.db.get_value("Supplier", supplier, "default_currency"))
+		or None
+	)
 
 
 def get_supplier_purchase_context(supplier: str, company: str | None = None):
@@ -1464,6 +1505,7 @@ def get_supplier_purchase_context(supplier: str, company: str | None = None):
 	default_address = _serialize_address_doc(_get_doc_if_exists("Address", address_names[0] if address_names else None))
 	resolved_company = _normalize_text(company) or _extract_first_non_empty(frappe.defaults.get_user_default("company"))
 	warehouse = _get_purchase_default_warehouse_for_company(resolved_company)
+	currency = _resolve_purchase_transaction_currency(supplier_doc.name, resolved_company)
 
 	return {
 		"status": "success",
@@ -1484,7 +1526,7 @@ def get_supplier_purchase_context(supplier: str, company: str | None = None):
 			"suggestions": {
 				"company": resolved_company,
 				"warehouse": warehouse,
-				"currency": getattr(supplier_doc, "default_currency", None),
+				"currency": currency,
 			},
 		},
 	}
@@ -2159,6 +2201,7 @@ def create_purchase_order(supplier: str, items, **kwargs):
 	schedule_date = kwargs.get("schedule_date") or nowdate()
 	default_warehouse = kwargs.get("default_warehouse")
 	request_id = kwargs.get("request_id")
+	currency = _resolve_purchase_transaction_currency(supplier, company, kwargs.get("currency"))
 
 	_validate_purchase_inputs(supplier, items, company)
 
@@ -2169,8 +2212,8 @@ def create_purchase_order(supplier: str, items, **kwargs):
 			po.transaction_date = kwargs.get("transaction_date") or nowdate()
 			po.schedule_date = schedule_date
 			po.company = company
-			if kwargs.get("currency"):
-				po.currency = kwargs["currency"]
+			if currency:
+				po.currency = currency
 			if kwargs.get("buying_price_list"):
 				po.buying_price_list = kwargs["buying_price_list"]
 			if kwargs.get("supplier_ref"):
