@@ -39,6 +39,7 @@ _load_env_file()
 BASE_URL = os.environ.get("MYAPP_HTTP_BASE_URL", "http://localhost:8080").rstrip("/")
 TOKEN_KEY = os.environ.get("MYAPP_HTTP_API_KEY", "").strip()
 TOKEN_SECRET = os.environ.get("MYAPP_HTTP_API_SECRET", "").strip()
+BEARER_TOKEN = os.environ.get("MYAPP_HTTP_BEARER_TOKEN", "").strip()
 USERNAME = os.environ.get("MYAPP_HTTP_USERNAME", "").strip()
 PASSWORD = os.environ.get("MYAPP_HTTP_PASSWORD", "").strip()
 PRINT_RESPONSES = os.environ.get("MYAPP_HTTP_PRINT_RESPONSES", "1").strip() not in {"0", "false", "False"}
@@ -67,6 +68,11 @@ class GatewayHttpTestCase(TestCase):
 		super().setUpClass()
 		cls._results = {}
 
+		if BEARER_TOKEN:
+			cls._auth_mode = "bearer"
+			cls._opener = urllib.request.build_opener()
+			return
+
 		if TOKEN_KEY and TOKEN_SECRET:
 			cls._auth_mode = "token"
 			cls._opener = urllib.request.build_opener()
@@ -80,14 +86,16 @@ class GatewayHttpTestCase(TestCase):
 			return
 
 		raise cls.skipTest(
-			"HTTP gateway tests require MYAPP_HTTP_API_KEY/MYAPP_HTTP_API_SECRET "
+			"HTTP gateway tests require MYAPP_HTTP_BEARER_TOKEN, MYAPP_HTTP_API_KEY/MYAPP_HTTP_API_SECRET "
 			"or MYAPP_HTTP_USERNAME/MYAPP_HTTP_PASSWORD."
 		)
 
 	@classmethod
 	def _headers(cls):
 		headers = {"Accept": "application/json"}
-		if cls._auth_mode == "token":
+		if cls._auth_mode == "bearer":
+			headers["Authorization"] = f"Bearer {BEARER_TOKEN}"
+		elif cls._auth_mode == "token":
 			headers["Authorization"] = f"token {TOKEN_KEY}:{TOKEN_SECRET}"
 		return headers
 

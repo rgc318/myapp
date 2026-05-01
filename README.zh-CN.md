@@ -11,6 +11,7 @@
 
 - API 说明：`API_GATEWAY.md`
 - 中文 API 说明：`API_GATEWAY.zh-CN.md`
+- JWT Token 认证接入说明：`JWT_AUTH.zh-CN.md`
 - 中文测试说明：`TESTING.zh-CN.md`
 - 报表模块设计文档：`REPORTS_TECH_DESIGN.zh-CN.md`
 - 开发设计基准文档：`WHOLESALE_TECH_DESIGN.zh-CN.md`
@@ -77,6 +78,7 @@ pre-commit install
 - backend 容器内直接执行时，应改用 `http://localhost:8000`
 - 不要改成 `127.0.0.1`，保持与当前 devcontainer 约定一致
 - 建议优先使用 API Token，而不是长期使用管理员密码
+- 若前端或移动端需要无 Cookie 认证，可使用 `myapp.auth.token_api.login_v1` 签发 JWT，并在 HTTP 测试中配置 `MYAPP_HTTP_BEARER_TOKEN`
 - 当前 HTTP 测试已覆盖所有 `myapp.api.gateway.*` 接口的基础可达性 / 鉴权后响应结构
 - 当前已补充销售主链路与采购主链路的真实成功测试
 - 当前已补充销售侧与采购侧的顺序幂等、不同数据、并发幂等测试

@@ -51,11 +51,15 @@
      - `MYAPP_HTTP_BASE_URL=http://localhost:8080`
    - backend 容器内直接执行 HTTP 测试时：
      - `MYAPP_HTTP_BASE_URL=http://localhost:8000`
-   - 测试账号密码或 API Token
+   - 测试账号密码、API Token 或 JWT Bearer Token
 4. 宿主机执行测试时使用 `python3`，不要默认使用 `python`。
 
 补充说明：
 
+- HTTP 测试鉴权优先级为 `MYAPP_HTTP_BEARER_TOKEN`、`MYAPP_HTTP_API_KEY/MYAPP_HTTP_API_SECRET`、`MYAPP_HTTP_USERNAME/MYAPP_HTTP_PASSWORD`
+- `MYAPP_HTTP_BEARER_TOKEN` 适合移动端和前后端分离场景，可通过 `myapp.auth.token_api.login_v1` 签发
+- `MYAPP_HTTP_API_KEY/MYAPP_HTTP_API_SECRET` 适合服务端联调
+- `MYAPP_HTTP_USERNAME/MYAPP_HTTP_PASSWORD` 会走 Frappe Session 登录，适合兼容历史流程
 - 宿主机侧当前约定使用 `http://localhost:8080`，不要随意改成 `127.0.0.1`
 - backend 容器内若直接跑 HTTP 测试，应改用 `http://localhost:8000`
 - 测试默认会打印响应，并写入 `http-test-results.json`
