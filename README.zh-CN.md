@@ -28,6 +28,15 @@ bench get-app $URL_OF_THIS_REPO --branch main
 bench install-app myapp
 ```
 
+Python 依赖由 `pyproject.toml` 统一声明。当前 JWT 公共能力依赖已经发布到公共 PyPI，并通过以下依赖自动安装：
+
+```toml
+"PyJWT~=2.10.1",
+"rgc-backend-kit>=0.1.0,<0.2.0",
+```
+
+因此正常执行 `pip install -e apps/myapp`、`bench get-app --resolve-deps`、本地 `docker compose` 启动或 staging 镜像构建时，都会自动安装 `rgc-backend-kit`。不要再手动安装 `/tmp/rgc-backend-kit` 或依赖宿主机本地源码路径。
+
 ### 开发
 
 本应用使用 `pre-commit` 做格式化和静态检查。请先安装并启用：
@@ -47,6 +56,7 @@ pre-commit install
 当前开发环境约定：
 
 - 项目以 VS Code devcontainer / Docker 中的 ERPNext 运行环境为主，不以宿主机 WSL 直接运行 Frappe 代码为准
+- 本地 `compose.yaml` 中的 backend、worker、scheduler 会在启动时执行 `./env/bin/pip install -e apps/myapp`，确保 `pyproject.toml` 依赖自动对齐
 - 若需要做接口联调或冒烟测试，优先通过 HTTP 访问宿主机 `http://localhost:8080`
 - 宿主机侧脚本请使用 `python3`，不要默认使用 `python`
 

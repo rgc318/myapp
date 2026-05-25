@@ -15,19 +15,15 @@
 
 当前 JWT 能力依赖已经抽出的后端公共包：
 
-```bash
-cd /home/frappe/frappe-bench
-env/bin/python -m pip install rgc-backend-kit
+```text
+rgc-backend-kit>=0.1.0,<0.2.0
 ```
 
-开发容器里如果使用本地包源码，可以临时安装：
+该依赖已经声明在 `apps/myapp/pyproject.toml`。同时为了兼容 Frappe 16 当前依赖约束，`myapp` 也显式声明了 `PyJWT~=2.10.1`。
 
-```bash
-cd /home/frappe/frappe-bench
-env/bin/python -m pip install -e /path/to/rgc-backend-kit
-```
+本地 Docker Compose 启动时会执行 `pip install -e apps/myapp` 自动安装；staging 镜像构建时也会在镜像内执行同样的 app 安装步骤。因此正常开发、重启 compose、构建 staging 镜像都不需要再手动安装 `rgc-backend-kit`。
 
-生产环境建议把 `rgc-backend-kit` 发布到私有 PyPI 或在镜像构建阶段固定版本安装，不建议依赖宿主机临时路径。
+不要再依赖 `/tmp/rgc-backend-kit` 或宿主机临时路径；如果发现容器里 `rgc_backend_kit.__file__` 指向 `/tmp/rgc-backend-kit`，说明当前环境仍残留旧的 editable 安装，需要重新执行 `pip install -e apps/myapp` 或重建 bench env。
 
 ## Frappe 配置
 
