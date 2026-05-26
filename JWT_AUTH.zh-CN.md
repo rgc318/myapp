@@ -16,7 +16,7 @@
 当前 JWT 能力依赖已经抽出的后端公共包：
 
 ```text
-rgc-backend-kit>=0.1.0,<0.2.0
+rgc-backend-kit>=0.1.1,<0.2.0
 ```
 
 该依赖已经声明在 `apps/myapp/pyproject.toml`。`PyJWT` 的具体版本由 Frappe 当前环境约束管理，`myapp` 不单独固定小版本；`rgc-backend-kit` 只声明较宽的 PyJWT 兼容范围，因此可以跟随不同 Frappe 16 版本使用 `PyJWT 2.10.x` 或 `2.12.x`。

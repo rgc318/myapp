@@ -10,7 +10,7 @@ dynamic = ["version"]
 dependencies = [
     # "frappe~=16.0.0" # Installed and managed by bench.
     "debugpy>=1.8.20",
-    "rgc-backend-kit>=0.1.0,<0.2.0",
+    "rgc-backend-kit>=0.1.1,<0.2.0",
 ]
 
 [build-system]

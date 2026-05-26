@@ -31,7 +31,7 @@ bench install-app myapp
 Python 依赖由 `pyproject.toml` 统一声明。当前 JWT 公共能力依赖已经发布到公共 PyPI，并通过以下依赖自动安装：
 
 ```toml
-"rgc-backend-kit>=0.1.0,<0.2.0",
+"rgc-backend-kit>=0.1.1,<0.2.0",
 ```
 
 因此正常执行 `pip install -e apps/myapp`、`bench get-app --resolve-deps`、本地 `docker compose` 启动或 staging 镜像构建时，都会自动安装 `rgc-backend-kit`。`PyJWT` 的具体版本由 Frappe 当前环境约束管理，`myapp` 不单独固定小版本，避免不同 Frappe 16 版本之间出现依赖冲突。不要再手动安装 `/tmp/rgc-backend-kit` 或依赖宿主机本地源码路径。
