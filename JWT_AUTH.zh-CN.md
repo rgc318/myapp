@@ -19,7 +19,7 @@
 rgc-backend-kit>=0.1.0,<0.2.0
 ```
 
-该依赖已经声明在 `apps/myapp/pyproject.toml`。同时为了兼容 Frappe 16 当前依赖约束，`myapp` 也显式声明了 `PyJWT~=2.10.1`。
+该依赖已经声明在 `apps/myapp/pyproject.toml`。`PyJWT` 的具体版本由 Frappe 当前环境约束管理，`myapp` 不单独固定小版本；`rgc-backend-kit` 只声明较宽的 PyJWT 兼容范围，因此可以跟随不同 Frappe 16 版本使用 `PyJWT 2.10.x` 或 `2.12.x`。
 
 本地 Docker Compose 启动时会执行 `pip install -e apps/myapp` 自动安装；staging 镜像构建时也会在镜像内执行同样的 app 安装步骤。因此正常开发、重启 compose、构建 staging 镜像都不需要再手动安装 `rgc-backend-kit`。
 
