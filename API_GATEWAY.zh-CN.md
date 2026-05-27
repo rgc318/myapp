@@ -135,10 +135,12 @@
 - 相同 `request_id` 且请求参数一致：返回第一次成功结果，不重复创建或提交业务单据。
 - 相同 `request_id` 但请求参数不同：返回 `409 IDEMPOTENCY_KEY_CONFLICT`，要求调用方更换 `request_id` 后重试。
 - 并发提交相同 `request_id` 且请求参数一致：只允许一个请求执行真实业务动作，其余请求等待并返回同一结果。
+- 业务校验失败会被记录为最终失败，后续同一 `request_id` 不会重复执行同一笔无效业务。
+- 系统异常会被记录为可重试失败；调用方可以使用相同 `request_id` 和相同请求参数再次重试，服务端会重新抢占执行权。
 
 因此 `request_id` 只能用于同一笔业务动作的网络重试或客户端重放，不能在不同业务动作、不同请求体之间复用。
 
-服务端会自动从当前 HTTP 请求参数生成请求指纹，调用方不需要额外传入 `request_hash`。指纹会忽略 Frape 路由字段 `cmd`，只比较业务请求内容。
+服务端会自动从当前 HTTP 请求参数生成请求指纹，调用方不需要额外传入 `request_hash`。指纹会忽略 Frappe 路由字段 `cmd`，只比较业务请求内容。
 
 幂等记录存储在 `tabMyApp Idempotency Key`，核心字段包括：
 
@@ -152,6 +154,8 @@
 - `expires_at`
 
 其中 `request_hash` / `request_json` 是本轮企业级优化新增字段，迁移为可空字段；历史幂等记录没有请求指纹时仍按兼容模式读取，不会破坏已有业务单据或旧幂等结果。
+
+幂等表由 `myapp.tasks.cleanup_idempotency_records` 每小时清理一次，只删除已经过期的最终状态记录，包括 `succeeded`、`failed`、`retryable_failed`。正在执行中的 `processing` 记录不会被定时任务删除，避免误清理仍在处理的请求。
 
 ### 报表与分析接口补充说明
 

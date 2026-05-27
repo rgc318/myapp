@@ -145,7 +145,8 @@ app_license = "mit"
 
 scheduler_events = {
 	"hourly": [
-		"myapp.tasks.cleanup_temporary_item_images"
+		"myapp.tasks.cleanup_temporary_item_images",
+		"myapp.tasks.cleanup_idempotency_records",
 	],
 }
 

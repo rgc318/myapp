@@ -1885,3 +1885,41 @@ HTTP 执行结果：
   - 空区间不误返回
   - 汇总计数与列表结果一致
   - 状态摘要与列表查询口径一致
+
+## 21. 幂等表清理与失败重试策略（2026-05-27）
+
+本轮继续完善幂等模块的生产化能力，目标是避免幂等表长期增长，并让失败状态更符合真实业务重试语义。
+
+新增能力：
+
+- `myapp.tasks.cleanup_idempotency_records`
+  - 接入 Frappe hourly scheduler
+  - 每次按批次清理过期幂等记录
+  - 只清理 `succeeded`、`failed`、`retryable_failed`
+  - 不清理 `processing`，避免误删仍在执行中的请求
+- 失败状态分类：
+  - 业务校验 / 权限 / 认证 / 资源不存在 / 重复数据等客户端或业务错误，记录为 `failed`
+  - 未归类的系统异常记录为 `retryable_failed`
+  - 同一 `namespace + request_id + request_hash` 遇到 `retryable_failed` 时允许重新抢占执行
+  - 同一 `request_id` 但不同请求参数仍返回 `409 IDEMPOTENCY_KEY_CONFLICT`
+- staging 部署后验收：
+  - `deploy/staging/check-staging.sh` 保留原有 Docker 服务与 HTTP ping 检查
+  - 设置 `RUN_STAGING_HTTP_REGRESSION=1` 后，会调用 `deploy/staging/run-critical-http-regression.sh`
+  - GitHub Actions `Deploy staging stack` 新增 `run_http_regression` 输入，可在部署后运行关键 JWT + 幂等 HTTP 回归
+  - 这不是在 GitHub runner 中临时启动一套新项目，而是部署完成后 SSH 到 staging 服务器，在当前最新运行的 `backend` 容器内执行真实 HTTP 测试
+  - 因此验收对象是 staging 镜像、staging 容器、staging 数据库和真实 HTTP 接口，而不是 mock 或单纯服务层导入测试
+
+新增单元测试覆盖：
+
+- `test_persistent_store_marks_validation_failure_as_final`
+- `test_persistent_store_marks_system_failure_as_retryable`
+- `test_persistent_store_retries_previous_retryable_failure`
+- `test_cleanup_expired_idempotency_records_deletes_final_expired_rows`
+
+建议验收顺序：
+
+1. 先跑幂等单测，确认失败分类和清理 SQL 逻辑。
+2. 再跑 JWT、幂等 replay、不同参数冲突、并发同 key 的关键 HTTP 回归。
+3. staging 部署时勾选 `run_http_regression`，并在仓库 secrets 中配置测试凭据。
+
+当前关键 HTTP 回归定位为“部署后冒烟 + 高风险链路验收”，不是全量接口测试。它适合 release 前确认 JWT 与幂等链路在真实 staging 环境可用；完整业务接口覆盖仍以本地 / devcontainer 全量 HTTP 回归为主。

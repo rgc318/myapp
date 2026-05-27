@@ -9,6 +9,7 @@ from frappe.utils.synchronization import filelock
 DEFAULT_TTL = 24 * 60 * 60
 LOCK_TIMEOUT_SECONDS = 60
 POLL_INTERVAL_SECONDS = 0.2
+CLEANUP_BATCH_SIZE = 1000
 TABLE_NAME = "tabMyApp Idempotency Key"
 DOCTYPE_NAME = "MyApp Idempotency Key"
 IGNORED_FINGERPRINT_KEYS = {"cmd"}
@@ -16,6 +17,16 @@ IGNORED_FINGERPRINT_KEYS = {"cmd"}
 
 class IdempotencyConflictError(Exception):
 	pass
+
+
+FINAL_FAILURE_EXCEPTIONS = (
+	frappe.ValidationError,
+	frappe.PermissionError,
+	frappe.AuthenticationError,
+	frappe.DoesNotExistError,
+	frappe.DuplicateEntryError,
+	IdempotencyConflictError,
+)
 
 
 def normalize_request_id(request_id) -> str | None:
@@ -113,6 +124,10 @@ def _expires_at(ttl_seconds: int):
 	return add_to_date(now_datetime(), seconds=ttl_seconds)
 
 
+def _is_retryable_exception(exc: Exception) -> bool:
+	return not isinstance(exc, FINAL_FAILURE_EXCEPTIONS)
+
+
 def _insert_processing_record(
 	namespace: str,
 	request_id: str,
@@ -174,19 +189,20 @@ def _mark_record_succeeded(namespace: str, request_id: str, result: dict, ttl_se
 	frappe.db.commit()
 
 
-def _mark_record_failed(namespace: str, request_id: str, exc: Exception, ttl_seconds: int):
+def _mark_record_failed(namespace: str, request_id: str, exc: Exception, ttl_seconds: int, retryable: bool = False):
 	frappe.db.rollback()
 	frappe.db.sql(
 		f"""
 		UPDATE `{TABLE_NAME}`
 		SET modified = %s,
-			status = 'failed',
+			status = %s,
 			error = %s,
 			expires_at = %s
 		WHERE namespace = %s AND request_id = %s
 		""",
 		(
 			now_datetime(),
+			"retryable_failed" if retryable else "failed",
 			str(exc),
 			_expires_at(ttl_seconds),
 			namespace,
@@ -194,6 +210,49 @@ def _mark_record_failed(namespace: str, request_id: str, exc: Exception, ttl_sec
 		),
 	)
 	frappe.db.commit()
+
+
+def _claim_retryable_record(
+	namespace: str,
+	request_id: str,
+	request_hash: str | None,
+	request_json: str | None,
+	ttl_seconds: int,
+) -> bool:
+	_refresh_transaction_snapshot()
+	row = _get_record(namespace, request_id)
+	_assert_request_hash_matches(row, request_hash)
+
+	if not row or row.status != "retryable_failed":
+		return False
+
+	now = now_datetime()
+	frappe.db.sql(
+		f"""
+		UPDATE `{TABLE_NAME}`
+		SET modified = %s,
+			status = 'processing',
+			request_hash = %s,
+			request_json = %s,
+			response_json = NULL,
+			error = NULL,
+			expires_at = %s
+		WHERE namespace = %s
+			AND request_id = %s
+			AND status = 'retryable_failed'
+		""",
+		(
+			now,
+			request_hash,
+			request_json,
+			_expires_at(ttl_seconds),
+			namespace,
+			request_id,
+		),
+	)
+	rows = frappe.db.sql("SELECT ROW_COUNT() AS row_count", as_dict=True)
+	frappe.db.commit()
+	return bool(rows and rows[0].row_count)
 
 
 def _get_record(namespace: str, request_id: str):
@@ -251,6 +310,9 @@ def _wait_for_record_result(namespace: str, request_id: str, request_hash: str |
 		if row and row.status == "failed":
 			frappe.throw(f"相同 request_id 的请求已失败：{row.error or '未知错误'}")
 
+		if row and row.status == "retryable_failed":
+			frappe.throw(f"相同 request_id 上次因系统异常失败，可使用相同参数重试：{row.error or '未知错误'}")
+
 		if row and row.status == "succeeded" and row.response_json:
 			result = frappe.parse_json(row.response_json)
 			return store_idempotent_result(namespace, request_id, result)
@@ -259,6 +321,18 @@ def _wait_for_record_result(namespace: str, request_id: str, request_hash: str |
 
 	_refresh_transaction_snapshot()
 	frappe.throw("相同 request_id 的请求正在处理中，请稍后重试。")
+
+
+def _execute_and_store_result(namespace: str, request_id: str, callback, ttl_seconds: int):
+	try:
+		result = callback()
+	except Exception as exc:
+		_mark_record_failed(namespace, request_id, exc, ttl_seconds, retryable=_is_retryable_exception(exc))
+		raise
+
+	store_idempotent_result(namespace, request_id, result, ttl_seconds=ttl_seconds)
+	_mark_record_succeeded(namespace, request_id, result, ttl_seconds)
+	return result
 
 
 def _run_persistent_idempotent(
@@ -270,17 +344,38 @@ def _run_persistent_idempotent(
 	ttl_seconds: int,
 ):
 	if _insert_processing_record(namespace, request_id, request_hash, request_json, ttl_seconds):
-		try:
-			result = callback()
-		except Exception as exc:
-			_mark_record_failed(namespace, request_id, exc, ttl_seconds)
-			raise
+		return _execute_and_store_result(namespace, request_id, callback, ttl_seconds)
 
-		store_idempotent_result(namespace, request_id, result, ttl_seconds=ttl_seconds)
-		_mark_record_succeeded(namespace, request_id, result, ttl_seconds)
-		return result
+	if _claim_retryable_record(namespace, request_id, request_hash, request_json, ttl_seconds):
+		return _execute_and_store_result(namespace, request_id, callback, ttl_seconds)
 
 	return _wait_for_record_result(namespace, request_id, request_hash)
+
+
+def cleanup_expired_idempotency_records(batch_size: int = CLEANUP_BATCH_SIZE) -> dict:
+	if not _table_exists():
+		return {"status": "success", "data": {"deleted_count": 0, "batch_size": batch_size}}
+
+	rows = frappe.db.sql(
+		f"""
+		SELECT name
+		FROM `{TABLE_NAME}`
+		WHERE expires_at IS NOT NULL
+			AND expires_at < %s
+			AND status IN ('succeeded', 'failed', 'retryable_failed')
+		ORDER BY expires_at ASC
+		LIMIT %s
+		""",
+		(now_datetime(), batch_size),
+		as_dict=True,
+	)
+	names = [row.name for row in rows]
+	if not names:
+		return {"status": "success", "data": {"deleted_count": 0, "batch_size": batch_size}}
+
+	placeholders = ", ".join(["%s"] * len(names))
+	frappe.db.sql(f"DELETE FROM `{TABLE_NAME}` WHERE name IN ({placeholders})", names)
+	return {"status": "success", "data": {"deleted_count": len(names), "batch_size": batch_size}}
 
 
 def _run_filelock_idempotent(namespace: str, request_id: str, callback, ttl_seconds: int):
