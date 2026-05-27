@@ -544,7 +544,7 @@ class GatewayHttpTestCase(TestCase):
 			second_payload["message"]["data"]["order"],
 		)
 
-	def test_create_order_same_request_id_with_different_data_returns_first_result(self):
+	def test_create_order_same_request_id_with_different_data_returns_conflict(self):
 		request_id = self._unique_request_id("http-diffdata")
 		first_payload = {
 			"customer": SALES_CUSTOMER,
@@ -577,12 +577,8 @@ class GatewayHttpTestCase(TestCase):
 		self._assert_success(first_status, first_response, code="ORDER_CREATED")
 
 		second_status, second_response = self._call_gateway("myapp.api.gateway.create_order", second_payload)
-		self._assert_success(second_status, second_response, code="ORDER_CREATED")
-
-		self.assertEqual(
-			first_response["message"]["data"]["order"],
-			second_response["message"]["data"]["order"],
-		)
+		self.assertEqual(second_status, 409)
+		self.assertEqual(second_response["message"]["code"], "IDEMPOTENCY_KEY_CONFLICT")
 
 	def test_create_order_new_request_id_with_different_data_creates_new_order(self):
 		first_status, first_response = self._call_gateway(
@@ -656,7 +652,7 @@ class GatewayHttpTestCase(TestCase):
 			second_payload["message"]["data"]["purchase_order"],
 		)
 
-	def test_create_purchase_order_same_request_id_with_different_data_returns_first_result(self):
+	def test_create_purchase_order_same_request_id_with_different_data_returns_conflict(self):
 		request_id = self._unique_request_id("http-purchase-diffdata")
 		first_payload = {
 			"supplier": PURCHASE_SUPPLIER,
@@ -693,12 +689,8 @@ class GatewayHttpTestCase(TestCase):
 			"myapp.api.gateway.create_purchase_order",
 			second_payload,
 		)
-		self._assert_success(second_status, second_response, code="PURCHASE_ORDER_CREATED")
-
-		self.assertEqual(
-			first_response["message"]["data"]["purchase_order"],
-			second_response["message"]["data"]["purchase_order"],
-		)
+		self.assertEqual(second_status, 409)
+		self.assertEqual(second_response["message"]["code"], "IDEMPOTENCY_KEY_CONFLICT")
 
 	def test_create_purchase_order_new_request_id_with_different_data_creates_new_order(self):
 		first_status, first_response = self._call_gateway(

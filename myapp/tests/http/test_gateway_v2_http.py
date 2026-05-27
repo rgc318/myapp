@@ -1326,7 +1326,7 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 			second_payload["message"]["data"]["stock_entry"],
 		)
 
-	def test_create_product_and_stock_same_request_id_with_different_data_returns_first_result(self):
+	def test_create_product_and_stock_same_request_id_with_different_data_returns_conflict(self):
 		request_id = self._unique_request_id("http-v2-product-diffdata")
 		first_payload = self._build_product_payload(
 			item_name=f"HTTP-V2-幂等A-{time.time_ns()}",
@@ -1348,15 +1348,8 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 			"myapp.api.gateway.create_product_and_stock",
 			second_payload,
 		)
-		self._assert_success(second_status, second_response, code="PRODUCT_CREATED")
-		self.assertEqual(
-			first_response["message"]["data"]["item_code"],
-			second_response["message"]["data"]["item_code"],
-		)
-		self.assertEqual(
-			first_response["message"]["data"]["stock_entry"],
-			second_response["message"]["data"]["stock_entry"],
-		)
+		self.assertEqual(second_status, 409)
+		self.assertEqual(second_response["message"]["code"], "IDEMPOTENCY_KEY_CONFLICT")
 
 	def test_create_product_and_stock_concurrent_same_request_id_returns_single_item(self):
 		request_id = self._unique_request_id("http-v2-product-concurrent")

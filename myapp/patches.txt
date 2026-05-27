@@ -14,3 +14,4 @@ myapp.patches.add_workbench_query_indexes
 myapp.patches.add_report_query_indexes
 myapp.patches.optimize_report_query_indexes_v2
 myapp.patches.create_idempotency_key_table
+myapp.patches.add_idempotency_request_fingerprint

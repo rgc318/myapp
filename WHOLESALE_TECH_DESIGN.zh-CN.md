@@ -771,7 +771,8 @@ Frappe Web Request 默认运行在单次请求事务中。
 当前状态：
 
 - 交易型接口已支持基于 `request_id` 的幂等控制
-- 相同业务动作重试时会直接返回第一次成功结果
+- 相同业务动作、相同请求参数重试时会直接返回第一次成功结果
+- 相同 `request_id` 但请求参数不同会返回 `409 IDEMPOTENCY_KEY_CONFLICT`
 
 风险场景：
 
@@ -787,9 +788,10 @@ Frappe Web Request 默认运行在单次请求事务中。
 建议方案：
 
 - 所有交易型接口支持 `request_id`
-- 在网关层或独立幂等表中记录 `request_id -> result_docname`
+- 在独立幂等表中记录 `namespace + request_id + request_hash -> response`
 - 对高频交易动作优先实现
 - 对重复请求直接返回已有结果而不是再次创建单据
+- 对复用同一 `request_id` 但请求体不同的场景直接拒绝，避免静默返回旧业务结果
 
 当前已实现：
 
@@ -804,6 +806,7 @@ Frappe Web Request 默认运行在单次请求事务中。
 - `request_id` 不是单据编号，也不是数据库主键
 - `request_id` 应由前端或上游系统生成，并在同一笔业务重试时保持不变
 - 不同业务动作不应复用同一个 `request_id`
+- 同一业务动作如果参数已经发生变化，应生成新的 `request_id`
 
 ## 12. 关键接口时序
 

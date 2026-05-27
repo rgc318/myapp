@@ -11,6 +11,11 @@ LOCK_TIMEOUT_SECONDS = 60
 POLL_INTERVAL_SECONDS = 0.2
 TABLE_NAME = "tabMyApp Idempotency Key"
 DOCTYPE_NAME = "MyApp Idempotency Key"
+IGNORED_FINGERPRINT_KEYS = {"cmd"}
+
+
+class IdempotencyConflictError(Exception):
+	pass
 
 
 def normalize_request_id(request_id) -> str | None:
@@ -29,6 +34,39 @@ def build_idempotency_lock_name(namespace: str, request_id: str) -> str:
 def build_idempotency_record_name(namespace: str, request_id: str) -> str:
 	digest = hashlib.sha256(f"{namespace}:{request_id}".encode()).hexdigest()
 	return f"idem-{digest}"
+
+
+def _normalize_fingerprint_value(value):
+	if isinstance(value, dict):
+		return {
+			key: _normalize_fingerprint_value(value[key])
+			for key in sorted(value)
+			if key not in IGNORED_FINGERPRINT_KEYS
+		}
+	if isinstance(value, (list, tuple)):
+		return [_normalize_fingerprint_value(item) for item in value]
+	return value
+
+
+def build_request_fingerprint(payload) -> tuple[str | None, str | None]:
+	if payload is None:
+		return None, None
+
+	normalized = _normalize_fingerprint_value(payload)
+	payload_json = frappe.as_json(normalized)
+	return hashlib.sha256(payload_json.encode()).hexdigest(), payload_json
+
+
+def _get_current_request_payload():
+	try:
+		form_dict = getattr(frappe.local, "form_dict", None)
+	except Exception:
+		return None
+
+	if not form_dict:
+		return None
+
+	return dict(form_dict)
 
 
 def get_idempotent_result(namespace: str, request_id) -> dict | None:
@@ -75,16 +113,22 @@ def _expires_at(ttl_seconds: int):
 	return add_to_date(now_datetime(), seconds=ttl_seconds)
 
 
-def _insert_processing_record(namespace: str, request_id: str, ttl_seconds: int) -> bool:
+def _insert_processing_record(
+	namespace: str,
+	request_id: str,
+	request_hash: str | None,
+	request_json: str | None,
+	ttl_seconds: int,
+) -> bool:
 	now = now_datetime()
 	try:
 		frappe.db.sql(
 			f"""
 			INSERT INTO `{TABLE_NAME}`
 				(name, creation, modified, modified_by, owner, docstatus, idx,
-				 namespace, request_id, status, expires_at)
+				 namespace, request_id, request_hash, request_json, status, expires_at)
 			VALUES
-				(%s, %s, %s, %s, %s, 0, 0, %s, %s, 'processing', %s)
+				(%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, 'processing', %s)
 			""",
 			(
 				build_idempotency_record_name(namespace, request_id),
@@ -94,6 +138,8 @@ def _insert_processing_record(namespace: str, request_id: str, ttl_seconds: int)
 				frappe.session.user if getattr(frappe, "session", None) else "Administrator",
 				namespace,
 				request_id,
+				request_hash,
+				request_json,
 				_expires_at(ttl_seconds),
 			),
 		)
@@ -153,7 +199,7 @@ def _mark_record_failed(namespace: str, request_id: str, exc: Exception, ttl_sec
 def _get_record(namespace: str, request_id: str):
 	rows = frappe.db.sql(
 		f"""
-		SELECT status, response_json, error
+		SELECT status, request_hash, response_json, error
 		FROM `{TABLE_NAME}`
 		WHERE namespace = %s AND request_id = %s
 		LIMIT 1
@@ -165,6 +211,14 @@ def _get_record(namespace: str, request_id: str):
 		return None
 
 	return rows[0]
+
+
+def _assert_request_hash_matches(row, request_hash: str | None):
+	if not request_hash or not row or not row.request_hash:
+		return
+
+	if row.request_hash != request_hash:
+		raise IdempotencyConflictError("相同 request_id 已被不同请求参数使用，请更换 request_id 后重试。")
 
 
 def _get_record_result(namespace: str, request_id: str) -> dict | None:
@@ -182,16 +236,18 @@ def _refresh_transaction_snapshot():
 	frappe.db.rollback()
 
 
-def _wait_for_record_result(namespace: str, request_id: str):
+def _wait_for_record_result(namespace: str, request_id: str, request_hash: str | None):
 	deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
 	while time.monotonic() < deadline:
-		if cached_result := get_idempotent_result(namespace, request_id):
-			return cached_result
-
 		# MariaDB's default repeatable-read transaction can keep seeing the old
 		# "processing" row unless the polling request starts a fresh read.
 		_refresh_transaction_snapshot()
 		row = _get_record(namespace, request_id)
+		_assert_request_hash_matches(row, request_hash)
+
+		if cached_result := get_idempotent_result(namespace, request_id):
+			return cached_result
+
 		if row and row.status == "failed":
 			frappe.throw(f"相同 request_id 的请求已失败：{row.error or '未知错误'}")
 
@@ -205,8 +261,15 @@ def _wait_for_record_result(namespace: str, request_id: str):
 	frappe.throw("相同 request_id 的请求正在处理中，请稍后重试。")
 
 
-def _run_persistent_idempotent(namespace: str, request_id: str, callback, ttl_seconds: int):
-	if _insert_processing_record(namespace, request_id, ttl_seconds):
+def _run_persistent_idempotent(
+	namespace: str,
+	request_id: str,
+	request_hash: str | None,
+	request_json: str | None,
+	callback,
+	ttl_seconds: int,
+):
+	if _insert_processing_record(namespace, request_id, request_hash, request_json, ttl_seconds):
 		try:
 			result = callback()
 		except Exception as exc:
@@ -217,7 +280,7 @@ def _run_persistent_idempotent(namespace: str, request_id: str, callback, ttl_se
 		_mark_record_succeeded(namespace, request_id, result, ttl_seconds)
 		return result
 
-	return _wait_for_record_result(namespace, request_id)
+	return _wait_for_record_result(namespace, request_id, request_hash)
 
 
 def _run_filelock_idempotent(namespace: str, request_id: str, callback, ttl_seconds: int):
@@ -230,16 +293,20 @@ def _run_filelock_idempotent(namespace: str, request_id: str, callback, ttl_seco
 		return store_idempotent_result(namespace, request_id, result, ttl_seconds=ttl_seconds)
 
 
-def run_idempotent(namespace: str, request_id, callback, ttl_seconds: int = DEFAULT_TTL):
+def run_idempotent(namespace: str, request_id, callback, ttl_seconds: int = DEFAULT_TTL, request_payload=None):
 	request_id = normalize_request_id(request_id)
-	if cached_result := get_idempotent_result(namespace, request_id):
-		return cached_result
+	request_hash, request_json = build_request_fingerprint(
+		_get_current_request_payload() if request_payload is None else request_payload
+	)
 
 	if not request_id:
 		result = callback()
 		return store_idempotent_result(namespace, request_id, result, ttl_seconds=ttl_seconds)
 
 	if _table_exists():
-		return _run_persistent_idempotent(namespace, request_id, callback, ttl_seconds)
+		return _run_persistent_idempotent(namespace, request_id, request_hash, request_json, callback, ttl_seconds)
+
+	if cached_result := get_idempotent_result(namespace, request_id):
+		return cached_result
 
 	return _run_filelock_idempotent(namespace, request_id, callback, ttl_seconds)

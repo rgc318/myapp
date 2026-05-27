@@ -3,7 +3,7 @@ from unittest import TestCase
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-from myapp.utils.idempotency import run_idempotent
+from myapp.utils.idempotency import IdempotencyConflictError, build_request_fingerprint, run_idempotent
 
 
 class TestIdempotency(TestCase):
@@ -73,7 +73,9 @@ class TestIdempotency(TestCase):
 
 		self.assertEqual(result["order"], "SO-0020")
 		mock_table_exists.assert_called_once()
-		mock_run_persistent.assert_called_once()
+		args = mock_run_persistent.call_args.args
+		self.assertEqual(args[0], "create_order")
+		self.assertEqual(args[1], "req-20")
 
 	@patch("myapp.utils.idempotency._refresh_transaction_snapshot")
 	@patch("myapp.utils.idempotency.store_idempotent_result")
@@ -81,6 +83,7 @@ class TestIdempotency(TestCase):
 		"myapp.utils.idempotency._get_record",
 		return_value=SimpleNamespace(
 			status="succeeded",
+			request_hash=None,
 			response_json='{"status": "success", "order": "SO-0030"}',
 			error=None,
 		),
@@ -93,11 +96,47 @@ class TestIdempotency(TestCase):
 
 		mock_store_idempotent_result.return_value = {"status": "success", "order": "SO-0030"}
 
-		result = _wait_for_record_result("create_order", "req-30")
+		result = _wait_for_record_result("create_order", "req-30", None)
 
 		self.assertEqual(result["order"], "SO-0030")
 		mock_store_idempotent_result.assert_called_once()
 		mock_refresh_snapshot.assert_called_once()
+
+	def test_build_request_fingerprint_is_stable_and_ignores_cmd(self):
+		first_hash, first_json = build_request_fingerprint(
+			{"cmd": "myapp.api.gateway.create_order", "items": [{"qty": 1}], "customer": "CUST-001"}
+		)
+		second_hash, second_json = build_request_fingerprint({"customer": "CUST-001", "items": [{"qty": 1}]})
+
+		self.assertEqual(first_hash, second_hash)
+		self.assertEqual(first_json, second_json)
+
+	def test_build_request_fingerprint_changes_when_payload_changes(self):
+		first_hash, _first_json = build_request_fingerprint({"customer": "CUST-001", "qty": 1})
+		second_hash, _second_json = build_request_fingerprint({"customer": "CUST-001", "qty": 2})
+
+		self.assertNotEqual(first_hash, second_hash)
+
+	def test_wait_for_record_result_rejects_same_request_id_with_different_payload(self):
+		from myapp.utils.idempotency import _wait_for_record_result
+
+		stored_hash, _stored_json = build_request_fingerprint({"qty": 1})
+		incoming_hash, _incoming_json = build_request_fingerprint({"qty": 2})
+
+		with (
+			patch("myapp.utils.idempotency._refresh_transaction_snapshot"),
+			patch(
+				"myapp.utils.idempotency._get_record",
+				return_value=SimpleNamespace(
+					status="succeeded",
+					request_hash=stored_hash,
+					response_json='{"status": "success"}',
+					error=None,
+				),
+			),
+		):
+			with self.assertRaises(IdempotencyConflictError):
+				_wait_for_record_result("create_order", "req-31", incoming_hash)
 
 	def test_concurrent_insert_conflict_is_recognized_for_idempotency_table(self):
 		from myapp.utils.idempotency import _is_concurrent_insert_conflict

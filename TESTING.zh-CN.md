@@ -508,7 +508,7 @@ docker exec frappe_docker-backend-1 bash -lc '
 - 商品基础信息更新
 - 多条件搜索与排序的基础验证
 - `create_product_and_stock` 顺序幂等 replay
-- 相同 `request_id` 但不同请求数据，返回第一次结果
+- 相同 `request_id` 但不同请求数据，返回 `409 IDEMPOTENCY_KEY_CONFLICT`
 - 相同 `request_id` 并发请求，仅创建一份商品和一张入库单
 - 负数初始入库数量校验
 - 重复条码校验
@@ -664,8 +664,35 @@ v2 轻链路内容：
 `create_product_and_stock` 当前已经支持 `request_id` 幂等，且已通过真实 HTTP 测试验证：
 
 - 相同 `request_id` 顺序重试不会重复创建商品
-- 相同 `request_id` 且请求体不同，仍返回第一次成功结果
+- 相同 `request_id` 且请求体不同，返回 `409 IDEMPOTENCY_KEY_CONFLICT`
 - 相同 `request_id` 并发请求不会重复创建商品或入库单
+
+本轮企业级幂等请求指纹优化后，额外完成多轮真实 HTTP 回归：
+
+- 销售订单：replay、不同 payload 冲突、新 request_id 新建、并发单次落库
+- 销售分步动作：发货、开票、收款、退货 replay
+- 采购订单：replay、不同 payload 冲突、新 request_id 新建、并发单次落库
+- 采购分步动作：收货、开票、按收货开票、供应商付款 replay
+- 商品建档：`create_product_and_stock` replay、不同 payload 冲突、并发单次落库
+- 采购快捷链路：快捷开单、收货、开票、付款 replay，供应商付款并发仅生成一笔付款
+
+最近一次目标集合验证结果：
+
+```text
+Ran 25 tests in 8.710s
+
+OK
+```
+
+同时复测了幂等 / JWT / token 相关单元测试：
+
+```text
+Ran 20 tests in 0.015s
+
+OK
+```
+
+测试前曾遇到 `SKU010 / Stores - RD` 可用库存不足，导致销售发货用例在业务校验阶段返回 `422`。通过项目库存 bootstrap 脚本恢复测试库存后，销售分步幂等用例全部通过；该问题属于本地测试数据状态，不是幂等逻辑问题。
 
 ### 6.3 权限结论
 

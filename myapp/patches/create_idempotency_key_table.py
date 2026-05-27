@@ -17,6 +17,8 @@ def execute():
 			`idx` int(8) NOT NULL DEFAULT 0,
 			`namespace` varchar(140) NOT NULL,
 			`request_id` varchar(140) NOT NULL,
+			`request_hash` varchar(64) DEFAULT NULL,
+			`request_json` longtext DEFAULT NULL,
 			`status` varchar(20) NOT NULL,
 			`response_json` longtext DEFAULT NULL,
 			`error` text DEFAULT NULL,

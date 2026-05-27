@@ -69,6 +69,14 @@ def map_exception_to_error(exc: Exception):
 	code = "INTERNAL_ERROR"
 	http_status = 500
 
+	try:
+		from myapp.utils.idempotency import IdempotencyConflictError
+
+		if isinstance(exc, IdempotencyConflictError):
+			return "IDEMPOTENCY_KEY_CONFLICT", 409
+	except Exception:
+		pass
+
 	if isinstance(exc, frappe.ValidationError):
 		code = "VALIDATION_ERROR"
 		http_status = 422

@@ -114,6 +114,7 @@
 - `AUTHENTICATION_REQUIRED`
 - `RESOURCE_NOT_FOUND`
 - `DUPLICATE_ENTRY`
+- `IDEMPOTENCY_KEY_CONFLICT`
 - `WORKFLOW_ACTION_INVALID`
 - `INSUFFICIENT_STOCK`
 - `INTERNAL_ERROR`
@@ -126,6 +127,31 @@
 - `409` 重复、工作流冲突、库存不足
 - `422` 参数或业务校验失败
 - `500` 系统内部错误
+
+### 幂等语义
+
+交易型接口通过 `request_id` 支持幂等重试。当前企业级语义为：
+
+- 相同 `request_id` 且请求参数一致：返回第一次成功结果，不重复创建或提交业务单据。
+- 相同 `request_id` 但请求参数不同：返回 `409 IDEMPOTENCY_KEY_CONFLICT`，要求调用方更换 `request_id` 后重试。
+- 并发提交相同 `request_id` 且请求参数一致：只允许一个请求执行真实业务动作，其余请求等待并返回同一结果。
+
+因此 `request_id` 只能用于同一笔业务动作的网络重试或客户端重放，不能在不同业务动作、不同请求体之间复用。
+
+服务端会自动从当前 HTTP 请求参数生成请求指纹，调用方不需要额外传入 `request_hash`。指纹会忽略 Frape 路由字段 `cmd`，只比较业务请求内容。
+
+幂等记录存储在 `tabMyApp Idempotency Key`，核心字段包括：
+
+- `namespace`
+- `request_id`
+- `request_hash`
+- `request_json`
+- `status`
+- `response_json`
+- `error`
+- `expires_at`
+
+其中 `request_hash` / `request_json` 是本轮企业级优化新增字段，迁移为可空字段；历史幂等记录没有请求指纹时仍按兼容模式读取，不会破坏已有业务单据或旧幂等结果。
 
 ### 报表与分析接口补充说明
 
