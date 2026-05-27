@@ -32,4 +32,7 @@ def validate():
 	if not _is_enabled_user(payload.subject):
 		raise frappe.AuthenticationError("JWT 用户不存在或已被禁用。")
 
+	form_dict = getattr(frappe.local, "form_dict", None)
 	frappe.set_user(payload.subject)
+	if form_dict is not None:
+		frappe.local.form_dict = form_dict

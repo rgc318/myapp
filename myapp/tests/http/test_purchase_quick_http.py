@@ -39,6 +39,7 @@ BASE_URL = os.environ.get("MYAPP_HTTP_BASE_URL", "http://localhost:8080").rstrip
 USERNAME = os.environ.get("MYAPP_HTTP_USERNAME", "").strip()
 PASSWORD = os.environ.get("MYAPP_HTTP_PASSWORD", "").strip()
 PRINT_RESPONSES = os.environ.get("MYAPP_HTTP_PRINT_RESPONSES", "1").strip() not in {"0", "false", "False"}
+HTTP_TIMEOUT = int(os.environ.get("MYAPP_HTTP_TIMEOUT", "60"))
 PURCHASE_SUPPLIER = os.environ.get("MYAPP_TEST_SUPPLIER", "MA Inc.").strip()
 PURCHASE_ITEM_CODE = os.environ.get("MYAPP_TEST_PURCHASE_ITEM_CODE", "SKU010").strip()
 PURCHASE_WAREHOUSE = os.environ.get("MYAPP_TEST_PURCHASE_WAREHOUSE", "Stores - RD").strip()
@@ -66,7 +67,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
 			method="POST",
 		)
-		with cls._opener.open(request, timeout=15) as response:
+		with cls._opener.open(request, timeout=HTTP_TIMEOUT) as response:
 			payload = json.loads(response.read().decode() or "{}")
 		if payload.get("message") != "Logged In":
 			raise AssertionError(f"Login failed against {BASE_URL}: {payload}")
@@ -80,7 +81,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			method="POST",
 		)
 		try:
-			with cls._opener.open(request, timeout=30) as response:
+			with cls._opener.open(request, timeout=HTTP_TIMEOUT) as response:
 				return response.getcode(), json.loads(response.read().decode() or "{}")
 		except urllib.error.HTTPError as exc:
 			body = exc.read().decode()
@@ -97,7 +98,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			headers={"Accept": "application/json"},
 			method="GET",
 		)
-		with cls._opener.open(request, timeout=15) as response:
+		with cls._opener.open(request, timeout=HTTP_TIMEOUT) as response:
 			return json.loads(response.read().decode() or "{}")["data"]
 
 	@classmethod

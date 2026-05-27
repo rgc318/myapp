@@ -61,6 +61,26 @@ auth_hooks = [
 
 Frappe 请求鉴权顺序仍保持原机制：OAuth / API Key 先处理，然后执行 `auth_hooks`。因此原有 Cookie / Session 与 `Authorization: token api_key:api_secret` 继续可用。
 
+### 本轮修复的问题
+
+本轮企业级验收前发现两个 JWT 集成边界问题：
+
+- Bearer Token 鉴权通过后会调用 `frappe.set_user(payload.subject)`。在 Frappe 请求生命周期中，该调用会重建部分本地上下文，导致 `frappe.local.form_dict` 中的 JSON 请求参数丢失。表现为使用 Bearer Token 调业务接口时，服务端已经识别用户，但业务方法收到的参数为空或缺少必填参数。
+- `refresh_v1` 遇到 refresh token 复用、已删除或无效时，底层 `rgc-backend-kit` 会抛出 `InvalidTokenError` / `RefreshTokenReuseError`。如果不在 `myapp` 集成层映射，该异常会被 HTTP 层表现为 `500`，不符合认证失败语义。
+
+已完成的修复：
+
+- `myapp.auth.jwt_auth.validate` 在调用 `frappe.set_user` 前保存 `frappe.local.form_dict`，调用后恢复，确保 Bearer Token 与 Session / API Key 一样不会破坏业务接口参数。
+- `myapp.auth.token_api.refresh_v1` 将底层无效 token 异常统一映射为 `frappe.AuthenticationError`，HTTP 层返回 `401`，避免把客户端 token 复用或过期问题暴露为服务端错误。
+
+修复后的安全语义：
+
+- 有效 Bearer Token：正常设置 `frappe.session.user`，业务接口可读取原始请求参数。
+- 无效、过期、已注销 Access Token：返回认证失败，不降级为 Guest。
+- refresh token 轮换后旧 token 再次使用：返回认证失败。
+- logout 删除 refresh token 后再次刷新：返回认证失败。
+- 普通 Session 登录不会隐式下发 JWT Cookie；JWT 只通过显式 Token API 签发。
+
 ## Token API
 
 ### 登录签发 Token
@@ -191,6 +211,13 @@ MYAPP_HTTP_BEARER_TOKEN=<access_token>
 python3 apps/myapp/myapp/tests/http/test_gateway_http.py
 ```
 
+JWT 生命周期回归测试：
+
+```bash
+MYAPP_HTTP_ENV_FILE=apps/myapp/.env.http-test \
+python3 -m unittest apps.myapp.myapp.tests.http.test_jwt_token_http
+```
+
 HTTP 测试鉴权优先级：
 
 1. `MYAPP_HTTP_BEARER_TOKEN`
@@ -199,7 +226,7 @@ HTTP 测试鉴权优先级：
 
 ## 当前验证结果
 
-已在 backend 容器中完成：
+已在 backend 容器和本地真实 HTTP 站点中完成：
 
 - `myapp.auth.jwt_auth` 和 `myapp.auth.token_api` 单元测试通过
 - 使用真实 `rgc-backend-kit` 包完成 access / refresh 签发
@@ -207,5 +234,34 @@ HTTP 测试鉴权优先级：
 - refresh token 解码通过
 - refresh token 轮换后旧 refresh token 被拒绝
 - access token 注销后再次解码被拒绝
+- Bearer Token 调 `myapp.api.gateway.search_product_v2` 时请求参数不丢失
+- `login_v1 -> me_v1 -> refresh_v1 -> logout_v1` 生命周期 HTTP 回归通过
+- 旧 refresh token 复用返回 `401 AuthenticationError`，不再返回 `500`
+- logout 后 access token 被拒绝
+- logout 删除 refresh token 后再次刷新被拒绝
+- 无效 Bearer Token 被拒绝
+- 普通 Frappe Session 登录不会生成 JWT Cookie
+
+本轮执行过的关键验证命令：
+
+```bash
+docker exec frappe_docker-backend-1 bash -lc '
+  cd /home/frappe/frappe-bench &&
+  ./env/bin/python -m unittest \
+    myapp.tests.unit.test_token_api \
+    myapp.tests.unit.test_jwt_auth \
+    myapp.tests.unit.test_idempotency
+'
+
+MYAPP_HTTP_ENV_FILE=apps/myapp/.env.http-test \
+MYAPP_HTTP_TIMEOUT=60 \
+python3 -m unittest apps.myapp.myapp.tests.http.test_jwt_token_http
+```
+
+最近一次验证结果：
+
+- JWT / token / idempotency 相关单元测试：`Ran 17 tests ... OK`
+- JWT 生命周期 HTTP 测试：`Ran 3 tests ... OK`
+- JWT 生命周期 HTTP 测试 + 3 个核心并发幂等场景综合回归：`Ran 6 tests ... OK`
 
 已使用 `apps/myapp/.env.http-test` 中配置的测试账号完成真实站点上下文验证。为避免泄露凭据，文档不记录明文密码。

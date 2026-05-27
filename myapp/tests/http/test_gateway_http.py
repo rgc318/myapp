@@ -48,6 +48,7 @@ RESULTS_FILE = pathlib.Path(
 	os.environ.get("MYAPP_HTTP_RESULTS_FILE", str(DEFAULT_ENV_FILE.with_name("http-test-results.json")))
 ).expanduser()
 CHAIN_TEST_ENABLED = os.environ.get("MYAPP_HTTP_ENABLE_CHAIN_TESTS", "0").strip() in {"1", "true", "True"}
+HTTP_TIMEOUT = int(os.environ.get("MYAPP_HTTP_TIMEOUT", "60"))
 SALES_CUSTOMER = os.environ.get("MYAPP_TEST_CUSTOMER", "Palmer Productions Ltd.").strip()
 SALES_ITEM_CODE = os.environ.get("MYAPP_TEST_ITEM_CODE", "SKU010").strip()
 SALES_WAREHOUSE = os.environ.get("MYAPP_TEST_WAREHOUSE", "Stores - RD").strip()
@@ -107,7 +108,7 @@ class GatewayHttpTestCase(TestCase):
 			headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
 			method="POST",
 		)
-		with cls._opener.open(request, timeout=15) as response:
+		with cls._opener.open(request, timeout=HTTP_TIMEOUT) as response:
 			payload = json.loads(response.read().decode() or "{}")
 		if payload.get("message") != "Logged In":
 			raise AssertionError(f"Login failed against {BASE_URL}: {payload}")
@@ -122,7 +123,7 @@ class GatewayHttpTestCase(TestCase):
 			method="POST",
 		)
 		try:
-			with cls._opener.open(request, timeout=15) as response:
+			with cls._opener.open(request, timeout=HTTP_TIMEOUT) as response:
 				return response.getcode(), json.loads(response.read().decode() or "{}")
 		except urllib.error.HTTPError as exc:
 			body = exc.read().decode()
@@ -139,7 +140,7 @@ class GatewayHttpTestCase(TestCase):
 			headers=cls._headers(),
 			method="GET",
 		)
-		with cls._opener.open(request, timeout=15) as response:
+		with cls._opener.open(request, timeout=HTTP_TIMEOUT) as response:
 			payload = json.loads(response.read().decode() or "{}")
 		return payload["data"]
 

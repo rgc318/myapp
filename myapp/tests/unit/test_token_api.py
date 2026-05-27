@@ -2,6 +2,7 @@ from unittest import TestCase
 from unittest.mock import Mock, patch
 
 import frappe
+from rgc_backend_kit.security import InvalidTokenError
 
 from myapp.auth import token_api
 
@@ -70,3 +71,10 @@ class TestTokenApi(TestCase):
 	def test_login_v1_requires_credentials(self):
 		with self.assertRaises(frappe.AuthenticationError):
 			token_api.login_v1(username="", password="")
+
+	@patch("myapp.auth.token_api.rotate_refresh_token")
+	def test_refresh_v1_maps_invalid_refresh_token_to_authentication_error(self, mock_rotate_refresh_token):
+		mock_rotate_refresh_token.side_effect = InvalidTokenError("invalid refresh token")
+
+		with self.assertRaises(frappe.AuthenticationError):
+			token_api.refresh_v1("invalid-refresh-token")

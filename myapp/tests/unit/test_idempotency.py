@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -59,3 +60,48 @@ class TestIdempotency(TestCase):
 
 		self.assertEqual(result["order"], "SO-0011")
 		mock_filelock.assert_not_called()
+
+	@patch("myapp.utils.idempotency._run_persistent_idempotent")
+	@patch("myapp.utils.idempotency._table_exists", return_value=True)
+	@patch("myapp.utils.idempotency.get_idempotent_result", return_value=None)
+	def test_run_idempotent_uses_persistent_store_when_table_exists(
+		self, mock_get_idempotent_result, mock_table_exists, mock_run_persistent
+	):
+		mock_run_persistent.return_value = {"status": "success", "order": "SO-0020"}
+
+		result = run_idempotent("create_order", "req-20", lambda: {"status": "success", "order": "SO-0021"})
+
+		self.assertEqual(result["order"], "SO-0020")
+		mock_table_exists.assert_called_once()
+		mock_run_persistent.assert_called_once()
+
+	@patch("myapp.utils.idempotency._refresh_transaction_snapshot")
+	@patch("myapp.utils.idempotency.store_idempotent_result")
+	@patch(
+		"myapp.utils.idempotency._get_record",
+		return_value=SimpleNamespace(
+			status="succeeded",
+			response_json='{"status": "success", "order": "SO-0030"}',
+			error=None,
+		),
+	)
+	@patch("myapp.utils.idempotency.get_idempotent_result", return_value=None)
+	def test_wait_for_record_result_returns_persisted_response(
+		self, mock_get_idempotent_result, mock_get_record, mock_store_idempotent_result, mock_refresh_snapshot
+	):
+		from myapp.utils.idempotency import _wait_for_record_result
+
+		mock_store_idempotent_result.return_value = {"status": "success", "order": "SO-0030"}
+
+		result = _wait_for_record_result("create_order", "req-30")
+
+		self.assertEqual(result["order"], "SO-0030")
+		mock_store_idempotent_result.assert_called_once()
+		mock_refresh_snapshot.assert_called_once()
+
+	def test_concurrent_insert_conflict_is_recognized_for_idempotency_table(self):
+		from myapp.utils.idempotency import _is_concurrent_insert_conflict
+
+		exc = Exception(1020, "Record has changed since last read in table 'tabMyApp Idempotency Key'")
+
+		self.assertTrue(_is_concurrent_insert_conflict(exc))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import frappe
 from frappe.utils import cint
+from rgc_backend_kit.security import InvalidTokenError
 
 from myapp.auth.jwt_service import delete_refresh_token, issue_token_pair, rotate_refresh_token, revoke_access_token
 from myapp.utils.api_response import success_response
@@ -74,7 +75,11 @@ def refresh_v1(refresh_token: str):
 	if not (refresh_token or "").strip():
 		raise frappe.AuthenticationError("请提供 refresh token。")
 
-	pair = rotate_refresh_token(refresh_token.strip())
+	try:
+		pair = rotate_refresh_token(refresh_token.strip())
+	except InvalidTokenError:
+		raise frappe.AuthenticationError("Refresh token 无效、已过期或已被使用。")
+
 	return success_response(
 		message="JWT 令牌已刷新。",
 		code="JWT_TOKEN_REFRESHED",

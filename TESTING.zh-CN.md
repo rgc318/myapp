@@ -1,6 +1,6 @@
 # 测试说明
 
-更新时间：2026-04-05
+更新时间：2026-05-27
 
 ## 1. 测试原则
 
@@ -33,6 +33,8 @@
   覆盖商品工作台与销售状态聚合相关 v2 能力
 - [test_purchase_quick_http.py](/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/tests/http/test_purchase_quick_http.py)
   覆盖采购快捷开单 / 快捷回退的真实 HTTP 回归
+- [test_jwt_token_http.py](/home/rgc318/python-project/frappe_docker/apps/myapp/myapp/tests/http/test_jwt_token_http.py)
+  覆盖 JWT 登录签发、Bearer 鉴权、刷新轮换、注销撤销、无效 token 拒绝和普通 Session 不下发 JWT Cookie
 
 结果文件：
 
@@ -116,6 +118,13 @@ python3 -m unittest apps.myapp.myapp.tests.http.test_gateway_v2_http
 
 ```bash
 python3 -m unittest apps.myapp.myapp.tests.http.test_purchase_quick_http
+```
+
+跑 JWT Token 生命周期回归：
+
+```bash
+MYAPP_HTTP_ENV_FILE=apps/myapp/.env.http-test \
+python3 -m unittest apps.myapp.myapp.tests.http.test_jwt_token_http
 ```
 
 跑性能基线脚本：

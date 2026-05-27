@@ -88,6 +88,7 @@ pre-commit install
 - 不要改成 `127.0.0.1`，保持与当前 devcontainer 约定一致
 - 建议优先使用 API Token，而不是长期使用管理员密码
 - 若前端或移动端需要无 Cookie 认证，可使用 `myapp.auth.token_api.login_v1` 签发 JWT，并在 HTTP 测试中配置 `MYAPP_HTTP_BEARER_TOKEN`
+- JWT 已补充独立生命周期 HTTP 回归：`python3 -m unittest apps.myapp.myapp.tests.http.test_jwt_token_http`
 - 当前 HTTP 测试已覆盖所有 `myapp.api.gateway.*` 接口的基础可达性 / 鉴权后响应结构
 - 当前已补充销售主链路与采购主链路的真实成功测试
 - 当前已补充销售侧与采购侧的顺序幂等、不同数据、并发幂等测试

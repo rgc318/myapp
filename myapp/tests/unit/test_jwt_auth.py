@@ -39,12 +39,15 @@ class TestJwtAuthHook(TestCase):
 	):
 		mock_get_request_header.return_value = "Bearer access-token"
 		mock_decode_access_token.return_value = Mock(subject="user@example.com")
+		original_form_dict = Mock()
+		frappe.local.form_dict = original_form_dict
 
 		jwt_auth.validate()
 
 		mock_decode_access_token.assert_called_once_with("access-token")
 		mock_is_enabled_user.assert_called_once_with("user@example.com")
 		mock_set_user.assert_called_once_with("user@example.com")
+		self.assertIs(frappe.local.form_dict, original_form_dict)
 
 	@patch.object(frappe, "get_request_header")
 	@patch.object(frappe, "set_user")
