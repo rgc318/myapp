@@ -1942,3 +1942,16 @@ HTTP 执行结果：
 
 - 单测确认 `run_idempotent` 会优先使用 `Idempotency-Key`
 - HTTP 测试确认 `create_order` 不传 body `request_id`，只传 `Idempotency-Key` 时可以正常 replay
+
+本轮验证结果：
+
+- 幂等单测：`Ran 14 tests ... OK`
+- JWT / token / 幂等组合单测：`Ran 25 tests ... OK`
+- Header 幂等 HTTP 专项：`Ran 1 test ... OK`
+- 关键 HTTP 回归：`Ran 15 tests ... OK`
+
+当前判断：
+
+- Header 幂等 key 不影响 body `request_id` 旧路径。
+- 新客户端可以使用 `Idempotency-Key`，旧前端无需迁移。
+- 当前幂等模块已经覆盖交易接口企业级核心场景，后续优化重点是协议字段忽略列表、监控指标和按业务 namespace 配置 TTL。

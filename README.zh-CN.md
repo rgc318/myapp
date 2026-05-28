@@ -92,6 +92,7 @@ pre-commit install
 - 当前 HTTP 测试已覆盖所有 `myapp.api.gateway.*` 接口的基础可达性 / 鉴权后响应结构
 - 当前已补充销售主链路与采购主链路的真实成功测试
 - 当前已补充销售侧与采购侧的顺序幂等、不同数据、并发幂等测试
+- 当前交易型接口已支持 Header `Idempotency-Key` / `X-Idempotency-Key` 和 body `request_id` 两种幂等 key 传入方式；新客户端推荐使用 `Idempotency-Key`
 - 当前已补充 v2 商品与销售状态聚合接口的真实 HTTP 测试
 - 大多数基础用例只验证成功结构或校验错误结构，不依赖固定业务单据，适合日常冒烟检查
 - 测试会默认打印接口返回值，并把结果保存到 `apps/myapp/http-test-results.json`

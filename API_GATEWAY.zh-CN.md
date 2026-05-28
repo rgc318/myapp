@@ -147,6 +147,16 @@
 
 服务端会自动从当前 HTTP 请求参数生成请求指纹，调用方不需要额外传入 `request_hash`。指纹会忽略 Frappe 路由字段 `cmd`，只比较业务请求内容。
 
+前端 / 调用方推荐约定：
+
+- 新业务提交生成新的幂等 key。
+- 网络超时、重复点击、客户端自动重试时复用同一个幂等 key 和同一份请求内容。
+- 用户修改表单内容后再次提交，应生成新的幂等 key。
+- 新客户端优先使用 Header `Idempotency-Key`；旧客户端可以继续使用 body `request_id`。
+- 不建议在交易接口 payload 中加入每次重试都会变化的协议字段，例如 `timestamp`、`nonce`、`signature`、`trace_id`。如果未来网关或客户端 SDK 统一加入这类字段，应在服务端请求指纹忽略列表中明确登记。
+
+当前会参与请求指纹的业务字段包括客户、供应商、商品、数量、金额、仓库、明细行以及业务日期等。`posting_date`、`posting_time`、`transaction_date`、`delivery_date`、`schedule_date` 这类字段会影响真实单据结果，必须参与幂等校验，不应被忽略。
+
 幂等记录存储在 `tabMyApp Idempotency Key`，核心字段包括：
 
 - `namespace`
@@ -161,6 +171,8 @@
 其中 `request_hash` / `request_json` 是本轮企业级优化新增字段，迁移为可空字段；历史幂等记录没有请求指纹时仍按兼容模式读取，不会破坏已有业务单据或旧幂等结果。
 
 幂等表由 `myapp.tasks.cleanup_idempotency_records` 每小时清理一次，只删除已经过期的最终状态记录，包括 `succeeded`、`failed`、`retryable_failed`。正在执行中的 `processing` 记录不会被定时任务删除，避免误清理仍在处理的请求。
+
+当前幂等模块已经具备企业级交易接口所需的核心语义：统一入口、Header/body 双兼容、持久化记录、请求指纹、并发保护、成功结果复放、失败分类、系统异常可重试和过期清理。后续如果接入开放 API 网关或更复杂移动端 SDK，可继续增强协议字段忽略列表、幂等指标监控和按业务 namespace 配置 TTL。
 
 ### 报表与分析接口补充说明
 
