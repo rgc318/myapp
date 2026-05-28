@@ -66,8 +66,9 @@ class TestIdempotency(TestCase):
 	@patch("myapp.utils.idempotency._run_persistent_idempotent")
 	@patch("myapp.utils.idempotency._table_exists", return_value=True)
 	@patch("myapp.utils.idempotency.get_idempotent_result", return_value=None)
+	@patch("myapp.utils.idempotency._get_request_header", return_value=None)
 	def test_run_idempotent_uses_persistent_store_when_table_exists(
-		self, mock_get_idempotent_result, mock_table_exists, mock_run_persistent
+		self, mock_get_request_header, mock_get_idempotent_result, mock_table_exists, mock_run_persistent
 	):
 		mock_run_persistent.return_value = {"status": "success", "order": "SO-0020"}
 
@@ -78,6 +79,22 @@ class TestIdempotency(TestCase):
 		args = mock_run_persistent.call_args.args
 		self.assertEqual(args[0], "create_order")
 		self.assertEqual(args[1], "req-20")
+
+	@patch("myapp.utils.idempotency._run_persistent_idempotent")
+	@patch("myapp.utils.idempotency._table_exists", return_value=True)
+	@patch("myapp.utils.idempotency.get_idempotent_result", return_value=None)
+	@patch("myapp.utils.idempotency._get_request_header")
+	def test_run_idempotent_prefers_idempotency_key_header(
+		self, mock_get_request_header, mock_get_idempotent_result, mock_table_exists, mock_run_persistent
+	):
+		mock_get_request_header.side_effect = lambda header_name: "header-req-1" if header_name == "Idempotency-Key" else None
+		mock_run_persistent.return_value = {"status": "success", "order": "SO-0022"}
+
+		result = run_idempotent("create_order", "body-req-1", lambda: {"status": "success", "order": "SO-0023"})
+
+		self.assertEqual(result["order"], "SO-0022")
+		args = mock_run_persistent.call_args.args
+		self.assertEqual(args[1], "header-req-1")
 
 	@patch("myapp.utils.idempotency._refresh_transaction_snapshot")
 	@patch("myapp.utils.idempotency.store_idempotent_result")

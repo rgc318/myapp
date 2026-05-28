@@ -1923,3 +1923,22 @@ HTTP 执行结果：
 3. staging 部署时勾选 `run_http_regression`，并在仓库 secrets 中配置测试凭据。
 
 当前关键 HTTP 回归定位为“部署后冒烟 + 高风险链路验收”，不是全量接口测试。它适合 release 前确认 JWT 与幂等链路在真实 staging 环境可用；完整业务接口覆盖仍以本地 / devcontainer 全量 HTTP 回归为主。
+
+## 22. Header 幂等 key 支持（2026-05-28）
+
+本轮在兼容既有 `request_id` 的基础上，新增企业 API 更常见的 Header 传参方式：
+
+- `Idempotency-Key: <uuid>`
+- `X-Idempotency-Key: <uuid>`
+
+兼容策略：
+
+- Header 优先于 body `request_id`
+- 未传 Header 时继续使用 body `request_id`
+- 旧前端和现有 HTTP 测试不需要修改
+- 新客户端可以把幂等 key 放在 Header 中，让业务 payload 保持干净
+
+新增验证：
+
+- 单测确认 `run_idempotent` 会优先使用 `Idempotency-Key`
+- HTTP 测试确认 `create_order` 不传 body `request_id`，只传 `Idempotency-Key` 时可以正常 replay

@@ -12,6 +12,7 @@ POLL_INTERVAL_SECONDS = 0.2
 CLEANUP_BATCH_SIZE = 1000
 TABLE_NAME = "tabMyApp Idempotency Key"
 DOCTYPE_NAME = "MyApp Idempotency Key"
+IDEMPOTENCY_KEY_HEADERS = ("Idempotency-Key", "X-Idempotency-Key")
 IGNORED_FINGERPRINT_KEYS = {"cmd"}
 
 
@@ -32,6 +33,20 @@ FINAL_FAILURE_EXCEPTIONS = (
 def normalize_request_id(request_id) -> str | None:
 	request_id = (request_id or "").strip()
 	return request_id or None
+
+
+def _get_request_header(header_name: str) -> str | None:
+	try:
+		return frappe.get_request_header(header_name, "") or None
+	except Exception:
+		return None
+
+
+def _get_current_request_id(request_id) -> str | None:
+	for header_name in IDEMPOTENCY_KEY_HEADERS:
+		if header_value := normalize_request_id(_get_request_header(header_name)):
+			return header_value
+	return normalize_request_id(request_id)
 
 
 def build_idempotency_key(namespace: str, request_id: str) -> str:
@@ -389,7 +404,7 @@ def _run_filelock_idempotent(namespace: str, request_id: str, callback, ttl_seco
 
 
 def run_idempotent(namespace: str, request_id, callback, ttl_seconds: int = DEFAULT_TTL, request_payload=None):
-	request_id = normalize_request_id(request_id)
+	request_id = _get_current_request_id(request_id)
 	request_hash, request_json = build_request_fingerprint(
 		_get_current_request_payload() if request_payload is None else request_payload
 	)

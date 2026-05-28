@@ -114,12 +114,12 @@ class GatewayHttpTestCase(TestCase):
 			raise AssertionError(f"Login failed against {BASE_URL}: {payload}")
 
 	@classmethod
-	def _post_method(cls, method_path: str, payload: dict | None = None):
+	def _post_method(cls, method_path: str, payload: dict | None = None, headers: dict | None = None):
 		payload = payload or {}
 		request = urllib.request.Request(
 			f"{BASE_URL}/api/method/{method_path}",
 			data=json.dumps(payload).encode(),
-			headers={**cls._headers(), "Content-Type": "application/json"},
+			headers={**cls._headers(), **(headers or {}), "Content-Type": "application/json"},
 			method="POST",
 		)
 		try:
@@ -195,9 +195,9 @@ class GatewayHttpTestCase(TestCase):
 			raise KeyError(f"Path '{path}' not found in saved result '{test_name}'.")
 		return current
 
-	def _call_gateway(self, method_path: str, payload: dict | None = None):
+	def _call_gateway(self, method_path: str, payload: dict | None = None, headers: dict | None = None):
 		request_payload = payload or {}
-		status_code, response_payload = self._post_method(method_path, request_payload)
+		status_code, response_payload = self._post_method(method_path, request_payload, headers=headers)
 		self._record_response(
 			test_name=self._testMethodName,
 			method_path=method_path,
@@ -538,6 +538,31 @@ class GatewayHttpTestCase(TestCase):
 		request_id = self._unique_request_id("http-chain-order")
 		first_request, first_payload = self._create_sales_order(request_id=request_id)
 		second_status, second_payload = self._call_gateway("myapp.api.gateway.create_order", first_request)
+		self._assert_success(second_status, second_payload, code="ORDER_CREATED")
+		self.assertEqual(
+			first_payload["message"]["data"]["order"],
+			second_payload["message"]["data"]["order"],
+		)
+
+	def test_create_order_idempotent_replay_with_header_key(self):
+		request_id = self._unique_request_id("http-header-idem")
+		payload = {
+			"customer": SALES_CUSTOMER,
+			"items": [
+				{
+					"item_code": SALES_ITEM_CODE,
+					"qty": SALES_QTY,
+					"warehouse": SALES_WAREHOUSE,
+				}
+			],
+			"company": SALES_COMPANY,
+			"immediate": 0,
+		}
+		headers = {"Idempotency-Key": request_id}
+
+		first_status, first_payload = self._call_gateway("myapp.api.gateway.create_order", payload, headers=headers)
+		self._assert_success(first_status, first_payload, code="ORDER_CREATED")
+		second_status, second_payload = self._call_gateway("myapp.api.gateway.create_order", payload, headers=headers)
 		self._assert_success(second_status, second_payload, code="ORDER_CREATED")
 		self.assertEqual(
 			first_payload["message"]["data"]["order"],
