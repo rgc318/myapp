@@ -9,7 +9,6 @@ readme = "README.md"
 dynamic = ["version"]
 dependencies = [
     # "frappe~=16.0.0" # Installed and managed by bench.
-    "debugpy>=1.8.20",
     "rgc-backend-kit>=0.1.1,<0.2.0",
 ]
 
@@ -20,6 +19,7 @@ build-backend = "flit_core.buildapi"
 # These dependencies are only installed when developer mode is enabled
 [tool.bench.dev-dependencies]
 # package_name = "~=1.1.0"
+debugpy = ">=1.8.20"
 
 [tool.ruff]
 line-length = 110
