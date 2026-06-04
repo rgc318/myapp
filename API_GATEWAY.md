@@ -150,7 +150,129 @@ Current cashflow semantics:
 - `payment_type = 'Pay'` counts as outbound cashflow
 - other payment types are currently classified as `transfer`
 
+- `list_stock_ledger_entries_v1`
+  - returns paginated stock ledger rows
+  - based on `Stock Ledger Entry`
+  - supports filters:
+    - `company`
+    - `date_from`
+    - `date_to`
+    - `item_code`
+    - `warehouse`
+    - `voucher_type`
+    - `voucher_no`
+  - supports:
+    - `page`
+    - `page_size`
+  - returns row fields:
+    - `name`
+    - `posting_date`
+    - `posting_time`
+    - `company`
+    - `item_code`
+    - `item_name`
+    - `warehouse`
+    - `actual_qty`
+    - `qty_after_transaction`
+    - `incoming_rate`
+    - `stock_value_difference`
+    - `voucher_type`
+    - `voucher_no`
+  - returns pagination info:
+    - `page`
+    - `page_size`
+    - `total_count`
+    - `has_more`
+
+Current stock ledger semantics:
+
+- date field: `posting_date`
+- defaults to the latest 30 days
+- maximum date range is 366 days
+- maximum `page_size` is 100
+- rows are ordered by `posting_date desc, posting_time desc, creation desc`
+
 See `REPORTS_TECH_DESIGN.zh-CN.md` for the current productionization plan and module boundaries.
+
+### list_stock_ledger_entries_v1
+
+Method:
+
+- `myapp.api.gateway.list_stock_ledger_entries_v1`
+
+Purpose:
+
+- Provides `Stock Ledger Entry` details for the Web inventory ledger page.
+- Tracks stock movement by item, warehouse, date range, and source voucher.
+- This is a read-only query API. It does not create, update, or submit stock documents.
+
+Arguments:
+
+- `company: str | None = None`
+- `date_from: str | None = None`
+- `date_to: str | None = None`
+- `item_code: str | None = None`
+- `warehouse: str | None = None`
+- `voucher_type: str | None = None`
+- `voucher_no: str | None = None`
+- `page: int = 1`
+- `page_size: int = 20`
+
+Pagination and range:
+
+- Default date range: latest 30 days.
+- Maximum date range: 366 days.
+- Maximum `page_size`: 100.
+- Ordering: `posting_date desc, posting_time desc, creation desc`.
+
+Response fields:
+
+- `rows`
+  - `name`
+  - `posting_date`
+  - `posting_time`
+  - `company`
+  - `item_code`
+  - `item_name`
+  - `warehouse`
+  - `actual_qty`
+  - `qty_after_transaction`
+  - `incoming_rate`
+  - `stock_value_difference`
+  - `voucher_type`
+  - `voucher_no`
+- `pagination`
+  - `page`
+  - `page_size`
+  - `total_count`
+  - `has_more`
+- `meta`
+  - `company`
+  - `date_from`
+  - `date_to`
+  - `item_code`
+  - `warehouse`
+  - `voucher_type`
+  - `voucher_no`
+
+Example:
+
+```javascript
+frappe.call({
+  method: "myapp.api.gateway.list_stock_ledger_entries_v1",
+  args: {
+    company: "rgc (Demo)",
+    item_code: "ITEM-001",
+    warehouse: "Stores - R",
+    date_from: "2026-06-01",
+    date_to: "2026-06-30",
+    page: 1,
+    page_size: 20,
+  },
+}).then((r) => {
+  console.log(r.message.data.rows);
+});
+```
 
 ### Client Call Examples
 

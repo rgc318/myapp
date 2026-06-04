@@ -73,6 +73,7 @@ from .reports_api import get_purchase_report_v1 as get_purchase_report_v1_servic
 from .reports_api import get_receivable_payable_report_v1 as get_receivable_payable_report_v1_service
 from .reports_api import get_sales_report_v1 as get_sales_report_v1_service
 from .reports_api import list_cashflow_entries_v1 as list_cashflow_entries_v1_service
+from .inventory_api import list_stock_ledger_entries_v1 as list_stock_ledger_entries_v1_service
 from .returns_api import get_return_source_context_v2 as get_return_source_context_v2_service
 from .settlement_api import confirm_pending_document as confirm_pending_document_service
 from .settlement_api import cancel_payment_entry as cancel_payment_entry_service
@@ -359,6 +360,34 @@ def list_cashflow_entries_v1(
 			page_size=page_size,
 		),
 		success_code="CASHFLOW_ENTRIES_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def list_stock_ledger_entries_v1(
+	company: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	item_code: str | None = None,
+	warehouse: str | None = None,
+	voucher_type: str | None = None,
+	voucher_no: str | None = None,
+	page: int = 1,
+	page_size: int = 20,
+):
+	return _handle_gateway_call(
+		lambda: list_stock_ledger_entries_v1_service(
+			company=company,
+			date_from=date_from,
+			date_to=date_to,
+			item_code=item_code,
+			warehouse=warehouse,
+			voucher_type=voucher_type,
+			voucher_no=voucher_no,
+			page=page,
+			page_size=page_size,
+		),
+		success_code="STOCK_LEDGER_ENTRIES_FETCHED",
 	)
 
 

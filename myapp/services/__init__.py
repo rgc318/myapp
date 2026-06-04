@@ -47,6 +47,7 @@ from .report_service import (
 	get_sales_report_v1,
 	list_cashflow_entries_v1,
 )
+from .inventory_service import list_stock_ledger_entries_v1
 from .return_service import get_return_source_context_v2
 from .settlement_service import cancel_payment_entry, confirm_pending_document, process_sales_return, update_payment_status
 from .uom_service import create_uom_v2, delete_uom_v2, disable_uom_v2, get_uom_detail_v2, list_uoms_v2, update_uom_v2
@@ -94,6 +95,7 @@ __all__ = [
 	"get_uom_detail_v2",
 	"list_customers_v2",
 	"list_cashflow_entries_v1",
+	"list_stock_ledger_entries_v1",
 	"list_suppliers_v2",
 	"list_uoms_v2",
 	"search_purchase_orders_v2",

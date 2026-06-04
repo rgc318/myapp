@@ -69,7 +69,7 @@
 - 采购快捷链路（规划中）：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
 - 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`、`create_supplier_v2`、`update_supplier_v2`、`disable_supplier_v2`
 - 采购更新与作废：`update_purchase_order_v2`、`update_purchase_order_items_v2`、`cancel_purchase_order_v2`、`cancel_purchase_receipt_v2`、`cancel_purchase_invoice_v2`、`cancel_supplier_payment`
-- 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`
+- 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`、`list_stock_ledger_entries_v1`
 - 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
 
 ### 统一成功响应格式
@@ -215,7 +215,174 @@
 - `payment_type = 'Pay'` 计入支出
 - 其他类型当前归类为 `transfer`
 
+- `list_stock_ledger_entries_v1`
+  - 只返回库存流水明细
+  - 基于 `Stock Ledger Entry`
+  - 支持筛选：
+    - `company`
+    - `date_from`
+    - `date_to`
+    - `item_code`
+    - `warehouse`
+    - `voucher_type`
+    - `voucher_no`
+  - 支持分页参数：
+    - `page`
+    - `page_size`
+  - 返回字段：
+    - `name`
+    - `posting_date`
+    - `posting_time`
+    - `company`
+    - `item_code`
+    - `item_name`
+    - `warehouse`
+    - `actual_qty`
+    - `qty_after_transaction`
+    - `incoming_rate`
+    - `stock_value_difference`
+    - `voucher_type`
+    - `voucher_no`
+  - 返回分页信息：
+    - `page`
+    - `page_size`
+    - `total_count`
+    - `has_more`
+
+当前库存流水口径：
+
+- 日期字段使用 `posting_date`
+- 默认查询最近 30 天
+- 最大日期范围 366 天
+- 单页最大 `page_size` 为 100
+- 查询结果按 `posting_date desc, posting_time desc, creation desc` 排序
+
 更完整的拆分思路与正式化边界，请参见 `REPORTS_TECH_DESIGN.zh-CN.md`。
+
+### list_stock_ledger_entries_v1
+
+Method:
+
+- `myapp.api.gateway.list_stock_ledger_entries_v1`
+
+用途：
+
+- 为 Web 库存流水查询页提供 `Stock Ledger Entry` 明细。
+- 用于按商品、仓库、时间范围和来源凭证追踪库存变动。
+- 这是只读查询接口，不创建、不修改、不提交任何库存单据。
+
+参数：
+
+- `company: str | None = None`
+- `date_from: str | None = None`
+- `date_to: str | None = None`
+- `item_code: str | None = None`
+- `warehouse: str | None = None`
+- `voucher_type: str | None = None`
+- `voucher_no: str | None = None`
+- `page: int = 1`
+- `page_size: int = 20`
+
+分页与范围：
+
+- 默认日期范围：最近 30 天。
+- 最大日期范围：366 天。
+- 最大 `page_size`：100。
+- 排序：`posting_date desc, posting_time desc, creation desc`。
+
+响应字段：
+
+- `rows`
+  - `name`
+  - `posting_date`
+  - `posting_time`
+  - `company`
+  - `item_code`
+  - `item_name`
+  - `warehouse`
+  - `actual_qty`
+  - `qty_after_transaction`
+  - `incoming_rate`
+  - `stock_value_difference`
+  - `voucher_type`
+  - `voucher_no`
+- `pagination`
+  - `page`
+  - `page_size`
+  - `total_count`
+  - `has_more`
+- `meta`
+  - `company`
+  - `date_from`
+  - `date_to`
+  - `item_code`
+  - `warehouse`
+  - `voucher_type`
+  - `voucher_no`
+
+示例：
+
+```javascript
+frappe.call({
+  method: "myapp.api.gateway.list_stock_ledger_entries_v1",
+  args: {
+    company: "rgc (Demo)",
+    item_code: "ITEM-001",
+    warehouse: "Stores - R",
+    date_from: "2026-06-01",
+    date_to: "2026-06-30",
+    page: 1,
+    page_size: 20,
+  },
+}).then((r) => {
+  console.log(r.message.data.rows);
+});
+```
+
+成功响应示例：
+
+```json
+{
+  "ok": true,
+  "status": "success",
+  "code": "STOCK_LEDGER_ENTRIES_FETCHED",
+  "message": "库存流水列表获取成功。",
+  "data": {
+    "rows": [
+      {
+        "name": "SLE-0001",
+        "posting_date": "2026-06-04",
+        "posting_time": "10:30:00",
+        "company": "rgc (Demo)",
+        "item_code": "ITEM-001",
+        "item_name": "示例商品",
+        "warehouse": "Stores - R",
+        "actual_qty": -2.0,
+        "qty_after_transaction": 8.0,
+        "incoming_rate": 5.0,
+        "stock_value_difference": -10.0,
+        "voucher_type": "Delivery Note",
+        "voucher_no": "DN-0001"
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "page_size": 20,
+      "total_count": 1,
+      "has_more": false
+    },
+    "meta": {
+      "company": "rgc (Demo)",
+      "date_from": "2026-06-01",
+      "date_to": "2026-06-30",
+      "item_code": "ITEM-001",
+      "warehouse": "Stores - R",
+      "voucher_type": null,
+      "voucher_no": null
+    }
+  }
+}
+```
 
 ### 调用示例
 
