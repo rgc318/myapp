@@ -69,7 +69,12 @@ class TestCustomerService(TestCase):
 		self.assertEqual(result["data"][0]["display_name"], "Palmer Productions Ltd.")
 		self.assertEqual(result["data"][0]["default_contact"]["display_name"], "张三")
 		self.assertEqual(result["meta"]["total"], 2)
+		self.assertEqual(result["meta"]["total_count"], 2)
+		self.assertEqual(result["pagination"]["total_count"], 2)
+		self.assertEqual(result["pagination"]["page"], 1)
+		self.assertEqual(result["pagination"]["page_size"], 20)
 		self.assertTrue(result["meta"]["has_more"])
+		self.assertTrue(result["pagination"]["has_more"])
 		self.assertEqual(
 			mock_get_all.call_args_list[0].kwargs["filters"]["creation"],
 			["between", ["2026-03-01 00:00:00", "2026-03-31 23:59:59"]],

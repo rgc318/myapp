@@ -5,6 +5,7 @@ from frappe.utils import cint, flt, getdate
 
 from myapp.services.media_service import bind_uploaded_item_image, cleanup_temporary_item_image
 from myapp.utils.idempotency import run_idempotent
+from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom_display import build_uom_display_map
 from myapp.utils.uom import resolve_item_quantity_to_stock
 
@@ -387,6 +388,56 @@ def _get_item_rows(
 			)[:limit]
 
 	return rows
+
+
+def _count_item_rows(
+	*,
+	search_key: str | None = None,
+	item_group: str | None = None,
+	disabled: int | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+):
+	filters = {}
+	if item_group:
+		filters["item_group"] = item_group
+	if disabled is not None:
+		filters["disabled"] = cint(disabled)
+	resolved_date_from, resolved_date_to = _normalize_master_date_range(date_from, date_to)
+	if resolved_date_from and resolved_date_to:
+		filters["creation"] = ["between", [f"{resolved_date_from} 00:00:00", f"{resolved_date_to} 23:59:59"]]
+	elif resolved_date_from:
+		filters["creation"] = [">=", f"{resolved_date_from} 00:00:00"]
+	elif resolved_date_to:
+		filters["creation"] = ["<=", f"{resolved_date_to} 23:59:59"]
+
+	or_filters = None
+	search_key = _normalize_text(search_key)
+	if search_key:
+		nickname_field = _get_item_nickname_field()
+		specification_field = _get_item_specification_field()
+		or_filters = {
+			"name": ["like", f"%{search_key}%"],
+			"item_name": ["like", f"%{search_key}%"],
+			"description": ["like", f"%{search_key}%"],
+		}
+		if nickname_field:
+			or_filters[nickname_field] = ["like", f"%{search_key}%"]
+		if specification_field:
+			or_filters[specification_field] = ["like", f"%{search_key}%"]
+
+	total = len(
+		frappe.get_all(
+			"Item",
+			filters=filters,
+			or_filters=or_filters,
+			pluck="name",
+			limit_page_length=0,
+		)
+	)
+	if search_key and frappe.db.get_value("Item Barcode", {"barcode": search_key}, "parent"):
+		return max(total, 1)
+	return total
 
 
 def _get_price_map(item_codes: list[str], *, price_list: str, currency: str | None):
@@ -792,6 +843,19 @@ def list_products_v2(
 		sort_by=sort_by,
 		sort_order=sort_order,
 	)
+	total_count = _count_item_rows(
+		search_key=search_key,
+		item_group=_normalize_text(item_group) or None,
+		disabled=disabled,
+		date_from=date_from,
+		date_to=date_to,
+	)
+	pagination = build_offset_pagination(
+		start=start,
+		limit=limit,
+		total_count=total_count,
+		row_count=len(rows),
+	)
 	item_codes = [row.name for row in rows]
 	stock_company = _resolve_stock_company_scope(warehouse, company)
 	qty_map = _get_qty_map(item_codes, warehouse=warehouse, company=company)
@@ -861,6 +925,15 @@ def list_products_v2(
 	return {
 		"status": "success",
 		"data": items,
+		"meta": {
+			"total": total_count,
+			"total_count": total_count,
+			"start": start,
+			"limit": limit,
+			"has_more": pagination["has_more"],
+			"pagination": pagination,
+		},
+		"pagination": pagination,
 		"filters": {
 			"search_key": _normalize_text(search_key) or None,
 			"warehouse": warehouse,

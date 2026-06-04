@@ -5,6 +5,7 @@ from frappe.utils import cint, flt, getdate, nowdate
 
 from myapp.services.wholesale_service import _get_item_specification_field
 from myapp.utils.idempotency import run_idempotent
+from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom import resolve_item_quantity_to_stock
 
 
@@ -1986,6 +1987,13 @@ def search_sales_orders_v2(
 		if resolved_sort in {"amount_asc", "amount_desc", "unfinished_first"}:
 			paged_rows = _finalize_sales_ranked_page(ranked_rows, resolved_sort, start, limit)
 
+		pagination = build_offset_pagination(
+			start=start,
+			limit=limit,
+			total_count=visible_count,
+			row_count=len(paged_rows),
+		)
+
 		return {
 			"status": "success",
 			"data": {
@@ -1999,7 +2007,9 @@ def search_sales_orders_v2(
 					"completed_count": completed_count,
 					"cancelled_count": cancelled_count,
 				},
+				"pagination": pagination,
 				"meta": {
+					"pagination": pagination,
 					"filters": {
 						"search_key": resolved_search_key or None,
 						"customer": customer,

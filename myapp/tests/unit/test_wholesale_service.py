@@ -59,10 +59,12 @@ class TestWholesaleService(TestCase):
 	@patch("myapp.services.wholesale_service._get_multi_price_map")
 	@patch("myapp.services.wholesale_service._get_price_map")
 	@patch("myapp.services.wholesale_service._get_qty_map")
+	@patch("myapp.services.wholesale_service._count_item_rows")
 	@patch("myapp.services.wholesale_service._get_item_rows")
 	def test_list_products_v2_returns_price_summary(
 		self,
 		mock_get_item_rows,
+		mock_count_item_rows,
 		mock_get_qty_map,
 		mock_get_price_map,
 		mock_get_multi_price_map,
@@ -90,6 +92,7 @@ class TestWholesaleService(TestCase):
 				}
 			)
 		]
+		mock_count_item_rows.return_value = 2
 		mock_get_qty_map.side_effect = [
 			{"ITEM-001": 9},
 			{"ITEM-001": 42},
@@ -131,9 +134,16 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(result["data"][0]["uom_display"], "件")
 		self.assertEqual(result["data"][0]["valuation_rate"], 7.5)
 		self.assertEqual(result["data"][0]["total_qty"], 42)
+		self.assertEqual(result["meta"]["total_count"], 2)
+		self.assertEqual(result["pagination"]["total_count"], 2)
+		self.assertEqual(result["pagination"]["page"], 1)
+		self.assertEqual(result["pagination"]["page_size"], 20)
+		self.assertTrue(result["pagination"]["has_more"])
 		self.assertEqual(len(result["data"][0]["warehouse_stock_details"]), 2)
 		self.assertEqual(mock_get_item_rows.call_args.kwargs["date_from"], "2026-03-01")
 		self.assertEqual(mock_get_item_rows.call_args.kwargs["date_to"], "2026-03-31")
+		self.assertEqual(mock_count_item_rows.call_args.kwargs["date_from"], "2026-03-01")
+		self.assertEqual(mock_count_item_rows.call_args.kwargs["date_to"], "2026-03-31")
 		self.assertEqual(result["filters"]["date_from"], "2026-03-01")
 		self.assertEqual(result["filters"]["date_to"], "2026-03-31")
 
@@ -713,7 +723,7 @@ class TestWholesaleService(TestCase):
 			warehouse="Stores - RD",
 			company=None,
 			price_list="Standard Selling",
-			currency=None,
+			currency="CNY",
 		)
 		self.assertEqual(result["data"]["item_code"], "ITEM-NEW")
 		mock_ensure_zero_stock_bin.assert_not_called()
@@ -1025,6 +1035,9 @@ class TestWholesaleService(TestCase):
 		item.valuation_rate = 9
 		mock_get_doc.return_value = item
 		mock_db_exists.return_value = False
+		_mock_resolve_default_uom.return_value = "Nos"
+		_mock_normalize_mode_default_uom.side_effect = lambda value=None: value.strip() if isinstance(value, str) else None
+		_mock_get_item_mode_default_uom_field.return_value = None
 		mock_resolve_company_from_warehouse.return_value = "rgc (Demo)"
 		mock_get_qty_map.return_value = {"ITEM-001": 0}
 		mock_resolve_item_quantity_to_stock.return_value = {"stock_qty": 0}

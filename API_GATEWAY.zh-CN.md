@@ -92,6 +92,38 @@
 - `data`：主业务数据
 - `meta`：辅助信息，例如筛选条件
 
+### 统一分页约定
+
+查询列表接口优先复用同一个接口同时支持移动端下拉加载和 Web 表格翻页，不新增 Web 专用分页接口。
+
+分页参数分两类：
+
+- 老接口可继续使用 `start` + `limit`。
+- 新接口优先使用 `page` + `page_size`。
+
+Web 标准分页需要接口返回总数。列表接口应尽量返回：
+
+```json
+{
+  "pagination": {
+    "page": 1,
+    "page_size": 20,
+    "start": 0,
+    "limit": 20,
+    "total_count": 123,
+    "has_more": true
+  }
+}
+```
+
+兼容说明：
+
+- 移动端可以只使用 `has_more` 并追加下一页结果。
+- Web 可以使用 `total_count` 计算总页数，并在翻页时替换当前表格数据。
+- 已有 `meta.total`、`meta.has_more`、`summary.total_count`、`summary.visible_count` 等历史字段会保留。
+- `list_products_v2`、`list_customers_v2`、`list_suppliers_v2`、`list_uoms_v2` 已补充顶层 `pagination`。
+- `search_sales_orders_v2`、`search_purchase_orders_v2` 已在 `data.pagination` 和 `data.meta.pagination` 返回当前筛选结果分页信息。
+
 ### 统一错误响应格式
 
 `myapp.api.gateway.*` 现在会针对常见业务错误返回统一错误包络：
@@ -1215,6 +1247,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 聚合默认联系人与默认地址摘要，便于移动端直接展示
 - 支持按客户名称 / 编码 / 手机 / 邮箱模糊搜索
 - 支持按客户主数据创建时间 `creation` 做日期区间过滤
+- 返回顶层 `pagination`，同时保留 `meta.total`、`meta.total_count`、`meta.has_more`
 - 日期区间按整天处理：
   - `date_from` -> `00:00:00`
   - `date_to` -> `23:59:59`
@@ -1369,6 +1402,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 支持按单位名称 / 符号 / 描述模糊搜索
 - 支持按启停状态、是否必须整数筛选
 - 支持按单位主数据创建时间 `creation` 做日期区间过滤
+- 返回顶层 `pagination`，同时保留 `meta.total`、`meta.total_count`、`meta.has_more`
 - 日期区间按整天处理：
   - `date_from` -> `00:00:00`
   - `date_to` -> `23:59:59`
@@ -1561,6 +1595,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 
 - 返回商品列表工作台所需的基础摘要
 - 支持按商品主数据创建时间 `creation` 做日期区间过滤
+- 返回顶层 `pagination`，同时保留 `meta.total`、`meta.total_count`、`meta.has_more`
 - 日期区间按整天处理：
   - `date_from` -> `00:00:00`
   - `date_to` -> `23:59:59`
@@ -2740,6 +2775,7 @@ frappe.call({
 - 返回供应商列表摘要
 - 支持模糊搜索、分组筛选、启停状态筛选和分页
 - 支持按供应商主数据创建时间 `creation` 做日期区间过滤
+- 返回顶层 `pagination`，同时保留 `meta.total`、`meta.total_count`、`meta.has_more`
 - 日期区间按整天处理：
   - `date_from` -> `00:00:00`
   - `date_to` -> `23:59:59`

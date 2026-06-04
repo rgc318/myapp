@@ -17,6 +17,7 @@ from myapp.services.wholesale_service import _get_item_specification_field
 from myapp.services.return_service import build_return_submission_payload
 from myapp.services.settlement_service import cancel_payment_entry
 from myapp.utils.idempotency import run_idempotent
+from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom import resolve_item_quantity_to_stock
 
 
@@ -1338,6 +1339,13 @@ def search_purchase_orders_v2(
 		if resolved_sort in {"amount_asc", "amount_desc", "unfinished_first"}:
 			paged_rows = _finalize_purchase_ranked_page(ranked_rows, resolved_sort, start, limit)
 
+		pagination = build_offset_pagination(
+			start=start,
+			limit=limit,
+			total_count=visible_count,
+			row_count=len(paged_rows),
+		)
+
 		return {
 			"status": "success",
 			"data": {
@@ -1351,7 +1359,9 @@ def search_purchase_orders_v2(
 					"completed_count": completed_count,
 					"cancelled_count": cancelled_count,
 				},
+				"pagination": pagination,
 				"meta": {
+					"pagination": pagination,
 					"filters": {
 						"search_key": resolved_search_key or None,
 						"supplier": supplier,
@@ -1604,15 +1614,24 @@ def list_suppliers_v2(
 		)
 	)
 
+	pagination = build_offset_pagination(
+		start=start,
+		limit=limit,
+		total_count=total_count,
+		row_count=len(rows),
+	)
+
 	return {
 		"status": "success",
 		"message": _("供应商列表获取成功。"),
 		"data": [_build_supplier_payload(row) for row in rows],
 		"meta": {
 			"total": total_count,
+			"total_count": total_count,
 			"start": start,
 			"limit": limit,
-			"has_more": start + len(rows) < total_count,
+			"has_more": pagination["has_more"],
+			"pagination": pagination,
 			"filters": {
 				"search_key": search_key or None,
 				"supplier_group": _normalize_text(supplier_group) or None,
@@ -1623,6 +1642,7 @@ def list_suppliers_v2(
 				"sort_order": sort_order,
 			},
 		},
+		"pagination": pagination,
 	}
 
 

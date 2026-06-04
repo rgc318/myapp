@@ -11,6 +11,7 @@ from myapp.services.order_service import (
 	_serialize_contact_doc,
 )
 from myapp.utils.idempotency import run_idempotent
+from myapp.utils.pagination import build_offset_pagination
 
 
 def _normalize_text(value: str | None):
@@ -291,15 +292,24 @@ def list_customers_v2(
 		)
 	)
 
+	pagination = build_offset_pagination(
+		start=start,
+		limit=limit,
+		total_count=total_count,
+		row_count=len(rows),
+	)
+
 	return {
 		"status": "success",
 		"message": _("客户列表获取成功。"),
 		"data": [_build_customer_payload(row) for row in rows],
 		"meta": {
 			"total": total_count,
+			"total_count": total_count,
 			"start": start,
 			"limit": limit,
-			"has_more": start + len(rows) < total_count,
+			"has_more": pagination["has_more"],
+			"pagination": pagination,
 			"filters": {
 				"search_key": search_key or None,
 				"customer_group": _normalize_text(customer_group) or None,
@@ -310,6 +320,7 @@ def list_customers_v2(
 				"sort_order": sort_order,
 			},
 		},
+		"pagination": pagination,
 	}
 
 

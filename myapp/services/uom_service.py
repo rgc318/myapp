@@ -3,6 +3,7 @@ from frappe import _
 from frappe.utils import cint, getdate
 
 from myapp.utils.idempotency import run_idempotent
+from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom_display import resolve_uom_display_name
 
 
@@ -249,15 +250,24 @@ def list_uoms_v2(
 			limit_page_length=0,
 		)
 	)
+	pagination = build_offset_pagination(
+		start=start,
+		limit=limit,
+		total_count=total,
+		row_count=len(rows),
+	)
+
 	return {
 		"status": "success",
 		"message": _("单位列表获取成功。"),
 		"data": [_build_uom_payload(row) for row in rows],
 		"meta": {
 			"total": total,
+			"total_count": total,
 			"start": start,
 			"limit": limit,
-			"has_more": start + len(rows) < total,
+			"has_more": pagination["has_more"],
+			"pagination": pagination,
 			"filters": {
 				"search_key": search_key or None,
 				"enabled": _normalize_enabled(enabled),
@@ -268,6 +278,7 @@ def list_uoms_v2(
 				"sort_order": sort_order,
 			},
 		},
+		"pagination": pagination,
 	}
 
 
