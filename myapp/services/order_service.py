@@ -937,11 +937,20 @@ def _build_delivery_summary(fulfillment: dict, *, delivery_note_names: list[str]
 
 def _build_action_flags(fulfillment: dict, payment: dict, *, invoice_names: list[str], delivery_note_names: list[str], docstatus: int):
 	is_submitted = cint(docstatus) == 1
+	can_cancel_sales_order = is_submitted and not invoice_names and not delivery_note_names
+	cancel_sales_order_hint = None
+	if is_submitted and not can_cancel_sales_order:
+		cancel_sales_order_hint = _("当前销售订单已存在发货或开票记录，请先回退下游单据后再作废订单。")
+	elif cint(docstatus) == 0:
+		cancel_sales_order_hint = _("只有已提交的销售订单才允许作废。")
+
 	return {
 		"can_submit_delivery": is_submitted and not fulfillment.get("is_fully_delivered"),
 		"can_create_sales_invoice": is_submitted and not invoice_names and not payment.get("is_fully_paid"),
 		"can_record_payment": is_submitted and payment.get("outstanding_amount", 0) > 0,
 		"can_process_return": bool(is_submitted and (invoice_names or delivery_note_names)),
+		"can_cancel_sales_order": can_cancel_sales_order,
+		"cancel_sales_order_hint": cancel_sales_order_hint,
 	}
 
 

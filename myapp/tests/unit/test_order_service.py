@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 import frappe
 
 from myapp.services.order_service import (
+	_build_action_flags,
 	cancel_delivery_note,
 	cancel_order_v2,
 	cancel_sales_invoice,
@@ -1303,12 +1304,26 @@ class TestOrderService(TestCase):
 		self.assertTrue(result["data"]["actions"]["can_submit_delivery"])
 		self.assertTrue(result["data"]["actions"]["can_record_payment"])
 		self.assertFalse(result["data"]["actions"]["can_create_sales_invoice"])
+		self.assertFalse(result["data"]["actions"]["can_cancel_sales_order"])
+		self.assertIn("发货或开票记录", result["data"]["actions"]["cancel_sales_order_hint"])
 		self.assertEqual(result["data"]["payment"]["actual_paid_amount"], 120)
 		self.assertEqual(result["data"]["payment"]["total_writeoff_amount"], 30)
 		self.assertEqual(result["data"]["customer"]["contact_display_name"], "张三")
 		self.assertEqual(result["data"]["shipping"]["city"], "测试市")
 		self.assertEqual(result["data"]["items"][0]["image"], "/files/item-001.png")
 		self.assertEqual(result["data"]["items"][0]["specification"], "500ml")
+
+	def test_build_action_flags_allows_sales_order_cancel_without_downstream_docs(self):
+		result = _build_action_flags(
+			{"is_fully_delivered": False},
+			{"outstanding_amount": 10},
+			invoice_names=[],
+			delivery_note_names=[],
+			docstatus=1,
+		)
+
+		self.assertTrue(result["can_cancel_sales_order"])
+		self.assertIsNone(result["cancel_sales_order_hint"])
 
 	@patch("myapp.services.order_service._build_sales_order_summary_rows")
 	@patch("myapp.services.order_service.frappe.get_all")
