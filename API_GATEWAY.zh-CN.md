@@ -2969,6 +2969,49 @@ frappe.call({
 - 当前环境的 `Selling Settings.maintain_same_sales_rate = 0`，销售侧允许在发货和开票阶段按实际成交结果改价
 - 采购列表页、详情页、收货详情页和发票详情页优先使用采购聚合接口，不建议前端自行拼装 `Purchase Order / Purchase Receipt / Purchase Invoice / Payment Entry` 状态
 
+## 通用 Link 选项查询
+
+方法：
+
+- `myapp.api.gateway.search_link_options_v1`
+
+用途：
+
+- 为 Web / mobile 的 Link 选择器提供 JWT 友好的查询入口
+- 当前用于付款方式选择器，避免 Web 端直接调用 `frappe.client.get_list` 绕过 `myapp.*` Bearer Token 注入规则
+
+参数：
+
+- `doctype: str`
+- `query: str | None`
+- `extra_fields: list[str] | str | None`
+- `limit: int`
+
+安全约束：
+
+- 只允许白名单 DocType，不开放任意 DocType 搜索
+- 当前白名单包括 `Mode of Payment`、`Company`、`Warehouse`、`Customer`、`Supplier`、销售 / 采购主链路单据
+- `extra_fields` 也受每个 DocType 的白名单限制
+
+返回：
+
+```json
+{
+  "data": [
+    {
+      "label": "Cash",
+      "value": "Cash",
+      "description": null
+    }
+  ],
+  "meta": {
+    "doctype": "Mode of Payment",
+    "query": "Ca",
+    "limit": 8
+  }
+}
+```
+
 ### 附录：联调中实际会用到的官方接口
 
 以下官方接口不是本应用的主业务入口，但在测试、前端查询、调试和对账时会实际用到。

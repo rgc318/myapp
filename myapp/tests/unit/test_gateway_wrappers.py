@@ -32,6 +32,7 @@ from myapp.api.gateway import (
 	get_receivable_payable_report_v1,
 	get_return_source_context_v2,
 	get_sales_report_v1,
+	search_link_options_v1,
 	list_stock_ledger_entries_v1,
 	list_cashflow_entries_v1,
 	search_purchase_orders_v2,
@@ -103,6 +104,7 @@ class TestGatewayWrappers(TestCase):
 			get_sales_report_v1,
 			get_purchase_report_v1,
 			get_receivable_payable_report_v1,
+			search_link_options_v1,
 			list_cashflow_entries_v1,
 			list_stock_ledger_entries_v1,
 			get_purchase_order_detail_v2,
@@ -197,6 +199,27 @@ class TestGatewayWrappers(TestCase):
 		mock_update_preferences_service.assert_called_once_with(
 			default_company="Test Company",
 			default_warehouse="Stores - RD",
+		)
+
+	@patch("myapp.api.gateway.search_link_options_v1_service")
+	def test_search_link_options_v1_passes_filters_to_service(self, mock_search_link_options_service):
+		mock_search_link_options_service.return_value = {
+			"status": "success",
+			"data": [{"label": "Cash", "value": "Cash"}],
+		}
+
+		search_link_options_v1(
+			doctype="Mode of Payment",
+			query="Ca",
+			extra_fields=["name"],
+			limit=5,
+		)
+
+		mock_search_link_options_service.assert_called_once_with(
+			doctype="Mode of Payment",
+			query="Ca",
+			extra_fields=["name"],
+			limit=5,
 		)
 
 	@patch("myapp.api.gateway.submit_delivery_service")

@@ -74,6 +74,7 @@ from .reports_api import get_receivable_payable_report_v1 as get_receivable_paya
 from .reports_api import get_sales_report_v1 as get_sales_report_v1_service
 from .reports_api import list_cashflow_entries_v1 as list_cashflow_entries_v1_service
 from .inventory_api import list_stock_ledger_entries_v1 as list_stock_ledger_entries_v1_service
+from myapp.services.link_options_service import search_link_options_v1 as search_link_options_v1_service
 from .returns_api import get_return_source_context_v2 as get_return_source_context_v2_service
 from .settlement_api import confirm_pending_document as confirm_pending_document_service
 from .settlement_api import cancel_payment_entry as cancel_payment_entry_service
@@ -226,6 +227,24 @@ def get_current_user_workspace_preferences_v1():
 	return _handle_gateway_call(
 		lambda: get_current_user_workspace_preferences_v1_service(),
 		success_code="USER_WORKSPACE_PREFERENCES_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def search_link_options_v1(
+	doctype: str,
+	query: str | None = None,
+	extra_fields=None,
+	limit: int = 8,
+):
+	return _handle_gateway_call(
+		lambda: search_link_options_v1_service(
+			doctype=doctype,
+			query=query,
+			extra_fields=extra_fields,
+			limit=limit,
+		),
+		success_code="LINK_OPTIONS_FETCHED",
 	)
 
 
