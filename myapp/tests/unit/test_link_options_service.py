@@ -37,6 +37,17 @@ class TestLinkOptionsService(TestCase):
 		self.assertEqual(result["data"][0]["description"], "供应商 A")
 		self.assertEqual(mock_get_list.call_args.kwargs["fields"], ["name", "supplier_name"])
 
+	@patch("myapp.services.link_options_service.frappe.get_list")
+	def test_search_link_options_v1_allows_delivery_note_sources(self, mock_get_list):
+		mock_get_list.return_value = [
+			frappe._dict({"name": "DN-0001", "customer": "CUST-0001"}),
+		]
+
+		result = search_link_options_v1("Delivery Note", extra_fields=["customer", "owner"])
+
+		self.assertEqual(result["data"][0]["description"], "CUST-0001")
+		self.assertEqual(mock_get_list.call_args.kwargs["fields"], ["name", "customer"])
+
 	@patch("myapp.services.link_options_service.frappe.throw")
 	def test_search_link_options_v1_rejects_unlisted_doctype(self, mock_throw):
 		mock_throw.side_effect = RuntimeError("not allowed")

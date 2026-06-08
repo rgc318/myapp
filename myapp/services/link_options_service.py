@@ -5,6 +5,7 @@ from frappe import _
 ALLOWED_LINK_DOCTYPES = {
 	"Company": ("name",),
 	"Customer": ("name", "customer_name"),
+	"Delivery Note": ("name", "customer", "company"),
 	"Mode of Payment": ("name",),
 	"Purchase Invoice": ("name", "supplier", "company"),
 	"Purchase Order": ("name", "supplier", "company"),
