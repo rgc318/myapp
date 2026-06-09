@@ -247,6 +247,32 @@ Web 标准分页需要接口返回总数。列表接口应尽量返回：
 - `payment_type = 'Pay'` 计入支出
 - 其他类型当前归类为 `transfer`
 
+- `list_inventory_stock_summary_v1`
+  - 只返回库存汇总 / 预警数据
+  - 基于 `Bin`
+  - 支持筛选：
+    - `company`
+    - `warehouse`
+    - `search_key`
+    - `stock_status`: `all` / `in_stock` / `low_stock` / `out_of_stock` / `negative`
+    - `low_stock_threshold`
+  - 支持分页参数：
+    - `page`
+    - `page_size`
+  - 返回字段：
+    - `item_code`
+    - `item_name`
+    - `stock_uom`
+    - `warehouse`
+    - `company`
+    - `actual_qty`
+    - `reserved_qty`
+    - `ordered_qty`
+    - `indented_qty`
+    - `projected_qty`
+    - `valuation_rate`
+    - `stock_value`
+
 - `list_stock_ledger_entries_v1`
   - 只返回库存流水明细
   - 基于 `Stock Ledger Entry`
@@ -283,6 +309,10 @@ Web 标准分页需要接口返回总数。列表接口应尽量返回：
 
 当前库存流水口径：
 
+- 库存汇总基于 `Bin` 当前快照，不创建、不修改任何库存单据
+- 低库存口径为 `0 < actual_qty <= low_stock_threshold`
+- 无库存口径为 `actual_qty == 0`
+- 负库存口径为 `actual_qty < 0`
 - 日期字段使用 `posting_date`
 - 默认查询最近 30 天
 - 最大日期范围 366 天
@@ -290,6 +320,62 @@ Web 标准分页需要接口返回总数。列表接口应尽量返回：
 - 查询结果按 `posting_date desc, posting_time desc, creation desc` 排序
 
 更完整的拆分思路与正式化边界，请参见 `REPORTS_TECH_DESIGN.zh-CN.md`。
+
+### list_inventory_stock_summary_v1
+
+Method:
+
+- `myapp.api.gateway.list_inventory_stock_summary_v1`
+
+用途：
+
+- 为 Web 库存预警页提供当前库存快照。
+- 用于按商品、仓库、公司筛选低库存、无库存和负库存。
+- 这是只读查询接口，不创建、不修改、不提交任何库存单据。
+
+参数：
+
+- `company: str | None = None`
+- `warehouse: str | None = None`
+- `search_key: str | None = None`
+- `stock_status: str | None = "all"`
+- `low_stock_threshold: float | int | str | None = 10`
+- `page: int = 1`
+- `page_size: int = 20`
+
+分页与状态：
+
+- 最大 `page_size`：100。
+- `stock_status` 支持 `all`、`in_stock`、`low_stock`、`out_of_stock`、`negative`。
+- `low_stock` 口径为 `0 < actual_qty <= low_stock_threshold`。
+
+响应字段：
+
+- `rows`
+  - `item_code`
+  - `item_name`
+  - `stock_uom`
+  - `warehouse`
+  - `company`
+  - `actual_qty`
+  - `reserved_qty`
+  - `ordered_qty`
+  - `indented_qty`
+  - `projected_qty`
+  - `valuation_rate`
+  - `stock_value`
+- `summary`
+  - `actual_qty_total`
+  - `reserved_qty_total`
+  - `projected_qty_total`
+  - `stock_value_total`
+  - `negative_count`
+  - `out_of_stock_count`
+- `pagination`
+  - `page`
+  - `page_size`
+  - `total_count`
+  - `has_more`
 
 ### list_stock_ledger_entries_v1
 

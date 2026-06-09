@@ -33,6 +33,7 @@ from myapp.api.gateway import (
 	get_return_source_context_v2,
 	get_sales_report_v1,
 	search_link_options_v1,
+	list_inventory_stock_summary_v1,
 	list_stock_ledger_entries_v1,
 	list_cashflow_entries_v1,
 	search_purchase_orders_v2,
@@ -106,6 +107,7 @@ class TestGatewayWrappers(TestCase):
 			get_receivable_payable_report_v1,
 			search_link_options_v1,
 			list_cashflow_entries_v1,
+			list_inventory_stock_summary_v1,
 			list_stock_ledger_entries_v1,
 			get_purchase_order_detail_v2,
 			get_purchase_order_status_summary,
@@ -905,6 +907,30 @@ class TestGatewayWrappers(TestCase):
 			voucher_no="DN-0001",
 			page=2,
 			page_size=5,
+		)
+
+	@patch("myapp.api.gateway.list_inventory_stock_summary_v1_service")
+	def test_list_inventory_stock_summary_v1_passes_filters_to_service(self, mock_list_inventory_stock_summary_v1_service):
+		mock_list_inventory_stock_summary_v1_service.return_value = {"status": "success", "data": {"rows": []}}
+
+		list_inventory_stock_summary_v1(
+			company="Test Company",
+			warehouse="Stores - TC",
+			search_key="ITEM",
+			stock_status="low_stock",
+			low_stock_threshold=5,
+			page=2,
+			page_size=10,
+		)
+
+		mock_list_inventory_stock_summary_v1_service.assert_called_once_with(
+			company="Test Company",
+			warehouse="Stores - TC",
+			search_key="ITEM",
+			stock_status="low_stock",
+			low_stock_threshold=5,
+			page=2,
+			page_size=10,
 		)
 
 	@patch("myapp.api.gateway.list_customers_v2_service")

@@ -1,7 +1,29 @@
 import frappe
 from frappe.utils import cint
 
+from myapp.services.inventory_service import list_inventory_stock_summary_v1 as list_inventory_stock_summary_v1_service
 from myapp.services.inventory_service import list_stock_ledger_entries_v1 as list_stock_ledger_entries_v1_service
+
+
+@frappe.whitelist()
+def list_inventory_stock_summary_v1(
+	company: str | None = None,
+	warehouse: str | None = None,
+	search_key: str | None = None,
+	stock_status: str | None = "all",
+	low_stock_threshold: float | int | str | None = 10,
+	page: int = 1,
+	page_size: int = 20,
+):
+	return list_inventory_stock_summary_v1_service(
+		company=company,
+		warehouse=warehouse,
+		search_key=search_key,
+		stock_status=stock_status,
+		low_stock_threshold=low_stock_threshold,
+		page=cint(page),
+		page_size=cint(page_size),
+	)
 
 
 @frappe.whitelist()

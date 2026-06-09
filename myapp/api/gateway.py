@@ -73,6 +73,7 @@ from .reports_api import get_purchase_report_v1 as get_purchase_report_v1_servic
 from .reports_api import get_receivable_payable_report_v1 as get_receivable_payable_report_v1_service
 from .reports_api import get_sales_report_v1 as get_sales_report_v1_service
 from .reports_api import list_cashflow_entries_v1 as list_cashflow_entries_v1_service
+from .inventory_api import list_inventory_stock_summary_v1 as list_inventory_stock_summary_v1_service
 from .inventory_api import list_stock_ledger_entries_v1 as list_stock_ledger_entries_v1_service
 from myapp.services.link_options_service import search_link_options_v1 as search_link_options_v1_service
 from .returns_api import get_return_source_context_v2 as get_return_source_context_v2_service
@@ -379,6 +380,30 @@ def list_cashflow_entries_v1(
 			page_size=page_size,
 		),
 		success_code="CASHFLOW_ENTRIES_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def list_inventory_stock_summary_v1(
+	company: str | None = None,
+	warehouse: str | None = None,
+	search_key: str | None = None,
+	stock_status: str | None = "all",
+	low_stock_threshold: float | int | str | None = 10,
+	page: int = 1,
+	page_size: int = 20,
+):
+	return _handle_gateway_call(
+		lambda: list_inventory_stock_summary_v1_service(
+			company=company,
+			warehouse=warehouse,
+			search_key=search_key,
+			stock_status=stock_status,
+			low_stock_threshold=low_stock_threshold,
+			page=page,
+			page_size=page_size,
+		),
+		success_code="INVENTORY_STOCK_SUMMARY_FETCHED",
 	)
 
 
