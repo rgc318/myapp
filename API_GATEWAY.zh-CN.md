@@ -64,10 +64,10 @@
 
 ### 模块导航
 
-- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`process_sales_return`
+- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`list_business_documents_v1`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
 - 采购快捷链路（规划中）：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
-- 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`、`create_supplier_v2`、`update_supplier_v2`、`disable_supplier_v2`
+- 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`list_business_documents_v1`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`、`create_supplier_v2`、`update_supplier_v2`、`disable_supplier_v2`
 - 采购更新与作废：`update_purchase_order_v2`、`update_purchase_order_items_v2`、`cancel_purchase_order_v2`、`cancel_purchase_receipt_v2`、`cancel_purchase_invoice_v2`、`cancel_supplier_payment`
 - 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`、`list_stock_ledger_entries_v1`
 - 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
@@ -1383,6 +1383,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `default_currency: str | None`
 - `default_price_list: str | None`
 - `remarks: str | None`
+- `contact_phone: str | None`
+- `contact_email: str | None`
 - `default_contact: dict | json-string | None`
 - `default_address: dict | json-string | None`
 - `disabled: bool | int = False`
@@ -2337,9 +2339,40 @@ create_purchase_order(
   - 订单详情页 -> 开票确认页
   - 由确认页承接 `source_name`、`due_date`、`remarks` 等输入
   - 用户确认后再调用本接口
-- 若销售发票详情页后续承接打印能力，建议：
-  - 详情页优先朝“预览化单据页”建设
-  - 打印预览入口优先放在发票详情页或发票预览页，而不是订单详情页
+- Web 端已在销售发票、销售订单、销售发货单、采购订单、采购收货单和采购发票详情页接入打印预览和 PDF 下载。
+- 新增单据类型时应先在打印 registry 中白名单登记，再由 Web 通过 `get_print_preview_v1` / `get_print_file_v1` / `download_print_file_v1` 接入，不直接拼 Frappe 打印 URL。
+
+### list_business_documents_v1
+
+方法：
+
+- `myapp.api.gateway.list_business_documents_v1`
+
+参数：
+
+- `doctype: str`
+- `search_key: str | None`
+- `company: str | None`
+- `party: str | None`
+- `date_from: str | None`
+- `date_to: str | None`
+- `docstatus: "all" | "draft" | "submitted" | "cancelled" | 0 | 1 | 2 | None`
+- `sort_by: "latest" | "oldest" | "amount_desc" | "amount_asc" | None`
+- `limit: int = 20`
+- `start: int = 0`
+
+当前白名单单据：
+
+- `Delivery Note`
+- `Sales Invoice`
+- `Purchase Receipt`
+- `Purchase Invoice`
+
+行为：
+
+- 返回下游业务单据列表，用于 Web 端销售发货单、销售发票、采购收货单和采购发票列表页。
+- 支持公司、客户 / 供应商、过账日期、单据状态、关键词、排序和分页。
+- 该接口是受限业务列表网关，不开放任意 DocType 查询；Web 不应退回直接调用 `frappe.client.get_list` 或 `/api/resource`。
 
 ### receive_purchase_order
 
@@ -2895,6 +2928,8 @@ frappe.call({
 - `supplier_group: str | None`
 - `default_currency: str | None`
 - `remarks: str | None`
+- `contact_phone: str | None`
+- `contact_email: str | None`
 - `mobile_no: str | None`
 - `email_id: str | None`
 - `default_contact: dict | json-string | None`
@@ -3071,6 +3106,7 @@ frappe.call({
 - `doctype: str`
 - `query: str | None`
 - `extra_fields: list[str] | str | None`
+- `filters: dict | str | None`
 - `limit: int`
 
 安全约束：
@@ -3078,6 +3114,13 @@ frappe.call({
 - 只允许白名单 DocType，不开放任意 DocType 搜索
 - 当前白名单包括 `Mode of Payment`、`Company`、`Warehouse`、`Customer`、`Supplier`、销售 / 采购主链路单据
 - `extra_fields` 也受每个 DocType 的白名单限制
+- `filters` 只支持每个 DocType 显式白名单内的等值过滤；非白名单字段、空值和复杂条件会被忽略
+- 当前过滤白名单：
+  - `Warehouse`: `company`、`disabled`、`is_group`
+  - `Customer`: `disabled`
+  - `Supplier`: `disabled`
+  - `Mode of Payment`: `enabled`
+  - 销售 / 采购主链路单据：`company`、客户 / 供应商、`docstatus`
 
 返回：
 

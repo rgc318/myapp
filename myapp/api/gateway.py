@@ -7,6 +7,7 @@ from .customers_api import create_customer_v2 as create_customer_v2_service
 from .customers_api import disable_customer_v2 as disable_customer_v2_service
 from .customers_api import get_customer_detail_v2 as get_customer_detail_v2_service
 from .customers_api import list_customers_v2 as list_customers_v2_service
+from .document_lists_api import list_business_documents_v1 as list_business_documents_v1_service
 from .uoms_api import create_uom_v2 as create_uom_v2_service
 from .uoms_api import delete_uom_v2 as delete_uom_v2_service
 from .uoms_api import disable_uom_v2 as disable_uom_v2_service
@@ -236,6 +237,7 @@ def search_link_options_v1(
 	doctype: str,
 	query: str | None = None,
 	extra_fields=None,
+	filters=None,
 	limit: int = 8,
 ):
 	return _handle_gateway_call(
@@ -243,6 +245,7 @@ def search_link_options_v1(
 			doctype=doctype,
 			query=query,
 			extra_fields=extra_fields,
+			filters=filters,
 			limit=limit,
 		),
 		success_code="LINK_OPTIONS_FETCHED",
@@ -608,6 +611,36 @@ def get_sales_invoice_detail_v2(sales_invoice_name: str):
 	return _handle_gateway_call(
 		lambda: get_sales_invoice_detail_service(sales_invoice_name=sales_invoice_name),
 		success_code="SALES_INVOICE_DETAIL_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def list_business_documents_v1(
+	doctype: str,
+	search_key: str | None = None,
+	company: str | None = None,
+	party: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	docstatus=None,
+	sort_by: str | None = None,
+	limit: int = 20,
+	start: int = 0,
+):
+	return _handle_gateway_call(
+		lambda: list_business_documents_v1_service(
+			doctype=doctype,
+			search_key=search_key,
+			company=company,
+			party=party,
+			date_from=date_from,
+			date_to=date_to,
+			docstatus=docstatus,
+			sort_by=sort_by,
+			limit=limit,
+			start=start,
+		),
+		success_code="BUSINESS_DOCUMENTS_LISTED",
 	)
 
 

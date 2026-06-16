@@ -1,4 +1,5 @@
 from .customers_api import create_customer_v2, disable_customer_v2, get_customer_detail_v2, list_customers_v2, update_customer_v2
+from .document_lists_api import list_business_documents_v1
 from .orders_api import (
 	cancel_delivery_note,
 	cancel_sales_invoice,
@@ -94,6 +95,7 @@ __all__ = [
 	"disable_supplier_v2",
 	"get_uom_detail_v2",
 	"list_customers_v2",
+	"list_business_documents_v1",
 	"list_cashflow_entries_v1",
 	"list_inventory_stock_summary_v1",
 	"list_stock_ledger_entries_v1",

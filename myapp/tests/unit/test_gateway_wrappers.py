@@ -36,6 +36,7 @@ from myapp.api.gateway import (
 	list_inventory_stock_summary_v1,
 	list_stock_ledger_entries_v1,
 	list_cashflow_entries_v1,
+	list_business_documents_v1,
 	search_purchase_orders_v2,
 	create_product_and_stock,
 	create_sales_invoice,
@@ -106,6 +107,7 @@ class TestGatewayWrappers(TestCase):
 			get_purchase_report_v1,
 			get_receivable_payable_report_v1,
 			search_link_options_v1,
+			list_business_documents_v1,
 			list_cashflow_entries_v1,
 			list_inventory_stock_summary_v1,
 			list_stock_ledger_entries_v1,
@@ -214,6 +216,7 @@ class TestGatewayWrappers(TestCase):
 			doctype="Mode of Payment",
 			query="Ca",
 			extra_fields=["name"],
+			filters={"enabled": 1},
 			limit=5,
 		)
 
@@ -221,6 +224,7 @@ class TestGatewayWrappers(TestCase):
 			doctype="Mode of Payment",
 			query="Ca",
 			extra_fields=["name"],
+			filters={"enabled": 1},
 			limit=5,
 		)
 
