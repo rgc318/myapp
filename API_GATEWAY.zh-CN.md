@@ -2807,11 +2807,13 @@ frappe.call({
 - 支持关键词、公司、日期区间、状态、排序、分页联动查询
 - 当前排序值支持：
   - `latest`
+  - `order_date_desc`：最新订单，按 `Purchase Order.transaction_date desc, modified desc`
   - `oldest`
   - `amount_desc`
   - `amount_asc`
   - `unfinished_first`
 - 支持默认排除已作废订单，避免有效订单列表被历史作废单据淹没
+- 查询 `status_filter="cancelled"` 时调用方需要传 `exclude_cancelled=0`，否则作废单据会被默认有效订单口径排除
 - 当前实现已改为批量聚合订单、订单明细、发票和付款引用数据
 - 不再为工作台列表中的每一条采购订单逐条调用 `get_purchase_order_detail_v2`
 - 仍然保留统一的服务端业务口径：
