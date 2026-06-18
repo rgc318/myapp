@@ -1532,6 +1532,44 @@ class TestOrderService(TestCase):
 
 	@patch("myapp.services.order_service._build_sales_order_summary_rows")
 	@patch("myapp.services.order_service.frappe.get_all")
+	def test_search_sales_orders_v2_supports_delivery_overdue_risk_filter(self, mock_get_all, mock_build_summary_rows):
+		mock_get_all.return_value = [
+			frappe._dict({"name": "SO-OVERDUE"}),
+			frappe._dict({"name": "SO-NORMAL"}),
+		]
+		mock_build_summary_rows.return_value = [
+			{
+				"order_name": "SO-OVERDUE",
+				"document_status": "submitted",
+				"fulfillment": {"status": "pending", "is_fully_delivered": False},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "open"},
+				"risk": {"is_delivery_overdue": True, "delivery_overdue_days": 3},
+			},
+			{
+				"order_name": "SO-NORMAL",
+				"document_status": "submitted",
+				"fulfillment": {"status": "pending", "is_fully_delivered": False},
+				"payment": {"status": "unpaid"},
+				"completion": {"status": "open"},
+				"risk": {"is_delivery_overdue": False, "delivery_overdue_days": 0},
+			},
+		]
+
+		result = search_sales_orders_v2(
+			status_filter="delivering",
+			risk_filter="delivery_overdue",
+			exclude_cancelled=True,
+			limit=10,
+			start=0,
+		)
+
+		self.assertEqual(result["data"]["items"][0]["order_name"], "SO-OVERDUE")
+		self.assertEqual(result["data"]["summary"]["delivery_overdue_count"], 1)
+		self.assertEqual(result["data"]["meta"]["filters"]["risk_filter"], "delivery_overdue")
+
+	@patch("myapp.services.order_service._build_sales_order_summary_rows")
+	@patch("myapp.services.order_service.frappe.get_all")
 	def test_search_sales_orders_v2_supports_amount_asc_sort(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(

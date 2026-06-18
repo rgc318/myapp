@@ -2067,6 +2067,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `date_to: str | None`
 - `status_filter: str | None`
 - `exclude_cancelled: bool | None`
+- `risk_filter: str | None`
 - `sort_by: str | None`
 - `limit: int | None = 20`
 - `start: int | None = 0`
@@ -2075,6 +2076,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 
 - 面向销售工作台的真实检索接口
 - 支持关键词、客户、公司、日期区间、状态、排序、分页联动查询
+- 当前风险筛选值支持：
+  - `delivery_overdue`：逾期待发货，匹配未完全发货且交货日期早于当前日期的有效订单
 - 当前排序值支持：
   - `order_date_desc`：最新订单，按 `Sales Order.transaction_date desc, modified desc`
   - `latest`
@@ -2094,8 +2097,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 返回两层数据：
   - `items`：当前命中的销售订单摘要列表
     - 每条摘要包含 `actions`，用于列表页按后端口径展示发货、开票、收款、作废等操作入口
-    - 每条摘要包含 `delivery_date` 和 `risk.is_delivery_overdue` / `risk.delivery_overdue_days`，用于列表页展示逾期待发货风险
-  - `summary`：当前检索口径下的未完成 / 待发货 / 待收款 / 已完成 / 已作废计数
+    - 每条摘要包含 `delivery_date` 和 `risk.is_delivery_overdue` / `risk.delivery_overdue_days`，用于列表页将交货日期与逾期待发货异常分列展示
+  - `summary`：当前检索口径下的未完成 / 待发货 / 待收款 / 已完成 / 已作废 / 逾期待发货计数
 - 日期区间过滤作用于 `Sales Order.transaction_date`
 
 ### get_delivery_note_detail_v2

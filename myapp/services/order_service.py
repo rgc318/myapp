@@ -50,6 +50,14 @@ def _normalize_sales_desk_sort(sort_by: str | None):
 	return resolved
 
 
+def _normalize_sales_risk_filter(risk_filter: str | None):
+	allowed_filters = {"all", "delivery_overdue"}
+	resolved = (_normalize_text(risk_filter) or "all").lower()
+	if resolved not in allowed_filters:
+		return "all"
+	return resolved
+
+
 def _normalize_bool_flag(value, default: bool = False):
 	if value in (None, ""):
 		return default
@@ -177,6 +185,13 @@ def _sales_summary_matches_filter(summary_row: dict, status_filter: str, exclude
 		return _is_sales_summary_completed(summary_row)
 	if status_filter == "cancelled":
 		return _is_sales_summary_cancelled(summary_row)
+	return True
+
+
+def _sales_summary_matches_risk_filter(summary_row: dict, risk_filter: str):
+	resolved_filter = _normalize_sales_risk_filter(risk_filter)
+	if resolved_filter == "delivery_overdue":
+		return bool((summary_row.get("risk") or {}).get("is_delivery_overdue"))
 	return True
 
 
@@ -1927,6 +1942,7 @@ def search_sales_orders_v2(
 	date_to: str | None = None,
 	status_filter: str | None = None,
 	exclude_cancelled=None,
+	risk_filter: str | None = None,
 	sort_by: str | None = None,
 	limit: int = 20,
 	start: int = 0,
@@ -1935,6 +1951,7 @@ def search_sales_orders_v2(
 	start = _normalize_start(start)
 	resolved_status_filter = _normalize_sales_status_filter(status_filter)
 	resolved_sort = _normalize_sales_desk_sort(sort_by)
+	resolved_risk_filter = _normalize_sales_risk_filter(risk_filter)
 	resolved_search_key = _normalize_text(search_key)
 	resolved_exclude_cancelled = _normalize_bool_flag(exclude_cancelled, default=False)
 	resolved_date_from, resolved_date_to = _normalize_order_date_range(date_from, date_to)
@@ -1965,12 +1982,12 @@ def search_sales_orders_v2(
 	try:
 		fields = [
 			"name",
-				"customer",
-				"customer_name",
-				"transaction_date",
-				"delivery_date",
-				"company",
-				"docstatus",
+			"customer",
+			"customer_name",
+			"transaction_date",
+			"delivery_date",
+			"company",
+			"docstatus",
 			"rounded_total",
 			"grand_total",
 			"modified",
@@ -1988,6 +2005,7 @@ def search_sales_orders_v2(
 		payment_count = 0
 		completed_count = 0
 		cancelled_count = 0
+		delivery_overdue_count = 0
 		paged_rows = []
 		visible_cursor = 0
 		page_target = start + limit
@@ -2025,13 +2043,17 @@ def search_sales_orders_v2(
 					delivery_count += 1
 				if _is_sales_summary_payment_pending(row):
 					payment_count += 1
-				if _is_sales_summary_completed(row):
-					completed_count += 1
+					if _is_sales_summary_completed(row):
+						completed_count += 1
+					if (row.get("risk") or {}).get("is_delivery_overdue"):
+						delivery_overdue_count += 1
 
-				if not _sales_summary_matches_filter(row, resolved_status_filter, exclude_cancelled=False):
-					continue
+					if not _sales_summary_matches_filter(row, resolved_status_filter, exclude_cancelled=False):
+						continue
+					if not _sales_summary_matches_risk_filter(row, resolved_risk_filter):
+						continue
 
-				visible_count += 1
+					visible_count += 1
 				if resolved_sort in {"latest", "order_date_desc", "oldest"}:
 					if visible_cursor >= start and len(paged_rows) < limit:
 						paged_rows.append(row)
@@ -2070,10 +2092,11 @@ def search_sales_orders_v2(
 					"visible_count": visible_count,
 					"unfinished_count": unfinished_count,
 					"delivery_count": delivery_count,
-					"payment_count": payment_count,
-					"completed_count": completed_count,
-					"cancelled_count": cancelled_count,
-				},
+						"payment_count": payment_count,
+						"completed_count": completed_count,
+						"cancelled_count": cancelled_count,
+						"delivery_overdue_count": delivery_overdue_count,
+					},
 				"pagination": pagination,
 				"meta": {
 					"pagination": pagination,
@@ -2083,9 +2106,10 @@ def search_sales_orders_v2(
 						"company": company,
 						"date_from": resolved_date_from,
 						"date_to": resolved_date_to,
-						"status_filter": resolved_status_filter,
-						"exclude_cancelled": resolved_exclude_cancelled,
-						"sort_by": resolved_sort,
+							"status_filter": resolved_status_filter,
+							"exclude_cancelled": resolved_exclude_cancelled,
+							"risk_filter": resolved_risk_filter,
+							"sort_by": resolved_sort,
 						"limit": limit,
 						"start": start,
 					}
