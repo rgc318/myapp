@@ -2076,6 +2076,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 面向销售工作台的真实检索接口
 - 支持关键词、客户、公司、日期区间、状态、排序、分页联动查询
 - 当前排序值支持：
+  - `order_date_desc`：最新订单，按 `Sales Order.transaction_date desc, modified desc`
   - `latest`
   - `oldest`
   - `amount_desc`
@@ -2088,6 +2089,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
   - 发货状态基于订单明细汇总
   - 收款状态基于关联销售发票与付款引用汇总
   - 完成状态基于发货与收款共同判断
+  - `completed` 表示已全部发货且已全部开票收款结清；单纯 `outstanding_amount = 0` 不代表销售订单已完成
+  - 查询 `status_filter="cancelled"` 时调用方需要传 `exclude_cancelled=0`，否则作废单据会被默认有效订单口径排除
 - 返回两层数据：
   - `items`：当前命中的销售订单摘要列表
   - `summary`：当前检索口径下的未完成 / 待发货 / 待收款 / 已完成 / 已作废计数

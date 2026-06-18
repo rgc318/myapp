@@ -43,7 +43,7 @@ def _normalize_sales_status_filter(status_filter: str | None):
 
 
 def _normalize_sales_desk_sort(sort_by: str | None):
-	allowed_sorts = {"unfinished_first", "latest", "oldest", "amount_desc", "amount_asc"}
+	allowed_sorts = {"unfinished_first", "latest", "order_date_desc", "oldest", "amount_desc", "amount_asc"}
 	resolved = (_normalize_text(sort_by) or "unfinished_first").lower()
 	if resolved not in allowed_sorts:
 		return "unfinished_first"
@@ -223,6 +223,12 @@ def _sort_sales_summary_rows(rows: list[dict], sort_by: str):
 		)
 	if resolved_sort == "oldest":
 		return sorted(rows, key=lambda row: (_get_sales_summary_transaction_time(row), _get_sales_summary_modified_time(row)))
+	if resolved_sort == "order_date_desc":
+		return sorted(
+			rows,
+			key=lambda row: (_get_sales_summary_transaction_time(row), _get_sales_summary_modified_time(row)),
+			reverse=True,
+		)
 	if resolved_sort == "latest":
 		return sorted(rows, key=_get_sales_summary_modified_time, reverse=True)
 
@@ -1922,6 +1928,8 @@ def search_sales_orders_v2(
 		order_by = "modified desc"
 		if resolved_sort == "oldest":
 			order_by = "transaction_date asc, modified asc"
+		elif resolved_sort == "order_date_desc":
+			order_by = "transaction_date desc, modified desc"
 
 		total_count = 0
 		visible_count = 0
@@ -1974,7 +1982,7 @@ def search_sales_orders_v2(
 					continue
 
 				visible_count += 1
-				if resolved_sort in {"latest", "oldest"}:
+				if resolved_sort in {"latest", "order_date_desc", "oldest"}:
 					if visible_cursor >= start and len(paged_rows) < limit:
 						paged_rows.append(row)
 					visible_cursor += 1
