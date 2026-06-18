@@ -2082,7 +2082,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
   - `amount_desc`
   - `amount_asc`
   - `unfinished_first`
-- 支持默认排除已作废订单，避免未来销售工作台把历史作废单据混入有效订单列表
+- 有效订单视图应由调用方传 `exclude_cancelled=1`，避免销售工作台把历史作废单据混入常规列表
 - 当前实现已改为批量聚合订单、订单明细、发票和付款引用数据
 - 不再为工作台列表中的每一条订单逐条调用 `get_sales_order_detail`
 - 仍然保留统一的服务端业务口径：
@@ -2090,9 +2090,10 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
   - 收款状态基于关联销售发票与付款引用汇总
   - 完成状态基于发货与收款共同判断
   - `completed` 表示已全部发货且已全部开票收款结清；单纯 `outstanding_amount = 0` 不代表销售订单已完成
-  - 查询 `status_filter="cancelled"` 时调用方需要传 `exclude_cancelled=0`，否则作废单据会被默认有效订单口径排除
+  - 查询 `status_filter="cancelled"` 时调用方需要显式传 `exclude_cancelled=0`，否则作废单据会被有效订单口径排除
 - 返回两层数据：
   - `items`：当前命中的销售订单摘要列表
+    - 每条摘要包含 `actions`，用于列表页按后端口径展示发货、开票、收款、作废等操作入口
   - `summary`：当前检索口径下的未完成 / 待发货 / 待收款 / 已完成 / 已作废计数
 - 日期区间过滤作用于 `Sales Order.transaction_date`
 
@@ -2812,8 +2813,8 @@ frappe.call({
   - `amount_desc`
   - `amount_asc`
   - `unfinished_first`
-- 支持默认排除已作废订单，避免有效订单列表被历史作废单据淹没
-- 查询 `status_filter="cancelled"` 时调用方需要传 `exclude_cancelled=0`，否则作废单据会被默认有效订单口径排除
+- 有效订单视图应由调用方传 `exclude_cancelled=1`，避免采购工作台把历史作废单据混入常规列表
+- 查询 `status_filter="cancelled"` 时调用方需要显式传 `exclude_cancelled=0`，否则作废单据会被有效订单口径排除
 - 当前实现已改为批量聚合订单、订单明细、发票和付款引用数据
 - 不再为工作台列表中的每一条采购订单逐条调用 `get_purchase_order_detail_v2`
 - 仍然保留统一的服务端业务口径：
