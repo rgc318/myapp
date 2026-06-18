@@ -2094,6 +2094,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 返回两层数据：
   - `items`：当前命中的销售订单摘要列表
     - 每条摘要包含 `actions`，用于列表页按后端口径展示发货、开票、收款、作废等操作入口
+    - 每条摘要包含 `delivery_date` 和 `risk.is_delivery_overdue` / `risk.delivery_overdue_days`，用于列表页展示逾期待发货风险
   - `summary`：当前检索口径下的未完成 / 待发货 / 待收款 / 已完成 / 已作废计数
 - 日期区间过滤作用于 `Sales Order.transaction_date`
 

@@ -5,6 +5,7 @@ import frappe
 
 from myapp.services.order_service import (
 	_build_action_flags,
+	_build_sales_order_summary_rows,
 	cancel_delivery_note,
 	cancel_order_v2,
 	cancel_sales_invoice,
@@ -1324,6 +1325,43 @@ class TestOrderService(TestCase):
 
 		self.assertTrue(result["can_cancel_sales_order"])
 		self.assertIsNone(result["cancel_sales_order_hint"])
+
+	@patch("myapp.services.order_service.frappe.get_all")
+	def test_build_sales_order_summary_rows_returns_action_flags(self, mock_get_all):
+		mock_get_all.side_effect = [
+			[frappe._dict({"parent": "SO-0001", "qty": 10, "delivered_qty": 2})],
+			[],
+			[frappe._dict({"against_sales_order": "SO-0001", "parent": "DN-0001"})],
+		]
+
+		with patch("myapp.services.order_service.nowdate", return_value="2026-03-20"):
+			result = _build_sales_order_summary_rows(
+				[
+					frappe._dict(
+						{
+							"name": "SO-0001",
+							"customer": "Test Customer",
+							"customer_name": "测试客户",
+							"transaction_date": "2026-03-17",
+							"delivery_date": "2026-03-17",
+							"company": "Test Company",
+							"docstatus": 1,
+							"rounded_total": 200,
+							"grand_total": 200,
+							"modified": "2026-03-17 10:00:00",
+						}
+					)
+				]
+			)
+
+		self.assertTrue(result[0]["actions"]["can_submit_delivery"])
+		self.assertTrue(result[0]["actions"]["can_create_sales_invoice"])
+		self.assertTrue(result[0]["actions"]["can_process_return"])
+		self.assertFalse(result[0]["actions"]["can_cancel_sales_order"])
+		self.assertIn("发货或开票记录", result[0]["actions"]["cancel_sales_order_hint"])
+		self.assertEqual(result[0]["delivery_date"], "2026-03-17")
+		self.assertTrue(result[0]["risk"]["is_delivery_overdue"])
+		self.assertEqual(result[0]["risk"]["delivery_overdue_days"], 3)
 
 	@patch("myapp.services.order_service._build_sales_order_summary_rows")
 	@patch("myapp.services.order_service.frappe.get_all")

@@ -456,7 +456,24 @@ def _build_sales_order_summary_rows(order_rows):
 		if invoice_name not in order_invoice_names_map.setdefault(order_name, []):
 			order_invoice_names_map[order_name].append(invoice_name)
 
-	all_invoice_names = sorted({invoice_name for invoice_names in order_invoice_names_map.values() for invoice_name in invoice_names})
+	delivery_link_rows = frappe.get_all(
+		"Delivery Note Item",
+		filters={"against_sales_order": ["in", order_names], "docstatus": 1},
+		fields=["against_sales_order", "parent"],
+		limit_page_length=0,
+	)
+	order_delivery_note_names_map = {order_name: [] for order_name in order_names}
+	for row in delivery_link_rows:
+		order_name = getattr(row, "against_sales_order", None)
+		delivery_note_name = getattr(row, "parent", None)
+		if not order_name or not delivery_note_name:
+			continue
+		if delivery_note_name not in order_delivery_note_names_map.setdefault(order_name, []):
+			order_delivery_note_names_map[order_name].append(delivery_note_name)
+
+	all_invoice_names = sorted(
+		{invoice_name for invoice_names in order_invoice_names_map.values() for invoice_name in invoice_names}
+	)
 	invoice_row_map = {}
 	if all_invoice_names:
 		invoice_rows = frappe.get_all(
@@ -471,9 +488,11 @@ def _build_sales_order_summary_rows(order_rows):
 	summaries = []
 	for row in order_rows:
 		fulfillment = _build_fulfillment_summary(item_rows_by_order.get(row.name, []))
+		invoice_names = order_invoice_names_map.get(row.name, [])
+		delivery_note_names = order_delivery_note_names_map.get(row.name, [])
 		invoice_rows_for_order = [
 			invoice_row_map[invoice_name]
-			for invoice_name in order_invoice_names_map.get(row.name, [])
+			for invoice_name in invoice_names
 			if invoice_name in invoice_row_map
 		]
 		payment = _build_payment_summary(invoice_rows_for_order)
@@ -496,16 +515,29 @@ def _build_sales_order_summary_rows(order_rows):
 				"order_name": row.name,
 				"customer_name": row.customer_name or row.customer,
 				"customer": row.customer,
-				"company": row.company,
-				"transaction_date": row.transaction_date,
-				"document_status": _document_status_label(row.docstatus),
-				"order_amount_estimate": flt(row.rounded_total or row.grand_total or 0),
-				"fulfillment": fulfillment,
+					"company": row.company,
+					"transaction_date": row.transaction_date,
+					"delivery_date": row.get("delivery_date"),
+					"document_status": _document_status_label(row.docstatus),
+					"order_amount_estimate": flt(row.rounded_total or row.grand_total or 0),
+					"fulfillment": fulfillment,
 				"payment": payment,
 				"completion": completion,
-				"outstanding_amount": flt(payment.get("outstanding_amount", 0) or 0),
-				"modified": row.modified,
-			}
+				"actions": _build_action_flags(
+					fulfillment,
+					payment,
+					invoice_names=invoice_names,
+						delivery_note_names=delivery_note_names,
+						docstatus=row.docstatus,
+					),
+					"risk": _build_sales_order_risk_flags(
+						delivery_date=row.get("delivery_date"),
+						fulfillment=fulfillment,
+						docstatus=row.docstatus,
+					),
+					"outstanding_amount": flt(payment.get("outstanding_amount", 0) or 0),
+					"modified": row.modified,
+				}
 		)
 
 	return summaries
@@ -957,6 +989,22 @@ def _build_action_flags(fulfillment: dict, payment: dict, *, invoice_names: list
 		"can_process_return": bool(is_submitted and (invoice_names or delivery_note_names)),
 		"can_cancel_sales_order": can_cancel_sales_order,
 		"cancel_sales_order_hint": cancel_sales_order_hint,
+	}
+
+
+def _build_sales_order_risk_flags(*, delivery_date, fulfillment: dict, docstatus: int):
+	resolved_delivery_date = _normalize_text(str(delivery_date or "")) or None
+	is_delivery_overdue = False
+	delivery_overdue_days = 0
+	if resolved_delivery_date and cint(docstatus) != 2 and not fulfillment.get("is_fully_delivered"):
+		delta_days = (getdate(nowdate()) - getdate(resolved_delivery_date)).days
+		if delta_days > 0:
+			is_delivery_overdue = True
+			delivery_overdue_days = delta_days
+
+	return {
+		"is_delivery_overdue": is_delivery_overdue,
+		"delivery_overdue_days": delivery_overdue_days,
 	}
 
 
@@ -1837,6 +1885,7 @@ def get_sales_order_status_summary(
 				"customer",
 				"customer_name",
 				"transaction_date",
+				"delivery_date",
 				"company",
 				"docstatus",
 				"rounded_total",
@@ -1916,11 +1965,12 @@ def search_sales_orders_v2(
 	try:
 		fields = [
 			"name",
-			"customer",
-			"customer_name",
-			"transaction_date",
-			"company",
-			"docstatus",
+				"customer",
+				"customer_name",
+				"transaction_date",
+				"delivery_date",
+				"company",
+				"docstatus",
 			"rounded_total",
 			"grand_total",
 			"modified",
