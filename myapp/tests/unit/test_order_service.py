@@ -12,6 +12,7 @@ from myapp.services.order_service import (
 	create_order,
 	create_order_v2,
 	create_sales_invoice,
+	export_sales_orders_v2,
 	get_customer_sales_context,
 	get_delivery_note_detail,
 	get_sales_order_detail,
@@ -1605,6 +1606,60 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"]["items"][0]["order_name"], "SO-PAYMENT-OVERDUE")
 		self.assertEqual(result["data"]["summary"]["payment_overdue_count"], 1)
 		self.assertEqual(result["data"]["meta"]["filters"]["risk_filter"], "payment_overdue")
+
+	@patch("myapp.services.order_service.nowdate", return_value="2026-03-20")
+	@patch("myapp.services.order_service.search_sales_orders_v2")
+	def test_export_sales_orders_v2_returns_filtered_csv(self, mock_search_sales_orders_v2, mock_nowdate):
+		mock_search_sales_orders_v2.return_value = {
+			"status": "success",
+			"data": {
+				"items": [
+					{
+						"order_name": "SO-0001",
+						"customer_name": "测试客户",
+						"company": "Test Company",
+						"transaction_date": "2026-03-17",
+						"delivery_date": "2026-03-20",
+						"document_status": "submitted",
+						"fulfillment": {"status": "pending"},
+						"payment": {"status": "unpaid"},
+						"risk": {"is_payment_overdue": True, "payment_overdue_days": 5},
+						"order_amount_estimate": 200,
+						"outstanding_amount": 50,
+						"modified": "2026-03-18 10:00:00",
+					}
+				],
+				"pagination": {"has_more": False},
+			},
+		}
+
+		result = export_sales_orders_v2(
+			search_key="SO",
+			company="Test Company",
+			status_filter="paying",
+			risk_filter="payment_overdue",
+			sort_by="latest",
+			limit=5000,
+		)
+
+		self.assertEqual(result["data"]["exported_count"], 1)
+		self.assertEqual(result["data"]["limit"], 1000)
+		self.assertFalse(result["data"]["truncated"])
+		self.assertIn("SO-0001", result["data"]["content"])
+		self.assertIn("收款逾期 5 天", result["data"]["content"])
+		mock_search_sales_orders_v2.assert_called_once_with(
+			search_key="SO",
+			customer=None,
+			company="Test Company",
+			date_from=None,
+			date_to=None,
+			status_filter="paying",
+			exclude_cancelled=None,
+			risk_filter="payment_overdue",
+			sort_by="latest",
+			limit=100,
+			start=0,
+		)
 
 	@patch("myapp.services.order_service._build_sales_order_summary_rows")
 	@patch("myapp.services.order_service.frappe.get_all")

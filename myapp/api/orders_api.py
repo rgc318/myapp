@@ -14,6 +14,7 @@ from myapp.services.order_service import get_sales_order_detail as get_sales_ord
 from myapp.services.order_service import get_sales_invoice_detail as get_sales_invoice_detail_service
 from myapp.services.order_service import get_sales_order_status_summary as get_sales_order_status_summary_service
 from myapp.services.order_service import search_sales_orders_v2 as search_sales_orders_v2_service
+from myapp.services.order_service import export_sales_orders_v2 as export_sales_orders_v2_service
 from myapp.services.order_service import submit_delivery as submit_delivery_service
 from myapp.services.order_service import update_order_items_v2 as update_order_items_v2_service
 from myapp.services.order_service import update_order_v2 as update_order_v2_service
@@ -131,6 +132,33 @@ def search_sales_orders_v2(
 		sort_by=sort_by,
 		limit=limit,
 		start=start,
+	)
+
+
+@frappe.whitelist()
+def export_sales_orders_v2(
+	search_key: str | None = None,
+	customer: str | None = None,
+	company: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	status_filter: str | None = None,
+	exclude_cancelled=None,
+	risk_filter: str | None = None,
+	sort_by: str | None = None,
+	limit: int | None = None,
+):
+	return export_sales_orders_v2_service(
+		search_key=search_key,
+		customer=customer,
+		company=company,
+		date_from=date_from,
+		date_to=date_to,
+		status_filter=status_filter,
+		exclude_cancelled=exclude_cancelled,
+		risk_filter=risk_filter,
+		sort_by=sort_by,
+		limit=limit,
 	)
 
 

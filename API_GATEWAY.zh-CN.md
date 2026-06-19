@@ -2102,6 +2102,23 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
   - `summary`：当前检索口径下的未完成 / 待发货 / 待收款 / 已完成 / 已作废 / 逾期待发货 / 逾期未收款计数
 - 日期区间过滤作用于 `Sales Order.transaction_date`
 
+### export_sales_orders_v2
+
+方法：
+
+- `myapp.api.gateway.export_sales_orders_v2`
+
+参数：
+
+- 与 `search_sales_orders_v2` 共享筛选参数：`search_key`、`customer`、`company`、`date_from`、`date_to`、`status_filter`、`exclude_cancelled`、`risk_filter`、`sort_by`
+- `limit: int | None = 1000`
+
+行为：
+
+- 导出当前筛选结果为 CSV 文本，字段包括订单号、客户、公司、订单日期、交货日期、异常、单据状态、履约状态、收款状态、订单金额、未收金额、最近更新
+- 导出上限为 1000 条；超过上限时返回 `truncated=1`
+- 返回 `content`、`filename`、`mime_type`、`exported_count`、`limit`、`truncated`
+
 ### get_delivery_note_detail_v2
 
 方法：

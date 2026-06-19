@@ -40,6 +40,7 @@ from myapp.api.gateway import (
 	search_purchase_orders_v2,
 	create_product_and_stock,
 	create_sales_invoice,
+	export_sales_orders_v2,
 	create_uom_v2,
 	create_order,
 	create_purchase_order,
@@ -1328,6 +1329,36 @@ class TestGatewayWrappers(TestCase):
 			sort_by="unfinished_first",
 			limit=8,
 			start=5,
+		)
+
+	@patch("myapp.api.gateway.export_sales_orders_v2_service")
+	def test_export_sales_orders_v2_passes_filters_to_service(self, mock_export_sales_orders_v2_service):
+		mock_export_sales_orders_v2_service.return_value = {"status": "success", "data": {"content": ""}}
+
+		export_sales_orders_v2(
+			search_key="SO",
+			customer="Test Customer",
+			company="Test Company",
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+			status_filter="paying",
+			exclude_cancelled=True,
+			risk_filter="payment_overdue",
+			sort_by="latest",
+			limit=500,
+		)
+
+		mock_export_sales_orders_v2_service.assert_called_once_with(
+			search_key="SO",
+			customer="Test Customer",
+			company="Test Company",
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+			status_filter="paying",
+			exclude_cancelled=True,
+			risk_filter="payment_overdue",
+			sort_by="latest",
+			limit=500,
 		)
 
 	@patch("myapp.api.gateway.get_sales_order_status_summary_service")

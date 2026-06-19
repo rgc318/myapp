@@ -1,3 +1,6 @@
+import csv
+import io
+
 import frappe
 import heapq
 from frappe import _
@@ -12,6 +15,7 @@ from myapp.utils.uom import resolve_item_quantity_to_stock
 ORDER_REMARK_FIELD = "custom_order_remark"
 ORDER_DEFAULT_SALES_MODE_FIELD = "custom_default_sales_mode"
 ORDER_ITEM_SALES_MODE_FIELD = "custom_sales_mode"
+SALES_ORDER_EXPORT_LIMIT = 1000
 
 
 def _coerce_json_value(value, default):
@@ -2124,10 +2128,10 @@ def search_sales_orders_v2(
 						"company": company,
 						"date_from": resolved_date_from,
 						"date_to": resolved_date_to,
-							"status_filter": resolved_status_filter,
-							"exclude_cancelled": resolved_exclude_cancelled,
-							"risk_filter": resolved_risk_filter,
-							"sort_by": resolved_sort,
+						"status_filter": resolved_status_filter,
+						"exclude_cancelled": resolved_exclude_cancelled,
+						"risk_filter": resolved_risk_filter,
+						"sort_by": resolved_sort,
 						"limit": limit,
 						"start": start,
 					}
@@ -2140,6 +2144,115 @@ def search_sales_orders_v2(
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), _("销售订单工作台查询失败"))
 		raise
+
+
+def _normalize_sales_export_limit(limit: int | None):
+	return max(1, min(int(limit or SALES_ORDER_EXPORT_LIMIT), SALES_ORDER_EXPORT_LIMIT))
+
+
+def _sales_order_export_risk_label(row: dict):
+	risk = row.get("risk") or {}
+	labels = []
+	if risk.get("is_delivery_overdue"):
+		labels.append(_("发货逾期 {0} 天").format(cint(risk.get("delivery_overdue_days"))))
+	if risk.get("is_payment_overdue"):
+		labels.append(_("收款逾期 {0} 天").format(cint(risk.get("payment_overdue_days"))))
+	return "；".join(labels)
+
+
+def _build_sales_orders_csv(rows: list[dict]):
+	output = io.StringIO()
+	writer = csv.writer(output)
+	writer.writerow(
+		[
+			"订单号",
+			"客户",
+			"公司",
+			"订单日期",
+			"交货日期",
+			"异常",
+			"单据状态",
+			"履约状态",
+			"收款状态",
+			"订单金额",
+			"未收金额",
+			"最近更新",
+		]
+	)
+	for row in rows:
+		writer.writerow(
+			[
+				row.get("order_name"),
+				row.get("customer_name") or row.get("customer"),
+				row.get("company"),
+				row.get("transaction_date"),
+				row.get("delivery_date"),
+				_sales_order_export_risk_label(row),
+				row.get("document_status"),
+				(row.get("fulfillment") or {}).get("status"),
+				(row.get("payment") or {}).get("status"),
+				flt(row.get("order_amount_estimate") or 0),
+				flt(row.get("outstanding_amount") or 0),
+				row.get("modified"),
+			]
+		)
+	return output.getvalue()
+
+
+def export_sales_orders_v2(
+	search_key: str | None = None,
+	customer: str | None = None,
+	company: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	status_filter: str | None = None,
+	exclude_cancelled=None,
+	risk_filter: str | None = None,
+	sort_by: str | None = None,
+	limit: int | None = SALES_ORDER_EXPORT_LIMIT,
+):
+	export_limit = _normalize_sales_export_limit(limit)
+	rows = []
+	start = 0
+
+	while len(rows) < export_limit:
+		page_size = min(100, export_limit - len(rows))
+		result = search_sales_orders_v2(
+			search_key=search_key,
+			customer=customer,
+			company=company,
+			date_from=date_from,
+			date_to=date_to,
+			status_filter=status_filter,
+			exclude_cancelled=exclude_cancelled,
+			risk_filter=risk_filter,
+			sort_by=sort_by,
+			limit=page_size,
+			start=start,
+		)
+		data = result.get("data") or {}
+		items = data.get("items") or []
+		if not items:
+			break
+		rows.extend(items)
+		start += len(items)
+		pagination = data.get("pagination") or {}
+		if not pagination.get("has_more"):
+			break
+
+	csv_content = _build_sales_orders_csv(rows)
+	return {
+		"status": "success",
+		"data": {
+			"content": csv_content,
+			"filename": f"sales-orders-{nowdate()}.csv",
+			"mime_type": "text/csv;charset=utf-8",
+			"exported_count": len(rows),
+			"limit": export_limit,
+			"truncated": len(rows) >= export_limit,
+		},
+		"message": _("销售订单导出成功。"),
+	}
 
 
 def create_order(customer: str, items: list[dict], immediate: bool = False, **kwargs):
