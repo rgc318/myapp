@@ -51,7 +51,7 @@ def _normalize_sales_desk_sort(sort_by: str | None):
 
 
 def _normalize_sales_risk_filter(risk_filter: str | None):
-	allowed_filters = {"all", "delivery_overdue"}
+	allowed_filters = {"all", "delivery_overdue", "payment_overdue"}
 	resolved = (_normalize_text(risk_filter) or "all").lower()
 	if resolved not in allowed_filters:
 		return "all"
@@ -192,6 +192,8 @@ def _sales_summary_matches_risk_filter(summary_row: dict, risk_filter: str):
 	resolved_filter = _normalize_sales_risk_filter(risk_filter)
 	if resolved_filter == "delivery_overdue":
 		return bool((summary_row.get("risk") or {}).get("is_delivery_overdue"))
+	if resolved_filter == "payment_overdue":
+		return bool((summary_row.get("risk") or {}).get("is_payment_overdue"))
 	return True
 
 
@@ -530,29 +532,30 @@ def _build_sales_order_summary_rows(order_rows):
 				"order_name": row.name,
 				"customer_name": row.customer_name or row.customer,
 				"customer": row.customer,
-					"company": row.company,
-					"transaction_date": row.transaction_date,
-					"delivery_date": row.get("delivery_date"),
-					"document_status": _document_status_label(row.docstatus),
-					"order_amount_estimate": flt(row.rounded_total or row.grand_total or 0),
-					"fulfillment": fulfillment,
+				"company": row.company,
+				"transaction_date": row.transaction_date,
+				"delivery_date": row.get("delivery_date"),
+				"document_status": _document_status_label(row.docstatus),
+				"order_amount_estimate": flt(row.rounded_total or row.grand_total or 0),
+				"fulfillment": fulfillment,
 				"payment": payment,
 				"completion": completion,
 				"actions": _build_action_flags(
 					fulfillment,
 					payment,
 					invoice_names=invoice_names,
-						delivery_note_names=delivery_note_names,
-						docstatus=row.docstatus,
-					),
-					"risk": _build_sales_order_risk_flags(
-						delivery_date=row.get("delivery_date"),
-						fulfillment=fulfillment,
-						docstatus=row.docstatus,
-					),
-					"outstanding_amount": flt(payment.get("outstanding_amount", 0) or 0),
-					"modified": row.modified,
-				}
+					delivery_note_names=delivery_note_names,
+					docstatus=row.docstatus,
+				),
+				"risk": _build_sales_order_risk_flags(
+					delivery_date=row.get("delivery_date"),
+					fulfillment=fulfillment,
+					payment=payment,
+					docstatus=row.docstatus,
+				),
+				"outstanding_amount": flt(payment.get("outstanding_amount", 0) or 0),
+				"modified": row.modified,
+			}
 		)
 
 	return summaries
@@ -1007,19 +1010,29 @@ def _build_action_flags(fulfillment: dict, payment: dict, *, invoice_names: list
 	}
 
 
-def _build_sales_order_risk_flags(*, delivery_date, fulfillment: dict, docstatus: int):
+def _build_sales_order_risk_flags(*, delivery_date, fulfillment: dict, payment: dict, docstatus: int):
 	resolved_delivery_date = _normalize_text(str(delivery_date or "")) or None
 	is_delivery_overdue = False
 	delivery_overdue_days = 0
-	if resolved_delivery_date and cint(docstatus) != 2 and not fulfillment.get("is_fully_delivered"):
+	is_payment_overdue = False
+	payment_overdue_days = 0
+	is_active_order = cint(docstatus) != 2
+	if resolved_delivery_date and is_active_order and not fulfillment.get("is_fully_delivered"):
 		delta_days = (getdate(nowdate()) - getdate(resolved_delivery_date)).days
 		if delta_days > 0:
 			is_delivery_overdue = True
 			delivery_overdue_days = delta_days
+	if resolved_delivery_date and is_active_order and flt(payment.get("outstanding_amount", 0) or 0) > 0:
+		delta_days = (getdate(nowdate()) - getdate(resolved_delivery_date)).days
+		if delta_days > 0:
+			is_payment_overdue = True
+			payment_overdue_days = delta_days
 
 	return {
 		"is_delivery_overdue": is_delivery_overdue,
 		"delivery_overdue_days": delivery_overdue_days,
+		"is_payment_overdue": is_payment_overdue,
+		"payment_overdue_days": payment_overdue_days,
 	}
 
 
@@ -2006,6 +2019,7 @@ def search_sales_orders_v2(
 		completed_count = 0
 		cancelled_count = 0
 		delivery_overdue_count = 0
+		payment_overdue_count = 0
 		paged_rows = []
 		visible_cursor = 0
 		page_target = start + limit
@@ -2043,17 +2057,20 @@ def search_sales_orders_v2(
 					delivery_count += 1
 				if _is_sales_summary_payment_pending(row):
 					payment_count += 1
-					if _is_sales_summary_completed(row):
-						completed_count += 1
-					if (row.get("risk") or {}).get("is_delivery_overdue"):
-						delivery_overdue_count += 1
+				if _is_sales_summary_completed(row):
+					completed_count += 1
+				risk = row.get("risk") or {}
+				if risk.get("is_delivery_overdue"):
+					delivery_overdue_count += 1
+				if risk.get("is_payment_overdue"):
+					payment_overdue_count += 1
 
-					if not _sales_summary_matches_filter(row, resolved_status_filter, exclude_cancelled=False):
-						continue
-					if not _sales_summary_matches_risk_filter(row, resolved_risk_filter):
-						continue
+				if not _sales_summary_matches_filter(row, resolved_status_filter, exclude_cancelled=False):
+					continue
+				if not _sales_summary_matches_risk_filter(row, resolved_risk_filter):
+					continue
 
-					visible_count += 1
+				visible_count += 1
 				if resolved_sort in {"latest", "order_date_desc", "oldest"}:
 					if visible_cursor >= start and len(paged_rows) < limit:
 						paged_rows.append(row)
@@ -2092,11 +2109,12 @@ def search_sales_orders_v2(
 					"visible_count": visible_count,
 					"unfinished_count": unfinished_count,
 					"delivery_count": delivery_count,
-						"payment_count": payment_count,
-						"completed_count": completed_count,
-						"cancelled_count": cancelled_count,
-						"delivery_overdue_count": delivery_overdue_count,
-					},
+					"payment_count": payment_count,
+					"completed_count": completed_count,
+					"cancelled_count": cancelled_count,
+					"delivery_overdue_count": delivery_overdue_count,
+					"payment_overdue_count": payment_overdue_count,
+				},
 				"pagination": pagination,
 				"meta": {
 					"pagination": pagination,
