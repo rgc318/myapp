@@ -33,6 +33,7 @@
 - `myapp.api.gateway.cancel_sales_invoice`
 - `myapp.api.gateway.update_payment_status`
 - `myapp.api.gateway.cancel_payment_entry`
+- `myapp.api.gateway.create_customer_refund`
 - `myapp.api.gateway.process_sales_return`
 
 - 采购与结算：
@@ -64,7 +65,7 @@
 
 ### 模块导航
 
-- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`list_business_documents_v1`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`process_sales_return`
+- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`list_business_documents_v1`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`create_customer_refund`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
 - 采购快捷链路（规划中）：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
 - 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`list_business_documents_v1`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`、`create_supplier_v2`、`update_supplier_v2`、`disable_supplier_v2`
@@ -2580,6 +2581,76 @@ frappe.call({
   - `latest_unallocated_amount`
   - `latest_writeoff_amount`
 - 推荐前端优先直接读取这些语义化金额字段，而不是长期自行推导“实收金额 / 核销金额 / 额外收款”
+
+### create_customer_refund
+
+方法：
+
+- `myapp.api.gateway.create_customer_refund`
+
+参数：
+
+- `return_invoice_name: str`
+- `refund_amount: float`
+- `request_id: str | None`
+- `mode_of_payment: str | None`
+- `reference_no: str | None`
+- `reference_date: str | None`
+- `remarks: str | None`
+
+行为：
+
+- 基于已提交的销售退货发票创建并提交退款 `Payment Entry`
+- 只支持 `Sales Invoice.is_return = 1` 的退货发票，不允许对普通销售发票直接登记退款
+- 退款金额不能大于退货发票当前可退金额，即 `abs(outstanding_amount)`
+- 当使用相同 `request_id` 重试时，直接返回第一次成功的退款结果
+- 当前接口应明确理解为：
+  - “退货发票依据版客户退款”
+  - 用于退货已确认后的正式退款登记
+  - 不用于处理任意未分配预收款退款或无来源退款
+
+当前返回重点字段：
+
+- `payment_entry`
+- `refund_amount`
+- `refundable_amount_before_refund`
+- `return_invoice`
+- `source_invoice`
+- `mode_of_payment`
+- `reference_no`
+- `reference_date`
+
+HTTP 调用示例：
+
+```bash
+curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.create_customer_refund \
+  -H "Authorization: token api_key:api_secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "return_invoice_name": "ACC-SINV-RET-2026-00001",
+    "refund_amount": 80,
+    "mode_of_payment": "Bank",
+    "reference_no": "REFUND-001",
+    "request_id": "refund-idem-001"
+  }'
+```
+
+Frappe Desk / 前端调用：
+
+```javascript
+frappe.call({
+  method: "myapp.api.gateway.create_customer_refund",
+  args: {
+    return_invoice_name: "ACC-SINV-RET-2026-00001",
+    refund_amount: 80,
+    mode_of_payment: "Bank",
+    reference_no: "REFUND-001",
+    request_id: "refund-idem-001",
+  },
+}).then((r) => {
+  console.log(r.message.data.payment_entry);
+});
+```
 
 ### process_sales_return
 

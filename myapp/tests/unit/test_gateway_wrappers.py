@@ -13,6 +13,7 @@ from myapp.api.gateway import (
 	cancel_sales_invoice,
 	cancel_supplier_payment,
 	create_customer_v2,
+	create_customer_refund,
 	create_product_v2,
 	create_supplier_v2,
 	create_purchase_invoice,
@@ -133,6 +134,7 @@ class TestGatewayWrappers(TestCase):
 				cancel_sales_invoice,
 				cancel_supplier_payment,
 				create_customer_v2,
+				create_customer_refund,
 				create_supplier_v2,
 				create_uom_v2,
 			update_order_v2,
@@ -301,6 +303,21 @@ class TestGatewayWrappers(TestCase):
 		mock_cancel_payment_entry_service.assert_called_once_with(
 			payment_entry_name="ACC-PAY-0001",
 			request_id="pay-cancel-001",
+		)
+
+	@patch("myapp.api.gateway.create_customer_refund_service")
+	def test_create_customer_refund_passes_request_id_to_service(self, mock_create_customer_refund_service):
+		mock_create_customer_refund_service.return_value = {
+			"status": "success",
+			"payment_entry": "ACC-PAY-REF-0001",
+		}
+
+		create_customer_refund("SINV-RET-0001", 80, request_id="refund-001")
+
+		mock_create_customer_refund_service.assert_called_once_with(
+			return_invoice_name="SINV-RET-0001",
+			refund_amount=80,
+			request_id="refund-001",
 		)
 
 	@patch("myapp.api.gateway.receive_purchase_order_service")
@@ -1326,6 +1343,7 @@ class TestGatewayWrappers(TestCase):
 			date_to="2026-03-31",
 			status_filter="unfinished",
 			exclude_cancelled=True,
+			risk_filter=None,
 			sort_by="unfinished_first",
 			limit=8,
 			start=5,

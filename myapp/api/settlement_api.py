@@ -2,6 +2,7 @@ import frappe
 
 from myapp.services.settlement_service import cancel_payment_entry as cancel_payment_entry_service
 from myapp.services.settlement_service import confirm_pending_document as confirm_pending_document_service
+from myapp.services.settlement_service import create_customer_refund as create_customer_refund_service
 from myapp.services.settlement_service import process_sales_return as process_sales_return_service
 from myapp.services.settlement_service import update_payment_status as update_payment_status_service
 
@@ -24,6 +25,15 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 @frappe.whitelist()
 def cancel_payment_entry(payment_entry_name: str, **kwargs):
 	return cancel_payment_entry_service(payment_entry_name=payment_entry_name, **kwargs)
+
+
+@frappe.whitelist()
+def create_customer_refund(return_invoice_name: str, refund_amount: float, **kwargs):
+	return create_customer_refund_service(
+		return_invoice_name=return_invoice_name,
+		refund_amount=refund_amount,
+		**kwargs,
+	)
 
 
 @frappe.whitelist()

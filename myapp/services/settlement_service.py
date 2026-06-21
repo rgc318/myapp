@@ -240,6 +240,68 @@ def cancel_payment_entry(payment_entry_name: str, **kwargs):
 		raise
 
 
+def create_customer_refund(return_invoice_name: str, refund_amount: float, **kwargs):
+	from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
+
+	if not return_invoice_name:
+		frappe.throw(_("return_invoice_name 不能为空。"))
+
+	refund_amount = flt(refund_amount)
+	if refund_amount <= 0:
+		frappe.throw(_("refund_amount 必须大于 0。"))
+
+	request_id = kwargs.get("request_id")
+
+	try:
+		def _create_customer_refund():
+			return_invoice = frappe.get_doc("Sales Invoice", return_invoice_name)
+			if cint(return_invoice.docstatus) != 1:
+				frappe.throw(_("只有已提交的销售退货发票才能登记退款。"))
+			if not cint(return_invoice.get("is_return")):
+				frappe.throw(_("只能基于销售退货发票登记客户退款。"))
+
+			refundable_amount = abs(flt(return_invoice.get("outstanding_amount")))
+			if refundable_amount <= 0:
+				frappe.throw(_("销售退货发票 {0} 当前没有可退金额。").format(return_invoice.name))
+			if refund_amount > refundable_amount:
+				frappe.throw(
+					_("退款金额不能大于当前可退金额 {0}。").format(refundable_amount)
+				)
+
+			pe = get_payment_entry("Sales Invoice", return_invoice.name, party_amount=refund_amount)
+			pe.mode_of_payment = kwargs.get("mode_of_payment") or pe.mode_of_payment or "Cash"
+			pe.reference_no = kwargs.get("reference_no") or _("客户退款")
+			pe.reference_date = kwargs.get("reference_date") or nowdate()
+			if kwargs.get("remarks"):
+				pe.remarks = kwargs["remarks"]
+
+			pe.insert()
+			pe.submit()
+
+			return {
+				"status": "success",
+				"payment_entry": pe.name,
+				"refund_amount": refund_amount,
+				"refundable_amount_before_refund": refundable_amount,
+				"return_invoice": return_invoice.name,
+				"source_invoice": return_invoice.get("return_against"),
+				"mode_of_payment": pe.mode_of_payment,
+				"reference_no": pe.reference_no,
+				"reference_date": pe.reference_date,
+				"message": _("成功为销售退货发票 {0} 登记客户退款 {1}。").format(
+					return_invoice.name,
+					refund_amount,
+				),
+			}
+
+		return run_idempotent("create_customer_refund", request_id, _create_customer_refund)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("客户退款登记失败"))
+		raise
+
+
 def process_sales_return(source_doctype: str, source_name: str, return_items: list[dict] | None = None, **kwargs):
 	if not source_doctype or not source_name:
 		frappe.throw(_("source_doctype 和 source_name 不能为空。"))

@@ -51,7 +51,13 @@ from .reports_api import (
 )
 from .inventory_api import list_inventory_stock_summary_v1, list_stock_ledger_entries_v1
 from .returns_api import get_return_source_context_v2
-from .settlement_api import cancel_payment_entry, confirm_pending_document, process_sales_return, update_payment_status
+from .settlement_api import (
+	cancel_payment_entry,
+	confirm_pending_document,
+	create_customer_refund,
+	process_sales_return,
+	update_payment_status,
+)
 from .uoms_api import create_uom_v2, delete_uom_v2, disable_uom_v2, get_uom_detail_v2, list_uoms_v2, update_uom_v2
 from .wholesale_api import search_product
 
@@ -71,6 +77,7 @@ __all__ = [
 	"create_purchase_invoice_from_receipt",
 	"create_purchase_order",
 	"get_purchase_company_context",
+	"create_customer_refund",
 	"build_print_file_download_v1",
 	"get_print_file_v1",
 	"get_print_preview_v1",

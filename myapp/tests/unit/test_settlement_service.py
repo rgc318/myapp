@@ -9,6 +9,7 @@ import frappe
 from myapp.services.settlement_service import (
 	cancel_payment_entry,
 	confirm_pending_document,
+	create_customer_refund,
 	process_sales_return,
 	update_payment_status,
 )
@@ -303,4 +304,93 @@ class TestSettlementService(TestCase):
 		result = cancel_payment_entry("ACC-PAY-0099", request_id="pay-cancel-001")
 
 		self.assertEqual(result["payment_entry"], "ACC-PAY-0099")
+		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.settlement_service.frappe.get_doc")
+	def test_create_customer_refund_creates_payment_entry_for_return_invoice(self, mock_get_doc):
+		return_invoice = frappe._dict(
+			{
+				"name": "SINV-RET-0001",
+				"docstatus": 1,
+				"is_return": 1,
+				"outstanding_amount": -100,
+				"return_against": "SINV-0001",
+			}
+		)
+		mock_get_doc.return_value = return_invoice
+
+		pe = MagicMock()
+		pe.name = "ACC-PAY-REF-0001"
+		pe.mode_of_payment = None
+
+		fake_payment_entry_module = ModuleType("payment_entry")
+		fake_get_payment_entry = MagicMock(return_value=pe)
+		fake_payment_entry_module.get_payment_entry = fake_get_payment_entry
+
+		with patch.dict(
+			sys.modules,
+			{"erpnext.accounts.doctype.payment_entry.payment_entry": fake_payment_entry_module},
+		), patch("myapp.services.settlement_service.nowdate", return_value="2026-04-01"):
+			result = create_customer_refund(
+				"SINV-RET-0001",
+				80,
+				mode_of_payment="Bank",
+				reference_no="REF-001",
+				remarks="客户退货退款",
+			)
+
+		fake_get_payment_entry.assert_called_once_with(
+			"Sales Invoice",
+			"SINV-RET-0001",
+			party_amount=80.0,
+		)
+		pe.insert.assert_called_once()
+		pe.submit.assert_called_once()
+		self.assertEqual(pe.mode_of_payment, "Bank")
+		self.assertEqual(pe.reference_no, "REF-001")
+		self.assertEqual(pe.reference_date, "2026-04-01")
+		self.assertEqual(pe.remarks, "客户退货退款")
+		self.assertEqual(result["payment_entry"], "ACC-PAY-REF-0001")
+		self.assertEqual(result["refund_amount"], 80.0)
+		self.assertEqual(result["return_invoice"], "SINV-RET-0001")
+		self.assertEqual(result["source_invoice"], "SINV-0001")
+
+	@patch("myapp.services.settlement_service.frappe.get_doc")
+	def test_create_customer_refund_rejects_normal_sales_invoice(self, mock_get_doc):
+		mock_get_doc.return_value = frappe._dict(
+			{
+				"name": "SINV-0001",
+				"docstatus": 1,
+				"is_return": 0,
+				"outstanding_amount": 100,
+			}
+		)
+
+		with self.assertRaises(frappe.ValidationError):
+			create_customer_refund("SINV-0001", 10)
+
+	@patch("myapp.services.settlement_service.frappe.get_doc")
+	def test_create_customer_refund_rejects_over_refund(self, mock_get_doc):
+		mock_get_doc.return_value = frappe._dict(
+			{
+				"name": "SINV-RET-0002",
+				"docstatus": 1,
+				"is_return": 1,
+				"outstanding_amount": -50,
+			}
+		)
+
+		with self.assertRaises(frappe.ValidationError):
+			create_customer_refund("SINV-RET-0002", 60)
+
+	@patch("myapp.services.settlement_service.run_idempotent")
+	def test_create_customer_refund_uses_idempotent_runner(self, mock_run_idempotent):
+		mock_run_idempotent.return_value = {
+			"status": "success",
+			"payment_entry": "ACC-PAY-REF-0099",
+		}
+
+		result = create_customer_refund("SINV-RET-0099", 20, request_id="refund-001")
+
+		self.assertEqual(result["payment_entry"], "ACC-PAY-REF-0099")
 		mock_run_idempotent.assert_called_once()
