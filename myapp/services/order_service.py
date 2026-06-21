@@ -945,6 +945,103 @@ def _get_latest_payment_entry_summary(invoice_names: list[str]):
 	)
 
 
+def _collect_sales_invoice_payment_entries(invoice_names: list[str]):
+	if not invoice_names:
+		return []
+
+	reference_rows = frappe.get_all(
+		"Payment Entry Reference",
+		filters={
+			"reference_doctype": "Sales Invoice",
+			"reference_name": ["in", invoice_names],
+			"parenttype": "Payment Entry",
+			"parentfield": "references",
+		},
+		fields=["parent", "reference_name", "allocated_amount", "modified"],
+		limit_page_length=0,
+	)
+	if not reference_rows:
+		return []
+
+	parent_names = []
+	total_allocated_by_parent = {}
+	for row in reference_rows:
+		parent = getattr(row, "parent", None)
+		if not parent:
+			continue
+		if parent not in parent_names:
+			parent_names.append(parent)
+		total_allocated_by_parent[parent] = total_allocated_by_parent.get(parent, 0) + flt(
+			getattr(row, "allocated_amount", 0) or 0
+		)
+
+	if not parent_names:
+		return []
+
+	payment_entry_rows = frappe.get_all(
+		"Payment Entry",
+		filters={"name": ["in", parent_names], "docstatus": 1},
+		fields=[
+			"name",
+			"posting_date",
+			"payment_type",
+			"mode_of_payment",
+			"party",
+			"paid_amount",
+			"received_amount",
+			"unallocated_amount",
+			"reference_no",
+			"reference_date",
+			"modified",
+		],
+		order_by="modified desc",
+		limit_page_length=0,
+	)
+	if not payment_entry_rows:
+		return []
+
+	payment_entry_map = {getattr(row, "name", None): row for row in payment_entry_rows}
+	entries = []
+	for row in reference_rows:
+		parent = getattr(row, "parent", None)
+		payment_entry = payment_entry_map.get(parent)
+		if not payment_entry:
+			continue
+		allocated_amount = flt(getattr(row, "allocated_amount", 0) or 0)
+		parent_total_allocated = flt(total_allocated_by_parent.get(parent, 0) or 0)
+		parent_paid_amount = flt(
+			getattr(payment_entry, "paid_amount", None)
+			or getattr(payment_entry, "received_amount", None)
+			or 0
+		)
+		parent_effective_paid_amount = min(parent_paid_amount, parent_total_allocated)
+		actual_paid_amount = (
+			parent_effective_paid_amount * allocated_amount / parent_total_allocated
+			if parent_total_allocated > 0
+			else 0
+		)
+		entries.append(
+			{
+				"payment_entry": parent,
+				"invoice_name": getattr(row, "reference_name", None),
+				"posting_date": getattr(payment_entry, "posting_date", None),
+				"payment_type": getattr(payment_entry, "payment_type", None),
+				"mode_of_payment": getattr(payment_entry, "mode_of_payment", None),
+				"party": getattr(payment_entry, "party", None),
+				"paid_amount": parent_paid_amount,
+				"allocated_amount": allocated_amount,
+				"actual_paid_amount": max(actual_paid_amount, 0),
+				"writeoff_amount": max(allocated_amount - actual_paid_amount, 0),
+				"unallocated_amount": flt(getattr(payment_entry, "unallocated_amount", 0) or 0),
+				"reference_no": getattr(payment_entry, "reference_no", None),
+				"reference_date": getattr(payment_entry, "reference_date", None),
+				"modified": getattr(payment_entry, "modified", None),
+			}
+		)
+
+	return sorted(entries, key=lambda entry: str(entry.get("modified") or ""), reverse=True)
+
+
 def _build_completion_summary(fulfillment: dict, payment: dict, *, docstatus: int):
 	if cint(docstatus) == 2:
 		return {"status": "closed", "is_completed": False}
@@ -1843,6 +1940,7 @@ def get_sales_invoice_detail(sales_invoice_name: str):
 		payment = _build_payment_summary([si])
 		latest_payment_entry = _get_latest_payment_entry_summary([si.name])
 		_apply_sales_latest_payment_metrics(payment, latest_payment_entry)
+		payment["entries"] = _collect_sales_invoice_payment_entries([si.name])
 
 		return {
 			"status": "success",

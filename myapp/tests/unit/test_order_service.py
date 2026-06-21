@@ -5,6 +5,7 @@ import frappe
 
 from myapp.services.order_service import (
 	_build_action_flags,
+	_collect_sales_invoice_payment_entries,
 	_build_sales_order_summary_rows,
 	cancel_delivery_note,
 	cancel_order_v2,
@@ -267,12 +268,14 @@ class TestOrderService(TestCase):
 
 	@patch("myapp.services.order_service._serialize_sales_invoice_items")
 	@patch("myapp.services.order_service._build_sales_invoice_references")
+	@patch("myapp.services.order_service._collect_sales_invoice_payment_entries")
 	@patch("myapp.services.order_service._get_latest_payment_entry_summary")
 	@patch("myapp.services.order_service.frappe.get_doc")
 	def test_get_sales_invoice_detail_returns_payment_and_references(
 		self,
 		mock_get_doc,
 		mock_get_latest_payment_entry_summary,
+		mock_collect_sales_invoice_payment_entries,
 		mock_build_sales_invoice_references,
 		mock_serialize_sales_invoice_items,
 	):
@@ -343,16 +346,88 @@ class TestOrderService(TestCase):
 			"total_actual_paid_amount": 95,
 			"total_writeoff_amount": 5,
 		}
+		mock_collect_sales_invoice_payment_entries.return_value = [
+			{
+				"payment_entry": "ACC-PAY-0001",
+				"allocated_amount": 100,
+				"actual_paid_amount": 95,
+				"writeoff_amount": 5,
+			}
+		]
 
 		result = get_sales_invoice_detail("ACC-SINV-0001")
 
 		self.assertEqual(result["status"], "success")
 		self.assertEqual(result["data"]["payment"]["actual_paid_amount"], 95)
 		self.assertEqual(result["data"]["payment"]["total_writeoff_amount"], 5)
+		self.assertEqual(result["data"]["payment"]["entries"][0]["payment_entry"], "ACC-PAY-0001")
 		self.assertEqual(result["data"]["references"]["sales_orders"], ["SO-0001"])
 		self.assertEqual(result["data"]["references"]["delivery_notes"], ["MAT-DN-0001"])
 		self.assertEqual(result["data"]["items"][0]["item_code"], "SKU010")
 		self.assertEqual(result["data"]["items"][0]["specification"], "500ml")
+
+	@patch("myapp.services.order_service.frappe.get_all")
+	def test_collect_sales_invoice_payment_entries_returns_submitted_payments(self, mock_get_all):
+		mock_get_all.side_effect = [
+			[
+				frappe._dict(
+					{
+						"parent": "ACC-PAY-0001",
+						"reference_name": "ACC-SINV-0001",
+						"allocated_amount": 95,
+						"modified": "2026-06-20 10:00:00",
+					}
+				),
+				frappe._dict(
+					{
+						"parent": "ACC-PAY-0002",
+						"reference_name": "ACC-SINV-0001",
+						"allocated_amount": 50,
+						"modified": "2026-06-21 10:00:00",
+					}
+				),
+			],
+			[
+				frappe._dict(
+					{
+						"name": "ACC-PAY-0001",
+						"posting_date": "2026-06-20",
+						"payment_type": "Receive",
+						"mode_of_payment": "Cash",
+						"party": "CUST-0001",
+						"paid_amount": 95,
+						"received_amount": 95,
+						"unallocated_amount": 0,
+						"reference_no": "CASH-001",
+						"reference_date": "2026-06-20",
+						"modified": "2026-06-20 10:00:00",
+					}
+				),
+				frappe._dict(
+					{
+						"name": "ACC-PAY-0002",
+						"posting_date": "2026-06-21",
+						"payment_type": "Receive",
+						"mode_of_payment": "Bank",
+						"party": "CUST-0001",
+						"paid_amount": 70,
+						"received_amount": 70,
+						"unallocated_amount": 20,
+						"reference_no": "BANK-001",
+						"reference_date": "2026-06-21",
+						"modified": "2026-06-21 10:00:00",
+					}
+				),
+			],
+		]
+
+		result = _collect_sales_invoice_payment_entries(["ACC-SINV-0001"])
+
+		self.assertEqual([row["payment_entry"] for row in result], ["ACC-PAY-0002", "ACC-PAY-0001"])
+		self.assertEqual(result[0]["allocated_amount"], 50)
+		self.assertEqual(result[0]["actual_paid_amount"], 50)
+		self.assertEqual(result[0]["unallocated_amount"], 20)
+		self.assertEqual(result[1]["mode_of_payment"], "Cash")
 
 	@patch("myapp.services.order_service.frappe.get_all")
 	def test_build_sales_invoice_references_falls_back_to_sales_order_delivery_notes(self, mock_get_all):
