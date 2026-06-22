@@ -1978,6 +1978,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 当存在发货单时，`delivery.status` 会按真实履约结果聚合为 `shipped`
 - 当存在销售发票时，`actions.can_create_sales_invoice` 会自动变为 `false`
 - 当存在未结清销售发票时，`actions.can_record_payment` 会按真实应收状态返回
+- 返回 `timeline[]` 业务时间线，用于订单详情页串联销售订单、发货单、销售发票、收款单、退货发票和客户退款
 
 适用场景：
 
@@ -2011,6 +2012,15 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `items[].image`
 - `references.delivery_notes`
 - `references.sales_invoices`
+- `timeline[].type`
+- `timeline[].title`
+- `timeline[].doctype`
+- `timeline[].docname`
+- `timeline[].status`
+- `timeline[].date`
+- `timeline[].amount`
+- `timeline[].related_doctype`
+- `timeline[].related_docname`
 - `meta.remarks`
 
 补充说明：
@@ -2018,6 +2028,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `items` 当前会返回适合移动端 / 详情页直接渲染的商品摘要字段
 - 其中 `items[].image` 来自 `Item.image`，用于避免前端为订单详情逐行再次查询商品主数据
 - `remarks` 当前优先读取正式自定义字段 `Sales Order.custom_order_remark`；若站点尚未迁移，则回退兼容旧字段口径
+- `timeline` 是展示型聚合字段，按业务日期 / 修改时间排序；前端不应再自行拼接发货、开票、收款和退款时间线
 
 ### get_sales_order_status_summary
 

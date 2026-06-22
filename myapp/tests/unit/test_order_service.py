@@ -5,6 +5,7 @@ import frappe
 
 from myapp.services.order_service import (
 	_build_action_flags,
+	_build_sales_order_timeline,
 	_collect_sales_invoice_payment_entries,
 	_build_sales_order_summary_rows,
 	cancel_delivery_note,
@@ -1271,8 +1272,18 @@ class TestOrderService(TestCase):
 
 	@patch("myapp.services.order_service.frappe.get_all")
 	@patch("myapp.services.order_service._get_item_specification_field", return_value="custom_specification")
+	@patch(
+		"myapp.services.order_service._build_sales_order_timeline",
+		return_value=[{"type": "sales_order", "docname": "SO-0001"}],
+	)
 	@patch("myapp.services.order_service.frappe.get_doc")
-	def test_get_sales_order_detail_aggregates_statuses(self, mock_get_doc, mock_get_item_specification_field, mock_get_all):
+	def test_get_sales_order_detail_aggregates_statuses(
+		self,
+		mock_get_doc,
+		mock_build_sales_order_timeline,
+		mock_get_item_specification_field,
+		mock_get_all,
+	):
 		so = frappe._dict(
 			{
 				"name": "SO-0001",
@@ -1369,6 +1380,59 @@ class TestOrderService(TestCase):
 				)
 			],
 			[frappe._dict({"name": "ITEM-001", "image": "/files/item-001.png", "custom_specification": "500ml"})],
+			[
+				frappe._dict(
+					{
+						"name": "DN-0001",
+						"docstatus": 1,
+						"posting_date": "2026-03-18",
+						"posting_time": "09:00:00",
+						"grand_total": 200,
+						"modified": "2026-03-18 09:00:00",
+					}
+				)
+			],
+			[
+				frappe._dict(
+					{
+						"name": "SINV-0001",
+						"docstatus": 1,
+						"posting_date": "2026-03-19",
+						"grand_total": 200,
+						"outstanding_amount": 50,
+						"is_return": 0,
+						"modified": "2026-03-19 09:00:00",
+					}
+				)
+			],
+			[],
+			[
+				frappe._dict(
+					{
+						"parent": "ACC-PAY-0001",
+						"reference_name": "SINV-0001",
+						"allocated_amount": 150,
+						"modified": "2026-03-20 10:00:00",
+					}
+				)
+			],
+			[
+				frappe._dict(
+					{
+						"name": "ACC-PAY-0001",
+						"posting_date": "2026-03-20",
+						"payment_type": "Receive",
+						"mode_of_payment": "Cash",
+						"party": "Test Customer",
+						"paid_amount": 150,
+						"received_amount": 150,
+						"unallocated_amount": 0,
+						"reference_no": "CASH-001",
+						"reference_date": "2026-03-20",
+						"modified": "2026-03-20 10:00:00",
+					}
+				)
+			],
 		]
 
 		result = get_sales_order_detail("SO-0001")
@@ -1389,6 +1453,129 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"]["shipping"]["city"], "测试市")
 		self.assertEqual(result["data"]["items"][0]["image"], "/files/item-001.png")
 		self.assertEqual(result["data"]["items"][0]["specification"], "500ml")
+		self.assertEqual(result["data"]["timeline"][0]["type"], "sales_order")
+		mock_build_sales_order_timeline.assert_called_once_with(so, ["DN-0001"], ["SINV-0001"])
+
+	@patch("myapp.services.order_service.frappe.get_all")
+	def test_build_sales_order_timeline_includes_downstream_documents(self, mock_get_all):
+		so = frappe._dict(
+			{
+				"name": "SO-0001",
+				"docstatus": 1,
+				"transaction_date": "2026-03-17",
+				"rounded_total": 200,
+			}
+		)
+		so.get = lambda key, default=None: so[key] if key in so else default
+		delivery_rows = [
+			frappe._dict(
+				{
+					"name": "DN-0001",
+					"docstatus": 1,
+					"posting_date": "2026-03-18",
+					"posting_time": "09:00:00",
+					"grand_total": 200,
+					"modified": "2026-03-18 09:00:00",
+				}
+			)
+		]
+		invoice_rows = [
+			frappe._dict(
+				{
+					"name": "SINV-0001",
+					"docstatus": 1,
+					"posting_date": "2026-03-19",
+					"grand_total": 200,
+					"outstanding_amount": 0,
+					"modified": "2026-03-19 09:00:00",
+				}
+			)
+		]
+		return_invoice_rows = [
+			frappe._dict(
+				{
+					"name": "SINV-RET-0001",
+					"docstatus": 1,
+					"posting_date": "2026-03-21",
+					"grand_total": -80,
+					"outstanding_amount": -20,
+					"return_against": "SINV-0001",
+					"modified": "2026-03-21 09:00:00",
+				}
+			)
+		]
+		payment_reference_rows = [
+			frappe._dict(
+				{
+					"parent": "ACC-PAY-0001",
+					"reference_name": "SINV-0001",
+					"allocated_amount": 200,
+					"modified": "2026-03-20 10:00:00",
+				}
+			),
+			frappe._dict(
+				{
+					"parent": "ACC-PAY-REF-0001",
+					"reference_name": "SINV-RET-0001",
+					"allocated_amount": 60,
+					"modified": "2026-03-22 10:00:00",
+				}
+			),
+		]
+		payment_rows = [
+			frappe._dict(
+				{
+					"name": "ACC-PAY-0001",
+					"posting_date": "2026-03-20",
+					"payment_type": "Receive",
+					"mode_of_payment": "Cash",
+					"paid_amount": 200,
+					"received_amount": 200,
+					"unallocated_amount": 0,
+					"reference_no": "CASH-001",
+					"reference_date": "2026-03-20",
+					"modified": "2026-03-20 10:00:00",
+				}
+			),
+			frappe._dict(
+				{
+					"name": "ACC-PAY-REF-0001",
+					"posting_date": "2026-03-22",
+					"payment_type": "Pay",
+					"mode_of_payment": "Bank",
+					"paid_amount": 60,
+					"received_amount": 60,
+					"unallocated_amount": 0,
+					"reference_no": "REF-001",
+					"reference_date": "2026-03-22",
+					"modified": "2026-03-22 10:00:00",
+				}
+			),
+		]
+
+		def fake_get_all(doctype, filters=None, **kwargs):
+			filters = filters or {}
+			if doctype == "Delivery Note":
+				return delivery_rows
+			if doctype == "Sales Invoice" and "return_against" in filters:
+				return return_invoice_rows
+			if doctype == "Sales Invoice":
+				return invoice_rows
+			if doctype == "Payment Entry Reference":
+				return payment_reference_rows
+			if doctype == "Payment Entry":
+				return payment_rows
+			return []
+
+		mock_get_all.side_effect = fake_get_all
+
+		result = _build_sales_order_timeline(so, ["DN-0001"], ["SINV-0001"])
+
+		self.assertEqual(
+			[event["type"] for event in result],
+			["sales_order", "delivery_note", "sales_invoice", "payment_entry", "sales_return", "customer_refund"],
+		)
+		self.assertEqual(result[-1]["related_docname"], "SINV-RET-0001")
 
 	def test_build_action_flags_allows_sales_order_cancel_without_downstream_docs(self):
 		result = _build_action_flags(

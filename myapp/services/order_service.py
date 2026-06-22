@@ -1677,6 +1677,161 @@ def _collect_sales_order_reference_names(order_name: str):
 	return delivery_note_names, invoice_names
 
 
+def _timeline_datetime_key(event: dict):
+	value = event.get("datetime") or event.get("date") or event.get("modified") or "1900-01-01"
+	try:
+		return frappe.utils.get_datetime(value)
+	except Exception:
+		return frappe.utils.get_datetime("1900-01-01")
+
+
+def _document_status_from_row(row):
+	return _document_status_label(cint(getattr(row, "docstatus", 0) or 0))
+
+
+def _build_sales_order_timeline(so, delivery_note_names: list[str], invoice_names: list[str]):
+	events = [
+		{
+			"key": f"sales_order:{so.name}",
+			"type": "sales_order",
+			"title": _("销售订单"),
+			"doctype": "Sales Order",
+			"docname": so.name,
+			"status": _document_status_label(so.docstatus),
+			"date": so.get("transaction_date"),
+			"datetime": so.get("transaction_date"),
+			"amount": flt(so.get("rounded_total") or so.get("grand_total") or 0),
+			"description": _("订单创建 / 提交"),
+		}
+	]
+
+	if delivery_note_names:
+		delivery_rows = frappe.get_all(
+			"Delivery Note",
+			filters={"name": ["in", delivery_note_names]},
+			fields=["name", "docstatus", "posting_date", "posting_time", "grand_total", "rounded_total", "modified"],
+			limit_page_length=0,
+		)
+		for row in delivery_rows:
+			events.append(
+				{
+					"key": f"delivery_note:{row.name}",
+					"type": "delivery_note",
+					"title": _("销售发货"),
+					"doctype": "Delivery Note",
+					"docname": row.name,
+					"status": _document_status_from_row(row),
+					"date": getattr(row, "posting_date", None),
+					"datetime": f"{getattr(row, 'posting_date', '')} {getattr(row, 'posting_time', '')}".strip(),
+					"modified": getattr(row, "modified", None),
+					"amount": flt(getattr(row, "rounded_total", None) or getattr(row, "grand_total", None) or 0),
+					"description": _("销售发货单"),
+				}
+			)
+
+	invoice_rows = []
+	if invoice_names:
+		invoice_rows = frappe.get_all(
+			"Sales Invoice",
+			filters={"name": ["in", invoice_names]},
+			fields=[
+				"name",
+				"docstatus",
+				"posting_date",
+				"due_date",
+				"grand_total",
+				"rounded_total",
+				"outstanding_amount",
+				"is_return",
+				"return_against",
+				"modified",
+			],
+			limit_page_length=0,
+		)
+		for row in invoice_rows:
+			events.append(
+				{
+					"key": f"sales_invoice:{row.name}",
+					"type": "sales_invoice",
+					"title": _("销售开票"),
+					"doctype": "Sales Invoice",
+					"docname": row.name,
+					"status": _document_status_from_row(row),
+					"date": getattr(row, "posting_date", None),
+					"datetime": getattr(row, "posting_date", None),
+					"modified": getattr(row, "modified", None),
+					"amount": flt(getattr(row, "rounded_total", None) or getattr(row, "grand_total", None) or 0),
+					"outstanding_amount": flt(getattr(row, "outstanding_amount", 0) or 0),
+					"description": _("销售发票"),
+				}
+			)
+
+	return_invoice_rows = []
+	if invoice_names:
+		return_invoice_rows = frappe.get_all(
+			"Sales Invoice",
+			filters={"return_against": ["in", invoice_names], "is_return": 1},
+			fields=[
+				"name",
+				"docstatus",
+				"posting_date",
+				"grand_total",
+				"rounded_total",
+				"outstanding_amount",
+				"return_against",
+				"modified",
+			],
+			limit_page_length=0,
+		)
+		for row in return_invoice_rows:
+			events.append(
+				{
+					"key": f"sales_return:{row.name}",
+					"type": "sales_return",
+					"title": _("销售退货"),
+					"doctype": "Sales Invoice",
+					"docname": row.name,
+					"status": _document_status_from_row(row),
+					"date": getattr(row, "posting_date", None),
+					"datetime": getattr(row, "posting_date", None),
+					"modified": getattr(row, "modified", None),
+					"amount": abs(flt(getattr(row, "rounded_total", None) or getattr(row, "grand_total", None) or 0)),
+					"outstanding_amount": abs(flt(getattr(row, "outstanding_amount", 0) or 0)),
+					"related_doctype": "Sales Invoice",
+					"related_docname": getattr(row, "return_against", None),
+					"description": _("退货发票"),
+				}
+			)
+
+	return_invoice_names = {
+		getattr(row, "name", None) for row in return_invoice_rows if getattr(row, "name", None)
+	}
+	payment_invoice_names = invoice_names + list(return_invoice_names)
+	for entry in _collect_sales_invoice_payment_entries(payment_invoice_names):
+		is_refund = entry.get("invoice_name") in return_invoice_names
+		events.append(
+			{
+				"key": f"payment_entry:{entry.get('payment_entry')}:{entry.get('invoice_name')}",
+				"type": "customer_refund" if is_refund else "payment_entry",
+				"title": _("客户退款") if is_refund else _("客户收款"),
+				"doctype": "Payment Entry",
+				"docname": entry.get("payment_entry"),
+				"status": "submitted",
+				"date": entry.get("posting_date"),
+				"datetime": entry.get("posting_date") or entry.get("modified"),
+				"modified": entry.get("modified"),
+				"amount": flt(entry.get("allocated_amount") or 0),
+				"related_doctype": "Sales Invoice",
+				"related_docname": entry.get("invoice_name"),
+				"mode_of_payment": entry.get("mode_of_payment"),
+				"reference_no": entry.get("reference_no"),
+				"description": _("退款核销退货发票") if is_refund else _("收款核销销售发票"),
+			}
+		)
+
+	return sorted(events, key=_timeline_datetime_key)
+
+
 def _load_sales_invoice_rows(invoice_names: list[str]):
 	if not invoice_names:
 		return []
@@ -1855,6 +2010,7 @@ def get_sales_order_detail(order_name: str):
 					"sales_invoices": invoice_names,
 					"latest_payment_entry": latest_payment_entry.get("payment_entry"),
 				},
+				"timeline": _build_sales_order_timeline(so, delivery_note_names, invoice_names),
 				"meta": {
 					"company": so.company,
 					"currency": so.get("currency"),
