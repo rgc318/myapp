@@ -33,6 +33,7 @@
 - `myapp.api.gateway.cancel_sales_invoice`
 - `myapp.api.gateway.update_payment_status`
 - `myapp.api.gateway.cancel_payment_entry`
+- `myapp.api.gateway.get_customer_refund_context_v1`
 - `myapp.api.gateway.create_customer_refund`
 - `myapp.api.gateway.process_sales_return`
 
@@ -65,7 +66,7 @@
 
 ### 模块导航
 
-- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`list_business_documents_v1`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`create_customer_refund`、`process_sales_return`
+- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`list_business_documents_v1`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`get_customer_refund_context_v1`、`create_customer_refund`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
 - 采购快捷链路（规划中）：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
 - 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`list_business_documents_v1`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`、`create_supplier_v2`、`update_supplier_v2`、`disable_supplier_v2`
@@ -2582,6 +2583,58 @@ frappe.call({
   - `latest_writeoff_amount`
 - 推荐前端优先直接读取这些语义化金额字段，而不是长期自行推导“实收金额 / 核销金额 / 额外收款”
 
+### get_customer_refund_context_v1
+
+方法：
+
+- `myapp.api.gateway.get_customer_refund_context_v1`
+
+参数：
+
+- `return_invoice_name: str`
+
+行为：
+
+- 基于销售退货发票返回客户退款页上下文
+- 校验并返回当前退货发票是否允许登记客户退款
+- 统一返回退货发票、来源销售发票、可退金额、已退金额、建议本次退款金额和退款历史
+- 退款历史来自退货发票关联的已提交 `Payment Entry`
+- 前端不应再通过普通销售发票详情自行推导“可退金额 / 已退金额 / 是否可退款”
+
+当前返回重点字段：
+
+- `return_invoice`
+  - `name`
+  - `document_status`
+  - `docstatus`
+  - `is_return`
+  - `return_against`
+  - `customer`
+  - `customer_name`
+  - `company`
+  - `currency`
+  - `posting_date`
+  - `grand_total`
+  - `outstanding_amount`
+- `source_invoice`
+- `refund`
+  - `return_amount`
+  - `refunded_amount`
+  - `refundable_amount`
+  - `suggested_refund_amount`
+  - `status`
+- `entries[]`
+  - `payment_entry`
+  - `posting_date`
+  - `mode_of_payment`
+  - `allocated_amount`
+  - `actual_paid_amount`
+  - `reference_no`
+  - `reference_date`
+- `actions`
+  - `can_create_refund`
+  - `create_refund_hint`
+
 ### create_customer_refund
 
 方法：
@@ -2703,7 +2756,7 @@ frappe.call({
 
 - 对已收款销售发票执行退货后，当前会建议前端进入：
   - `review_refund`
-- 这表示“退货单已创建”，但当前并不会自动生成独立退款闭环凭证
+- 这表示“退货单已创建”，下一步应通过 `get_customer_refund_context_v1` 核对可退金额和退款历史，再调用 `create_customer_refund` 登记正式客户退款
 
 ### get_return_source_context_v2
 

@@ -52,6 +52,7 @@ from myapp.api.gateway import (
 	disable_supplier_v2,
 	disable_uom_v2,
 	get_customer_detail_v2,
+	get_customer_refund_context_v1,
 	get_delivery_note_detail_v2,
 	get_product_detail_v2,
 	get_sales_order_detail,
@@ -149,6 +150,7 @@ class TestGatewayWrappers(TestCase):
 			create_product_and_stock,
 			get_product_detail_v2,
 			get_customer_detail_v2,
+			get_customer_refund_context_v1,
 			get_supplier_detail_v2,
 			get_delivery_note_detail_v2,
 			get_sales_invoice_detail_v2,
@@ -318,6 +320,22 @@ class TestGatewayWrappers(TestCase):
 			return_invoice_name="SINV-RET-0001",
 			refund_amount=80,
 			request_id="refund-001",
+		)
+
+	@patch("myapp.api.gateway.get_customer_refund_context_v1_service")
+	def test_get_customer_refund_context_v1_passes_return_invoice_to_service(
+		self,
+		mock_get_customer_refund_context_v1_service,
+	):
+		mock_get_customer_refund_context_v1_service.return_value = {
+			"status": "success",
+			"data": {"return_invoice": {"name": "SINV-RET-0001"}},
+		}
+
+		get_customer_refund_context_v1("SINV-RET-0001")
+
+		mock_get_customer_refund_context_v1_service.assert_called_once_with(
+			return_invoice_name="SINV-RET-0001",
 		)
 
 	@patch("myapp.api.gateway.receive_purchase_order_service")

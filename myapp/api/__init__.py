@@ -55,6 +55,7 @@ from .settlement_api import (
 	cancel_payment_entry,
 	confirm_pending_document,
 	create_customer_refund,
+	get_customer_refund_context_v1,
 	process_sales_return,
 	update_payment_status,
 )
@@ -93,6 +94,7 @@ __all__ = [
 	"delete_uom_v2",
 	"disable_uom_v2",
 	"get_customer_detail_v2",
+	"get_customer_refund_context_v1",
 	"get_purchase_invoice_detail_v2",
 	"get_purchase_order_detail_v2",
 	"get_purchase_order_status_summary",
