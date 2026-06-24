@@ -214,6 +214,7 @@ class TestReportService(TestCase):
 			company="Test Company",
 			date_from="2026-03-04",
 			date_to="2026-04-02",
+			search_key=None,
 		)
 		mock_make_cashflow_entry_rows.assert_called_once_with(
 			company="Test Company",
@@ -221,6 +222,7 @@ class TestReportService(TestCase):
 			date_to="2026-04-02",
 			limit=2,
 			offset=2,
+			search_key=None,
 		)
 
 	@patch("myapp.services.report_service.nowdate", return_value="2026-04-02")
@@ -245,6 +247,37 @@ class TestReportService(TestCase):
 			date_to="2026-04-02",
 			limit=100,
 			offset=0,
+			search_key=None,
+		)
+
+	@patch("myapp.services.report_service.nowdate", return_value="2026-04-02")
+	@patch("myapp.services.report_service._count_cashflow_entries")
+	@patch("myapp.services.report_service._make_cashflow_entry_rows")
+	def test_list_cashflow_entries_v1_passes_search_key(
+		self,
+		mock_make_cashflow_entry_rows,
+		mock_count_cashflow_entries,
+		mock_nowdate,
+	):
+		mock_count_cashflow_entries.return_value = 1
+		mock_make_cashflow_entry_rows.return_value = []
+
+		result = list_cashflow_entries_v1(search_key=" PE-0001 ", page=1, page_size=20)
+
+		self.assertEqual(result["data"]["meta"]["search_key"], "PE-0001")
+		mock_count_cashflow_entries.assert_called_once_with(
+			company=None,
+			date_from="2026-03-04",
+			date_to="2026-04-02",
+			search_key="PE-0001",
+		)
+		mock_make_cashflow_entry_rows.assert_called_once_with(
+			company=None,
+			date_from="2026-03-04",
+			date_to="2026-04-02",
+			limit=20,
+			offset=0,
+			search_key="PE-0001",
 		)
 
 	@patch("myapp.services.report_service.nowdate", return_value="2026-04-02")

@@ -186,6 +186,19 @@ def _make_scalar_aggregate(
 	return flt(getattr(rows[0], "total_amount", 0) or 0)
 
 
+def _cashflow_search_sql(search_key: str | None):
+	resolved = (search_key or "").strip()
+	if not resolved:
+		return None, []
+	keyword = f"%{resolved}%"
+	return "(name LIKE %s OR party LIKE %s OR mode_of_payment LIKE %s OR reference_no LIKE %s)", [
+		keyword,
+		keyword,
+		keyword,
+		keyword,
+	]
+
+
 def _make_recent_cashflow_rows(*, company: str | None, date_from: str, date_to: str, limit: int):
 	return _make_cashflow_entry_rows(
 		company=company,
@@ -196,12 +209,22 @@ def _make_recent_cashflow_rows(*, company: str | None, date_from: str, date_to: 
 	)
 
 
-def _make_cashflow_entry_rows(*, company: str | None, date_from: str, date_to: str, limit: int, offset: int):
+def _make_cashflow_entry_rows(
+	*,
+	company: str | None,
+	date_from: str,
+	date_to: str,
+	limit: int,
+	offset: int,
+	search_key: str | None = None,
+):
+	search_sql, search_params = _cashflow_search_sql(search_key)
 	where_sql, params = _build_where_clause(
 		date_field="posting_date",
 		company=company,
 		date_from=date_from,
 		date_to=date_to,
+		extra_sql=search_sql,
 	)
 	return frappe.db.sql(
 		f"""
@@ -220,17 +243,19 @@ def _make_cashflow_entry_rows(*, company: str | None, date_from: str, date_to: s
 		ORDER BY posting_date DESC, modified DESC
 		LIMIT %s OFFSET %s
 		""",
-		(*params, limit, offset),
+		(*params, *search_params, limit, offset),
 		as_dict=True,
 	)
 
 
-def _count_cashflow_entries(*, company: str | None, date_from: str, date_to: str):
+def _count_cashflow_entries(*, company: str | None, date_from: str, date_to: str, search_key: str | None = None):
+	search_sql, search_params = _cashflow_search_sql(search_key)
 	where_sql, params = _build_where_clause(
 		date_field="posting_date",
 		company=company,
 		date_from=date_from,
 		date_to=date_to,
+		extra_sql=search_sql,
 	)
 	rows = frappe.db.sql(
 		f"""
@@ -238,7 +263,7 @@ def _count_cashflow_entries(*, company: str | None, date_from: str, date_to: str
 		FROM {_get_report_table_sql("tabPayment Entry")}
 		WHERE {where_sql}
 		""",
-		params,
+		(*params, *search_params),
 		as_dict=True,
 	)
 	if not rows:
@@ -1036,11 +1061,13 @@ def list_cashflow_entries_v1(
 	company: str | None = None,
 	date_from: str | None = None,
 	date_to: str | None = None,
+	search_key: str | None = None,
 	page: int | str | None = 1,
 	page_size: int | str | None = DEFAULT_CASHFLOW_ENTRY_PAGE_SIZE,
 ):
 	resolved_company = _normalize_company(company)
 	resolved_date_from, resolved_date_to = _resolve_report_date_range(date_from, date_to)
+	resolved_search_key = (search_key or "").strip() or None
 	resolved_page = _resolve_positive_int(page, default=1, minimum=1)
 	resolved_page_size = _resolve_positive_int(
 		page_size,
@@ -1053,6 +1080,7 @@ def list_cashflow_entries_v1(
 		company=resolved_company,
 		date_from=resolved_date_from,
 		date_to=resolved_date_to,
+		search_key=resolved_search_key,
 	)
 	rows = _serialize_cashflow_rows(
 		_make_cashflow_entry_rows(
@@ -1061,6 +1089,7 @@ def list_cashflow_entries_v1(
 			date_to=resolved_date_to,
 			limit=resolved_page_size,
 			offset=offset,
+			search_key=resolved_search_key,
 		)
 	)
 
@@ -1079,6 +1108,7 @@ def list_cashflow_entries_v1(
 				"company": resolved_company,
 				"date_from": resolved_date_from,
 				"date_to": resolved_date_to,
+				"search_key": resolved_search_key,
 			},
 		},
 	}
