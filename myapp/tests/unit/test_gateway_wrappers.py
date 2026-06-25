@@ -53,6 +53,7 @@ from myapp.api.gateway import (
 	disable_uom_v2,
 	get_customer_detail_v2,
 	get_customer_refund_context_v1,
+	get_payment_entry_detail_v1,
 	get_delivery_note_detail_v2,
 	get_product_detail_v2,
 	get_sales_order_detail,
@@ -336,6 +337,22 @@ class TestGatewayWrappers(TestCase):
 
 		mock_get_customer_refund_context_v1_service.assert_called_once_with(
 			return_invoice_name="SINV-RET-0001",
+		)
+
+	@patch("myapp.api.gateway.get_payment_entry_detail_v1_service")
+	def test_get_payment_entry_detail_v1_passes_name_to_service(
+		self,
+		mock_get_payment_entry_detail_v1_service,
+	):
+		mock_get_payment_entry_detail_v1_service.return_value = {
+			"status": "success",
+			"data": {"name": "ACC-PAY-0001"},
+		}
+
+		get_payment_entry_detail_v1("ACC-PAY-0001")
+
+		mock_get_payment_entry_detail_v1_service.assert_called_once_with(
+			payment_entry_name="ACC-PAY-0001",
 		)
 
 	@patch("myapp.api.gateway.receive_purchase_order_service")

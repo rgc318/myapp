@@ -1461,6 +1461,30 @@ class GatewayHttpTestCase(TestCase):
 				self.assertGreaterEqual(row["posting_date"], "2026-03-01")
 				self.assertLessEqual(row["posting_date"], "2026-04-02")
 
+	def test_get_payment_entry_detail_v1_returns_reference_links(self):
+		_order_request, order_payload = self._create_sales_order(price=120)
+		order_name = order_payload["message"]["data"]["order"]
+		_invoice_request, invoice_payload = self._create_sales_invoice(order_name)
+		invoice_name = invoice_payload["message"]["data"]["sales_invoice"]
+		_payment_request, payment_payload = self._record_sales_payment(invoice_name, paid_amount=120)
+		payment_entry = payment_payload["message"]["data"]["payment_entry"]
+
+		status_code, response = self._call_gateway(
+			"myapp.api.gateway.get_payment_entry_detail_v1",
+			{"payment_entry_name": payment_entry},
+		)
+
+		self._assert_success(status_code, response, code="PAYMENT_ENTRY_DETAIL_FETCHED")
+		data = response["message"]["data"]
+		self.assertEqual(data["name"], payment_entry)
+		self.assertEqual(data["direction"], "in")
+		self.assertEqual(data["business_type"], "customer_receipt")
+		self.assertTrue(data["actions"]["can_cancel"])
+		self.assertTrue(data["references"])
+		self.assertEqual(data["references"][0]["reference_doctype"], "Sales Invoice")
+		self.assertEqual(data["references"][0]["reference_name"], invoice_name)
+		self.assertIn(invoice_name, data["links"]["sales_invoices"])
+
 	def test_list_cashflow_entries_v1_rejects_invalid_date_range(self):
 		status_code, payload = self._call_gateway(
 			"myapp.api.gateway.list_cashflow_entries_v1",

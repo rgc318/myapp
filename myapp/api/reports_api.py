@@ -93,6 +93,7 @@ def list_cashflow_entries_v1(
 	company: str | None = None,
 	date_from: str | None = None,
 	date_to: str | None = None,
+	search_key: str | None = None,
 	page: int = 1,
 	page_size: int = 20,
 ):
@@ -100,6 +101,7 @@ def list_cashflow_entries_v1(
 		company=company,
 		date_from=date_from,
 		date_to=date_to,
+		search_key=search_key,
 		page=cint(page),
 		page_size=cint(page_size),
 	)

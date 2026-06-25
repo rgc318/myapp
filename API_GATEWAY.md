@@ -141,6 +141,11 @@ The current first-stage production split for reporting adds:
     - `page_size`
     - `total_count`
     - `has_more`
+- `get_payment_entry_detail_v1`
+  - returns one `Payment Entry` detail payload for payment/fund-management pages
+  - includes document status, direction, business type, party, payment mode, amounts, references, deductions, grouped business links, and action eligibility
+  - request:
+    - `payment_entry_name`
 
 Current cashflow semantics:
 

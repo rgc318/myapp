@@ -240,6 +240,213 @@ def cancel_payment_entry(payment_entry_name: str, **kwargs):
 		raise
 
 
+def _payment_entry_document_status(docstatus: int):
+	if cint(docstatus) == 2:
+		return "cancelled"
+	if cint(docstatus) == 1:
+		return "submitted"
+	return "draft"
+
+
+def _payment_entry_direction(payment_type: str | None):
+	if payment_type == "Receive":
+		return "in"
+	if payment_type == "Pay":
+		return "out"
+	return "transfer"
+
+
+def _payment_entry_amount(payment_entry):
+	payment_type = payment_entry.get("payment_type")
+	if payment_type == "Receive":
+		return flt(payment_entry.get("received_amount") or payment_entry.get("paid_amount") or 0)
+	if payment_type == "Pay":
+		return flt(payment_entry.get("paid_amount") or payment_entry.get("received_amount") or 0)
+	return flt(payment_entry.get("paid_amount") or payment_entry.get("received_amount") or 0)
+
+
+def _payment_entry_currency(payment_entry):
+	if payment_entry.get("payment_type") == "Receive":
+		return payment_entry.get("paid_to_account_currency") or payment_entry.get("paid_from_account_currency")
+	return payment_entry.get("paid_from_account_currency") or payment_entry.get("paid_to_account_currency")
+
+
+def _payment_entry_business_type(payment_entry, references: list[dict]):
+	payment_type = payment_entry.get("payment_type")
+	party_type = payment_entry.get("party_type")
+	reference_doctypes = {row.get("reference_doctype") for row in references}
+	has_return_invoice = any(row.get("is_return") for row in references)
+
+	if payment_type == "Internal Transfer":
+		return "internal_transfer"
+	if party_type == "Customer" and payment_type == "Receive":
+		return "customer_refund" if has_return_invoice else "customer_receipt"
+	if party_type == "Customer" and payment_type == "Pay":
+		return "customer_refund"
+	if party_type == "Supplier" and payment_type == "Pay":
+		return "supplier_refund" if has_return_invoice else "supplier_payment"
+	if party_type == "Supplier" and payment_type == "Receive":
+		return "supplier_refund"
+	if "Sales Invoice" in reference_doctypes:
+		return "customer_settlement"
+	if "Purchase Invoice" in reference_doctypes:
+		return "supplier_settlement"
+	return "other"
+
+
+def _get_invoice_reference_meta(reference_doctype: str | None, reference_name: str | None):
+	if reference_doctype not in {"Sales Invoice", "Purchase Invoice"} or not reference_name:
+		return {}
+	values = frappe.db.get_value(
+		reference_doctype,
+		reference_name,
+		["is_return", "return_against"],
+		as_dict=True,
+	)
+	if not values:
+		return {}
+	return {
+		"is_return": bool(cint(values.get("is_return"))),
+		"return_against": values.get("return_against"),
+	}
+
+
+def _build_payment_entry_references(payment_entry):
+	references = []
+	for row in payment_entry.get("references") or []:
+		reference_doctype = getattr(row, "reference_doctype", None)
+		reference_name = getattr(row, "reference_name", None)
+		meta = _get_invoice_reference_meta(reference_doctype, reference_name)
+		references.append(
+			{
+				"reference_doctype": reference_doctype,
+				"reference_name": reference_name,
+				"total_amount": flt(getattr(row, "total_amount", 0) or 0),
+				"outstanding_amount": flt(getattr(row, "outstanding_amount", 0) or 0),
+				"allocated_amount": flt(getattr(row, "allocated_amount", 0) or 0),
+				"exchange_rate": flt(getattr(row, "exchange_rate", 0) or 0),
+				"due_date": getattr(row, "due_date", None),
+				"account": getattr(row, "account", None),
+				**meta,
+			}
+		)
+	return references
+
+
+def _build_payment_entry_deductions(payment_entry):
+	return [
+		{
+			"account": getattr(row, "account", None),
+			"cost_center": getattr(row, "cost_center", None),
+			"amount": flt(getattr(row, "amount", 0) or 0),
+			"description": getattr(row, "description", None),
+		}
+		for row in payment_entry.get("deductions") or []
+	]
+
+
+def _build_payment_entry_links(references: list[dict]):
+	links = {
+		"sales_orders": [],
+		"sales_invoices": [],
+		"purchase_orders": [],
+		"purchase_invoices": [],
+		"return_invoices": [],
+	}
+	seen = {key: set() for key in links}
+
+	def add_link(key: str, value: str | None):
+		if not value or value in seen[key]:
+			return
+		seen[key].add(value)
+		links[key].append(value)
+
+	for row in references:
+		reference_doctype = row.get("reference_doctype")
+		reference_name = row.get("reference_name")
+		if reference_doctype == "Sales Order":
+			add_link("sales_orders", reference_name)
+		elif reference_doctype == "Purchase Order":
+			add_link("purchase_orders", reference_name)
+		elif reference_doctype == "Sales Invoice":
+			if row.get("is_return"):
+				add_link("return_invoices", reference_name)
+			else:
+				add_link("sales_invoices", reference_name)
+			add_link("sales_invoices", row.get("return_against"))
+		elif reference_doctype == "Purchase Invoice":
+			if row.get("is_return"):
+				add_link("return_invoices", reference_name)
+			else:
+				add_link("purchase_invoices", reference_name)
+			add_link("purchase_invoices", row.get("return_against"))
+
+	return links
+
+
+def _build_payment_entry_cancel_hint(payment_entry):
+	if cint(payment_entry.get("docstatus")) == 1:
+		return ""
+	if cint(payment_entry.get("docstatus")) == 2:
+		return _("当前收付款单已经作废。")
+	return _("只有已提交的收付款单才能作废。")
+
+
+def get_payment_entry_detail(payment_entry_name: str):
+	if not payment_entry_name:
+		frappe.throw(_("payment_entry_name 不能为空。"))
+
+	try:
+		payment_entry = frappe.get_doc("Payment Entry", payment_entry_name)
+		references = _build_payment_entry_references(payment_entry)
+		deductions = _build_payment_entry_deductions(payment_entry)
+		cancel_hint = _build_payment_entry_cancel_hint(payment_entry)
+
+		return {
+			"status": "success",
+			"message": _("收付款单详情获取成功。"),
+			"data": {
+				"name": payment_entry.name,
+				"company": payment_entry.get("company"),
+				"posting_date": payment_entry.get("posting_date"),
+				"docstatus": cint(payment_entry.get("docstatus")),
+				"document_status": _payment_entry_document_status(payment_entry.get("docstatus")),
+				"payment_type": payment_entry.get("payment_type"),
+				"direction": _payment_entry_direction(payment_entry.get("payment_type")),
+				"business_type": _payment_entry_business_type(payment_entry, references),
+				"party_type": payment_entry.get("party_type"),
+				"party": payment_entry.get("party"),
+				"party_name": payment_entry.get("party_name") or payment_entry.get("party"),
+				"mode_of_payment": payment_entry.get("mode_of_payment"),
+				"paid_from": payment_entry.get("paid_from"),
+				"paid_to": payment_entry.get("paid_to"),
+				"paid_amount": flt(payment_entry.get("paid_amount") or 0),
+				"received_amount": flt(payment_entry.get("received_amount") or 0),
+				"amount": _payment_entry_amount(payment_entry),
+				"unallocated_amount": flt(payment_entry.get("unallocated_amount") or 0),
+				"difference_amount": flt(payment_entry.get("difference_amount") or 0),
+				"currency": _payment_entry_currency(payment_entry),
+				"reference_no": payment_entry.get("reference_no"),
+				"reference_date": payment_entry.get("reference_date"),
+				"remarks": payment_entry.get("remarks"),
+				"references": references,
+				"deductions": deductions,
+				"links": _build_payment_entry_links(references),
+				"actions": {
+					"can_cancel": not cancel_hint,
+					"cancel_hint": cancel_hint,
+				},
+			},
+		}
+	except frappe.DoesNotExistError:
+		raise
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("收付款单详情获取失败"))
+		raise
+
+
 def _build_refund_invoice_snapshot(invoice):
 	if not invoice:
 		return None

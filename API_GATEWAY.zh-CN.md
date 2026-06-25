@@ -33,6 +33,7 @@
 - `myapp.api.gateway.cancel_sales_invoice`
 - `myapp.api.gateway.update_payment_status`
 - `myapp.api.gateway.cancel_payment_entry`
+- `myapp.api.gateway.get_payment_entry_detail_v1`
 - `myapp.api.gateway.get_customer_refund_context_v1`
 - `myapp.api.gateway.create_customer_refund`
 - `myapp.api.gateway.process_sales_return`
@@ -66,7 +67,7 @@
 
 ### 模块导航
 
-- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`list_business_documents_v1`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`get_customer_refund_context_v1`、`create_customer_refund`、`process_sales_return`
+- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`list_business_documents_v1`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`get_payment_entry_detail_v1`、`get_customer_refund_context_v1`、`create_customer_refund`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
 - 采购快捷链路（规划中）：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
 - 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`list_business_documents_v1`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`、`create_supplier_v2`、`update_supplier_v2`、`disable_supplier_v2`
@@ -1209,6 +1210,65 @@ cancel_order_v2(
 
 - 当前接口语义是“收款回退/作废收款单”，不是自动生成银行退款凭证
 - 若业务要求记录真实退款出账，后续仍建议补专门的“退款凭证/反向付款”流程
+
+### get_payment_entry_detail_v1
+
+- `myapp.api.gateway.get_payment_entry_detail_v1`
+- 用途：读取统一收付款凭证详情，供 Web 资金模块、销售收款链路、采购付款链路和退款核对链路跳转查看。
+
+请求参数：
+
+- `payment_entry_name`: 收付款单号
+
+返回字段：
+
+- `name`: 收付款单号
+- `company`: 公司
+- `posting_date`: 过账日期
+- `docstatus`: Frappe 单据状态数值
+- `document_status`: `draft` / `submitted` / `cancelled`
+- `payment_type`: ERPNext `Payment Entry.payment_type`
+- `direction`: `in` / `out` / `transfer`
+- `business_type`: 业务归类，例如 `customer_receipt`、`customer_refund`、`supplier_payment`、`supplier_refund`、`internal_transfer`
+- `party_type`、`party`、`party_name`: 往来方信息
+- `mode_of_payment`: 付款方式
+- `paid_from`、`paid_to`: 出入账科目
+- `paid_amount`、`received_amount`、`amount`: 金额信息
+- `unallocated_amount`: 未分配金额
+- `difference_amount`: 差额
+- `currency`: 展示币种
+- `reference_no`、`reference_date`: 外部参考号和日期
+- `remarks`: 备注
+- `references`: 核销明细
+  - `reference_doctype`
+  - `reference_name`
+  - `total_amount`
+  - `outstanding_amount`
+  - `allocated_amount`
+  - `exchange_rate`
+  - `due_date`
+  - `account`
+  - `is_return`
+  - `return_against`
+- `deductions`: 差额核销 / 扣减明细
+  - `account`
+  - `cost_center`
+  - `amount`
+  - `description`
+- `links`: 前端跳转用关联单据分组
+  - `sales_orders`
+  - `sales_invoices`
+  - `purchase_orders`
+  - `purchase_invoices`
+  - `return_invoices`
+- `actions`
+  - `can_cancel`
+  - `cancel_hint`
+
+行为说明：
+
+- 该接口只读取和聚合 `Payment Entry` 详情，不创建、不作废凭证。
+- 前端不应自行拼接 `Payment Entry Reference`、退货发票关系和作废可用性，应以该接口返回为准。
 
 ### create_product_and_stock
 

@@ -83,6 +83,7 @@ from .settlement_api import confirm_pending_document as confirm_pending_document
 from .settlement_api import cancel_payment_entry as cancel_payment_entry_service
 from .settlement_api import create_customer_refund as create_customer_refund_service
 from .settlement_api import get_customer_refund_context_v1 as get_customer_refund_context_v1_service
+from .settlement_api import get_payment_entry_detail_v1 as get_payment_entry_detail_v1_service
 from .settlement_api import process_sales_return as process_sales_return_service
 from .settlement_api import update_payment_status as update_payment_status_service
 from .wholesale_api import create_product_and_stock as create_product_and_stock_service
@@ -1322,6 +1323,14 @@ def get_customer_refund_context_v1(return_invoice_name: str):
 	return _handle_gateway_call(
 		lambda: get_customer_refund_context_v1_service(return_invoice_name=return_invoice_name),
 		success_code="CUSTOMER_REFUND_CONTEXT_LOADED",
+	)
+
+
+@frappe.whitelist()
+def get_payment_entry_detail_v1(payment_entry_name: str):
+	return _handle_gateway_call(
+		lambda: get_payment_entry_detail_v1_service(payment_entry_name=payment_entry_name),
+		success_code="PAYMENT_ENTRY_DETAIL_FETCHED",
 	)
 
 
