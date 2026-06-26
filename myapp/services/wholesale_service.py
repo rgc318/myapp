@@ -102,8 +102,28 @@ def _normalize_price_list_names(value, *, defaults: tuple[str, ...]):
 	return names or list(defaults)
 
 
-def _get_item_filters():
-	return {"disabled": 0, "is_sales_item": 1}
+def _normalize_item_context(value: str | None):
+	context = _normalize_text(value).lower()
+	if not context:
+		return "sales"
+	if context not in {"any", "inventory", "purchase", "sales"}:
+		frappe.throw(_("item_context 只支持 sales、purchase、inventory 或 any。"))
+	return context
+
+
+def _get_item_filters(item_context: str | None = "sales", disabled: int | None = 0):
+	filters = {}
+	if disabled is not None:
+		filters["disabled"] = cint(disabled)
+
+	context = _normalize_item_context(item_context)
+	if context == "sales":
+		filters["is_sales_item"] = 1
+	elif context == "purchase":
+		filters["is_purchase_item"] = 1
+	elif context == "inventory":
+		filters["is_stock_item"] = 1
+	return filters
 
 
 def _has_item_field(fieldname: str):
@@ -202,8 +222,15 @@ def _decorate_uom_rows_with_display(rows, uom_display_map: dict[str, str]):
 	return decorated
 
 
-def _search_item_codes(search_key: str, *, search_fields: list[str], limit: int):
-	item_filters = _get_item_filters()
+def _search_item_codes(
+	search_key: str,
+	*,
+	search_fields: list[str],
+	limit: int,
+	item_context: str | None = "sales",
+	disabled: int | None = 0,
+):
+	item_filters = _get_item_filters(item_context=item_context, disabled=disabled)
 	matched_codes = []
 	seen = set()
 
@@ -276,11 +303,29 @@ def _search_item_codes(search_key: str, *, search_fields: list[str], limit: int)
 	return matched_codes[:limit]
 
 
-def _get_item_data_map(item_codes: list[str]):
+def _get_item_data_map(
+	item_codes: list[str],
+	*,
+	item_context: str | None = "sales",
+	disabled: int | None = 0,
+):
 	if not item_codes:
 		return {}
 
-	fields = ["name", "item_name", "stock_uom", "image", "description", "creation", "modified"]
+	fields = [
+		"name",
+		"item_name",
+		"item_group",
+		"brand",
+		"stock_uom",
+		"image",
+		"description",
+		"creation",
+		"modified",
+		"disabled",
+		"is_sales_item",
+		"is_purchase_item",
+	]
 	nickname_field = _get_item_nickname_field()
 	if nickname_field:
 		fields.append(nickname_field)
@@ -295,7 +340,13 @@ def _get_item_data_map(item_codes: list[str]):
 		d.name: d
 		for d in frappe.get_all(
 			"Item",
-			filters={**_get_item_filters(), "name": ["in", item_codes]},
+			filters={
+				**_get_item_filters(
+					item_context=item_context,
+					disabled=disabled,
+				),
+				"name": ["in", item_codes],
+			},
 			fields=fields,
 		)
 	}
@@ -772,6 +823,7 @@ def _build_product_detail_payload(
 		"description": item.description,
 		"disabled": cint(item.disabled),
 		"is_sales_item": cint(getattr(item, "is_sales_item", 0)),
+		"is_purchase_item": cint(getattr(item, "is_purchase_item", 0)),
 		"barcode": _get_primary_barcode(item.name),
 		"qty": flt(qty_map.get(item.name, 0)),
 		"total_qty": flt(total_qty_map.get(item.name, 0)),
@@ -1077,12 +1129,14 @@ def search_product_v2(
 	sort_by: str = "relevance",
 	sort_order: str = "asc",
 	in_stock_only: bool = False,
+	item_context: str | None = "sales",
 ):
 	search_key = _normalize_text(search_key)
 	if not search_key:
 		return {"status": "success", "data": []}
 
 	limit = _normalize_limit(limit)
+	item_context = _normalize_item_context(item_context)
 	price_list = _normalize_text(price_list) or "Standard Selling"
 	currency = _normalize_currency(currency)
 	warehouse = _normalize_text(warehouse) or None
@@ -1093,11 +1147,21 @@ def search_product_v2(
 	in_stock_only = bool(cint(in_stock_only))
 	disabled = cint(disabled) if disabled is not None else None
 
-	item_codes = _search_item_codes(search_key, search_fields=search_fields, limit=limit * 3)
+	item_codes = _search_item_codes(
+		search_key,
+		search_fields=search_fields,
+		limit=limit * 3,
+		item_context=item_context,
+		disabled=disabled,
+	)
 	if not item_codes:
 		return {"status": "success", "data": [], "message": _("未找到匹配商品")}
 
-	items_data = _get_item_data_map(item_codes)
+	items_data = _get_item_data_map(
+		item_codes,
+		item_context=item_context,
+		disabled=disabled,
+	)
 	price_map = _get_price_map(item_codes, price_list=price_list, currency=currency)
 	uom_map = _get_uom_map(item_codes)
 	stock_company = _resolve_stock_company_scope(warehouse, company)
@@ -1139,6 +1203,8 @@ def search_product_v2(
 			{
 				"item_code": item.name,
 				"item_name": item.item_name,
+				"item_group": item.item_group,
+				"brand": getattr(item, "brand", None),
 				"uom": item.stock_uom,
 				"uom_display": uom_display_map.get(_normalize_text(item.stock_uom)),
 				"all_uoms": _decorate_uom_rows_with_display(uom_map.get(code, []), uom_display_map),
@@ -1152,6 +1218,9 @@ def search_product_v2(
 				"nickname": _extract_item_nickname(item),
 				"specification": _extract_item_specification(item),
 				"description": item.description,
+				"disabled": cint(getattr(item, "disabled", 0)),
+				"is_sales_item": cint(getattr(item, "is_sales_item", 0)),
+				"is_purchase_item": cint(getattr(item, "is_purchase_item", 0)),
 				"price_summary": _build_price_summary(
 					item,
 					current_price_list=price_list,
@@ -1189,6 +1258,7 @@ def search_product_v2(
 			"sort_order": sort_order,
 			"in_stock_only": in_stock_only,
 			"disabled": disabled,
+			"item_context": item_context,
 		},
 	}
 

@@ -1675,6 +1675,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 
 - `search_key: str`
 - `search_fields: list[str] | json-string | csv-string | None`
+- `item_context: str = "sales"`，支持 `sales`、`purchase`、`inventory`、`any`
 - `warehouse: str | None`
 - `company: str | None`
 - `in_stock_only: bool = False`
@@ -1703,6 +1704,10 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 行为：
 
 - 支持多字段搜索
+- 默认保持旧版销售语义，只返回 `disabled=0, is_sales_item=1` 的商品
+- `item_context="purchase"` 时返回 `disabled=0, is_purchase_item=1` 的商品，用于采购订单选品
+- `item_context="inventory"` 时返回 `disabled=0, is_stock_item=1` 的商品，用于库存类操作
+- `item_context="any"` 时仅按启停过滤，用于商品后台或通用管理入口
 - 支持只看有库存商品
 - 支持仓库 / 公司口径库存过滤
 - `qty` 表示当前查询口径库存

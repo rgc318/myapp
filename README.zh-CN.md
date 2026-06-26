@@ -232,6 +232,8 @@ docker exec frappe_docker-backend-1 bash -lc '
 - 当前数据库里的测试单位已清空；ERPNext 默认科学 / 工业单位暂时保留，但后续不建议继续在常规业务选择器中暴露
 - 商品搜索默认只返回启用商品：
   - `search_product_v2` 默认按 `disabled=0` 过滤
+  - `search_product_v2` 默认 `item_context="sales"`，继续按 `is_sales_item=1` 过滤，兼容既有 Web / mobile 销售选品调用
+  - 采购选品应传 `item_context="purchase"`，按 `is_purchase_item=1` 过滤
   - 只有显式传入 `disabled=1` 等条件时，才返回已停用商品
   - 业务语义上“已停用商品”视为逻辑删除，不应继续出现在销售下单、采购建单、选商品等常规入口
   - 这样可以避免前端选中停用商品后，在建单阶段才触发“物料已禁用”的迟滞校验

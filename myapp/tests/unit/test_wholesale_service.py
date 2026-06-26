@@ -5,6 +5,7 @@ import frappe
 
 from myapp.services.wholesale_service import (
 	_apply_item_uom_updates,
+	_search_item_codes,
 	_validate_mode_default_uoms_against_stock_uom,
 	create_product_v2,
 	create_product_and_stock,
@@ -318,6 +319,7 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(result["data"][0]["item_code"], "ITEM-002")
 		self.assertEqual(result["data"][0]["nickname"], "昵称二")
 		self.assertEqual(result["data"][0]["specification"], "1000ml")
+		self.assertEqual(result["filters"]["item_context"], "sales")
 		self.assertEqual(result["data"][0]["retail_default_uom"], "Pair")
 		self.assertEqual(result["data"][0]["retail_default_uom_display"], "对")
 		self.assertEqual(result["data"][0]["uom_display"], "件")
@@ -409,6 +411,31 @@ class TestWholesaleService(TestCase):
 		disabled_result = search_product_v2(search_key="商品", disabled=1)
 		self.assertEqual([row["item_code"] for row in disabled_result["data"]], ["ITEM-DISABLED"])
 		self.assertEqual(disabled_result["filters"]["disabled"], 1)
+
+	@patch("myapp.services.wholesale_service.frappe.get_all")
+	def test_search_item_codes_uses_purchase_context_filters(
+		self,
+		mock_get_all,
+	):
+		mock_get_all.return_value = ["ITEM-PURCHASE"]
+
+		result = _search_item_codes(
+			search_key="采购",
+			item_context="purchase",
+			search_fields=["item_code"],
+			limit=20,
+		)
+
+		self.assertEqual(result, ["ITEM-PURCHASE"])
+		mock_get_all.assert_called_once()
+		self.assertEqual(
+			mock_get_all.call_args.kwargs["filters"],
+			{
+				"disabled": 0,
+				"is_purchase_item": 1,
+				"name": ["like", "%采购%"],
+			},
+		)
 
 	@patch(
 		"myapp.services.wholesale_service.frappe.throw",

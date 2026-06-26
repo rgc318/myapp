@@ -53,6 +53,7 @@ def search_product_v2(
 	sort_by: str = "relevance",
 	sort_order: str = "asc",
 	in_stock_only: bool = False,
+	item_context: str | None = "sales",
 ):
 	return search_product_v2_service(
 		search_key=search_key,
@@ -66,6 +67,7 @@ def search_product_v2(
 		sort_by=sort_by,
 		sort_order=sort_order,
 		in_stock_only=in_stock_only,
+		item_context=item_context,
 	)
 
 

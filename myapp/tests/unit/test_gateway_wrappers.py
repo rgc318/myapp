@@ -869,6 +869,7 @@ class TestGatewayWrappers(TestCase):
 
 		search_product_v2(
 			"可乐",
+			item_context="purchase",
 			search_fields=["item_name", "nickname"],
 			sort_by="price",
 			sort_order="desc",
@@ -887,6 +888,7 @@ class TestGatewayWrappers(TestCase):
 			sort_by="price",
 			sort_order="desc",
 			in_stock_only=1,
+			item_context="purchase",
 		)
 
 	@patch("myapp.api.gateway.get_product_detail_v2_service")
