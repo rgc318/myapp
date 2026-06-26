@@ -5,6 +5,7 @@ import frappe
 
 from myapp.services.wholesale_service import (
 	_apply_item_uom_updates,
+	_list_item_codes_by_filters,
 	_search_item_codes,
 	_validate_mode_default_uoms_against_stock_uom,
 	create_product_v2,
@@ -435,6 +436,63 @@ class TestWholesaleService(TestCase):
 				"is_purchase_item": 1,
 				"name": ["like", "%采购%"],
 			},
+		)
+
+	@patch("myapp.services.wholesale_service.frappe.get_all")
+	def test_search_item_codes_applies_group_and_brand_filters(
+		self,
+		mock_get_all,
+	):
+		mock_get_all.return_value = ["ITEM-FILTERED"]
+
+		result = _search_item_codes(
+			search_key="可乐",
+			item_context="sales",
+			item_group="饮料",
+			brand="可口可乐",
+			search_fields=["item_name"],
+			limit=20,
+		)
+
+		self.assertEqual(result, ["ITEM-FILTERED"])
+		mock_get_all.assert_called_once()
+		self.assertEqual(
+			mock_get_all.call_args.kwargs["filters"],
+			{
+				"disabled": 0,
+				"is_sales_item": 1,
+				"item_group": "饮料",
+				"brand": "可口可乐",
+				"item_name": ["like", "%可乐%"],
+			},
+		)
+
+	@patch("myapp.services.wholesale_service.frappe.get_all")
+	def test_list_item_codes_by_filters_applies_group_and_brand_filters(
+		self,
+		mock_get_all,
+	):
+		mock_get_all.return_value = ["ITEM-FILTERED"]
+
+		result = _list_item_codes_by_filters(
+			item_context="purchase",
+			item_group="饮料",
+			brand="可口可乐",
+			limit=20,
+		)
+
+		self.assertEqual(result, ["ITEM-FILTERED"])
+		mock_get_all.assert_called_once_with(
+			"Item",
+			filters={
+				"disabled": 0,
+				"is_purchase_item": 1,
+				"item_group": "饮料",
+				"brand": "可口可乐",
+			},
+			pluck="name",
+			limit_page_length=20,
+			order_by="modified desc",
 		)
 
 	@patch(

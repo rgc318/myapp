@@ -229,8 +229,14 @@ def _search_item_codes(
 	limit: int,
 	item_context: str | None = "sales",
 	disabled: int | None = 0,
+	item_group: str | None = None,
+	brand: str | None = None,
 ):
 	item_filters = _get_item_filters(item_context=item_context, disabled=disabled)
+	if item_group:
+		item_filters["item_group"] = item_group
+	if brand:
+		item_filters["brand"] = brand
 	matched_codes = []
 	seen = set()
 
@@ -303,11 +309,36 @@ def _search_item_codes(
 	return matched_codes[:limit]
 
 
+def _list_item_codes_by_filters(
+	*,
+	limit: int,
+	item_context: str | None = "sales",
+	disabled: int | None = 0,
+	item_group: str | None = None,
+	brand: str | None = None,
+):
+	item_filters = _get_item_filters(item_context=item_context, disabled=disabled)
+	if item_group:
+		item_filters["item_group"] = item_group
+	if brand:
+		item_filters["brand"] = brand
+
+	return frappe.get_all(
+		"Item",
+		filters=item_filters,
+		pluck="name",
+		limit_page_length=limit,
+		order_by="modified desc",
+	)
+
+
 def _get_item_data_map(
 	item_codes: list[str],
 	*,
 	item_context: str | None = "sales",
 	disabled: int | None = 0,
+	item_group: str | None = None,
+	brand: str | None = None,
 ):
 	if not item_codes:
 		return {}
@@ -336,15 +367,21 @@ def _get_item_data_map(
 		if _has_item_field(fieldname):
 			fields.append(fieldname)
 
+	item_filters = _get_item_filters(
+		item_context=item_context,
+		disabled=disabled,
+	)
+	if item_group:
+		item_filters["item_group"] = item_group
+	if brand:
+		item_filters["brand"] = brand
+
 	return {
 		d.name: d
 		for d in frappe.get_all(
 			"Item",
 			filters={
-				**_get_item_filters(
-					item_context=item_context,
-					disabled=disabled,
-				),
+				**item_filters,
 				"name": ["in", item_codes],
 			},
 			fields=fields,
@@ -1125,6 +1162,8 @@ def search_product_v2(
 	company: str | None = None,
 	limit: int = 20,
 	disabled: int | None = 0,
+	item_group: str | None = None,
+	brand: str | None = None,
 	search_fields=None,
 	sort_by: str = "relevance",
 	sort_order: str = "asc",
@@ -1132,28 +1171,41 @@ def search_product_v2(
 	item_context: str | None = "sales",
 ):
 	search_key = _normalize_text(search_key)
-	if not search_key:
-		return {"status": "success", "data": []}
-
 	limit = _normalize_limit(limit)
 	item_context = _normalize_item_context(item_context)
 	price_list = _normalize_text(price_list) or "Standard Selling"
 	currency = _normalize_currency(currency)
 	warehouse = _normalize_text(warehouse) or None
 	company = _normalize_text(company) or None
+	item_group = _normalize_text(item_group) or None
+	brand = _normalize_text(brand) or None
 	search_fields = _normalize_search_fields(search_fields)
 	sort_by = _normalize_text(sort_by).lower() or "relevance"
 	sort_order = "desc" if _normalize_text(sort_order).lower() == "desc" else "asc"
 	in_stock_only = bool(cint(in_stock_only))
 	disabled = cint(disabled) if disabled is not None else None
 
-	item_codes = _search_item_codes(
-		search_key,
-		search_fields=search_fields,
-		limit=limit * 3,
-		item_context=item_context,
-		disabled=disabled,
-	)
+	if not search_key and not item_group and not brand:
+		return {"status": "success", "data": []}
+
+	if search_key:
+		item_codes = _search_item_codes(
+			search_key,
+			search_fields=search_fields,
+			limit=limit * 3,
+			item_context=item_context,
+			disabled=disabled,
+			item_group=item_group,
+			brand=brand,
+		)
+	else:
+		item_codes = _list_item_codes_by_filters(
+			limit=limit * 3,
+			item_context=item_context,
+			disabled=disabled,
+			item_group=item_group,
+			brand=brand,
+		)
 	if not item_codes:
 		return {"status": "success", "data": [], "message": _("未找到匹配商品")}
 
@@ -1161,6 +1213,8 @@ def search_product_v2(
 		item_codes,
 		item_context=item_context,
 		disabled=disabled,
+		item_group=item_group,
+		brand=brand,
 	)
 	price_map = _get_price_map(item_codes, price_list=price_list, currency=currency)
 	uom_map = _get_uom_map(item_codes)
@@ -1252,6 +1306,8 @@ def search_product_v2(
 			"currency": currency,
 			"warehouse": warehouse,
 			"company": company,
+			"item_group": item_group,
+			"brand": brand,
 			"limit": limit,
 			"search_fields": search_fields,
 			"sort_by": sort_by,

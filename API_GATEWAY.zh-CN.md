@@ -1676,6 +1676,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `search_key: str`
 - `search_fields: list[str] | json-string | csv-string | None`
 - `item_context: str = "sales"`，支持 `sales`、`purchase`、`inventory`、`any`
+- `item_group: str | None`
+- `brand: str | None`
 - `warehouse: str | None`
 - `company: str | None`
 - `in_stock_only: bool = False`
@@ -1709,6 +1711,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `item_context="inventory"` 时返回 `disabled=0, is_stock_item=1` 的商品，用于库存类操作
 - `item_context="any"` 时仅按启停过滤，用于商品后台或通用管理入口
 - 支持只看有库存商品
+- 支持按商品分类 `item_group` 和品牌 `brand` 过滤；当 `search_key` 为空但传入 `item_group` 或 `brand` 时，接口按筛选条件返回候选商品
 - 支持仓库 / 公司口径库存过滤
 - `qty` 表示当前查询口径库存
 - `total_qty` 表示总库存汇总

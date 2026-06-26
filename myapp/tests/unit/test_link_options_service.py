@@ -49,6 +49,40 @@ class TestLinkOptionsService(TestCase):
 		self.assertEqual(mock_get_list.call_args.kwargs["fields"], ["name", "customer"])
 
 	@patch("myapp.services.link_options_service.frappe.get_list")
+	def test_search_link_options_v1_allows_item_group_filters(self, mock_get_list):
+		mock_get_list.return_value = [
+			frappe._dict({"name": "饮料"}),
+		]
+
+		result = search_link_options_v1("Item Group", filters={"is_group": 0, "owner": "Administrator"})
+
+		self.assertEqual(result["data"][0]["value"], "饮料")
+		mock_get_list.assert_called_once_with(
+			"Item Group",
+			fields=["name"],
+			filters=[["is_group", "=", 0]],
+			limit_page_length=8,
+			order_by="modified desc",
+		)
+
+	@patch("myapp.services.link_options_service.frappe.get_list")
+	def test_search_link_options_v1_allows_brand_options(self, mock_get_list):
+		mock_get_list.return_value = [
+			frappe._dict({"name": "可口可乐"}),
+		]
+
+		result = search_link_options_v1("Brand")
+
+		self.assertEqual(result["data"][0]["value"], "可口可乐")
+		mock_get_list.assert_called_once_with(
+			"Brand",
+			fields=["name"],
+			filters=[],
+			limit_page_length=8,
+			order_by="modified desc",
+		)
+
+	@patch("myapp.services.link_options_service.frappe.get_list")
 	def test_search_link_options_v1_applies_whitelisted_filters(self, mock_get_list):
 		mock_get_list.return_value = [
 			frappe._dict({"name": "Stores - RD", "company": "rgc (Demo)"}),

@@ -1309,6 +1309,7 @@ ERPNext 原生已经具备多价格体系基础：
 - 采购订单、采购退货等采购场景传 `item_context="purchase"`，只允许选择可采购商品。
 - 库存盘点、库存调整等库存场景传 `item_context="inventory"`，只允许选择库存物料。
 - 商品工作台、商品详情和后台管理场景可传 `item_context="any"`，用于查看全部启用商品。
+- 商品选择器可额外传 `item_group`、`brand` 和 `in_stock_only` 做企业级 Web 筛选；当没有关键词但传入分类或品牌时，`search_product_v2` 会按筛选条件返回候选商品。
 
 兼容性约束：
 

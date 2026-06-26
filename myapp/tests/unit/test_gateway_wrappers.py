@@ -870,6 +870,8 @@ class TestGatewayWrappers(TestCase):
 		search_product_v2(
 			"可乐",
 			item_context="purchase",
+			item_group="饮料",
+			brand="可口可乐",
 			search_fields=["item_name", "nickname"],
 			sort_by="price",
 			sort_order="desc",
@@ -884,6 +886,8 @@ class TestGatewayWrappers(TestCase):
 			company=None,
 			limit=20,
 			disabled=0,
+			item_group="饮料",
+			brand="可口可乐",
 			search_fields=["item_name", "nickname"],
 			sort_by="price",
 			sort_order="desc",
