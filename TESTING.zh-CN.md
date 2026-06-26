@@ -733,6 +733,12 @@ OK
     - 商品搜索结果返回 `specification`
     - `create_product_v2` 写入 `specification`
     - `update_product_v2` 更新 `specification`
+  - 已补充 `search_product_v2` 通用选品上下文断言：
+    - 默认不传 `item_context` 时保持销售语义
+    - `item_context="purchase"` 时按 `is_purchase_item=1` 构造商品搜索过滤
+- Gateway 包装层单元测试：
+  - `apps.myapp.myapp.tests.unit.test_gateway_wrappers`
+  - 已覆盖 `search_product_v2` 透传 `item_context`
 - 真实 HTTP 回归：
   - `test_product_specification_crud_and_search`
   - `test_same_item_name_different_specifications_are_distinct_products`
