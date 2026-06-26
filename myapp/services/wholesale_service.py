@@ -1572,6 +1572,10 @@ def _ensure_zero_stock_bin(item_code: str, warehouse: str):
 	return get_bin(item_code, warehouse)
 
 
+def _bin_exists(item_code: str, warehouse: str):
+	return bool(frappe.db.exists("Bin", {"item_code": item_code, "warehouse": warehouse}))
+
+
 def update_product_v2(
 	item_code: str,
 	**kwargs,
@@ -1685,7 +1689,7 @@ def update_product_v2(
 					valuation_rate=valuation_rate,
 					posting_date=kwargs.get("posting_date"),
 				)
-			elif not frappe.db.exists("Bin", {"item_code": item.name, "warehouse": resolved_warehouse}):
+			elif not _bin_exists(item.name, resolved_warehouse):
 				_ensure_zero_stock_bin(item.name, resolved_warehouse)
 
 		standard_rate = kwargs.get("standard_rate")

@@ -750,7 +750,7 @@ class TestWholesaleService(TestCase):
 			warehouse="Stores - RD",
 			company=None,
 			price_list="Standard Selling",
-			currency="CNY",
+			currency=None,
 		)
 		self.assertEqual(result["data"]["item_code"], "ITEM-NEW")
 		mock_ensure_zero_stock_bin.assert_not_called()
@@ -986,14 +986,12 @@ class TestWholesaleService(TestCase):
 	@patch("myapp.services.wholesale_service._create_stock_adjustment_entry")
 	@patch("myapp.services.wholesale_service.resolve_item_quantity_to_stock")
 	@patch("myapp.services.wholesale_service._get_qty_map")
-	@patch("myapp.services.wholesale_service.frappe.db.exists")
 	@patch("myapp.services.wholesale_service.frappe.get_doc")
 	@patch("myapp.services.wholesale_service.frappe.throw", side_effect=frappe.ValidationError)
 	def test_update_product_v2_rejects_mode_default_uom_without_conversion(
 		self,
 		_mock_throw,
 		mock_get_doc,
-		_mock_db_exists,
 		_mock_get_qty_map,
 		_mock_resolve_item_quantity_to_stock,
 		_mock_create_stock_adjustment_entry,
@@ -1037,12 +1035,12 @@ class TestWholesaleService(TestCase):
 	@patch("myapp.services.wholesale_service.resolve_item_quantity_to_stock")
 	@patch("myapp.services.wholesale_service._get_qty_map")
 	@patch("myapp.services.wholesale_service._resolve_company_from_warehouse")
-	@patch("myapp.services.wholesale_service.frappe.db.exists")
+	@patch("myapp.services.wholesale_service._bin_exists")
 	@patch("myapp.services.wholesale_service.frappe.get_doc")
 	def test_update_product_v2_creates_zero_qty_bin_for_new_warehouse(
 		self,
 		mock_get_doc,
-		mock_db_exists,
+		mock_bin_exists,
 		mock_resolve_company_from_warehouse,
 		mock_get_qty_map,
 		mock_resolve_item_quantity_to_stock,
@@ -1061,7 +1059,7 @@ class TestWholesaleService(TestCase):
 		item.standard_rate = 18
 		item.valuation_rate = 9
 		mock_get_doc.return_value = item
-		mock_db_exists.return_value = False
+		mock_bin_exists.return_value = False
 		_mock_resolve_default_uom.return_value = "Nos"
 		_mock_normalize_mode_default_uom.side_effect = lambda value=None: value.strip() if isinstance(value, str) else None
 		_mock_get_item_mode_default_uom_field.return_value = None
