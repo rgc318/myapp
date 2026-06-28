@@ -3,8 +3,10 @@ import frappe
 from myapp.services.settlement_service import cancel_payment_entry as cancel_payment_entry_service
 from myapp.services.settlement_service import confirm_pending_document as confirm_pending_document_service
 from myapp.services.settlement_service import create_customer_refund as create_customer_refund_service
+from myapp.services.settlement_service import create_supplier_refund as create_supplier_refund_service
 from myapp.services.settlement_service import get_customer_refund_context as get_customer_refund_context_service
 from myapp.services.settlement_service import get_payment_entry_detail as get_payment_entry_detail_service
+from myapp.services.settlement_service import get_supplier_refund_context as get_supplier_refund_context_service
 from myapp.services.settlement_service import process_sales_return as process_sales_return_service
 from myapp.services.settlement_service import update_payment_status as update_payment_status_service
 
@@ -41,6 +43,20 @@ def create_customer_refund(return_invoice_name: str, refund_amount: float, **kwa
 @frappe.whitelist()
 def get_customer_refund_context_v1(return_invoice_name: str):
 	return get_customer_refund_context_service(return_invoice_name=return_invoice_name)
+
+
+@frappe.whitelist()
+def create_supplier_refund(return_invoice_name: str, refund_amount: float, **kwargs):
+	return create_supplier_refund_service(
+		return_invoice_name=return_invoice_name,
+		refund_amount=refund_amount,
+		**kwargs,
+	)
+
+
+@frappe.whitelist()
+def get_supplier_refund_context_v1(return_invoice_name: str):
+	return get_supplier_refund_context_service(return_invoice_name=return_invoice_name)
 
 
 @frappe.whitelist()

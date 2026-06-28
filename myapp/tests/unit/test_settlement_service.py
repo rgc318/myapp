@@ -10,8 +10,10 @@ from myapp.services.settlement_service import (
 	cancel_payment_entry,
 	confirm_pending_document,
 	create_customer_refund,
+	create_supplier_refund,
 	get_customer_refund_context,
 	get_payment_entry_detail,
+	get_supplier_refund_context,
 	process_sales_return,
 	update_payment_status,
 )
@@ -613,3 +615,137 @@ class TestSettlementService(TestCase):
 
 		self.assertFalse(result["data"]["actions"]["can_create_refund"])
 		self.assertEqual(result["data"]["refund"]["status"], "unavailable")
+
+	@patch("myapp.services.settlement_service.frappe.get_doc")
+	def test_create_supplier_refund_creates_payment_entry_for_return_invoice(self, mock_get_doc):
+		return_invoice = frappe._dict(
+			{
+				"name": "PINV-RET-0001",
+				"docstatus": 1,
+				"is_return": 1,
+				"outstanding_amount": -100,
+				"return_against": "PINV-0001",
+			}
+		)
+		mock_get_doc.return_value = return_invoice
+
+		pe = MagicMock()
+		pe.name = "ACC-PAY-SUP-REF-0001"
+		pe.mode_of_payment = None
+
+		fake_payment_entry_module = ModuleType("payment_entry")
+		fake_get_payment_entry = MagicMock(return_value=pe)
+		fake_payment_entry_module.get_payment_entry = fake_get_payment_entry
+
+		with patch.dict(
+			sys.modules,
+			{"erpnext.accounts.doctype.payment_entry.payment_entry": fake_payment_entry_module},
+		), patch("myapp.services.settlement_service.nowdate", return_value="2026-04-02"):
+			result = create_supplier_refund(
+				"PINV-RET-0001",
+				70,
+				mode_of_payment="Bank",
+				reference_no="SUP-REF-001",
+				remarks="供应商退货退款",
+			)
+
+		fake_get_payment_entry.assert_called_once_with(
+			"Purchase Invoice",
+			"PINV-RET-0001",
+			party_amount=70.0,
+		)
+		pe.insert.assert_called_once()
+		pe.submit.assert_called_once()
+		self.assertEqual(pe.mode_of_payment, "Bank")
+		self.assertEqual(pe.reference_no, "SUP-REF-001")
+		self.assertEqual(pe.reference_date, "2026-04-02")
+		self.assertEqual(pe.remarks, "供应商退货退款")
+		self.assertEqual(result["payment_entry"], "ACC-PAY-SUP-REF-0001")
+		self.assertEqual(result["refund_amount"], 70.0)
+		self.assertEqual(result["return_invoice"], "PINV-RET-0001")
+		self.assertEqual(result["source_invoice"], "PINV-0001")
+
+	@patch("myapp.services.settlement_service.frappe.throw", side_effect=frappe.ValidationError)
+	@patch("myapp.services.settlement_service.frappe.get_doc")
+	def test_create_supplier_refund_rejects_normal_purchase_invoice(self, mock_get_doc, _mock_throw):
+		mock_get_doc.return_value = frappe._dict(
+			{
+				"name": "PINV-0001",
+				"docstatus": 1,
+				"is_return": 0,
+				"outstanding_amount": 100,
+			}
+		)
+
+		with self.assertRaises(frappe.ValidationError):
+			create_supplier_refund("PINV-0001", 10)
+
+	@patch("myapp.services.settlement_service.run_idempotent")
+	def test_create_supplier_refund_uses_idempotent_runner(self, mock_run_idempotent):
+		mock_run_idempotent.return_value = {
+			"status": "success",
+			"payment_entry": "ACC-PAY-SUP-REF-0099",
+		}
+
+		result = create_supplier_refund("PINV-RET-0099", 20, request_id="supplier-refund-001")
+
+		self.assertEqual(result["payment_entry"], "ACC-PAY-SUP-REF-0099")
+		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.settlement_service._collect_purchase_invoice_payment_entries")
+	@patch("myapp.services.settlement_service.frappe.get_doc")
+	def test_get_supplier_refund_context_returns_refundable_amount_and_history(
+		self,
+		mock_get_doc,
+		mock_collect_payment_entries,
+	):
+		return_invoice = frappe._dict(
+			{
+				"name": "PINV-RET-0001",
+				"docstatus": 1,
+				"is_return": 1,
+				"return_against": "PINV-0001",
+				"supplier": "SUP-0001",
+				"supplier_name": "Test Supplier",
+				"company": "Test Company",
+				"currency": "CNY",
+				"posting_date": "2026-06-22",
+				"grand_total": -100,
+				"outstanding_amount": -40,
+			}
+		)
+		source_invoice = frappe._dict(
+			{
+				"name": "PINV-0001",
+				"docstatus": 1,
+				"is_return": 0,
+				"supplier": "SUP-0001",
+				"supplier_name": "Test Supplier",
+				"company": "Test Company",
+				"currency": "CNY",
+				"posting_date": "2026-06-20",
+				"grand_total": 100,
+				"outstanding_amount": 0,
+			}
+		)
+		mock_get_doc.side_effect = [return_invoice, source_invoice]
+		mock_collect_payment_entries.return_value = [
+			{
+				"payment_entry": "ACC-PAY-SUP-REF-0001",
+				"allocated_amount": 60,
+				"posting_date": "2026-06-22",
+			}
+		]
+
+		result = get_supplier_refund_context("PINV-RET-0001")
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["return_invoice"]["name"], "PINV-RET-0001")
+		self.assertEqual(result["data"]["source_invoice"]["name"], "PINV-0001")
+		self.assertEqual(result["data"]["refund"]["return_amount"], 100)
+		self.assertEqual(result["data"]["refund"]["refunded_amount"], 60)
+		self.assertEqual(result["data"]["refund"]["refundable_amount"], 40)
+		self.assertEqual(result["data"]["refund"]["suggested_refund_amount"], 40)
+		self.assertEqual(result["data"]["refund"]["status"], "partial_refunded")
+		self.assertTrue(result["data"]["actions"]["can_create_refund"])
+		self.assertEqual(result["data"]["entries"][0]["payment_entry"], "ACC-PAY-SUP-REF-0001")

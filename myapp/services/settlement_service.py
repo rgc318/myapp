@@ -456,10 +456,12 @@ def _build_refund_invoice_snapshot(invoice):
 		"document_status": "cancelled" if cint(invoice.docstatus) == 2 else "submitted" if cint(invoice.docstatus) == 1 else "draft",
 		"docstatus": cint(invoice.docstatus),
 		"is_return": bool(cint(invoice.get("is_return"))),
-		"return_against": invoice.get("return_against"),
-		"customer": invoice.get("customer"),
-		"customer_name": invoice.get("customer_name") or invoice.get("customer"),
-		"company": invoice.get("company"),
+			"return_against": invoice.get("return_against"),
+			"customer": invoice.get("customer"),
+			"customer_name": invoice.get("customer_name") or invoice.get("customer"),
+			"supplier": invoice.get("supplier"),
+			"supplier_name": invoice.get("supplier_name") or invoice.get("supplier"),
+			"company": invoice.get("company"),
 		"currency": invoice.get("currency"),
 		"posting_date": invoice.get("posting_date"),
 		"grand_total": flt(invoice.get("rounded_total") or invoice.get("grand_total") or 0),
@@ -475,6 +477,62 @@ def _build_customer_refund_action_hint(*, return_invoice, refundable_amount: flo
 	if refundable_amount <= 0:
 		return _("当前退货发票没有可退金额。")
 	return ""
+
+
+def _build_supplier_refund_action_hint(*, return_invoice, refundable_amount: float):
+	if cint(return_invoice.docstatus) != 1:
+		return _("只有已提交的采购退货发票才能登记退款。")
+	if not cint(return_invoice.get("is_return")):
+		return _("只能基于采购退货发票登记供应商退款。")
+	if refundable_amount <= 0:
+		return _("当前采购退货发票没有可退金额。")
+	return ""
+
+
+def _collect_purchase_invoice_payment_entries(invoice_names: list[str]):
+	if not invoice_names:
+		return []
+
+	reference_rows = frappe.get_all(
+		"Payment Entry Reference",
+		filters={
+			"reference_doctype": "Purchase Invoice",
+			"reference_name": ["in", invoice_names],
+			"parenttype": "Payment Entry",
+			"parentfield": "references",
+		},
+		fields=["parent", "reference_name", "allocated_amount"],
+		limit_page_length=0,
+	)
+	parent_names = sorted({row.parent for row in reference_rows if getattr(row, "parent", None)})
+	if not parent_names:
+		return []
+
+	payment_entry_rows = frappe.get_all(
+		"Payment Entry",
+		filters={"name": ["in", parent_names], "docstatus": 1},
+		fields=["name", "posting_date", "mode_of_payment", "paid_amount", "received_amount", "modified"],
+		order_by="modified desc",
+		limit_page_length=0,
+	)
+	payment_entry_map = {getattr(row, "name", None): row for row in payment_entry_rows}
+	entries = []
+	for row in reference_rows:
+		payment_entry = payment_entry_map.get(getattr(row, "parent", None))
+		if not payment_entry:
+			continue
+		entries.append(
+			{
+				"allocated_amount": flt(getattr(row, "allocated_amount", 0) or 0),
+				"mode_of_payment": getattr(payment_entry, "mode_of_payment", None),
+				"paid_amount": flt(getattr(payment_entry, "paid_amount", 0) or 0),
+				"payment_entry": getattr(payment_entry, "name", None),
+				"posting_date": getattr(payment_entry, "posting_date", None),
+				"received_amount": flt(getattr(payment_entry, "received_amount", 0) or 0),
+				"reference_name": getattr(row, "reference_name", None),
+			}
+		)
+	return entries
 
 
 def get_customer_refund_context(return_invoice_name: str):
@@ -539,6 +597,66 @@ def get_customer_refund_context(return_invoice_name: str):
 		raise
 
 
+def get_supplier_refund_context(return_invoice_name: str):
+	if not return_invoice_name:
+		frappe.throw(_("return_invoice_name 不能为空。"))
+
+	try:
+		return_invoice = frappe.get_doc("Purchase Invoice", return_invoice_name)
+		source_invoice = None
+		source_invoice_name = return_invoice.get("return_against")
+		if source_invoice_name:
+			source_invoice = frappe.get_doc("Purchase Invoice", source_invoice_name)
+
+		refund_entries = _collect_purchase_invoice_payment_entries([return_invoice.name])
+		refunded_amount = sum(abs(flt(entry.get("allocated_amount") or 0)) for entry in refund_entries)
+		refundable_amount = abs(flt(return_invoice.get("outstanding_amount") or 0))
+		return_amount = abs(flt(return_invoice.get("rounded_total") or return_invoice.get("grand_total") or 0))
+		action_hint = _build_supplier_refund_action_hint(
+			return_invoice=return_invoice,
+			refundable_amount=refundable_amount,
+		)
+		can_create_refund = not action_hint
+
+		if cint(return_invoice.docstatus) == 1 and cint(return_invoice.get("is_return")) and refundable_amount <= 0:
+			refund_status = "refunded"
+		elif action_hint:
+			refund_status = "unavailable"
+		elif refunded_amount > 0:
+			refund_status = "partial_refunded"
+		else:
+			refund_status = "not_refunded"
+
+		return {
+			"status": "success",
+			"data": {
+				"return_invoice": _build_refund_invoice_snapshot(return_invoice),
+				"source_invoice": _build_refund_invoice_snapshot(source_invoice),
+				"refund": {
+					"currency": return_invoice.get("currency"),
+					"return_amount": return_amount,
+					"refunded_amount": refunded_amount,
+					"refundable_amount": refundable_amount,
+					"suggested_refund_amount": refundable_amount if can_create_refund else 0,
+					"status": refund_status,
+				},
+				"entries": refund_entries,
+				"actions": {
+					"can_create_refund": can_create_refund,
+					"create_refund_hint": action_hint,
+				},
+			},
+			"message": _("供应商退款上下文获取成功。"),
+		}
+	except frappe.DoesNotExistError:
+		raise
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("供应商退款上下文获取失败"))
+		raise
+
+
 def create_customer_refund(return_invoice_name: str, refund_amount: float, **kwargs):
 	from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
 
@@ -598,6 +716,68 @@ def create_customer_refund(return_invoice_name: str, refund_amount: float, **kwa
 		raise
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), _("客户退款登记失败"))
+		raise
+
+
+def create_supplier_refund(return_invoice_name: str, refund_amount: float, **kwargs):
+	from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
+
+	if not return_invoice_name:
+		frappe.throw(_("return_invoice_name 不能为空。"))
+
+	refund_amount = flt(refund_amount)
+	if refund_amount <= 0:
+		frappe.throw(_("refund_amount 必须大于 0。"))
+
+	request_id = kwargs.get("request_id")
+
+	try:
+		def _create_supplier_refund():
+			return_invoice = frappe.get_doc("Purchase Invoice", return_invoice_name)
+			if cint(return_invoice.docstatus) != 1:
+				frappe.throw(_("只有已提交的采购退货发票才能登记退款。"))
+			if not cint(return_invoice.get("is_return")):
+				frappe.throw(_("只能基于采购退货发票登记供应商退款。"))
+
+			refundable_amount = abs(flt(return_invoice.get("outstanding_amount")))
+			if refundable_amount <= 0:
+				frappe.throw(_("采购退货发票 {0} 当前没有可退金额。").format(return_invoice.name))
+			if refund_amount > refundable_amount:
+				frappe.throw(
+					_("退款金额不能大于当前可退金额 {0}。").format(refundable_amount)
+				)
+
+			pe = get_payment_entry("Purchase Invoice", return_invoice.name, party_amount=refund_amount)
+			pe.mode_of_payment = kwargs.get("mode_of_payment") or pe.mode_of_payment or "Cash"
+			pe.reference_no = kwargs.get("reference_no") or _("供应商退款")
+			pe.reference_date = kwargs.get("reference_date") or nowdate()
+			if kwargs.get("remarks"):
+				pe.remarks = kwargs["remarks"]
+
+			pe.insert()
+			pe.submit()
+
+			return {
+				"status": "success",
+				"payment_entry": pe.name,
+				"refund_amount": refund_amount,
+				"refundable_amount_before_refund": refundable_amount,
+				"return_invoice": return_invoice.name,
+				"source_invoice": return_invoice.get("return_against"),
+				"mode_of_payment": pe.mode_of_payment,
+				"reference_no": pe.reference_no,
+				"reference_date": pe.reference_date,
+				"message": _("成功为采购退货发票 {0} 登记供应商退款 {1}。").format(
+					return_invoice.name,
+					refund_amount,
+				),
+			}
+
+		return run_idempotent("create_supplier_refund", request_id, _create_supplier_refund)
+	except frappe.ValidationError:
+		raise
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("供应商退款登记失败"))
 		raise
 
 

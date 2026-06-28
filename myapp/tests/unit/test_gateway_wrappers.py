@@ -14,6 +14,7 @@ from myapp.api.gateway import (
 	cancel_supplier_payment,
 	create_customer_v2,
 	create_customer_refund,
+	create_supplier_refund,
 	create_product_v2,
 	create_supplier_v2,
 	create_purchase_invoice,
@@ -53,6 +54,7 @@ from myapp.api.gateway import (
 	disable_uom_v2,
 	get_customer_detail_v2,
 	get_customer_refund_context_v1,
+	get_supplier_refund_context_v1,
 	get_payment_entry_detail_v1,
 	get_delivery_note_detail_v2,
 	get_product_detail_v2,
@@ -337,6 +339,37 @@ class TestGatewayWrappers(TestCase):
 
 		mock_get_customer_refund_context_v1_service.assert_called_once_with(
 			return_invoice_name="SINV-RET-0001",
+		)
+
+	@patch("myapp.api.gateway.create_supplier_refund_service")
+	def test_create_supplier_refund_passes_request_id_to_service(self, mock_create_supplier_refund_service):
+		mock_create_supplier_refund_service.return_value = {
+			"status": "success",
+			"payment_entry": "ACC-PAY-SUP-REF-0001",
+		}
+
+		create_supplier_refund("PINV-RET-0001", 80, request_id="supplier-refund-001")
+
+		mock_create_supplier_refund_service.assert_called_once_with(
+			return_invoice_name="PINV-RET-0001",
+			refund_amount=80,
+			request_id="supplier-refund-001",
+		)
+
+	@patch("myapp.api.gateway.get_supplier_refund_context_v1_service")
+	def test_get_supplier_refund_context_v1_passes_return_invoice_to_service(
+		self,
+		mock_get_supplier_refund_context_v1_service,
+	):
+		mock_get_supplier_refund_context_v1_service.return_value = {
+			"status": "success",
+			"data": {"return_invoice": {"name": "PINV-RET-0001"}},
+		}
+
+		get_supplier_refund_context_v1("PINV-RET-0001")
+
+		mock_get_supplier_refund_context_v1_service.assert_called_once_with(
+			return_invoice_name="PINV-RET-0001",
 		)
 
 	@patch("myapp.api.gateway.get_payment_entry_detail_v1_service")

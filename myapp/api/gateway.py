@@ -82,8 +82,10 @@ from .returns_api import get_return_source_context_v2 as get_return_source_conte
 from .settlement_api import confirm_pending_document as confirm_pending_document_service
 from .settlement_api import cancel_payment_entry as cancel_payment_entry_service
 from .settlement_api import create_customer_refund as create_customer_refund_service
+from .settlement_api import create_supplier_refund as create_supplier_refund_service
 from .settlement_api import get_customer_refund_context_v1 as get_customer_refund_context_v1_service
 from .settlement_api import get_payment_entry_detail_v1 as get_payment_entry_detail_v1_service
+from .settlement_api import get_supplier_refund_context_v1 as get_supplier_refund_context_v1_service
 from .settlement_api import process_sales_return as process_sales_return_service
 from .settlement_api import update_payment_status as update_payment_status_service
 from .wholesale_api import create_product_and_stock as create_product_and_stock_service
@@ -1329,6 +1331,26 @@ def get_customer_refund_context_v1(return_invoice_name: str):
 	return _handle_gateway_call(
 		lambda: get_customer_refund_context_v1_service(return_invoice_name=return_invoice_name),
 		success_code="CUSTOMER_REFUND_CONTEXT_LOADED",
+	)
+
+
+@frappe.whitelist()
+def create_supplier_refund(return_invoice_name: str, refund_amount: float, **kwargs):
+	return _handle_gateway_call(
+		lambda: create_supplier_refund_service(
+			return_invoice_name=return_invoice_name,
+			refund_amount=refund_amount,
+			**kwargs,
+		),
+		success_code="SUPPLIER_REFUND_CREATED",
+	)
+
+
+@frappe.whitelist()
+def get_supplier_refund_context_v1(return_invoice_name: str):
+	return _handle_gateway_call(
+		lambda: get_supplier_refund_context_v1_service(return_invoice_name=return_invoice_name),
+		success_code="SUPPLIER_REFUND_CONTEXT_LOADED",
 	)
 
 
