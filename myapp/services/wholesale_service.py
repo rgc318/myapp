@@ -393,6 +393,7 @@ def _get_item_rows(
 	*,
 	search_key: str | None = None,
 	item_group: str | None = None,
+	brand: str | None = None,
 	disabled: int | None = None,
 	date_from: str | None = None,
 	date_to: str | None = None,
@@ -405,6 +406,7 @@ def _get_item_rows(
 		"name",
 		"item_name",
 		"item_group",
+		"brand",
 		"stock_uom",
 		"image",
 		"description",
@@ -429,6 +431,8 @@ def _get_item_rows(
 	filters = {}
 	if item_group:
 		filters["item_group"] = item_group
+	if brand:
+		filters["brand"] = brand
 	if disabled is not None:
 		filters["disabled"] = cint(disabled)
 	resolved_date_from, resolved_date_to = _normalize_master_date_range(date_from, date_to)
@@ -482,6 +486,7 @@ def _count_item_rows(
 	*,
 	search_key: str | None = None,
 	item_group: str | None = None,
+	brand: str | None = None,
 	disabled: int | None = None,
 	date_from: str | None = None,
 	date_to: str | None = None,
@@ -489,6 +494,8 @@ def _count_item_rows(
 	filters = {}
 	if item_group:
 		filters["item_group"] = item_group
+	if brand:
+		filters["brand"] = brand
 	if disabled is not None:
 		filters["disabled"] = cint(disabled)
 	resolved_date_from, resolved_date_to = _normalize_master_date_range(date_from, date_to)
@@ -900,7 +907,9 @@ def list_products_v2(
 	limit: int = 20,
 	start: int = 0,
 	item_group: str | None = None,
+	brand: str | None = None,
 	disabled: int | None = None,
+	in_stock_only: bool | int = False,
 	price_list: str = "Standard Selling",
 	currency: str | None = None,
 	selling_price_lists=None,
@@ -916,29 +925,57 @@ def list_products_v2(
 	currency = _normalize_currency(currency)
 	selling_price_lists = _normalize_price_list_names(selling_price_lists, defaults=DEFAULT_SELLING_PRICE_LISTS)
 	buying_price_lists = _normalize_price_list_names(buying_price_lists, defaults=DEFAULT_BUYING_PRICE_LISTS)
+	item_group = _normalize_text(item_group) or None
+	brand = _normalize_text(brand) or None
+	in_stock_only = bool(cint(in_stock_only))
 	sort_by = _normalize_text(sort_by).lower() or "modified"
 	if sort_by not in {"modified", "creation", "item_name", "name"}:
 		sort_by = "modified"
 	sort_order = "asc" if _normalize_text(sort_order).lower() == "asc" else "desc"
 
-	rows = _get_item_rows(
-		search_key=search_key,
-		item_group=_normalize_text(item_group) or None,
-		disabled=disabled,
-		date_from=date_from,
-		date_to=date_to,
-		limit=limit,
-		start=start,
-		sort_by=sort_by,
-		sort_order=sort_order,
-	)
-	total_count = _count_item_rows(
-		search_key=search_key,
-		item_group=_normalize_text(item_group) or None,
-		disabled=disabled,
-		date_from=date_from,
-		date_to=date_to,
-	)
+	stock_company = _resolve_stock_company_scope(warehouse, company)
+	if in_stock_only:
+		all_rows = _get_item_rows(
+			search_key=search_key,
+			item_group=item_group,
+			brand=brand,
+			disabled=disabled,
+			date_from=date_from,
+			date_to=date_to,
+			limit=0,
+			start=0,
+			sort_by=sort_by,
+			sort_order=sort_order,
+		)
+		all_item_codes = [row.name for row in all_rows]
+		all_qty_map = _get_qty_map(all_item_codes, warehouse=warehouse, company=company)
+		filtered_rows = [row for row in all_rows if flt(all_qty_map.get(row.name, 0) or 0) > 0]
+		total_count = len(filtered_rows)
+		rows = filtered_rows[start : start + limit]
+		qty_map = {row.name: all_qty_map.get(row.name, 0) for row in rows}
+	else:
+		rows = _get_item_rows(
+			search_key=search_key,
+			item_group=item_group,
+			brand=brand,
+			disabled=disabled,
+			date_from=date_from,
+			date_to=date_to,
+			limit=limit,
+			start=start,
+			sort_by=sort_by,
+			sort_order=sort_order,
+		)
+		total_count = _count_item_rows(
+			search_key=search_key,
+			item_group=item_group,
+			brand=brand,
+			disabled=disabled,
+			date_from=date_from,
+			date_to=date_to,
+		)
+		item_codes = [row.name for row in rows]
+		qty_map = _get_qty_map(item_codes, warehouse=warehouse, company=company)
 	pagination = build_offset_pagination(
 		start=start,
 		limit=limit,
@@ -946,8 +983,6 @@ def list_products_v2(
 		row_count=len(rows),
 	)
 	item_codes = [row.name for row in rows]
-	stock_company = _resolve_stock_company_scope(warehouse, company)
-	qty_map = _get_qty_map(item_codes, warehouse=warehouse, company=company)
 	total_qty_map = _get_qty_map(item_codes, warehouse=None, company=stock_company)
 	warehouse_stock_map = _get_warehouse_stock_detail_map(item_codes, company=stock_company)
 	global_total_qty_map = _get_qty_map(item_codes, warehouse=None, company=None)
@@ -973,6 +1008,7 @@ def list_products_v2(
 				"item_code": row.name,
 				"item_name": row.item_name,
 				"item_group": row.item_group,
+				"brand": getattr(row, "brand", None),
 				"stock_uom": row.stock_uom,
 				"stock_uom_display": uom_display_map.get(_normalize_text(row.stock_uom)),
 				"image": row.image,
@@ -1032,7 +1068,9 @@ def list_products_v2(
 			"limit": limit,
 			"start": start,
 			"item_group": _normalize_text(item_group) or None,
+			"brand": brand,
 			"disabled": disabled,
+			"in_stock_only": in_stock_only,
 			"price_list": price_list,
 			"currency": currency,
 			"selling_price_lists": selling_price_lists,

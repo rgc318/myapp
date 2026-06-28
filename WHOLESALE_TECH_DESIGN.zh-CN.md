@@ -5,8 +5,8 @@
 - 文档名称：副食批发业务二次开发需求及技术设计文档
 - 适用项目：`myapp` for Frappe / ERPNext
 - 文档定位：作为后续开发、接口联调、测试验收和团队协作的统一基准
-- 当前版本：v1.4
-- 更新日期：2026-03-17
+- 当前版本：v1.5
+- 更新日期：2026-06-28
 
 ## 2. 文档目标
 
@@ -173,6 +173,18 @@
 - 为兼容未执行 patch / migrate 的旧站点，运行时仍保留 `description` 兜底逻辑
 - 商品图片继续沿用 ERPNext 标准字段 `Item.image`，不额外引入独立媒体模型
 - 站点升级时需执行 `bench migrate` 以落地 patch：`myapp.patches.add_item_nickname_field`
+
+商品主数据列表与企业级维护能力补充：
+
+- `list_products_v2` 已支持商品分类、品牌、状态、仓库、公司、创建日期、仅有库存等列表过滤能力
+- `list_products_v2` 会返回 `brand`、分仓库存、全局库存、单位换算、批发 / 零售默认单位和价格摘要
+- `search_product_v2` 继续作为销售 / 采购 / 库存上下文选品搜索接口，支持 `item_context`、`item_group`、`brand`、`in_stock_only`
+- 价格摘要支持多价格表：
+  - 销售价格表：`Standard Selling`、`Wholesale`、`Retail`
+  - 采购价格表：`Standard Buying`
+- 商品创建与更新接口通过 `selling_prices` / `buying_prices` 维护不同价格层级
+- `standard_rate` 继续作为 ERPNext 标准售价兼容字段，但 Web 与移动端应优先读取 `price_summary`
+- Web 商品详情页可直接消费 `get_product_detail_v2` 的资料、库存、价格、单位和最近库存流水入口，ERPNext 后台仍保留复杂主数据配置兜底
 
 客户主数据补充约束：
 

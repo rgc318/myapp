@@ -78,6 +78,7 @@ class TestWholesaleService(TestCase):
 					"name": "ITEM-001",
 					"item_name": "商品一",
 					"item_group": "饮料",
+					"brand": "可口可乐",
 					"stock_uom": "Nos",
 					"image": "/files/a.png",
 					"description": "标准描述",
@@ -126,6 +127,7 @@ class TestWholesaleService(TestCase):
 
 		self.assertEqual(len(result["data"]), 1)
 		self.assertEqual(result["data"][0]["item_code"], "ITEM-001")
+		self.assertEqual(result["data"][0]["brand"], "可口可乐")
 		self.assertEqual(result["data"][0]["price_summary"]["wholesale_rate"], 12)
 		self.assertEqual(result["data"][0]["price_summary"]["standard_buying_rate"], 6.2)
 		self.assertEqual(result["data"][0]["wholesale_default_uom"], "Box")
@@ -138,16 +140,105 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(result["data"][0]["total_qty"], 42)
 		self.assertEqual(result["meta"]["total_count"], 2)
 		self.assertEqual(result["pagination"]["total_count"], 2)
+		mock_get_item_rows.assert_called_once_with(
+			search_key="可乐",
+			item_group=None,
+			brand=None,
+			disabled=None,
+			date_from="2026-03-01",
+			date_to="2026-03-31",
+			limit=20,
+			start=0,
+			sort_by="modified",
+			sort_order="desc",
+		)
+
+	@patch("myapp.services.wholesale_service._get_warehouse_stock_detail_map", return_value={})
+	@patch("myapp.services.wholesale_service._get_multi_price_map")
+	@patch("myapp.services.wholesale_service._get_uom_map", return_value={})
+	@patch("myapp.services.wholesale_service._get_price_map", return_value={})
+	@patch("myapp.services.wholesale_service._get_qty_map")
+	@patch("myapp.services.wholesale_service._get_item_rows")
+	def test_list_products_v2_filters_in_stock_rows(
+		self,
+		mock_get_item_rows,
+		mock_get_qty_map,
+		_mock_get_price_map,
+		_mock_get_uom_map,
+		mock_get_multi_price_map,
+		_mock_get_warehouse_stock_detail_map,
+	):
+		mock_get_item_rows.return_value = [
+			frappe._dict(
+				{
+					"name": "ITEM-001",
+					"item_name": "商品一",
+					"item_group": "饮料",
+					"brand": "可口可乐",
+					"stock_uom": "Nos",
+					"image": None,
+					"description": "",
+					"disabled": 0,
+					"is_sales_item": 1,
+					"is_purchase_item": 1,
+					"valuation_rate": 0,
+					"standard_rate": 0,
+					"creation": "2026-03-20 09:00:00",
+					"modified": "2026-03-20 10:00:00",
+				}
+			),
+			frappe._dict(
+				{
+					"name": "ITEM-002",
+					"item_name": "商品二",
+					"item_group": "饮料",
+					"brand": "可口可乐",
+					"stock_uom": "Nos",
+					"image": None,
+					"description": "",
+					"disabled": 0,
+					"is_sales_item": 1,
+					"is_purchase_item": 1,
+					"valuation_rate": 0,
+					"standard_rate": 0,
+					"creation": "2026-03-21 09:00:00",
+					"modified": "2026-03-21 10:00:00",
+				}
+			),
+		]
+		mock_get_qty_map.side_effect = [
+			{"ITEM-001": 0, "ITEM-002": 8},
+			{"ITEM-002": 8},
+			{"ITEM-002": 8},
+		]
+		mock_get_multi_price_map.side_effect = [{}, {}]
+
+		result = list_products_v2(
+			brand="可口可乐",
+			in_stock_only=1,
+			item_group="饮料",
+			limit=20,
+		)
+
+		self.assertEqual([row["item_code"] for row in result["data"]], ["ITEM-002"])
+		self.assertEqual(result["meta"]["total_count"], 1)
+		self.assertTrue(result["filters"]["in_stock_only"])
+		self.assertEqual(result["filters"]["brand"], "可口可乐")
 		self.assertEqual(result["pagination"]["page"], 1)
 		self.assertEqual(result["pagination"]["page_size"], 20)
-		self.assertTrue(result["pagination"]["has_more"])
-		self.assertEqual(len(result["data"][0]["warehouse_stock_details"]), 2)
-		self.assertEqual(mock_get_item_rows.call_args.kwargs["date_from"], "2026-03-01")
-		self.assertEqual(mock_get_item_rows.call_args.kwargs["date_to"], "2026-03-31")
-		self.assertEqual(mock_count_item_rows.call_args.kwargs["date_from"], "2026-03-01")
-		self.assertEqual(mock_count_item_rows.call_args.kwargs["date_to"], "2026-03-31")
-		self.assertEqual(result["filters"]["date_from"], "2026-03-01")
-		self.assertEqual(result["filters"]["date_to"], "2026-03-31")
+		self.assertFalse(result["pagination"]["has_more"])
+		mock_get_item_rows.assert_called_once_with(
+			search_key=None,
+			item_group="饮料",
+			brand="可口可乐",
+			disabled=None,
+			date_from=None,
+			date_to=None,
+			limit=0,
+			start=0,
+			sort_by="modified",
+			sort_order="desc",
+		)
 
 	@patch("myapp.services.wholesale_service._get_warehouse_stock_detail_map")
 	@patch("myapp.services.wholesale_service._get_primary_barcode")

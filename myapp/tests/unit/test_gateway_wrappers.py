@@ -957,6 +957,9 @@ class TestGatewayWrappers(TestCase):
 			date_to="2026-03-31",
 			limit=10,
 			start=5,
+			item_group="饮料",
+			brand="可口可乐",
+			in_stock_only=1,
 		)
 
 		mock_list_products_v2_service.assert_called_once_with(
@@ -967,8 +970,10 @@ class TestGatewayWrappers(TestCase):
 			date_to="2026-03-31",
 			limit=10,
 			start=5,
-			item_group=None,
+			item_group="饮料",
+			brand="可口可乐",
 			disabled=None,
+			in_stock_only=1,
 			price_list="Standard Selling",
 			currency=None,
 			selling_price_lists=None,

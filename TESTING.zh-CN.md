@@ -149,6 +149,18 @@ docker exec frappe_docker-backend-1 bash -lc '
 '
 ```
 
+跑商品主数据、商品筛选和网关包装器回归：
+
+```bash
+docker exec frappe_docker-backend-1 bash -lc '
+  cd /home/frappe/frappe-bench &&
+  env/bin/python -m unittest \
+    apps.myapp.myapp.tests.unit.test_wholesale_service \
+    apps.myapp.myapp.tests.unit.test_gateway_wrappers \
+    apps.myapp.myapp.tests.unit.test_link_options_service
+'
+```
+
 推荐顺序：
 
 1. 先跑单接口测试
