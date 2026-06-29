@@ -77,6 +77,8 @@ from .reports_api import get_sales_report_v1 as get_sales_report_v1_service
 from .reports_api import list_cashflow_entries_v1 as list_cashflow_entries_v1_service
 from .inventory_api import list_inventory_stock_summary_v1 as list_inventory_stock_summary_v1_service
 from .inventory_api import list_stock_ledger_entries_v1 as list_stock_ledger_entries_v1_service
+from .inventory_api import reconcile_inventory_stock_v1 as reconcile_inventory_stock_v1_service
+from .inventory_api import transfer_inventory_stock_v1 as transfer_inventory_stock_v1_service
 from myapp.services.link_options_service import search_link_options_v1 as search_link_options_v1_service
 from .returns_api import get_return_source_context_v2 as get_return_source_context_v2_service
 from .settlement_api import confirm_pending_document as confirm_pending_document_service
@@ -446,6 +448,58 @@ def list_stock_ledger_entries_v1(
 			page_size=page_size,
 		),
 		success_code="STOCK_LEDGER_ENTRIES_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def transfer_inventory_stock_v1(
+	item_code: str,
+	source_warehouse: str,
+	target_warehouse: str,
+	qty,
+	uom: str | None = None,
+	posting_date: str | None = None,
+	remarks: str | None = None,
+	request_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: transfer_inventory_stock_v1_service(
+			item_code=item_code,
+			source_warehouse=source_warehouse,
+			target_warehouse=target_warehouse,
+			qty=qty,
+			uom=uom,
+			posting_date=posting_date,
+			remarks=remarks,
+			request_id=request_id,
+		),
+		success_code="INVENTORY_STOCK_TRANSFERRED",
+	)
+
+
+@frappe.whitelist()
+def reconcile_inventory_stock_v1(
+	item_code: str,
+	warehouse: str,
+	target_qty,
+	uom: str | None = None,
+	valuation_rate=None,
+	posting_date: str | None = None,
+	remarks: str | None = None,
+	request_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: reconcile_inventory_stock_v1_service(
+			item_code=item_code,
+			warehouse=warehouse,
+			target_qty=target_qty,
+			uom=uom,
+			valuation_rate=valuation_rate,
+			posting_date=posting_date,
+			remarks=remarks,
+			request_id=request_id,
+		),
+		success_code="INVENTORY_STOCK_RECONCILED",
 	)
 
 

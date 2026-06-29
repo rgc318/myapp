@@ -38,6 +38,8 @@ from myapp.api.gateway import (
 	search_link_options_v1,
 	list_inventory_stock_summary_v1,
 	list_stock_ledger_entries_v1,
+	reconcile_inventory_stock_v1,
+	transfer_inventory_stock_v1,
 	list_cashflow_entries_v1,
 	list_business_documents_v1,
 	search_purchase_orders_v2,
@@ -1035,6 +1037,58 @@ class TestGatewayWrappers(TestCase):
 			low_stock_threshold=5,
 			page=2,
 			page_size=10,
+		)
+
+	@patch("myapp.api.gateway.transfer_inventory_stock_v1_service")
+	def test_transfer_inventory_stock_v1_passes_payload_to_service(self, mock_transfer_inventory_stock_v1_service):
+		mock_transfer_inventory_stock_v1_service.return_value = {"status": "success", "data": {"stock_entry": "STE-1"}}
+
+		transfer_inventory_stock_v1(
+			item_code="ITEM-001",
+			source_warehouse="Stores - TC",
+			target_warehouse="Transit - TC",
+			qty=2,
+			uom="Box",
+			posting_date="2026-06-01",
+			remarks="Move stock",
+			request_id="transfer-001",
+		)
+
+		mock_transfer_inventory_stock_v1_service.assert_called_once_with(
+			item_code="ITEM-001",
+			source_warehouse="Stores - TC",
+			target_warehouse="Transit - TC",
+			qty=2,
+			uom="Box",
+			posting_date="2026-06-01",
+			remarks="Move stock",
+			request_id="transfer-001",
+		)
+
+	@patch("myapp.api.gateway.reconcile_inventory_stock_v1_service")
+	def test_reconcile_inventory_stock_v1_passes_payload_to_service(self, mock_reconcile_inventory_stock_v1_service):
+		mock_reconcile_inventory_stock_v1_service.return_value = {"status": "success", "data": {"stock_entry": "STE-2"}}
+
+		reconcile_inventory_stock_v1(
+			item_code="ITEM-001",
+			warehouse="Stores - TC",
+			target_qty=12,
+			uom="Nos",
+			valuation_rate=8,
+			posting_date="2026-06-02",
+			remarks="Cycle count",
+			request_id="count-001",
+		)
+
+		mock_reconcile_inventory_stock_v1_service.assert_called_once_with(
+			item_code="ITEM-001",
+			warehouse="Stores - TC",
+			target_qty=12,
+			uom="Nos",
+			valuation_rate=8,
+			posting_date="2026-06-02",
+			remarks="Cycle count",
+			request_id="count-001",
 		)
 
 	@patch("myapp.api.gateway.list_customers_v2_service")

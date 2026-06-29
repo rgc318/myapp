@@ -49,7 +49,12 @@ from .reports_api import (
 	get_sales_report_v1,
 	list_cashflow_entries_v1,
 )
-from .inventory_api import list_inventory_stock_summary_v1, list_stock_ledger_entries_v1
+from .inventory_api import (
+	list_inventory_stock_summary_v1,
+	list_stock_ledger_entries_v1,
+	reconcile_inventory_stock_v1,
+	transfer_inventory_stock_v1,
+)
 from .returns_api import get_return_source_context_v2
 from .settlement_api import (
 	cancel_payment_entry,
@@ -115,6 +120,8 @@ __all__ = [
 	"list_cashflow_entries_v1",
 	"list_inventory_stock_summary_v1",
 	"list_stock_ledger_entries_v1",
+	"reconcile_inventory_stock_v1",
+	"transfer_inventory_stock_v1",
 	"list_suppliers_v2",
 	"list_uoms_v2",
 	"search_purchase_orders_v2",

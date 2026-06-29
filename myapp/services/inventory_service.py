@@ -2,6 +2,9 @@ import frappe
 from frappe import _
 from frappe.utils import add_days, cint, flt, getdate, nowdate
 
+from myapp.utils.idempotency import run_idempotent
+from myapp.utils.uom import resolve_item_quantity_to_stock
+
 
 DEFAULT_STOCK_LEDGER_PAGE_SIZE = 20
 MAX_STOCK_LEDGER_PAGE_SIZE = 100
@@ -149,6 +152,119 @@ def _get_warehouse_company_map(warehouses: list[str]):
 		fields=["name", "company"],
 	)
 	return {row.name: row.company for row in rows}
+
+
+def _get_item_stock_context(item_code: str):
+	item = frappe.db.get_value(
+		"Item",
+		item_code,
+		["name", "item_name", "stock_uom", "disabled", "is_stock_item"],
+		as_dict=True,
+	)
+	if not item:
+		frappe.throw(_("商品 {0} 不存在。").format(item_code))
+	if cint(item.disabled):
+		frappe.throw(_("商品 {0} 已停用，不能进行库存操作。").format(item_code))
+	if not cint(item.is_stock_item):
+		frappe.throw(_("商品 {0} 不是库存商品。").format(item_code))
+	return item
+
+
+def _resolve_warehouse_company(warehouse: str):
+	company = frappe.db.get_value("Warehouse", warehouse, "company")
+	if not company:
+		frappe.throw(_("仓库 {0} 不存在，或未绑定公司。").format(warehouse))
+	return company
+
+
+def _get_bin_actual_qty(item_code: str, warehouse: str):
+	return flt(frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty") or 0)
+
+
+def _serialize_inventory_stock_entry(stock_entry, *, item, quantity_context: dict, extra: dict | None = None):
+	data = {
+		"stock_entry": stock_entry.name,
+		"item_code": item.name,
+		"item_name": item.item_name,
+		"stock_uom": quantity_context["stock_uom"],
+		"input_qty": quantity_context["qty"],
+		"input_uom": quantity_context["uom"],
+		"stock_qty": quantity_context["stock_qty"],
+		"conversion_factor": quantity_context["conversion_factor"],
+	}
+	data.update(extra or {})
+	return data
+
+
+def _create_inventory_transfer_entry(
+	*,
+	item_code: str,
+	source_warehouse: str,
+	target_warehouse: str,
+	stock_qty: float,
+	company: str,
+	posting_date: str | None,
+	remarks: str | None,
+):
+	stock_entry = frappe.new_doc("Stock Entry")
+	stock_entry.stock_entry_type = "Material Transfer"
+	stock_entry.purpose = "Material Transfer"
+	stock_entry.company = company
+	if posting_date:
+		stock_entry.posting_date = posting_date
+	if remarks:
+		stock_entry.remarks = remarks
+	stock_entry.append(
+		"items",
+		{
+			"item_code": item_code,
+			"qty": stock_qty,
+			"s_warehouse": source_warehouse,
+			"t_warehouse": target_warehouse,
+			"allow_zero_valuation_rate": 1,
+		},
+	)
+	stock_entry.insert()
+	stock_entry.submit()
+	return stock_entry
+
+
+def _create_inventory_adjustment_entry(
+	*,
+	item_code: str,
+	warehouse: str,
+	qty_delta: float,
+	company: str,
+	valuation_rate: float,
+	posting_date: str | None,
+	remarks: str | None,
+):
+	stock_entry = frappe.new_doc("Stock Entry")
+	is_receipt = qty_delta > 0
+	stock_entry.stock_entry_type = "Material Receipt" if is_receipt else "Material Issue"
+	stock_entry.purpose = "Material Receipt" if is_receipt else "Material Issue"
+	stock_entry.company = company
+	if posting_date:
+		stock_entry.posting_date = posting_date
+	if remarks:
+		stock_entry.remarks = remarks
+
+	item_row = {
+		"item_code": item_code,
+		"qty": abs(qty_delta),
+		"basic_rate": valuation_rate,
+		"valuation_rate": valuation_rate,
+		"allow_zero_valuation_rate": 1,
+	}
+	if is_receipt:
+		item_row["t_warehouse"] = warehouse
+	else:
+		item_row["s_warehouse"] = warehouse
+
+	stock_entry.append("items", item_row)
+	stock_entry.insert()
+	stock_entry.submit()
+	return stock_entry
 
 
 def _build_stock_summary_filters(
@@ -307,6 +423,157 @@ def list_inventory_stock_summary_v1(
 			},
 		},
 	}
+
+
+def transfer_inventory_stock_v1(
+	item_code: str,
+	source_warehouse: str,
+	target_warehouse: str,
+	qty,
+	uom: str | None = None,
+	posting_date: str | None = None,
+	remarks: str | None = None,
+	request_id: str | None = None,
+):
+	resolved_item_code = _normalize_text(item_code)
+	resolved_source_warehouse = _normalize_text(source_warehouse)
+	resolved_target_warehouse = _normalize_text(target_warehouse)
+	if not resolved_item_code:
+		frappe.throw(_("商品编码不能为空。"))
+	if not resolved_source_warehouse:
+		frappe.throw(_("转出仓库不能为空。"))
+	if not resolved_target_warehouse:
+		frappe.throw(_("转入仓库不能为空。"))
+	if resolved_source_warehouse == resolved_target_warehouse:
+		frappe.throw(_("转出仓库和转入仓库不能相同。"))
+
+	def _transfer_inventory_stock():
+		item = _get_item_stock_context(resolved_item_code)
+		source_company = _resolve_warehouse_company(resolved_source_warehouse)
+		target_company = _resolve_warehouse_company(resolved_target_warehouse)
+		if source_company != target_company:
+			frappe.throw(_("转仓只能在同一公司仓库之间进行。"))
+
+		quantity_context = resolve_item_quantity_to_stock(
+			item_code=item.name,
+			qty=qty,
+			uom=uom,
+		)
+		stock_qty = flt(quantity_context["stock_qty"])
+		if stock_qty <= 0:
+			frappe.throw(_("转仓数量必须大于 0。"))
+
+		current_qty = _get_bin_actual_qty(item.name, resolved_source_warehouse)
+		if current_qty < stock_qty:
+			frappe.throw(_("转出仓库库存不足，当前库存为 {0}。").format(current_qty))
+
+		stock_entry = _create_inventory_transfer_entry(
+			item_code=item.name,
+			source_warehouse=resolved_source_warehouse,
+			target_warehouse=resolved_target_warehouse,
+			stock_qty=stock_qty,
+			company=source_company,
+			posting_date=_normalize_text(posting_date) or None,
+			remarks=_normalize_text(remarks) or None,
+		)
+		return {
+			"status": "success",
+			"message": _("库存转仓成功。"),
+			"data": _serialize_inventory_stock_entry(
+				stock_entry,
+				item=item,
+				quantity_context=quantity_context,
+				extra={
+					"company": source_company,
+					"source_warehouse": resolved_source_warehouse,
+					"target_warehouse": resolved_target_warehouse,
+					"source_qty_before": current_qty,
+					"source_qty_after": flt(current_qty - stock_qty),
+				},
+			),
+		}
+
+	return run_idempotent("transfer_inventory_stock_v1", request_id, _transfer_inventory_stock)
+
+
+def reconcile_inventory_stock_v1(
+	item_code: str,
+	warehouse: str,
+	target_qty,
+	uom: str | None = None,
+	valuation_rate: float | int | str | None = None,
+	posting_date: str | None = None,
+	remarks: str | None = None,
+	request_id: str | None = None,
+):
+	resolved_item_code = _normalize_text(item_code)
+	resolved_warehouse = _normalize_text(warehouse)
+	if not resolved_item_code:
+		frappe.throw(_("商品编码不能为空。"))
+	if not resolved_warehouse:
+		frappe.throw(_("仓库不能为空。"))
+
+	def _reconcile_inventory_stock():
+		item = _get_item_stock_context(resolved_item_code)
+		company = _resolve_warehouse_company(resolved_warehouse)
+		quantity_context = resolve_item_quantity_to_stock(
+			item_code=item.name,
+			qty=target_qty,
+			uom=uom,
+		)
+		target_stock_qty = flt(quantity_context["stock_qty"])
+		if target_stock_qty < 0:
+			frappe.throw(_("盘点目标库存不能为负数。"))
+
+		current_qty = _get_bin_actual_qty(item.name, resolved_warehouse)
+		qty_delta = flt(target_stock_qty - current_qty)
+		if not qty_delta:
+			return {
+				"status": "success",
+				"message": _("库存数量无变化。"),
+				"data": {
+					"stock_entry": None,
+					"item_code": item.name,
+					"item_name": item.item_name,
+					"warehouse": resolved_warehouse,
+					"company": company,
+					"stock_uom": quantity_context["stock_uom"],
+					"input_qty": quantity_context["qty"],
+					"input_uom": quantity_context["uom"],
+					"target_stock_qty": target_stock_qty,
+					"current_stock_qty": current_qty,
+					"qty_delta": 0,
+					"conversion_factor": quantity_context["conversion_factor"],
+				},
+			}
+
+		stock_entry = _create_inventory_adjustment_entry(
+			item_code=item.name,
+			warehouse=resolved_warehouse,
+			qty_delta=qty_delta,
+			company=company,
+			valuation_rate=flt(valuation_rate or 0),
+			posting_date=_normalize_text(posting_date) or None,
+			remarks=_normalize_text(remarks) or None,
+		)
+		return {
+			"status": "success",
+			"message": _("库存盘点调整成功。"),
+			"data": _serialize_inventory_stock_entry(
+				stock_entry,
+				item=item,
+				quantity_context=quantity_context,
+				extra={
+					"warehouse": resolved_warehouse,
+					"company": company,
+					"target_stock_qty": target_stock_qty,
+					"current_stock_qty": current_qty,
+					"qty_delta": qty_delta,
+				},
+			),
+		}
+
+	return run_idempotent("reconcile_inventory_stock_v1", request_id, _reconcile_inventory_stock)
 
 
 def _serialize_stock_ledger_rows(rows):

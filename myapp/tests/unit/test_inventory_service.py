@@ -6,6 +6,8 @@ import frappe
 from myapp.services.inventory_service import (
 	list_inventory_stock_summary_v1,
 	list_stock_ledger_entries_v1,
+	reconcile_inventory_stock_v1,
+	transfer_inventory_stock_v1,
 )
 
 
@@ -249,3 +251,139 @@ class TestInventoryService(TestCase):
 			order_by="item_code asc, warehouse asc",
 			limit_page_length=0,
 		)
+
+	@patch("myapp.services.inventory_service.run_idempotent")
+	@patch("myapp.services.inventory_service.resolve_item_quantity_to_stock")
+	@patch("myapp.services.inventory_service.frappe.new_doc")
+	@patch("myapp.services.inventory_service.frappe.db", new_callable=MagicMock)
+	def test_transfer_inventory_stock_v1_creates_material_transfer(
+		self,
+		mock_db,
+		mock_new_doc,
+		mock_resolve_item_quantity_to_stock,
+		mock_run_idempotent,
+	):
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
+		mock_db.get_value.side_effect = [
+			frappe._dict(
+				{
+					"name": "ITEM-001",
+					"item_name": "Transfer Item",
+					"stock_uom": "Nos",
+					"disabled": 0,
+					"is_stock_item": 1,
+				}
+			),
+			"Test Company",
+			"Test Company",
+			12,
+		]
+		mock_resolve_item_quantity_to_stock.return_value = {
+			"uom": "Box",
+			"stock_uom": "Nos",
+			"conversion_factor": 6,
+			"qty": 1,
+			"stock_qty": 6,
+		}
+		stock_entry = MagicMock()
+		stock_entry.name = "MAT-STE-0001"
+		mock_new_doc.return_value = stock_entry
+
+		result = transfer_inventory_stock_v1(
+			item_code="ITEM-001",
+			source_warehouse="Stores - TC",
+			target_warehouse="Transit - TC",
+			qty=1,
+			uom="Box",
+			posting_date="2026-06-01",
+			remarks="Move to transit",
+			request_id="transfer-001",
+		)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["stock_entry"], "MAT-STE-0001")
+		self.assertEqual(result["data"]["stock_qty"], 6)
+		self.assertEqual(result["data"]["source_qty_after"], 6)
+		self.assertEqual(stock_entry.stock_entry_type, "Material Transfer")
+		self.assertEqual(stock_entry.purpose, "Material Transfer")
+		self.assertEqual(stock_entry.company, "Test Company")
+		self.assertEqual(stock_entry.posting_date, "2026-06-01")
+		self.assertEqual(stock_entry.remarks, "Move to transit")
+		stock_entry.append.assert_called_once_with(
+			"items",
+			{
+				"item_code": "ITEM-001",
+				"qty": 6,
+				"s_warehouse": "Stores - TC",
+				"t_warehouse": "Transit - TC",
+				"allow_zero_valuation_rate": 1,
+			},
+		)
+		stock_entry.insert.assert_called_once()
+		stock_entry.submit.assert_called_once()
+
+	@patch("myapp.services.inventory_service.run_idempotent")
+	@patch("myapp.services.inventory_service.resolve_item_quantity_to_stock")
+	@patch("myapp.services.inventory_service.frappe.new_doc")
+	@patch("myapp.services.inventory_service.frappe.db", new_callable=MagicMock)
+	def test_reconcile_inventory_stock_v1_creates_delta_adjustment(
+		self,
+		mock_db,
+		mock_new_doc,
+		mock_resolve_item_quantity_to_stock,
+		mock_run_idempotent,
+	):
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
+		mock_db.get_value.side_effect = [
+			frappe._dict(
+				{
+					"name": "ITEM-001",
+					"item_name": "Counted Item",
+					"stock_uom": "Nos",
+					"disabled": 0,
+					"is_stock_item": 1,
+				}
+			),
+			"Test Company",
+			3,
+		]
+		mock_resolve_item_quantity_to_stock.return_value = {
+			"uom": "Box",
+			"stock_uom": "Nos",
+			"conversion_factor": 6,
+			"qty": 2,
+			"stock_qty": 12,
+		}
+		stock_entry = MagicMock()
+		stock_entry.name = "MAT-STE-0002"
+		mock_new_doc.return_value = stock_entry
+
+		result = reconcile_inventory_stock_v1(
+			item_code="ITEM-001",
+			warehouse="Stores - TC",
+			target_qty=2,
+			uom="Box",
+			valuation_rate=8,
+			posting_date="2026-06-02",
+			remarks="Cycle count",
+			request_id="count-001",
+		)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["stock_entry"], "MAT-STE-0002")
+		self.assertEqual(result["data"]["target_stock_qty"], 12)
+		self.assertEqual(result["data"]["qty_delta"], 9)
+		self.assertEqual(stock_entry.stock_entry_type, "Material Receipt")
+		stock_entry.append.assert_called_once_with(
+			"items",
+			{
+				"item_code": "ITEM-001",
+				"qty": 9,
+				"basic_rate": 8,
+				"valuation_rate": 8,
+				"allow_zero_valuation_rate": 1,
+				"t_warehouse": "Stores - TC",
+			},
+		)
+		stock_entry.insert.assert_called_once()
+		stock_entry.submit.assert_called_once()

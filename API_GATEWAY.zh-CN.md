@@ -385,6 +385,102 @@ Method:
   - `total_count`
   - `has_more`
 
+### transfer_inventory_stock_v1
+
+Method:
+
+- `myapp.api.gateway.transfer_inventory_stock_v1`
+
+用途：
+
+- 为 Web 库存转仓提供正式写操作。
+- 使用共享 `myapp.utils.uom.resolve_item_quantity_to_stock` 将输入单位换算为商品库存基准单位。
+- 通过 ERPNext `Stock Entry` 创建并提交 `Material Transfer` 单据，不允许前端或页面层自行换算库存数量。
+
+参数：
+
+- `item_code: str`
+- `source_warehouse: str`
+- `target_warehouse: str`
+- `qty`
+- `uom: str | None = None`
+- `posting_date: str | None = None`
+- `remarks: str | None = None`
+- `request_id: str | None = None`
+
+业务规则：
+
+- 商品必须存在、未停用且为库存商品。
+- 转出仓库和转入仓库不能为空且不能相同。
+- 转仓只能在同一公司仓库之间进行。
+- 数量必须大于 0。
+- 转出仓当前库存不能小于换算后的库存基准数量。
+- 接口支持 `request_id` 幂等。
+
+响应字段：
+
+- `stock_entry`: 已提交的 `Stock Entry` 单号
+- `item_code`
+- `item_name`
+- `company`
+- `source_warehouse`
+- `target_warehouse`
+- `input_qty`
+- `input_uom`
+- `stock_qty`
+- `stock_uom`
+- `conversion_factor`
+- `source_qty_before`
+- `source_qty_after`
+
+### reconcile_inventory_stock_v1
+
+Method:
+
+- `myapp.api.gateway.reconcile_inventory_stock_v1`
+
+用途：
+
+- 为 Web 单品单仓盘点提供目标库存校准。
+- 使用共享 `myapp.utils.uom.resolve_item_quantity_to_stock` 将盘点输入单位换算为商品库存基准单位。
+- 根据当前 `Bin.actual_qty` 和目标库存的差值创建并提交 ERPNext `Stock Entry`：
+  - 差值为正：`Material Receipt`
+  - 差值为负：`Material Issue`
+  - 差值为 0：不创建库存单据，返回 `stock_entry = None`
+
+参数：
+
+- `item_code: str`
+- `warehouse: str`
+- `target_qty`
+- `uom: str | None = None`
+- `valuation_rate: float | int | str | None = None`
+- `posting_date: str | None = None`
+- `remarks: str | None = None`
+- `request_id: str | None = None`
+
+业务规则：
+
+- 商品必须存在、未停用且为库存商品。
+- 仓库必须存在并绑定公司。
+- 目标库存不能为负数。
+- 接口支持 `request_id` 幂等。
+
+响应字段：
+
+- `stock_entry`: 已提交的 `Stock Entry` 单号；无差异时为 `None`
+- `item_code`
+- `item_name`
+- `warehouse`
+- `company`
+- `input_qty`
+- `input_uom`
+- `target_stock_qty`
+- `current_stock_qty`
+- `qty_delta`
+- `stock_uom`
+- `conversion_factor`
+
 ### list_stock_ledger_entries_v1
 
 Method:

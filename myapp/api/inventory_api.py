@@ -3,6 +3,8 @@ from frappe.utils import cint
 
 from myapp.services.inventory_service import list_inventory_stock_summary_v1 as list_inventory_stock_summary_v1_service
 from myapp.services.inventory_service import list_stock_ledger_entries_v1 as list_stock_ledger_entries_v1_service
+from myapp.services.inventory_service import reconcile_inventory_stock_v1 as reconcile_inventory_stock_v1_service
+from myapp.services.inventory_service import transfer_inventory_stock_v1 as transfer_inventory_stock_v1_service
 
 
 @frappe.whitelist()
@@ -48,4 +50,50 @@ def list_stock_ledger_entries_v1(
 		voucher_no=voucher_no,
 		page=cint(page),
 		page_size=cint(page_size),
+	)
+
+
+@frappe.whitelist()
+def transfer_inventory_stock_v1(
+	item_code: str,
+	source_warehouse: str,
+	target_warehouse: str,
+	qty,
+	uom: str | None = None,
+	posting_date: str | None = None,
+	remarks: str | None = None,
+	request_id: str | None = None,
+):
+	return transfer_inventory_stock_v1_service(
+		item_code=item_code,
+		source_warehouse=source_warehouse,
+		target_warehouse=target_warehouse,
+		qty=qty,
+		uom=uom,
+		posting_date=posting_date,
+		remarks=remarks,
+		request_id=request_id,
+	)
+
+
+@frappe.whitelist()
+def reconcile_inventory_stock_v1(
+	item_code: str,
+	warehouse: str,
+	target_qty,
+	uom: str | None = None,
+	valuation_rate=None,
+	posting_date: str | None = None,
+	remarks: str | None = None,
+	request_id: str | None = None,
+):
+	return reconcile_inventory_stock_v1_service(
+		item_code=item_code,
+		warehouse=warehouse,
+		target_qty=target_qty,
+		uom=uom,
+		valuation_rate=valuation_rate,
+		posting_date=posting_date,
+		remarks=remarks,
+		request_id=request_id,
 	)
