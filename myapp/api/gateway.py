@@ -88,13 +88,16 @@ from .settlement_api import get_payment_entry_detail_v1 as get_payment_entry_det
 from .settlement_api import get_supplier_refund_context_v1 as get_supplier_refund_context_v1_service
 from .settlement_api import process_sales_return as process_sales_return_service
 from .settlement_api import update_payment_status as update_payment_status_service
+from .wholesale_api import add_product_barcode_v2 as add_product_barcode_v2_service
 from .wholesale_api import create_product_and_stock as create_product_and_stock_service
 from .wholesale_api import create_product_v2 as create_product_v2_service
+from .wholesale_api import delete_product_barcode_v2 as delete_product_barcode_v2_service
 from .wholesale_api import disable_product_v2 as disable_product_v2_service
 from .wholesale_api import get_product_detail_v2 as get_product_detail_v2_service
 from .wholesale_api import list_products_v2 as list_products_v2_service
 from .wholesale_api import search_product as search_product_service
 from .wholesale_api import search_product_v2 as search_product_v2_service
+from .wholesale_api import set_primary_product_barcode_v2 as set_primary_product_barcode_v2_service
 from .wholesale_api import update_product_v2 as update_product_v2_service
 from .customers_api import update_customer_v2 as update_customer_v2_service
 from .uoms_api import update_uom_v2 as update_uom_v2_service
@@ -1238,6 +1241,35 @@ def disable_product_v2(item_code: str, disabled: bool = True, **kwargs):
 	return _handle_gateway_call(
 		lambda: disable_product_v2_service(item_code=item_code, disabled=disabled, **kwargs),
 		success_code="PRODUCT_UPDATED",
+	)
+
+
+@frappe.whitelist()
+def add_product_barcode_v2(item_code: str, barcode: str, set_primary: bool = False, **kwargs):
+	return _handle_gateway_call(
+		lambda: add_product_barcode_v2_service(
+			item_code=item_code,
+			barcode=barcode,
+			set_primary=set_primary,
+			**kwargs,
+		),
+		success_code="PRODUCT_BARCODE_ADDED",
+	)
+
+
+@frappe.whitelist()
+def set_primary_product_barcode_v2(item_code: str, barcode: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: set_primary_product_barcode_v2_service(item_code=item_code, barcode=barcode, **kwargs),
+		success_code="PRODUCT_BARCODE_UPDATED",
+	)
+
+
+@frappe.whitelist()
+def delete_product_barcode_v2(item_code: str, barcode: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: delete_product_barcode_v2_service(item_code=item_code, barcode=barcode, **kwargs),
+		success_code="PRODUCT_BARCODE_DELETED",
 	)
 
 

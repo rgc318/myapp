@@ -2,12 +2,15 @@ import frappe
 from frappe.utils import cint
 
 from myapp.services.wholesale_service import create_product_and_stock as create_product_and_stock_service
+from myapp.services.wholesale_service import add_product_barcode_v2 as add_product_barcode_v2_service
 from myapp.services.wholesale_service import create_product_v2 as create_product_v2_service
+from myapp.services.wholesale_service import delete_product_barcode_v2 as delete_product_barcode_v2_service
 from myapp.services.wholesale_service import disable_product_v2 as disable_product_v2_service
 from myapp.services.wholesale_service import get_product_detail_v2 as get_product_detail_v2_service
 from myapp.services.wholesale_service import list_products_v2 as list_products_v2_service
 from myapp.services.wholesale_service import search_product as search_product_service
 from myapp.services.wholesale_service import search_product_v2 as search_product_v2_service
+from myapp.services.wholesale_service import set_primary_product_barcode_v2 as set_primary_product_barcode_v2_service
 from myapp.services.wholesale_service import update_product_v2 as update_product_v2_service
 
 
@@ -146,3 +149,23 @@ def update_product_v2(item_code: str, **kwargs):
 @frappe.whitelist()
 def disable_product_v2(item_code: str, disabled: bool = True, **kwargs):
 	return disable_product_v2_service(item_code=item_code, disabled=disabled, **kwargs)
+
+
+@frappe.whitelist()
+def add_product_barcode_v2(item_code: str, barcode: str, set_primary: bool = False, **kwargs):
+	return add_product_barcode_v2_service(
+		item_code=item_code,
+		barcode=barcode,
+		set_primary=set_primary,
+		**kwargs,
+	)
+
+
+@frappe.whitelist()
+def set_primary_product_barcode_v2(item_code: str, barcode: str, **kwargs):
+	return set_primary_product_barcode_v2_service(item_code=item_code, barcode=barcode, **kwargs)
+
+
+@frappe.whitelist()
+def delete_product_barcode_v2(item_code: str, barcode: str, **kwargs):
+	return delete_product_barcode_v2_service(item_code=item_code, barcode=barcode, **kwargs)

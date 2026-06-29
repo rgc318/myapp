@@ -803,6 +803,23 @@ def _get_primary_barcode(item_code: str):
 	return frappe.db.get_value("Item Barcode", {"parent": item_code}, "barcode")
 
 
+def _get_item_barcodes(item):
+	rows = []
+	for index, row in enumerate(list(getattr(item, "barcodes", []) or []), start=1):
+		barcode = _normalize_text(getattr(row, "barcode", None))
+		if not barcode:
+			continue
+		rows.append(
+			{
+				"name": getattr(row, "name", None),
+				"barcode": barcode,
+				"idx": cint(getattr(row, "idx", 0)) or index,
+				"is_primary": index == 1,
+			}
+		)
+	return rows
+
+
 def _update_primary_barcode(item, barcode: str | None):
 	if barcode is None:
 		return
@@ -869,6 +886,7 @@ def _build_product_detail_payload(
 		"is_sales_item": cint(getattr(item, "is_sales_item", 0)),
 		"is_purchase_item": cint(getattr(item, "is_purchase_item", 0)),
 		"barcode": _get_primary_barcode(item.name),
+		"barcodes": _get_item_barcodes(item),
 		"qty": flt(qty_map.get(item.name, 0)),
 		"total_qty": flt(total_qty_map.get(item.name, 0)),
 		"warehouse_stock_details": warehouse_stock_map.get(item.name, []),
@@ -1977,6 +1995,148 @@ def disable_product_v2(item_code: str, disabled: bool | int = True, **kwargs):
 		}
 
 	return run_idempotent("disable_product_v2", request_id, _disable_product)
+
+
+def add_product_barcode_v2(
+	item_code: str,
+	barcode: str,
+	set_primary: bool | int = False,
+	**kwargs,
+):
+	item_code = _normalize_text(item_code)
+	barcode = _normalize_text(barcode)
+	if not item_code:
+		frappe.throw(_("商品编码不能为空。"))
+	if not barcode:
+		frappe.throw(_("条码不能为空。"))
+
+	request_id = kwargs.get("request_id")
+
+	def _add_product_barcode():
+		item = frappe.get_doc("Item", item_code)
+		existing_parent = frappe.db.get_value("Item Barcode", {"barcode": barcode}, "parent")
+		if existing_parent and existing_parent != item.name:
+			frappe.throw(_("条码 {0} 已存在。").format(barcode))
+
+		existing_rows = list(getattr(item, "barcodes", []) or [])
+		matched_row = None
+		for row in existing_rows:
+			if _normalize_text(getattr(row, "barcode", None)) == barcode:
+				matched_row = row
+				break
+		if not matched_row:
+			item.append("barcodes", {"barcode": barcode})
+			existing_rows = list(getattr(item, "barcodes", []) or [])
+			matched_row = existing_rows[-1] if existing_rows else None
+
+		if cint(set_primary) and matched_row:
+			_set_barcode_row_primary(item, matched_row)
+
+		item.save()
+		item.reload()
+		return {
+			"status": "success",
+			"data": _build_product_detail_payload(
+				item,
+				warehouse=_normalize_text(kwargs.get("warehouse")) or None,
+				company=_normalize_text(kwargs.get("company")) or None,
+				price_list=_normalize_text(kwargs.get("price_list")) or "Standard Selling",
+				currency=_normalize_currency(kwargs.get("currency")),
+			),
+		}
+
+	return run_idempotent("add_product_barcode_v2", request_id, _add_product_barcode)
+
+
+def _set_barcode_row_primary(item, target_row):
+	rows = list(getattr(item, "barcodes", []) or [])
+	if not rows or target_row not in rows:
+		return
+	rows.remove(target_row)
+	rows.insert(0, target_row)
+	for index, row in enumerate(rows, start=1):
+		row.idx = index
+	item.barcodes = rows
+
+
+def set_primary_product_barcode_v2(
+	item_code: str,
+	barcode: str,
+	**kwargs,
+):
+	item_code = _normalize_text(item_code)
+	barcode = _normalize_text(barcode)
+	if not item_code:
+		frappe.throw(_("商品编码不能为空。"))
+	if not barcode:
+		frappe.throw(_("条码不能为空。"))
+
+	request_id = kwargs.get("request_id")
+
+	def _set_primary_product_barcode():
+		item = frappe.get_doc("Item", item_code)
+		target_row = None
+		for row in list(getattr(item, "barcodes", []) or []):
+			if _normalize_text(getattr(row, "barcode", None)) == barcode:
+				target_row = row
+				break
+		if not target_row:
+			frappe.throw(_("商品 {0} 不存在条码 {1}。").format(item_code, barcode))
+
+		_set_barcode_row_primary(item, target_row)
+		item.save()
+		item.reload()
+		return {
+			"status": "success",
+			"data": _build_product_detail_payload(
+				item,
+				warehouse=_normalize_text(kwargs.get("warehouse")) or None,
+				company=_normalize_text(kwargs.get("company")) or None,
+				price_list=_normalize_text(kwargs.get("price_list")) or "Standard Selling",
+				currency=_normalize_currency(kwargs.get("currency")),
+			),
+		}
+
+	return run_idempotent("set_primary_product_barcode_v2", request_id, _set_primary_product_barcode)
+
+
+def delete_product_barcode_v2(
+	item_code: str,
+	barcode: str,
+	**kwargs,
+):
+	item_code = _normalize_text(item_code)
+	barcode = _normalize_text(barcode)
+	if not item_code:
+		frappe.throw(_("商品编码不能为空。"))
+	if not barcode:
+		frappe.throw(_("条码不能为空。"))
+
+	request_id = kwargs.get("request_id")
+
+	def _delete_product_barcode():
+		item = frappe.get_doc("Item", item_code)
+		rows = list(getattr(item, "barcodes", []) or [])
+		kept_rows = [row for row in rows if _normalize_text(getattr(row, "barcode", None)) != barcode]
+		if len(kept_rows) == len(rows):
+			frappe.throw(_("商品 {0} 不存在条码 {1}。").format(item_code, barcode))
+		for index, row in enumerate(kept_rows, start=1):
+			row.idx = index
+		item.barcodes = kept_rows
+		item.save()
+		item.reload()
+		return {
+			"status": "success",
+			"data": _build_product_detail_payload(
+				item,
+				warehouse=_normalize_text(kwargs.get("warehouse")) or None,
+				company=_normalize_text(kwargs.get("company")) or None,
+				price_list=_normalize_text(kwargs.get("price_list")) or "Standard Selling",
+				currency=_normalize_currency(kwargs.get("currency")),
+			),
+		}
+
+	return run_idempotent("delete_product_barcode_v2", request_id, _delete_product_barcode)
 
 
 def create_product_and_stock(

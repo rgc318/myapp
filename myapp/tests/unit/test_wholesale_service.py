@@ -8,13 +8,16 @@ from myapp.services.wholesale_service import (
 	_list_item_codes_by_filters,
 	_search_item_codes,
 	_validate_mode_default_uoms_against_stock_uom,
+	add_product_barcode_v2,
 	create_product_v2,
 	create_product_and_stock,
+	delete_product_barcode_v2,
 	disable_product_v2,
 	get_product_detail_v2,
 	list_products_v2,
 	search_product,
 	search_product_v2,
+	set_primary_product_barcode_v2,
 	update_product_v2,
 )
 
@@ -1027,6 +1030,111 @@ class TestWholesaleService(TestCase):
 
 		self.assertEqual(result["data"]["item_code"], "ITEM-001")
 		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.wholesale_service._build_product_detail_payload")
+	@patch("myapp.services.wholesale_service.run_idempotent")
+	@patch("myapp.services.wholesale_service.frappe.get_doc")
+	def test_add_product_barcode_v2_appends_unique_barcode(
+		self,
+		mock_get_doc,
+		mock_run_idempotent,
+		mock_build_product_detail_payload,
+	):
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
+		item = MagicMock()
+		item.name = "ITEM-001"
+		item.barcodes = []
+
+		def append_child(_fieldname, row):
+			child = MagicMock()
+			child.name = "ROW-001"
+			child.barcode = row["barcode"]
+			child.idx = len(item.barcodes) + 1
+			item.barcodes.append(child)
+
+		item.append.side_effect = append_child
+		mock_get_doc.return_value = item
+		mock_build_product_detail_payload.side_effect = lambda product, **_kwargs: {
+			"item_code": product.name,
+			"barcodes": [row.barcode for row in product.barcodes],
+		}
+		fake_db = MagicMock()
+		fake_db.get_value.return_value = None
+
+		from myapp.services import wholesale_service
+
+		with patch.object(wholesale_service.frappe, "db", fake_db):
+			result = add_product_barcode_v2("ITEM-001", "BAR-002")
+
+		item.append.assert_called_once_with("barcodes", {"barcode": "BAR-002"})
+		item.save.assert_called_once()
+		item.reload.assert_called_once()
+		self.assertEqual(result["data"]["barcodes"], ["BAR-002"])
+
+	@patch("myapp.services.wholesale_service._build_product_detail_payload")
+	@patch("myapp.services.wholesale_service.run_idempotent")
+	@patch("myapp.services.wholesale_service.frappe.get_doc")
+	def test_set_primary_product_barcode_v2_reorders_rows(
+		self,
+		mock_get_doc,
+		mock_run_idempotent,
+		mock_build_product_detail_payload,
+	):
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
+		first = MagicMock(name="first")
+		first.barcode = "BAR-001"
+		first.idx = 1
+		second = MagicMock(name="second")
+		second.barcode = "BAR-002"
+		second.idx = 2
+		item = MagicMock()
+		item.name = "ITEM-001"
+		item.barcodes = [first, second]
+		mock_get_doc.return_value = item
+		mock_build_product_detail_payload.side_effect = lambda product, **_kwargs: {
+			"item_code": product.name,
+			"barcodes": [row.barcode for row in product.barcodes],
+		}
+
+		result = set_primary_product_barcode_v2("ITEM-001", "BAR-002")
+
+		self.assertEqual([row.barcode for row in item.barcodes], ["BAR-002", "BAR-001"])
+		self.assertEqual(second.idx, 1)
+		self.assertEqual(first.idx, 2)
+		item.save.assert_called_once()
+		self.assertEqual(result["data"]["barcodes"][0], "BAR-002")
+
+	@patch("myapp.services.wholesale_service._build_product_detail_payload")
+	@patch("myapp.services.wholesale_service.run_idempotent")
+	@patch("myapp.services.wholesale_service.frappe.get_doc")
+	def test_delete_product_barcode_v2_removes_matching_row(
+		self,
+		mock_get_doc,
+		mock_run_idempotent,
+		mock_build_product_detail_payload,
+	):
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
+		first = MagicMock(name="first")
+		first.barcode = "BAR-001"
+		first.idx = 1
+		second = MagicMock(name="second")
+		second.barcode = "BAR-002"
+		second.idx = 2
+		item = MagicMock()
+		item.name = "ITEM-001"
+		item.barcodes = [first, second]
+		mock_get_doc.return_value = item
+		mock_build_product_detail_payload.side_effect = lambda product, **_kwargs: {
+			"item_code": product.name,
+			"barcodes": [row.barcode for row in product.barcodes],
+		}
+
+		result = delete_product_barcode_v2("ITEM-001", "BAR-001")
+
+		self.assertEqual([row.barcode for row in item.barcodes], ["BAR-002"])
+		self.assertEqual(second.idx, 1)
+		item.save.assert_called_once()
+		self.assertEqual(result["data"]["barcodes"], ["BAR-002"])
 
 	@patch("myapp.services.wholesale_service._build_product_detail_payload")
 	@patch("myapp.services.wholesale_service._upsert_item_price")

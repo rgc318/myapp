@@ -4,6 +4,7 @@ from unittest.mock import patch
 import frappe
 
 from myapp.api.gateway import (
+	add_product_barcode_v2,
 	cancel_delivery_note,
 	cancel_payment_entry,
 	cancel_purchase_invoice_v2,
@@ -71,6 +72,7 @@ from myapp.api.gateway import (
 	list_suppliers_v2,
 	list_uoms_v2,
 	delete_item_image,
+	delete_product_barcode_v2,
 	replace_item_image,
 	upload_item_image,
 	process_purchase_return,
@@ -78,6 +80,7 @@ from myapp.api.gateway import (
 	receive_purchase_order,
 	search_product,
 	search_product_v2,
+	set_primary_product_barcode_v2,
 	test_remote_debug,
 	update_payment_status,
 	update_purchase_order_items_v2,
@@ -1323,6 +1326,58 @@ class TestGatewayWrappers(TestCase):
 			standard_rate=18,
 			warehouse="Stores - RD",
 			warehouse_stock_qty=25,
+		)
+
+	@patch("myapp.api.gateway.add_product_barcode_v2_service")
+	def test_add_product_barcode_v2_passes_fields_to_service(self, mock_add_product_barcode_v2_service):
+		mock_add_product_barcode_v2_service.return_value = {
+			"status": "success",
+			"data": {"item_code": "ITEM-001"},
+		}
+
+		add_product_barcode_v2(
+			"ITEM-001",
+			"BAR-002",
+			set_primary=True,
+			request_id="barcode-add-001",
+		)
+
+		mock_add_product_barcode_v2_service.assert_called_once_with(
+			item_code="ITEM-001",
+			barcode="BAR-002",
+			set_primary=True,
+			request_id="barcode-add-001",
+		)
+
+	@patch("myapp.api.gateway.set_primary_product_barcode_v2_service")
+	def test_set_primary_product_barcode_v2_passes_fields_to_service(
+		self,
+		mock_set_primary_product_barcode_v2_service,
+	):
+		mock_set_primary_product_barcode_v2_service.return_value = {
+			"status": "success",
+			"data": {"item_code": "ITEM-001"},
+		}
+
+		set_primary_product_barcode_v2("ITEM-001", "BAR-002")
+
+		mock_set_primary_product_barcode_v2_service.assert_called_once_with(
+			item_code="ITEM-001",
+			barcode="BAR-002",
+		)
+
+	@patch("myapp.api.gateway.delete_product_barcode_v2_service")
+	def test_delete_product_barcode_v2_passes_fields_to_service(self, mock_delete_product_barcode_v2_service):
+		mock_delete_product_barcode_v2_service.return_value = {
+			"status": "success",
+			"data": {"item_code": "ITEM-001"},
+		}
+
+		delete_product_barcode_v2("ITEM-001", "BAR-002")
+
+		mock_delete_product_barcode_v2_service.assert_called_once_with(
+			item_code="ITEM-001",
+			barcode="BAR-002",
 		)
 
 	@patch("myapp.api.gateway.upload_item_image_service")

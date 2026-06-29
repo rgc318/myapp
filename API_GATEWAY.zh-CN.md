@@ -11,6 +11,9 @@
 - `myapp.api.gateway.list_products_v2`
 - `myapp.api.gateway.update_product_v2`
 - `myapp.api.gateway.disable_product_v2`
+- `myapp.api.gateway.add_product_barcode_v2`
+- `myapp.api.gateway.set_primary_product_barcode_v2`
+- `myapp.api.gateway.delete_product_barcode_v2`
 - `myapp.api.gateway.get_mobile_release_info_v1`
 - `myapp.api.gateway.create_order`
 - `myapp.api.gateway.create_order_v2`
@@ -67,7 +70,7 @@
 
 ### 模块导航
 
-- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`list_business_documents_v1`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`get_payment_entry_detail_v1`、`get_customer_refund_context_v1`、`create_customer_refund`、`process_sales_return`
+- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`add_product_barcode_v2`、`set_primary_product_barcode_v2`、`delete_product_barcode_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`list_business_documents_v1`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`get_payment_entry_detail_v1`、`get_customer_refund_context_v1`、`create_customer_refund`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
 - 采购快捷链路（规划中）：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
 - 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`list_business_documents_v1`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`、`create_supplier_v2`、`update_supplier_v2`、`disable_supplier_v2`
@@ -1821,7 +1824,12 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 返回标准图片字段 `Item.image`
 - 返回商品分类 `item_group` 与品牌 `brand`
 - 返回正式昵称字段 `Item.custom_nickname`，未迁移站点回退到旧 `description` 兼容口径
-- 返回当前价格、库存、主条码与换算单位信息
+- 返回当前价格、库存、主条码、条码列表与换算单位信息
+- `barcode` 保留为主条码兼容字段；`barcodes[]` 返回 ERPNext `Item Barcode` 子表摘要：
+  - `barcode`
+  - `idx`
+  - `is_primary`
+  - `name`
 - 其中库存相关字段包括：
   - `qty`
   - `total_qty`
@@ -2010,6 +2018,62 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
   - 停用商品
   - 启用商品
 - 不建议把“物理删除商品”作为常规业务动作
+
+### add_product_barcode_v2
+
+方法：
+
+- `myapp.api.gateway.add_product_barcode_v2`
+
+参数：
+
+- `item_code: str`
+- `barcode: str`
+- `set_primary: bool | int = 0`
+- `request_id: str | None`
+
+行为：
+
+- 向商品 `Item Barcode` 子表新增条码
+- 若条码已被其他商品使用，则拦截
+- 若条码已存在于当前商品，则不会重复新增；当 `set_primary=1` 时会将该条码调整为主条码
+- 返回更新后的商品详情快照
+
+### set_primary_product_barcode_v2
+
+方法：
+
+- `myapp.api.gateway.set_primary_product_barcode_v2`
+
+参数：
+
+- `item_code: str`
+- `barcode: str`
+- `request_id: str | None`
+
+行为：
+
+- 将当前商品已有条码调整为主条码
+- 主条码口径通过 `Item Barcode` 子表顺序表达，详情返回的 `barcode` 会继续取第一条
+- 返回更新后的商品详情快照
+
+### delete_product_barcode_v2
+
+方法：
+
+- `myapp.api.gateway.delete_product_barcode_v2`
+
+参数：
+
+- `item_code: str`
+- `barcode: str`
+- `request_id: str | None`
+
+行为：
+
+- 删除当前商品指定条码
+- 删除后会重新整理剩余条码顺序
+- 返回更新后的商品详情快照
 
 ### get_sales_order_detail
 
