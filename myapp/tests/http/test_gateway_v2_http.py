@@ -211,6 +211,39 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self._assert_success(status_code, response, code="PRODUCT_UPDATED")
 		return payload, response
 
+	def _add_product_barcode_v2(self, item_code: str, barcode: str, **kwargs):
+		payload = {
+			"item_code": item_code,
+			"barcode": barcode,
+			"request_id": kwargs.pop("request_id", self._unique_request_id("http-v2-add-barcode")),
+		}
+		payload.update(kwargs)
+		status_code, response = self._call_gateway("myapp.api.gateway.add_product_barcode_v2", payload)
+		self._assert_success(status_code, response, code="PRODUCT_BARCODE_ADDED")
+		return payload, response
+
+	def _set_primary_product_barcode_v2(self, item_code: str, barcode: str, **kwargs):
+		payload = {
+			"item_code": item_code,
+			"barcode": barcode,
+			"request_id": kwargs.pop("request_id", self._unique_request_id("http-v2-primary-barcode")),
+		}
+		payload.update(kwargs)
+		status_code, response = self._call_gateway("myapp.api.gateway.set_primary_product_barcode_v2", payload)
+		self._assert_success(status_code, response, code="PRODUCT_BARCODE_UPDATED")
+		return payload, response
+
+	def _delete_product_barcode_v2(self, item_code: str, barcode: str, **kwargs):
+		payload = {
+			"item_code": item_code,
+			"barcode": barcode,
+			"request_id": kwargs.pop("request_id", self._unique_request_id("http-v2-delete-barcode")),
+		}
+		payload.update(kwargs)
+		status_code, response = self._call_gateway("myapp.api.gateway.delete_product_barcode_v2", payload)
+		self._assert_success(status_code, response, code="PRODUCT_BARCODE_DELETED")
+		return payload, response
+
 	def test_search_product_v2_success(self):
 		status_code, payload = self._call_gateway(
 			"myapp.api.gateway.search_product_v2",
@@ -546,6 +579,46 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self.assertEqual(data["image"], "/files/test-product.png")
 		self.assertEqual(data["warehouse"], SALES_WAREHOUSE)
 		self.assertGreaterEqual(float(data["price"]), 0)
+
+	def test_product_barcode_management_v2_roundtrip(self):
+		create_request, create_payload = self._create_product_and_stock(
+			item_name=f"HTTP-V2-多条码商品-{time.time_ns()}",
+		)
+		item_code = create_payload["message"]["data"]["item_code"]
+		primary_barcode = create_request["barcode"]
+		extra_barcode = f"HTTPBC{str(time.time_ns())[-10:]}"
+
+		_add_request, add_payload = self._add_product_barcode_v2(item_code, extra_barcode)
+		add_data = add_payload["message"]["data"]
+		self.assertEqual(add_data["barcode"], primary_barcode)
+		self.assertTrue(any(row["barcode"] == extra_barcode for row in add_data["barcodes"]))
+
+		search_status, search_payload = self._call_gateway(
+			"myapp.api.gateway.search_product_v2",
+			{
+				"search_key": extra_barcode,
+				"search_fields": ["barcode"],
+				"limit": 5,
+			},
+		)
+		self._assert_success(search_status, search_payload, code="PRODUCTS_FETCHED")
+		self.assertTrue(any(row["item_code"] == item_code for row in search_payload["message"]["data"]))
+
+		_primary_request, primary_payload = self._set_primary_product_barcode_v2(item_code, extra_barcode)
+		primary_data = primary_payload["message"]["data"]
+		self.assertEqual(primary_data["barcode"], extra_barcode)
+		self.assertEqual(primary_data["barcodes"][0]["barcode"], extra_barcode)
+		self.assertTrue(primary_data["barcodes"][0]["is_primary"])
+
+		_delete_request, delete_payload = self._delete_product_barcode_v2(item_code, primary_barcode)
+		delete_data = delete_payload["message"]["data"]
+		self.assertEqual(delete_data["barcode"], extra_barcode)
+		self.assertFalse(any(row["barcode"] == primary_barcode for row in delete_data["barcodes"]))
+
+		_detail_request, detail_payload = self._get_product_detail_v2(item_code)
+		detail_data = detail_payload["message"]["data"]
+		self.assertEqual(detail_data["barcode"], extra_barcode)
+		self.assertEqual([row["barcode"] for row in detail_data["barcodes"]], [extra_barcode])
 
 	def test_update_product_v2_success(self):
 		create_request, create_payload = self._create_product_and_stock(
@@ -1014,15 +1087,16 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self.assertEqual(second_page_payload["message"]["data"]["items"][0]["order_name"], low_order_name)
 
 	def test_search_sales_orders_v2_supports_amount_asc_sort(self):
-		_low_request, low_payload = self._create_sales_order_v2(price=8888888)
-		_high_request, high_payload = self._create_sales_order_v2(price=9999999)
+		customer = self._create_customer_v2(f"HTTP Amount Sort Customer {time.time_ns()}")
+		_low_request, low_payload = self._create_sales_order_v2(customer=customer, price=8888888)
+		_high_request, high_payload = self._create_sales_order_v2(customer=customer, price=9999999)
 		low_order_name = low_payload["message"]["data"]["order"]
 		high_order_name = high_payload["message"]["data"]["order"]
 
 		status_code, payload = self._call_gateway(
 			"myapp.api.gateway.search_sales_orders_v2",
 			{
-				"customer": SALES_CUSTOMER,
+				"customer": customer,
 				"company": SALES_COMPANY,
 				"status_filter": "unfinished",
 				"exclude_cancelled": 1,

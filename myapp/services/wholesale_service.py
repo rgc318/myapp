@@ -800,7 +800,14 @@ def _validate_mode_default_uoms_against_stock_uom(*, item=None, stock_uom=None, 
 
 
 def _get_primary_barcode(item_code: str):
-	return frappe.db.get_value("Item Barcode", {"parent": item_code}, "barcode")
+	rows = frappe.get_all(
+		"Item Barcode",
+		filters={"parent": item_code},
+		fields=["barcode"],
+		order_by="idx asc",
+		limit=1,
+	)
+	return rows[0].barcode if rows else None
 
 
 def _get_item_barcodes(item):

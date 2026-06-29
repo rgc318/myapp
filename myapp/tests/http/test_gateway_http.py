@@ -1292,13 +1292,14 @@ class GatewayHttpTestCase(TestCase):
 
 		self._create_sales_order(item_code=item_code, price=18)
 		self._create_purchase_order(item_code=item_code, price=12)
+		report_date = time.strftime("%Y-%m-%d")
 
 		status_code, response = self._call_gateway(
 			"myapp.api.gateway.get_business_report_v1",
 			{
 				"company": SALES_COMPANY,
-				"date_from": "2026-04-05",
-				"date_to": "2026-04-05",
+				"date_from": report_date,
+				"date_to": report_date,
 				"limit": 10,
 			},
 		)

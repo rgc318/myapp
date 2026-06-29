@@ -1973,3 +1973,34 @@ HTTP 执行结果：
 - Header 幂等 key 不影响 body `request_id` 旧路径。
 - 新客户端可以使用 `Idempotency-Key`，旧前端无需迁移。
 - 当前幂等模块已经覆盖交易接口企业级核心场景，后续优化重点是协议字段忽略列表、监控指标和按业务 namespace 配置 TTL。
+
+## 23. 商品多条码管理回归（2026-06-29）
+
+本轮补齐商品多条码管理后端真实 HTTP 回归，并修复两处历史测试不稳定点。
+
+新增 / 修正覆盖：
+
+- `test_product_barcode_management_v2_roundtrip`
+  - 创建商品
+  - 新增第二条码
+  - 通过第二条码搜索命中商品
+  - 将第二条码设为主条码
+  - 删除旧主条码
+  - 详情回读 `barcode` 与 `barcodes[]`
+- `test_get_business_report_v1_product_rows_include_specification`
+  - 报表日期改为测试运行当天，避免新建订单与固定历史日期不一致
+- `test_search_sales_orders_v2_supports_amount_asc_sort`
+  - 改为使用本次测试创建的独立客户，避免历史大额订单污染分页结果
+
+本轮验证结果：
+
+- 后端服务层 / 网关单元回归：`Ran 117 tests ... OK`
+- 商品多条码目标 HTTP 回归：`Ran 4 tests ... OK`
+- v2 HTTP 全量回归：`Ran 207 tests in 307.520s ... OK`
+- 空白检查：`git diff --check` 通过
+
+当前判断：
+
+- 商品多条码管理后端链路已完成真实 HTTP 验收。
+- `barcode` 兼容字段以 `Item Barcode.idx asc` 第一条作为主条码口径。
+- `barcodes[]` 返回 ERPNext `Item Barcode` 子表摘要，前端可据此展示条码列表、主条码状态和删除 / 设主操作结果。
