@@ -8,6 +8,9 @@ from myapp.services.order_service import (
 	_build_sales_order_timeline,
 	_collect_sales_invoice_payment_entries,
 	_build_sales_order_summary_rows,
+	_serialize_delivery_note_items,
+	_serialize_order_items,
+	_serialize_sales_invoice_items,
 	cancel_delivery_note,
 	cancel_order_v2,
 	cancel_sales_invoice,
@@ -30,6 +33,33 @@ from myapp.services.order_service import (
 
 
 class TestOrderService(TestCase):
+	@patch("myapp.services.order_service._get_item_meta_map", return_value={})
+	@patch("myapp.services.order_service.build_uom_display_map", return_value={"Box": "箱", "Nos": "件"})
+	def test_sales_document_item_serializers_include_uom_display(self, mock_build_uom_display_map, _mock_get_item_meta):
+		items = [
+			frappe._dict(
+				{
+					"name": "ROW-001",
+					"item_code": "ITEM-001",
+					"item_name": "Item 1",
+					"uom": "Box",
+					"warehouse": "Stores - TC",
+					"qty": 2,
+					"rate": 10,
+					"amount": 20,
+				}
+			)
+		]
+
+		order_rows = _serialize_order_items(items)
+		delivery_rows = _serialize_delivery_note_items(items)
+		invoice_rows = _serialize_sales_invoice_items(items)
+
+		self.assertEqual(order_rows[0]["uom_display"], "箱")
+		self.assertEqual(delivery_rows[0]["uom_display"], "箱")
+		self.assertEqual(invoice_rows[0]["uom_display"], "箱")
+		mock_build_uom_display_map.assert_any_call(["Box"])
+
 	@patch("myapp.services.order_service._get_default_warehouse_for_context")
 	@patch("myapp.services.order_service.frappe.defaults.get_user_default")
 	@patch("myapp.services.order_service.frappe.get_all")

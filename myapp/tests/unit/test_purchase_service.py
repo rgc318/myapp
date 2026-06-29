@@ -5,6 +5,9 @@ from unittest.mock import MagicMock, patch
 import frappe
 
 from myapp.services.purchase_service import (
+	_serialize_purchase_invoice_items,
+	_serialize_purchase_order_items,
+	_serialize_purchase_receipt_items,
 	create_supplier_v2,
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
@@ -28,6 +31,35 @@ from myapp.services.purchase_service import (
 
 
 class TestPurchaseService(TestCase):
+	@patch("myapp.services.purchase_service._get_item_specification_map", return_value={})
+	@patch("myapp.services.purchase_service.build_uom_display_map", return_value={"Box": "箱"})
+	def test_purchase_document_item_serializers_include_uom_display(
+		self, mock_build_uom_display_map, _mock_get_item_specification_map
+	):
+		items = [
+			frappe._dict(
+				{
+					"name": "ROW-001",
+					"item_code": "ITEM-001",
+					"item_name": "Item 1",
+					"uom": "Box",
+					"warehouse": "Stores - TC",
+					"qty": 2,
+					"rate": 10,
+					"amount": 20,
+				}
+			)
+		]
+
+		order_rows = _serialize_purchase_order_items(items)
+		receipt_rows = _serialize_purchase_receipt_items(items)
+		invoice_rows = _serialize_purchase_invoice_items(items)
+
+		self.assertEqual(order_rows[0]["uom_display"], "箱")
+		self.assertEqual(receipt_rows[0]["uom_display"], "箱")
+		self.assertEqual(invoice_rows[0]["uom_display"], "箱")
+		mock_build_uom_display_map.assert_any_call(["Box"])
+
 	@patch("myapp.services.purchase_service.frappe.get_all")
 	def test_get_latest_purchase_payment_entry_summary_returns_actual_paid_and_writeoff(self, mock_get_all):
 		from myapp.services.purchase_service import _get_latest_purchase_payment_entry_summary

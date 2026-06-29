@@ -19,6 +19,7 @@ from myapp.services.settlement_service import cancel_payment_entry
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom import resolve_item_quantity_to_stock
+from myapp.utils.uom_display import build_uom_display_map
 
 
 def _coerce_json_value(value, default):
@@ -817,6 +818,7 @@ def _build_purchase_invoice_action_flags(*, docstatus: int, latest_payment_entry
 
 def _serialize_purchase_order_items(order_items):
 	item_specification_map = _get_item_specification_map(order_items)
+	uom_display_map = _build_item_row_uom_display_map(order_items)
 	return [
 		{
 			"purchase_order_item": getattr(item, "name", None),
@@ -824,6 +826,7 @@ def _serialize_purchase_order_items(order_items):
 			"item_name": getattr(item, "item_name", None),
 			"specification": item_specification_map.get(getattr(item, "item_code", None)),
 			"uom": getattr(item, "uom", None),
+			"uom_display": _resolve_item_row_uom_display(item, uom_display_map),
 			"warehouse": getattr(item, "warehouse", None),
 			"qty": flt(getattr(item, "qty", 0) or 0),
 			"received_qty": flt(getattr(item, "received_qty", 0) or 0),
@@ -836,8 +839,25 @@ def _serialize_purchase_order_items(order_items):
 	]
 
 
+def _build_item_row_uom_display_map(items):
+	uom_names = []
+	for item in items or []:
+		uom = _normalize_text(getattr(item, "uom", None))
+		if uom and uom not in uom_names:
+			uom_names.append(uom)
+	return build_uom_display_map(uom_names)
+
+
+def _resolve_item_row_uom_display(item, uom_display_map):
+	uom = _normalize_text(getattr(item, "uom", None))
+	if not uom:
+		return None
+	return uom_display_map.get(uom)
+
+
 def _serialize_purchase_receipt_items(receipt_items):
 	item_specification_map = _get_item_specification_map(receipt_items)
+	uom_display_map = _build_item_row_uom_display_map(receipt_items)
 	return [
 		{
 			"purchase_receipt_item": getattr(item, "name", None),
@@ -845,6 +865,7 @@ def _serialize_purchase_receipt_items(receipt_items):
 			"item_name": getattr(item, "item_name", None),
 			"specification": item_specification_map.get(getattr(item, "item_code", None)),
 			"uom": getattr(item, "uom", None),
+			"uom_display": _resolve_item_row_uom_display(item, uom_display_map),
 			"warehouse": getattr(item, "warehouse", None),
 			"qty": flt(getattr(item, "qty", 0) or 0),
 			"rate": flt(getattr(item, "rate", 0) or 0),
@@ -858,6 +879,7 @@ def _serialize_purchase_receipt_items(receipt_items):
 
 def _serialize_purchase_invoice_items(invoice_items):
 	item_specification_map = _get_item_specification_map(invoice_items)
+	uom_display_map = _build_item_row_uom_display_map(invoice_items)
 	return [
 		{
 			"purchase_invoice_item": getattr(item, "name", None),
@@ -865,6 +887,7 @@ def _serialize_purchase_invoice_items(invoice_items):
 			"item_name": getattr(item, "item_name", None),
 			"specification": item_specification_map.get(getattr(item, "item_code", None)),
 			"uom": getattr(item, "uom", None),
+			"uom_display": _resolve_item_row_uom_display(item, uom_display_map),
 			"warehouse": getattr(item, "warehouse", None),
 			"qty": flt(getattr(item, "qty", 0) or 0),
 			"rate": flt(getattr(item, "rate", 0) or 0),

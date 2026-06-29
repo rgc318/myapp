@@ -33,6 +33,7 @@ class TestReturnService(TestCase):
 						"item_code": "ITEM-001",
 						"item_name": "Item 1",
 						"uom": "Nos",
+						"uom_display": "件",
 						"warehouse": "Stores - TC",
 						"qty": 2,
 						"rate": 60,
@@ -53,6 +54,7 @@ class TestReturnService(TestCase):
 		self.assertEqual(result["data"]["actions"]["detail_submit_key"], "sales_invoice_item")
 		self.assertEqual(result["data"]["items"][0]["detail_id"], "SII-001")
 		self.assertEqual(result["data"]["items"][0]["max_returnable_qty"], 2.0)
+		self.assertEqual(result["data"]["items"][0]["uom_display"], "件")
 		self.assertEqual(result["data"]["amounts"]["primary_amount"], 120.0)
 
 	@patch("myapp.services.return_service._get_detail_loader")
@@ -76,6 +78,7 @@ class TestReturnService(TestCase):
 						"item_code": "ITEM-001",
 						"item_name": "Item 1",
 						"uom": "Nos",
+						"uom_display": "件",
 						"warehouse": "Stores - TC",
 						"qty": 4,
 						"rate": 22,
@@ -95,6 +98,7 @@ class TestReturnService(TestCase):
 		self.assertEqual(result["data"]["actions"]["detail_submit_key"], "purchase_receipt_item")
 		self.assertEqual(result["data"]["items"][0]["detail_id"], "PRI-001")
 		self.assertEqual(result["data"]["items"][0]["default_return_qty"], 4.0)
+		self.assertEqual(result["data"]["items"][0]["uom_display"], "件")
 
 	@patch("myapp.services.return_service.frappe.throw")
 	def test_get_return_source_context_v2_rejects_unsupported_source(self, mock_throw):

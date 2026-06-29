@@ -10,6 +10,7 @@ from myapp.services.wholesale_service import _get_item_specification_field
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom import resolve_item_quantity_to_stock
+from myapp.utils.uom_display import build_uom_display_map
 
 
 ORDER_REMARK_FIELD = "custom_order_remark"
@@ -1165,6 +1166,7 @@ def _build_sales_invoice_action_flags(*, docstatus: int, latest_payment_entry: s
 
 def _serialize_order_items(order_items):
 	item_meta_map = _get_item_meta_map(order_items)
+	uom_display_map = _build_item_row_uom_display_map(order_items)
 	sales_mode_field = _get_order_item_sales_mode_field()
 	return [
 		{
@@ -1173,6 +1175,7 @@ def _serialize_order_items(order_items):
 			"item_name": getattr(item, "item_name", None),
 			"specification": (item_meta_map.get(getattr(item, "item_code", None)) or {}).get("specification"),
 			"uom": getattr(item, "uom", None),
+			"uom_display": _resolve_item_row_uom_display(item, uom_display_map),
 			"warehouse": getattr(item, "warehouse", None),
 			"qty": flt(getattr(item, "qty", 0) or 0),
 			"delivered_qty": flt(getattr(item, "delivered_qty", 0) or 0),
@@ -1183,6 +1186,22 @@ def _serialize_order_items(order_items):
 		}
 		for item in order_items or []
 	]
+
+
+def _build_item_row_uom_display_map(items):
+	uom_names = []
+	for item in items or []:
+		uom = _normalize_text(getattr(item, "uom", None))
+		if uom and uom not in uom_names:
+			uom_names.append(uom)
+	return build_uom_display_map(uom_names)
+
+
+def _resolve_item_row_uom_display(item, uom_display_map):
+	uom = _normalize_text(getattr(item, "uom", None))
+	if not uom:
+		return None
+	return uom_display_map.get(uom)
 
 
 def _get_item_meta_map(items):
@@ -1215,6 +1234,7 @@ def _get_item_meta_map(items):
 
 def _serialize_delivery_note_items(delivery_items):
 	item_meta_map = _get_item_meta_map(delivery_items)
+	uom_display_map = _build_item_row_uom_display_map(delivery_items)
 	return [
 		{
 			"delivery_note_item": getattr(item, "name", None),
@@ -1222,6 +1242,7 @@ def _serialize_delivery_note_items(delivery_items):
 			"item_name": getattr(item, "item_name", None),
 			"specification": (item_meta_map.get(getattr(item, "item_code", None)) or {}).get("specification"),
 			"uom": getattr(item, "uom", None),
+			"uom_display": _resolve_item_row_uom_display(item, uom_display_map),
 			"warehouse": getattr(item, "warehouse", None),
 			"qty": flt(getattr(item, "qty", 0) or 0),
 			"rate": flt(getattr(item, "rate", 0) or 0),
@@ -1236,6 +1257,7 @@ def _serialize_delivery_note_items(delivery_items):
 
 def _serialize_sales_invoice_items(invoice_items):
 	item_meta_map = _get_item_meta_map(invoice_items)
+	uom_display_map = _build_item_row_uom_display_map(invoice_items)
 	return [
 		{
 			"sales_invoice_item": getattr(item, "name", None),
@@ -1243,6 +1265,7 @@ def _serialize_sales_invoice_items(invoice_items):
 			"item_name": getattr(item, "item_name", None),
 			"specification": (item_meta_map.get(getattr(item, "item_code", None)) or {}).get("specification"),
 			"uom": getattr(item, "uom", None),
+			"uom_display": _resolve_item_row_uom_display(item, uom_display_map),
 			"warehouse": getattr(item, "warehouse", None),
 			"qty": flt(getattr(item, "qty", 0) or 0),
 			"rate": flt(getattr(item, "rate", 0) or 0),
