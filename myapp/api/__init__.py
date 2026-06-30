@@ -68,6 +68,13 @@ from .settlement_api import (
 	update_payment_status,
 )
 from .uoms_api import create_uom_v2, delete_uom_v2, disable_uom_v2, get_uom_detail_v2, list_uoms_v2, update_uom_v2
+from .warehouses_api import (
+	create_warehouse_v2,
+	disable_warehouse_v2,
+	get_warehouse_detail_v2,
+	list_warehouses_v2,
+	update_warehouse_v2,
+)
 from .wholesale_api import search_product
 
 __all__ = [
@@ -99,9 +106,11 @@ __all__ = [
 	"get_sales_report_v1",
 	"create_sales_invoice",
 	"create_uom_v2",
+	"create_warehouse_v2",
 	"disable_customer_v2",
 	"delete_uom_v2",
 	"disable_uom_v2",
+	"disable_warehouse_v2",
 	"get_customer_detail_v2",
 	"get_customer_refund_context_v1",
 	"get_supplier_refund_context_v1",
@@ -115,6 +124,7 @@ __all__ = [
 	"get_supplier_purchase_context",
 	"disable_supplier_v2",
 	"get_uom_detail_v2",
+	"get_warehouse_detail_v2",
 	"list_customers_v2",
 	"list_business_documents_v1",
 	"list_cashflow_entries_v1",
@@ -124,6 +134,7 @@ __all__ = [
 	"transfer_inventory_stock_v1",
 	"list_suppliers_v2",
 	"list_uoms_v2",
+	"list_warehouses_v2",
 	"search_purchase_orders_v2",
 	"quick_cancel_order_v2",
 	"quick_create_order_v2",
@@ -143,4 +154,5 @@ __all__ = [
 	"update_purchase_order_v2",
 	"update_customer_v2",
 	"update_uom_v2",
+	"update_warehouse_v2",
 ]

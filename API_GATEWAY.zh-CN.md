@@ -1759,6 +1759,131 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 若已被 `Item.stock_uom`、`Item.uoms`、单据或系统设置等 Link 字段引用，则会直接拦截
 - 对已被引用的单位，建议走停用而不是删除
 
+### list_warehouses_v2
+
+方法：
+
+- `myapp.api.gateway.list_warehouses_v2`
+
+参数：
+
+- `search_key: str | None = None`
+- `company: str | None = None`
+- `disabled: int | bool | str | None = None`
+- `is_group: int | bool | str | None = None`
+- `date_from: str | None = None`
+- `date_to: str | None = None`
+- `limit: int = 20`
+- `start: int = 0`
+- `sort_by: str = "modified"`
+- `sort_order: str = "desc"`
+
+返回重点字段：
+
+- `name`
+- `warehouse_name`
+- `company`
+- `parent_warehouse`
+- `is_group`
+- `disabled`
+- `address_line_1`
+- `address_line_2`
+- `city`
+- `state`
+- `pin`
+- `modified`
+- `creation`
+
+适用场景：
+
+- Web 仓库管理列表页
+- 库存、转仓、盘点等页面的仓库治理入口
+
+### get_warehouse_detail_v2
+
+方法：
+
+- `myapp.api.gateway.get_warehouse_detail_v2`
+
+参数：
+
+- `warehouse: str`
+
+行为：
+
+- 返回单个仓库详情。
+
+### create_warehouse_v2
+
+方法：
+
+- `myapp.api.gateway.create_warehouse_v2`
+
+参数：
+
+- `warehouse_name: str`
+- `company: str`
+- `parent_warehouse: str | None`
+- `is_group: bool | int = False`
+- `disabled: bool | int = False`
+- `address_line_1: str | None`
+- `address_line_2: str | None`
+- `city: str | None`
+- `state: str | None`
+- `pin: str | None`
+- `request_id: str | None`
+
+行为：
+
+- 创建 ERPNext `Warehouse` 主数据。
+- `company` 必须存在。
+- `parent_warehouse` 如传入，必须存在、属于同一公司且是分组仓库。
+- 接口支持 `request_id` 幂等。
+
+### update_warehouse_v2
+
+方法：
+
+- `myapp.api.gateway.update_warehouse_v2`
+
+参数：
+
+- `warehouse: str`
+- `warehouse_name: str | None`
+- `company: str | None`
+- `parent_warehouse: str | None`
+- `is_group: bool | int | None`
+- `disabled: bool | int | None`
+- `address_line_1: str | None`
+- `address_line_2: str | None`
+- `city: str | None`
+- `state: str | None`
+- `pin: str | None`
+- `request_id: str | None`
+
+行为：
+
+- 更新仓库基础治理字段。
+- 修改父仓库时仍校验同公司和分组仓库规则。
+- 接口支持 `request_id` 幂等。
+
+### disable_warehouse_v2
+
+方法：
+
+- `myapp.api.gateway.disable_warehouse_v2`
+
+参数：
+
+- `warehouse: str`
+- `disabled: bool = True`
+- `request_id: str | None`
+
+行为：
+
+- 停用或重新启用仓库。
+- 停用后可避免新业务继续选择该仓库，但不会改写历史库存和单据记录。
+
 行为：
 
 - 停用或重新启用客户

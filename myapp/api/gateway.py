@@ -13,6 +13,11 @@ from .uoms_api import delete_uom_v2 as delete_uom_v2_service
 from .uoms_api import disable_uom_v2 as disable_uom_v2_service
 from .uoms_api import get_uom_detail_v2 as get_uom_detail_v2_service
 from .uoms_api import list_uoms_v2 as list_uoms_v2_service
+from .warehouses_api import create_warehouse_v2 as create_warehouse_v2_service
+from .warehouses_api import disable_warehouse_v2 as disable_warehouse_v2_service
+from .warehouses_api import get_warehouse_detail_v2 as get_warehouse_detail_v2_service
+from .warehouses_api import list_warehouses_v2 as list_warehouses_v2_service
+from .warehouses_api import update_warehouse_v2 as update_warehouse_v2_service
 from .orders_api import create_order as create_order_service
 from .orders_api import create_order_v2 as create_order_v2_service
 from .orders_api import quick_create_order_v2 as quick_create_order_v2_service
@@ -652,6 +657,68 @@ def delete_uom_v2(uom: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: delete_uom_v2_service(uom=uom, **kwargs),
 		success_code="UOM_DELETED",
+	)
+
+
+@frappe.whitelist()
+def list_warehouses_v2(
+	search_key: str | None = None,
+	company: str | None = None,
+	disabled=None,
+	is_group=None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	limit: int = 20,
+	start: int = 0,
+	sort_by: str = "modified",
+	sort_order: str = "desc",
+):
+	return _handle_gateway_call(
+		lambda: list_warehouses_v2_service(
+			search_key=search_key,
+			company=company,
+			disabled=disabled,
+			is_group=is_group,
+			date_from=date_from,
+			date_to=date_to,
+			limit=limit,
+			start=start,
+			sort_by=sort_by,
+			sort_order=sort_order,
+		),
+		success_code="WAREHOUSE_LIST_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_warehouse_detail_v2(warehouse: str):
+	return _handle_gateway_call(
+		lambda: get_warehouse_detail_v2_service(warehouse=warehouse),
+		success_code="WAREHOUSE_DETAIL_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def create_warehouse_v2(warehouse_name: str, company: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: create_warehouse_v2_service(warehouse_name=warehouse_name, company=company, **kwargs),
+		success_code="WAREHOUSE_CREATED",
+	)
+
+
+@frappe.whitelist()
+def update_warehouse_v2(warehouse: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: update_warehouse_v2_service(warehouse=warehouse, **kwargs),
+		success_code="WAREHOUSE_UPDATED",
+	)
+
+
+@frappe.whitelist()
+def disable_warehouse_v2(warehouse: str, disabled: bool = True, **kwargs):
+	return _handle_gateway_call(
+		lambda: disable_warehouse_v2_service(warehouse=warehouse, disabled=disabled, **kwargs),
+		success_code="WAREHOUSE_DISABLED",
 	)
 
 

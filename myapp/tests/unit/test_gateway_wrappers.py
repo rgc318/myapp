@@ -47,6 +47,7 @@ from myapp.api.gateway import (
 	create_sales_invoice,
 	export_sales_orders_v2,
 	create_uom_v2,
+	create_warehouse_v2,
 	create_order,
 	create_purchase_order,
 	quick_cancel_purchase_order_v2,
@@ -55,6 +56,7 @@ from myapp.api.gateway import (
 	disable_customer_v2,
 	disable_supplier_v2,
 	disable_uom_v2,
+	disable_warehouse_v2,
 	get_customer_detail_v2,
 	get_customer_refund_context_v1,
 	get_supplier_refund_context_v1,
@@ -69,10 +71,12 @@ from myapp.api.gateway import (
 	get_supplier_detail_v2,
 	get_supplier_purchase_context,
 	get_uom_detail_v2,
+	get_warehouse_detail_v2,
 	list_customers_v2,
 	list_products_v2,
 	list_suppliers_v2,
 	list_uoms_v2,
+	list_warehouses_v2,
 	delete_item_image,
 	delete_product_barcode_v2,
 	replace_item_image,
@@ -92,6 +96,7 @@ from myapp.api.gateway import (
 	update_current_user_workspace_preferences_v1,
 	update_product_v2,
 	update_uom_v2,
+	update_warehouse_v2,
 	update_order_items_v2,
 	update_order_v2,
 	record_supplier_payment,
@@ -1317,6 +1322,90 @@ class TestGatewayWrappers(TestCase):
 		mock_delete_uom_v2_service.assert_called_once_with(
 			uom="Box",
 			request_id="uom-delete-001",
+		)
+
+	@patch("myapp.api.gateway.list_warehouses_v2_service")
+	def test_list_warehouses_v2_passes_filters_to_service(self, mock_list_warehouses_v2_service):
+		mock_list_warehouses_v2_service.return_value = {"status": "success", "data": []}
+
+		list_warehouses_v2(
+			search_key="Store",
+			company="Test Company",
+			disabled=0,
+			is_group=0,
+			date_from="2026-06-01",
+			date_to="2026-06-30",
+			limit=10,
+			start=5,
+		)
+
+		mock_list_warehouses_v2_service.assert_called_once_with(
+			search_key="Store",
+			company="Test Company",
+			disabled=0,
+			is_group=0,
+			date_from="2026-06-01",
+			date_to="2026-06-30",
+			limit=10,
+			start=5,
+			sort_by="modified",
+			sort_order="desc",
+		)
+
+	@patch("myapp.api.gateway.get_warehouse_detail_v2_service")
+	def test_get_warehouse_detail_v2_passes_warehouse_to_service(self, mock_get_warehouse_detail_v2_service):
+		mock_get_warehouse_detail_v2_service.return_value = {"status": "success", "data": {"name": "Stores - TC"}}
+
+		get_warehouse_detail_v2("Stores - TC")
+
+		mock_get_warehouse_detail_v2_service.assert_called_once_with(warehouse="Stores - TC")
+
+	@patch("myapp.api.gateway.create_warehouse_v2_service")
+	def test_create_warehouse_v2_passes_payload_to_service(self, mock_create_warehouse_v2_service):
+		mock_create_warehouse_v2_service.return_value = {"status": "success", "data": {"name": "Stores - TC"}}
+
+		create_warehouse_v2(
+			warehouse_name="Stores",
+			company="Test Company",
+			parent_warehouse="All Warehouses - TC",
+			request_id="wh-create-001",
+		)
+
+		mock_create_warehouse_v2_service.assert_called_once_with(
+			warehouse_name="Stores",
+			company="Test Company",
+			parent_warehouse="All Warehouses - TC",
+			request_id="wh-create-001",
+		)
+
+	@patch("myapp.api.gateway.update_warehouse_v2_service")
+	def test_update_warehouse_v2_passes_payload_to_service(self, mock_update_warehouse_v2_service):
+		mock_update_warehouse_v2_service.return_value = {"status": "success", "data": {"name": "Stores - TC"}}
+
+		update_warehouse_v2(
+			"Stores - TC",
+			warehouse_name="Main Stores",
+			disabled=0,
+			request_id="wh-update-001",
+		)
+
+		mock_update_warehouse_v2_service.assert_called_once_with(
+			warehouse="Stores - TC",
+			warehouse_name="Main Stores",
+			disabled=0,
+			request_id="wh-update-001",
+		)
+
+	@patch("myapp.api.gateway.disable_warehouse_v2_service")
+	def test_disable_warehouse_v2_passes_disabled_flag_to_service(self, mock_disable_warehouse_v2_service):
+		mock_disable_warehouse_v2_service.return_value = {"status": "success", "data": {"name": "Stores - TC"}}
+
+		disable_warehouse_v2("Stores - TC", disabled=True, request_id="wh-disable-001")
+
+		mock_disable_warehouse_v2_service.assert_called_once_with(
+			warehouse="Stores - TC",
+			disabled=True,
+			request_id="wh-disable-001",
 		)
 
 	@patch("myapp.api.gateway.get_delivery_note_detail_service")
