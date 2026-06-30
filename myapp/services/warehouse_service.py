@@ -60,6 +60,14 @@ def _build_warehouse_payload(doc):
 		"parent_warehouse": getattr(doc, "parent_warehouse", None),
 		"is_group": cint(getattr(doc, "is_group", 0)),
 		"disabled": cint(getattr(doc, "disabled", 0)),
+		"account": getattr(doc, "account", None),
+		"warehouse_type": getattr(doc, "warehouse_type", None),
+		"default_in_transit_warehouse": getattr(doc, "default_in_transit_warehouse", None),
+		"is_rejected_warehouse": cint(getattr(doc, "is_rejected_warehouse", 0)),
+		"customer": getattr(doc, "customer", None),
+		"email_id": getattr(doc, "email_id", None),
+		"phone_no": getattr(doc, "phone_no", None),
+		"mobile_no": getattr(doc, "mobile_no", None),
 		"address_line_1": getattr(doc, "address_line_1", None),
 		"address_line_2": getattr(doc, "address_line_2", None),
 		"city": getattr(doc, "city", None),
@@ -75,6 +83,15 @@ def _ensure_company_exists(company: str):
 		frappe.throw(_("公司不能为空。"))
 	if not frappe.db.exists("Company", company):
 		frappe.throw(_("公司 {0} 不存在。").format(company))
+
+
+def _ensure_link_exists(doctype: str, value: str | None, label: str):
+	value = _normalize_text(value)
+	if not value:
+		return None
+	if not frappe.db.exists(doctype, value):
+		frappe.throw(_("{0} {1} 不存在。").format(label, value))
+	return value
 
 
 def _ensure_parent_warehouse_valid(parent_warehouse: str | None, company: str):
@@ -141,6 +158,14 @@ def list_warehouses_v2(
 		"parent_warehouse",
 		"is_group",
 		"disabled",
+		"account",
+		"warehouse_type",
+		"default_in_transit_warehouse",
+		"is_rejected_warehouse",
+		"customer",
+		"email_id",
+		"phone_no",
+		"mobile_no",
 		"address_line_1",
 		"address_line_2",
 		"city",
@@ -229,7 +254,25 @@ def create_warehouse_v2(warehouse_name: str, company: str, **kwargs):
 		doc.parent_warehouse = parent_warehouse
 		doc.is_group = _normalize_bool(kwargs.get("is_group"), default=0)
 		doc.disabled = _normalize_bool(kwargs.get("disabled"), default=0)
-		for fieldname in ("address_line_1", "address_line_2", "city", "state", "pin"):
+		doc.account = _ensure_link_exists("Account", kwargs.get("account"), _("会计科目"))
+		doc.warehouse_type = _ensure_link_exists("Warehouse Type", kwargs.get("warehouse_type"), _("仓库类型"))
+		doc.default_in_transit_warehouse = _ensure_link_exists(
+			"Warehouse",
+			kwargs.get("default_in_transit_warehouse"),
+			_("默认在途仓库"),
+		)
+		doc.customer = _ensure_link_exists("Customer", kwargs.get("customer"), _("客户"))
+		doc.is_rejected_warehouse = _normalize_bool(kwargs.get("is_rejected_warehouse"), default=0)
+		for fieldname in (
+			"email_id",
+			"phone_no",
+			"mobile_no",
+			"address_line_1",
+			"address_line_2",
+			"city",
+			"state",
+			"pin",
+		):
 			if kwargs.get(fieldname) is not None:
 				setattr(doc, fieldname, _normalize_text(kwargs.get(fieldname)))
 		doc.insert()
@@ -267,7 +310,33 @@ def update_warehouse_v2(warehouse: str, **kwargs):
 			doc.is_group = _normalize_bool(kwargs.get("is_group"), default=getattr(doc, "is_group", 0))
 		if kwargs.get("disabled") is not None:
 			doc.disabled = _normalize_bool(kwargs.get("disabled"), default=getattr(doc, "disabled", 0))
-		for fieldname in ("address_line_1", "address_line_2", "city", "state", "pin"):
+		if kwargs.get("account") is not None:
+			doc.account = _ensure_link_exists("Account", kwargs.get("account"), _("会计科目"))
+		if kwargs.get("warehouse_type") is not None:
+			doc.warehouse_type = _ensure_link_exists("Warehouse Type", kwargs.get("warehouse_type"), _("仓库类型"))
+		if kwargs.get("default_in_transit_warehouse") is not None:
+			doc.default_in_transit_warehouse = _ensure_link_exists(
+				"Warehouse",
+				kwargs.get("default_in_transit_warehouse"),
+				_("默认在途仓库"),
+			)
+		if kwargs.get("customer") is not None:
+			doc.customer = _ensure_link_exists("Customer", kwargs.get("customer"), _("客户"))
+		if kwargs.get("is_rejected_warehouse") is not None:
+			doc.is_rejected_warehouse = _normalize_bool(
+				kwargs.get("is_rejected_warehouse"),
+				default=getattr(doc, "is_rejected_warehouse", 0),
+			)
+		for fieldname in (
+			"email_id",
+			"phone_no",
+			"mobile_no",
+			"address_line_1",
+			"address_line_2",
+			"city",
+			"state",
+			"pin",
+		):
 			if kwargs.get(fieldname) is not None:
 				setattr(doc, fieldname, _normalize_text(kwargs.get(fieldname)))
 		doc.save()

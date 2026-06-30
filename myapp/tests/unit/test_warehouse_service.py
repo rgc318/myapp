@@ -24,6 +24,14 @@ class TestWarehouseService(TestCase):
 						"parent_warehouse": "All Warehouses - TC",
 						"is_group": 0,
 						"disabled": 0,
+						"account": "Stock In Hand - TC",
+						"warehouse_type": "Stores",
+						"default_in_transit_warehouse": "Transit - TC",
+						"is_rejected_warehouse": 0,
+						"customer": "CUST-0001",
+						"email_id": "store@example.test",
+						"phone_no": "021-12345678",
+						"mobile_no": "13800000000",
 						"address_line_1": "A1",
 						"address_line_2": None,
 						"city": "Shanghai",
@@ -51,6 +59,9 @@ class TestWarehouseService(TestCase):
 		self.assertEqual(result["status"], "success")
 		self.assertEqual(result["data"][0]["name"], "Stores - TC")
 		self.assertEqual(result["data"][0]["warehouse_name"], "Stores")
+		self.assertEqual(result["data"][0]["account"], "Stock In Hand - TC")
+		self.assertEqual(result["data"][0]["warehouse_type"], "Stores")
+		self.assertEqual(result["data"][0]["customer"], "CUST-0001")
 		self.assertEqual(result["meta"]["total"], 2)
 		self.assertEqual(result["pagination"]["total_count"], 2)
 		self.assertEqual(result["meta"]["filters"]["company"], "Test Company")
@@ -86,12 +97,28 @@ class TestWarehouseService(TestCase):
 		doc.parent_warehouse = "All Warehouses - TC"
 		doc.is_group = 0
 		doc.disabled = 0
+		doc.account = "Stock In Hand - TC"
+		doc.warehouse_type = "Stores"
+		doc.default_in_transit_warehouse = "Transit - TC"
+		doc.is_rejected_warehouse = 1
+		doc.customer = "CUST-0001"
+		doc.email_id = "store@example.test"
+		doc.phone_no = "021-12345678"
+		doc.mobile_no = "13800000000"
 		mock_new_doc.return_value = doc
 
 		result = create_warehouse_v2(
 			warehouse_name="Stores",
 			company="Test Company",
 			parent_warehouse="All Warehouses - TC",
+			account="Stock In Hand - TC",
+			warehouse_type="Stores",
+			default_in_transit_warehouse="Transit - TC",
+			is_rejected_warehouse=1,
+			customer="CUST-0001",
+			email_id="store@example.test",
+			phone_no="021-12345678",
+			mobile_no="13800000000",
 			city="Shanghai",
 		)
 
@@ -99,6 +126,11 @@ class TestWarehouseService(TestCase):
 		self.assertEqual(doc.warehouse_name, "Stores")
 		self.assertEqual(doc.company, "Test Company")
 		self.assertEqual(doc.parent_warehouse, "All Warehouses - TC")
+		self.assertEqual(doc.account, "Stock In Hand - TC")
+		self.assertEqual(doc.warehouse_type, "Stores")
+		self.assertEqual(doc.default_in_transit_warehouse, "Transit - TC")
+		self.assertEqual(doc.is_rejected_warehouse, 1)
+		self.assertEqual(doc.customer, "CUST-0001")
 		self.assertEqual(doc.city, "Shanghai")
 		doc.insert.assert_called_once()
 
@@ -116,12 +148,20 @@ class TestWarehouseService(TestCase):
 		doc.parent_warehouse = None
 		doc.is_group = 0
 		doc.disabled = 0
+		doc.is_rejected_warehouse = 0
 		mock_get_doc.return_value = doc
 
 		result = update_warehouse_v2(
 			warehouse="Stores - TC",
 			warehouse_name="Main Stores",
 			parent_warehouse="All Warehouses - TC",
+			account="Stock In Hand - TC",
+			warehouse_type="Stores",
+			default_in_transit_warehouse="Transit - TC",
+			is_rejected_warehouse=1,
+			customer="CUST-0001",
+			email_id="store@example.test",
+			phone_no="021-12345678",
 			disabled=1,
 			address_line_1="A1",
 		)
@@ -129,6 +169,13 @@ class TestWarehouseService(TestCase):
 		self.assertEqual(result["status"], "success")
 		self.assertEqual(doc.warehouse_name, "Main Stores")
 		self.assertEqual(doc.parent_warehouse, "All Warehouses - TC")
+		self.assertEqual(doc.account, "Stock In Hand - TC")
+		self.assertEqual(doc.warehouse_type, "Stores")
+		self.assertEqual(doc.default_in_transit_warehouse, "Transit - TC")
+		self.assertEqual(doc.is_rejected_warehouse, 1)
+		self.assertEqual(doc.customer, "CUST-0001")
+		self.assertEqual(doc.email_id, "store@example.test")
+		self.assertEqual(doc.phone_no, "021-12345678")
 		self.assertEqual(doc.disabled, 1)
 		self.assertEqual(doc.address_line_1, "A1")
 		doc.save.assert_called_once()

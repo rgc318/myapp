@@ -1786,6 +1786,14 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `parent_warehouse`
 - `is_group`
 - `disabled`
+- `account`
+- `warehouse_type`
+- `default_in_transit_warehouse`
+- `is_rejected_warehouse`
+- `customer`
+- `email_id`
+- `phone_no`
+- `mobile_no`
 - `address_line_1`
 - `address_line_2`
 - `city`
@@ -1824,6 +1832,14 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `warehouse_name: str`
 - `company: str`
 - `parent_warehouse: str | None`
+- `account: str | None`
+- `warehouse_type: str | None`
+- `default_in_transit_warehouse: str | None`
+- `is_rejected_warehouse: bool | int = False`
+- `customer: str | None`
+- `email_id: str | None`
+- `phone_no: str | None`
+- `mobile_no: str | None`
 - `is_group: bool | int = False`
 - `disabled: bool | int = False`
 - `address_line_1: str | None`
@@ -1838,6 +1854,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 创建 ERPNext `Warehouse` 主数据。
 - `company` 必须存在。
 - `parent_warehouse` 如传入，必须存在、属于同一公司且是分组仓库。
+- `account`、`warehouse_type`、`default_in_transit_warehouse`、`customer` 如传入，必须引用已存在的原生 ERPNext 主数据。
+- 本接口只透出 ERPNext `Warehouse` 原生治理字段，不新增自定义仓库字段。
 - 接口支持 `request_id` 幂等。
 
 ### update_warehouse_v2
@@ -1852,6 +1870,14 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `warehouse_name: str | None`
 - `company: str | None`
 - `parent_warehouse: str | None`
+- `account: str | None`
+- `warehouse_type: str | None`
+- `default_in_transit_warehouse: str | None`
+- `is_rejected_warehouse: bool | int | None`
+- `customer: str | None`
+- `email_id: str | None`
+- `phone_no: str | None`
+- `mobile_no: str | None`
 - `is_group: bool | int | None`
 - `disabled: bool | int | None`
 - `address_line_1: str | None`
@@ -1865,6 +1891,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 
 - 更新仓库基础治理字段。
 - 修改父仓库时仍校验同公司和分组仓库规则。
+- `account`、`warehouse_type`、`default_in_transit_warehouse`、`customer` 如传入，必须引用已存在的原生 ERPNext 主数据。
+- 空字符串可用于清空可选 Link 或文本字段。
 - 接口支持 `request_id` 幂等。
 
 ### disable_warehouse_v2
@@ -3640,11 +3668,12 @@ frappe.call({
 安全约束：
 
 - 只允许白名单 DocType，不开放任意 DocType 搜索
-- 当前白名单包括 `Mode of Payment`、`Company`、`Warehouse`、`Customer`、`Supplier`、销售 / 采购主链路单据
+- 当前白名单包括 `Mode of Payment`、`Company`、`Warehouse`、`Warehouse Type`、`Account`、`Customer`、`Supplier`、销售 / 采购主链路单据
 - `extra_fields` 也受每个 DocType 的白名单限制
 - `filters` 只支持每个 DocType 显式白名单内的等值过滤；非白名单字段、空值和复杂条件会被忽略
 - 当前过滤白名单：
   - `Warehouse`: `company`、`disabled`、`is_group`
+  - `Account`: `company`、`is_group`
   - `Customer`: `disabled`
   - `Supplier`: `disabled`
   - `Mode of Payment`: `enabled`

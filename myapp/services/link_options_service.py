@@ -3,6 +3,7 @@ from frappe import _
 
 
 ALLOWED_LINK_DOCTYPES = {
+	"Account": ("name", "account_name", "company"),
 	"Company": ("name",),
 	"Customer": ("name", "customer_name"),
 	"Delivery Note": ("name", "customer", "company"),
@@ -15,9 +16,11 @@ ALLOWED_LINK_DOCTYPES = {
 	"Sales Invoice": ("name", "customer", "company"),
 	"Supplier": ("name", "supplier_name"),
 	"Warehouse": ("name", "company"),
+	"Warehouse Type": ("name",),
 }
 
 ALLOWED_LINK_FILTERS = {
+	"Account": ("company", "is_group"),
 	"Company": (),
 	"Customer": ("disabled",),
 	"Delivery Note": ("company", "customer", "docstatus"),
@@ -30,6 +33,7 @@ ALLOWED_LINK_FILTERS = {
 	"Sales Invoice": ("company", "customer", "docstatus"),
 	"Supplier": ("disabled",),
 	"Warehouse": ("company", "disabled", "is_group"),
+	"Warehouse Type": (),
 }
 
 

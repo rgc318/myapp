@@ -83,6 +83,44 @@ class TestLinkOptionsService(TestCase):
 		)
 
 	@patch("myapp.services.link_options_service.frappe.get_list")
+	def test_search_link_options_v1_allows_account_filters(self, mock_get_list):
+		mock_get_list.return_value = [
+			frappe._dict({"name": "Stock In Hand - RD", "account_name": "Stock In Hand"}),
+		]
+
+		result = search_link_options_v1(
+			"Account",
+			extra_fields=["account_name", "owner"],
+			filters={"company": "rgc (Demo)", "is_group": 0, "disabled": 0},
+		)
+
+		self.assertEqual(result["data"][0]["description"], "Stock In Hand")
+		mock_get_list.assert_called_once_with(
+			"Account",
+			fields=["name", "account_name"],
+			filters=[["company", "=", "rgc (Demo)"], ["is_group", "=", 0]],
+			limit_page_length=8,
+			order_by="modified desc",
+		)
+
+	@patch("myapp.services.link_options_service.frappe.get_list")
+	def test_search_link_options_v1_allows_warehouse_type_options(self, mock_get_list):
+		mock_get_list.return_value = [
+			frappe._dict({"name": "Stores"}),
+		]
+
+		result = search_link_options_v1("Warehouse Type")
+
+		self.assertEqual(result["data"][0]["value"], "Stores")
+		mock_get_list.assert_called_once_with(
+			"Warehouse Type",
+			fields=["name"],
+			filters=[],
+			limit_page_length=8,
+			order_by="modified desc",
+		)
+
+	@patch("myapp.services.link_options_service.frappe.get_list")
 	def test_search_link_options_v1_applies_whitelisted_filters(self, mock_get_list):
 		mock_get_list.return_value = [
 			frappe._dict({"name": "Stores - RD", "company": "rgc (Demo)"}),
