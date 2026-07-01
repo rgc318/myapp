@@ -39,6 +39,7 @@ from myapp.api.gateway import (
 	list_inventory_stock_summary_v1,
 	list_stock_ledger_entries_v1,
 	reconcile_inventory_stock_v1,
+	submit_inventory_stock_count_v1,
 	transfer_inventory_stock_v1,
 	list_cashflow_entries_v1,
 	list_business_documents_v1,
@@ -1094,6 +1095,30 @@ class TestGatewayWrappers(TestCase):
 			posting_date="2026-06-02",
 			remarks="Cycle count",
 			request_id="count-001",
+		)
+
+	@patch("myapp.api.gateway.submit_inventory_stock_count_v1_service")
+	def test_submit_inventory_stock_count_v1_passes_payload_to_service(self, mock_submit_inventory_stock_count_v1_service):
+		mock_submit_inventory_stock_count_v1_service.return_value = {
+			"status": "success",
+			"data": {"stock_reconciliation": "STK-REC-0001"},
+		}
+		items = [{"item_code": "ITEM-001", "warehouse": "Stores - TC", "counted_qty": 12}]
+
+		submit_inventory_stock_count_v1(
+			items=items,
+			company="Test Company",
+			posting_date="2026-06-03",
+			remarks="Monthly count",
+			request_id="stock-count-001",
+		)
+
+		mock_submit_inventory_stock_count_v1_service.assert_called_once_with(
+			items=items,
+			company="Test Company",
+			posting_date="2026-06-03",
+			remarks="Monthly count",
+			request_id="stock-count-001",
 		)
 
 	@patch("myapp.api.gateway.list_customers_v2_service")

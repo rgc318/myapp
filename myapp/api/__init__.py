@@ -53,6 +53,7 @@ from .inventory_api import (
 	list_inventory_stock_summary_v1,
 	list_stock_ledger_entries_v1,
 	reconcile_inventory_stock_v1,
+	submit_inventory_stock_count_v1,
 	transfer_inventory_stock_v1,
 )
 from .returns_api import get_return_source_context_v2
@@ -131,6 +132,7 @@ __all__ = [
 	"list_inventory_stock_summary_v1",
 	"list_stock_ledger_entries_v1",
 	"reconcile_inventory_stock_v1",
+	"submit_inventory_stock_count_v1",
 	"transfer_inventory_stock_v1",
 	"list_suppliers_v2",
 	"list_uoms_v2",

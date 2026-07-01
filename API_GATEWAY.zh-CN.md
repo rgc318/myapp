@@ -76,6 +76,7 @@
 - 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`list_business_documents_v1`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`、`create_supplier_v2`、`update_supplier_v2`、`disable_supplier_v2`
 - 采购更新与作废：`update_purchase_order_v2`、`update_purchase_order_items_v2`、`cancel_purchase_order_v2`、`cancel_purchase_receipt_v2`、`cancel_purchase_invoice_v2`、`cancel_supplier_payment`
 - 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`、`list_stock_ledger_entries_v1`
+- 库存：`list_inventory_stock_summary_v1`、`list_stock_ledger_entries_v1`、`transfer_inventory_stock_v1`、`reconcile_inventory_stock_v1`、`submit_inventory_stock_count_v1`
 - 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
 
 ### 统一成功响应格式
@@ -480,6 +481,63 @@ Method:
 - `qty_delta`
 - `stock_uom`
 - `conversion_factor`
+
+### submit_inventory_stock_count_v1
+
+Method:
+
+- `myapp.api.gateway.submit_inventory_stock_count_v1`
+
+用途：
+
+- 为 Web 批量盘点页提供多商品、多行库存盘点写操作。
+- 使用共享 `myapp.utils.uom.resolve_item_quantity_to_stock` 将每行实盘数量换算为商品库存基准单位。
+- 通过 ERPNext `Stock Reconciliation` 创建并提交正式库存盘点单。
+- 无差异行会出现在响应 `rows` 中，但不会写入 `Stock Reconciliation.items`；全部无差异时不创建单据，返回 `stock_reconciliation = None`。
+
+参数：
+
+- `items: list[dict] | json-string`
+  - `item_code: str`
+  - `warehouse: str`
+  - `counted_qty`
+  - `uom: str | None`
+  - `valuation_rate: float | int | str | None`
+- `company: str | None = None`
+- `posting_date: str | None = None`
+- `remarks: str | None = None`
+- `request_id: str | None = None`
+
+业务规则：
+
+- 盘点明细不能为空，单次最多 200 行。
+- 每行商品必须存在、未停用且为库存商品。
+- 每行仓库必须存在并绑定公司。
+- 同一次盘点明细必须属于同一公司；传入 `company` 时明细仓库必须匹配该公司。
+- 同一商品和仓库组合不能重复。
+- 实盘数量不能为负数。
+- 接口支持 `request_id` 幂等。
+
+响应字段：
+
+- `stock_reconciliation`: 已提交的 `Stock Reconciliation` 单号；全部无差异时为 `None`
+- `company`
+- `posting_date`
+- `difference_count`
+- `rows`
+  - `item_code`
+  - `item_name`
+  - `warehouse`
+  - `company`
+  - `input_qty`
+  - `input_uom`
+  - `counted_stock_qty`
+  - `current_stock_qty`
+  - `qty_delta`
+  - `stock_uom`
+  - `conversion_factor`
+  - `valuation_rate`
+  - `has_difference`
 
 ### list_stock_ledger_entries_v1
 

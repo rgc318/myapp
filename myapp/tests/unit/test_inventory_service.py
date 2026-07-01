@@ -7,6 +7,7 @@ from myapp.services.inventory_service import (
 	list_inventory_stock_summary_v1,
 	list_stock_ledger_entries_v1,
 	reconcile_inventory_stock_v1,
+	submit_inventory_stock_count_v1,
 	transfer_inventory_stock_v1,
 )
 
@@ -387,3 +388,136 @@ class TestInventoryService(TestCase):
 		)
 		stock_entry.insert.assert_called_once()
 		stock_entry.submit.assert_called_once()
+
+	@patch("myapp.services.inventory_service.run_idempotent")
+	@patch("myapp.services.inventory_service.resolve_item_quantity_to_stock")
+	@patch("myapp.services.inventory_service.frappe.new_doc")
+	@patch("myapp.services.inventory_service.frappe.db", new_callable=MagicMock)
+	def test_submit_inventory_stock_count_v1_creates_stock_reconciliation(
+		self,
+		mock_db,
+		mock_new_doc,
+		mock_resolve_item_quantity_to_stock,
+		mock_run_idempotent,
+	):
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
+		mock_db.get_value.side_effect = [
+			frappe._dict(
+				{
+					"name": "ITEM-001",
+					"item_name": "Counted Item",
+					"stock_uom": "Nos",
+					"disabled": 0,
+					"is_stock_item": 1,
+				}
+			),
+			"Test Company",
+			3,
+			frappe._dict(
+				{
+					"name": "ITEM-002",
+					"item_name": "Second Item",
+					"stock_uom": "Nos",
+					"disabled": 0,
+					"is_stock_item": 1,
+				}
+			),
+			"Test Company",
+			5,
+		]
+		mock_resolve_item_quantity_to_stock.side_effect = [
+			{
+				"uom": "Box",
+				"stock_uom": "Nos",
+				"conversion_factor": 6,
+				"qty": 2,
+				"stock_qty": 12,
+			},
+			{
+				"uom": "Nos",
+				"stock_uom": "Nos",
+				"conversion_factor": 1,
+				"qty": 5,
+				"stock_qty": 5,
+			},
+		]
+		reconciliation = MagicMock()
+		reconciliation.name = "STK-REC-0001"
+		mock_new_doc.return_value = reconciliation
+
+		result = submit_inventory_stock_count_v1(
+			items=[
+				{"item_code": "ITEM-001", "warehouse": "Stores - TC", "counted_qty": 2, "uom": "Box", "valuation_rate": 8},
+				{"item_code": "ITEM-002", "warehouse": "Stores - TC", "counted_qty": 5, "uom": "Nos", "valuation_rate": 3},
+			],
+			company="Test Company",
+			posting_date="2026-06-03",
+			remarks="Monthly count",
+			request_id="stock-count-001",
+		)
+
+		self.assertEqual(result["status"], "success")
+		self.assertEqual(result["data"]["stock_reconciliation"], "STK-REC-0001")
+		self.assertEqual(result["data"]["difference_count"], 1)
+		self.assertEqual(result["data"]["rows"][0]["counted_stock_qty"], 12)
+		self.assertEqual(result["data"]["rows"][0]["qty_delta"], 9)
+		self.assertFalse(result["data"]["rows"][1]["has_difference"])
+		self.assertEqual(reconciliation.company, "Test Company")
+		self.assertEqual(reconciliation.purpose, "Stock Reconciliation")
+		self.assertEqual(reconciliation.posting_date, "2026-06-03")
+		self.assertEqual(reconciliation.remarks, "Monthly count")
+		reconciliation.append.assert_called_once_with(
+			"items",
+			{
+				"item_code": "ITEM-001",
+				"warehouse": "Stores - TC",
+				"qty": 12,
+				"valuation_rate": 8,
+			},
+		)
+		reconciliation.insert.assert_called_once()
+		reconciliation.submit.assert_called_once()
+
+	@patch("myapp.services.inventory_service.run_idempotent")
+	@patch("myapp.services.inventory_service.resolve_item_quantity_to_stock")
+	@patch("myapp.services.inventory_service.frappe.new_doc")
+	@patch("myapp.services.inventory_service.frappe.db", new_callable=MagicMock)
+	def test_submit_inventory_stock_count_v1_skips_document_when_no_difference(
+		self,
+		mock_db,
+		mock_new_doc,
+		mock_resolve_item_quantity_to_stock,
+		mock_run_idempotent,
+	):
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
+		mock_db.get_value.side_effect = [
+			frappe._dict(
+				{
+					"name": "ITEM-001",
+					"item_name": "Counted Item",
+					"stock_uom": "Nos",
+					"disabled": 0,
+					"is_stock_item": 1,
+				}
+			),
+			"Test Company",
+			12,
+		]
+		mock_resolve_item_quantity_to_stock.return_value = {
+			"uom": "Nos",
+			"stock_uom": "Nos",
+			"conversion_factor": 1,
+			"qty": 12,
+			"stock_qty": 12,
+		}
+
+		result = submit_inventory_stock_count_v1(
+			items=[{"item_code": "ITEM-001", "warehouse": "Stores - TC", "counted_qty": 12, "uom": "Nos"}],
+			company="Test Company",
+			request_id="stock-count-no-diff",
+		)
+
+		self.assertEqual(result["status"], "success")
+		self.assertIsNone(result["data"]["stock_reconciliation"])
+		self.assertEqual(result["data"]["difference_count"], 0)
+		mock_new_doc.assert_not_called()

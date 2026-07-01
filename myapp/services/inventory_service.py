@@ -12,6 +12,7 @@ MAX_STOCK_LEDGER_RANGE_DAYS = 366
 DEFAULT_STOCK_SUMMARY_PAGE_SIZE = 20
 MAX_STOCK_SUMMARY_PAGE_SIZE = 100
 DEFAULT_LOW_STOCK_THRESHOLD = 10
+MAX_STOCK_COUNT_ITEMS = 200
 
 
 def _normalize_text(value: str | None):
@@ -265,6 +266,72 @@ def _create_inventory_adjustment_entry(
 	stock_entry.insert()
 	stock_entry.submit()
 	return stock_entry
+
+
+def _create_stock_reconciliation(
+	*,
+	company: str,
+	items: list[dict],
+	posting_date: str | None,
+	remarks: str | None,
+):
+	reconciliation = frappe.new_doc("Stock Reconciliation")
+	reconciliation.company = company
+	reconciliation.purpose = "Stock Reconciliation"
+	if posting_date:
+		reconciliation.posting_date = posting_date
+	if remarks:
+		reconciliation.remarks = remarks
+
+	for item in items:
+		reconciliation.append("items", item)
+
+	reconciliation.insert()
+	reconciliation.submit()
+	return reconciliation
+
+
+def _serialize_stock_count_row(
+	*,
+	item,
+	warehouse: str,
+	company: str,
+	quantity_context: dict,
+	current_stock_qty: float,
+	valuation_rate: float,
+):
+	counted_stock_qty = flt(quantity_context["stock_qty"])
+	qty_delta = flt(counted_stock_qty - current_stock_qty)
+	return {
+		"item_code": item.name,
+		"item_name": item.item_name,
+		"warehouse": warehouse,
+		"company": company,
+		"stock_uom": quantity_context["stock_uom"],
+		"input_qty": quantity_context["qty"],
+		"input_uom": quantity_context["uom"],
+		"counted_stock_qty": counted_stock_qty,
+		"current_stock_qty": current_stock_qty,
+		"qty_delta": qty_delta,
+		"conversion_factor": quantity_context["conversion_factor"],
+		"valuation_rate": valuation_rate,
+		"has_difference": bool(qty_delta),
+	}
+
+
+def _normalize_stock_count_items(items):
+	if isinstance(items, str):
+		try:
+			items = frappe.parse_json(items)
+		except Exception:
+			frappe.throw(_("盘点明细格式无效。"))
+	if not isinstance(items, list):
+		frappe.throw(_("盘点明细必须是数组。"))
+	if not items:
+		frappe.throw(_("盘点明细不能为空。"))
+	if len(items) > MAX_STOCK_COUNT_ITEMS:
+		frappe.throw(_("单次盘点明细不能超过 {0} 行。").format(MAX_STOCK_COUNT_ITEMS))
+	return items
 
 
 def _build_stock_summary_filters(
@@ -574,6 +641,109 @@ def reconcile_inventory_stock_v1(
 		}
 
 	return run_idempotent("reconcile_inventory_stock_v1", request_id, _reconcile_inventory_stock)
+
+
+def submit_inventory_stock_count_v1(
+	items,
+	company: str | None = None,
+	posting_date: str | None = None,
+	remarks: str | None = None,
+	request_id: str | None = None,
+):
+	normalized_items = _normalize_stock_count_items(items)
+	resolved_company = _normalize_text(company)
+	resolved_posting_date = _normalize_text(posting_date) or None
+	resolved_remarks = _normalize_text(remarks) or None
+
+	def _submit_inventory_stock_count():
+		serialized_rows = []
+		reconciliation_items = []
+		row_keys = set()
+		count_company = resolved_company
+
+		for index, row in enumerate(normalized_items, start=1):
+			if not isinstance(row, dict):
+				frappe.throw(_("第 {0} 行盘点明细格式无效。").format(index))
+			item_code = _normalize_text(row.get("item_code"))
+			warehouse = _normalize_text(row.get("warehouse"))
+			if not item_code:
+				frappe.throw(_("第 {0} 行商品编码不能为空。").format(index))
+			if not warehouse:
+				frappe.throw(_("第 {0} 行仓库不能为空。").format(index))
+
+			row_key = (item_code, warehouse)
+			if row_key in row_keys:
+				frappe.throw(_("盘点明细存在重复商品和仓库：{0} / {1}。").format(item_code, warehouse))
+			row_keys.add(row_key)
+
+			item = _get_item_stock_context(item_code)
+			row_company = _resolve_warehouse_company(warehouse)
+			if count_company and row_company != count_company:
+				frappe.throw(_("盘点明细必须属于同一公司。"))
+			count_company = count_company or row_company
+
+			quantity_context = resolve_item_quantity_to_stock(
+				item_code=item.name,
+				qty=row.get("counted_qty"),
+				uom=row.get("uom"),
+			)
+			counted_stock_qty = flt(quantity_context["stock_qty"])
+			if counted_stock_qty < 0:
+				frappe.throw(_("第 {0} 行盘点数量不能为负数。").format(index))
+
+			current_qty = _get_bin_actual_qty(item.name, warehouse)
+			valuation_rate = flt(row.get("valuation_rate") or 0)
+			serialized_row = _serialize_stock_count_row(
+				item=item,
+				warehouse=warehouse,
+				company=row_company,
+				quantity_context=quantity_context,
+				current_stock_qty=current_qty,
+				valuation_rate=valuation_rate,
+			)
+			serialized_rows.append(serialized_row)
+			if serialized_row["has_difference"]:
+				reconciliation_items.append(
+					{
+						"item_code": item.name,
+						"warehouse": warehouse,
+						"qty": counted_stock_qty,
+						"valuation_rate": valuation_rate,
+					}
+				)
+
+		if not reconciliation_items:
+			return {
+				"status": "success",
+				"message": _("盘点数量无变化。"),
+				"data": {
+					"stock_reconciliation": None,
+					"company": count_company,
+					"posting_date": resolved_posting_date,
+					"rows": serialized_rows,
+					"difference_count": 0,
+				},
+			}
+
+		reconciliation = _create_stock_reconciliation(
+			company=count_company,
+			items=reconciliation_items,
+			posting_date=resolved_posting_date,
+			remarks=resolved_remarks,
+		)
+		return {
+			"status": "success",
+			"message": _("库存批量盘点已提交。"),
+			"data": {
+				"stock_reconciliation": reconciliation.name,
+				"company": count_company,
+				"posting_date": resolved_posting_date,
+				"rows": serialized_rows,
+				"difference_count": len(reconciliation_items),
+			},
+		}
+
+	return run_idempotent("submit_inventory_stock_count_v1", request_id, _submit_inventory_stock_count)
 
 
 def _serialize_stock_ledger_rows(rows):

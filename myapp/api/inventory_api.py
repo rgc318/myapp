@@ -4,6 +4,7 @@ from frappe.utils import cint
 from myapp.services.inventory_service import list_inventory_stock_summary_v1 as list_inventory_stock_summary_v1_service
 from myapp.services.inventory_service import list_stock_ledger_entries_v1 as list_stock_ledger_entries_v1_service
 from myapp.services.inventory_service import reconcile_inventory_stock_v1 as reconcile_inventory_stock_v1_service
+from myapp.services.inventory_service import submit_inventory_stock_count_v1 as submit_inventory_stock_count_v1_service
 from myapp.services.inventory_service import transfer_inventory_stock_v1 as transfer_inventory_stock_v1_service
 
 
@@ -93,6 +94,23 @@ def reconcile_inventory_stock_v1(
 		target_qty=target_qty,
 		uom=uom,
 		valuation_rate=valuation_rate,
+		posting_date=posting_date,
+		remarks=remarks,
+		request_id=request_id,
+	)
+
+
+@frappe.whitelist()
+def submit_inventory_stock_count_v1(
+	items,
+	company: str | None = None,
+	posting_date: str | None = None,
+	remarks: str | None = None,
+	request_id: str | None = None,
+):
+	return submit_inventory_stock_count_v1_service(
+		items=items,
+		company=company,
 		posting_date=posting_date,
 		remarks=remarks,
 		request_id=request_id,

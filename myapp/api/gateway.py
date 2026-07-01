@@ -83,6 +83,7 @@ from .reports_api import list_cashflow_entries_v1 as list_cashflow_entries_v1_se
 from .inventory_api import list_inventory_stock_summary_v1 as list_inventory_stock_summary_v1_service
 from .inventory_api import list_stock_ledger_entries_v1 as list_stock_ledger_entries_v1_service
 from .inventory_api import reconcile_inventory_stock_v1 as reconcile_inventory_stock_v1_service
+from .inventory_api import submit_inventory_stock_count_v1 as submit_inventory_stock_count_v1_service
 from .inventory_api import transfer_inventory_stock_v1 as transfer_inventory_stock_v1_service
 from myapp.services.link_options_service import search_link_options_v1 as search_link_options_v1_service
 from .returns_api import get_return_source_context_v2 as get_return_source_context_v2_service
@@ -505,6 +506,26 @@ def reconcile_inventory_stock_v1(
 			request_id=request_id,
 		),
 		success_code="INVENTORY_STOCK_RECONCILED",
+	)
+
+
+@frappe.whitelist()
+def submit_inventory_stock_count_v1(
+	items,
+	company: str | None = None,
+	posting_date: str | None = None,
+	remarks: str | None = None,
+	request_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: submit_inventory_stock_count_v1_service(
+			items=items,
+			company=company,
+			posting_date=posting_date,
+			remarks=remarks,
+			request_id=request_id,
+		),
+		success_code="INVENTORY_STOCK_COUNT_SUBMITTED",
 	)
 
 

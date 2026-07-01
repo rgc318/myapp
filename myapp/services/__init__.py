@@ -48,7 +48,7 @@ from .report_service import (
 	get_sales_report_v1,
 	list_cashflow_entries_v1,
 )
-from .inventory_service import list_stock_ledger_entries_v1
+from .inventory_service import list_stock_ledger_entries_v1, submit_inventory_stock_count_v1
 from .return_service import get_return_source_context_v2
 from .settlement_service import (
 	cancel_payment_entry,
@@ -104,6 +104,7 @@ __all__ = [
 	"list_customers_v2",
 	"list_cashflow_entries_v1",
 	"list_stock_ledger_entries_v1",
+	"submit_inventory_stock_count_v1",
 	"list_suppliers_v2",
 	"list_uoms_v2",
 	"search_purchase_orders_v2",
