@@ -3114,6 +3114,7 @@ frappe.call({
 - 基于已提交的销售退货发票创建并提交退款 `Payment Entry`
 - 只支持 `Sales Invoice.is_return = 1` 的退货发票，不允许对普通销售发票直接登记退款
 - 退款金额不能大于退货发票当前可退金额，即 `abs(outstanding_amount)`
+- 退货发票在 ERPNext 中通常以负数 `outstanding_amount` 表示客户应退余额；接口创建 `Payment Entry` 时会按退货发票负数口径规范化引用行的 `total_amount`、`outstanding_amount` 和 `allocated_amount`，避免 ERPNext 校验误判“已分配金额大于未付金额”
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的退款结果
 - 当前接口应明确理解为：
   - “退货发票依据版客户退款”

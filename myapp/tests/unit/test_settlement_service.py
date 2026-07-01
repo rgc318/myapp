@@ -456,6 +456,7 @@ class TestSettlementService(TestCase):
 				"name": "SINV-RET-0001",
 				"docstatus": 1,
 				"is_return": 1,
+				"grand_total": -100,
 				"outstanding_amount": -100,
 				"return_against": "SINV-0001",
 			}
@@ -465,6 +466,17 @@ class TestSettlementService(TestCase):
 		pe = MagicMock()
 		pe.name = "ACC-PAY-REF-0001"
 		pe.mode_of_payment = None
+		pe.references = [
+			frappe._dict(
+				{
+					"reference_doctype": "Sales Invoice",
+					"reference_name": "SINV-RET-0001",
+					"total_amount": 100,
+					"outstanding_amount": 100,
+					"allocated_amount": 80,
+				}
+			)
+		]
 
 		fake_payment_entry_module = ModuleType("payment_entry")
 		fake_get_payment_entry = MagicMock(return_value=pe)
@@ -493,6 +505,9 @@ class TestSettlementService(TestCase):
 		self.assertEqual(pe.reference_no, "REF-001")
 		self.assertEqual(pe.reference_date, "2026-04-01")
 		self.assertEqual(pe.remarks, "客户退货退款")
+		self.assertEqual(pe.references[0].total_amount, -100)
+		self.assertEqual(pe.references[0].outstanding_amount, -100)
+		self.assertEqual(pe.references[0].allocated_amount, -80)
 		self.assertEqual(result["payment_entry"], "ACC-PAY-REF-0001")
 		self.assertEqual(result["refund_amount"], 80.0)
 		self.assertEqual(result["return_invoice"], "SINV-RET-0001")
@@ -623,6 +638,7 @@ class TestSettlementService(TestCase):
 				"name": "PINV-RET-0001",
 				"docstatus": 1,
 				"is_return": 1,
+				"grand_total": -100,
 				"outstanding_amount": -100,
 				"return_against": "PINV-0001",
 			}
@@ -632,6 +648,17 @@ class TestSettlementService(TestCase):
 		pe = MagicMock()
 		pe.name = "ACC-PAY-SUP-REF-0001"
 		pe.mode_of_payment = None
+		pe.references = [
+			frappe._dict(
+				{
+					"reference_doctype": "Purchase Invoice",
+					"reference_name": "PINV-RET-0001",
+					"total_amount": 100,
+					"outstanding_amount": 100,
+					"allocated_amount": 70,
+				}
+			)
+		]
 
 		fake_payment_entry_module = ModuleType("payment_entry")
 		fake_get_payment_entry = MagicMock(return_value=pe)
@@ -660,6 +687,9 @@ class TestSettlementService(TestCase):
 		self.assertEqual(pe.reference_no, "SUP-REF-001")
 		self.assertEqual(pe.reference_date, "2026-04-02")
 		self.assertEqual(pe.remarks, "供应商退货退款")
+		self.assertEqual(pe.references[0].total_amount, -100)
+		self.assertEqual(pe.references[0].outstanding_amount, -100)
+		self.assertEqual(pe.references[0].allocated_amount, -70)
 		self.assertEqual(result["payment_entry"], "ACC-PAY-SUP-REF-0001")
 		self.assertEqual(result["refund_amount"], 70.0)
 		self.assertEqual(result["return_invoice"], "PINV-RET-0001")

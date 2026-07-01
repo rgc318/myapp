@@ -689,6 +689,7 @@ def create_customer_refund(return_invoice_name: str, refund_amount: float, **kwa
 			pe.mode_of_payment = kwargs.get("mode_of_payment") or pe.mode_of_payment or "Cash"
 			pe.reference_no = kwargs.get("reference_no") or _("客户退款")
 			pe.reference_date = kwargs.get("reference_date") or nowdate()
+			_normalize_return_invoice_payment_reference_amounts(pe, return_invoice, refund_amount)
 			if kwargs.get("remarks"):
 				pe.remarks = kwargs["remarks"]
 
@@ -717,6 +718,30 @@ def create_customer_refund(return_invoice_name: str, refund_amount: float, **kwa
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), _("客户退款登记失败"))
 		raise
+
+
+def _normalize_return_invoice_payment_reference_amounts(payment_entry, return_invoice, allocated_amount: float):
+	outstanding_amount = flt(return_invoice.get("outstanding_amount") or 0)
+	if outstanding_amount >= 0:
+		return
+
+	total_amount = flt(
+		return_invoice.get("rounded_total")
+		or return_invoice.get("grand_total")
+		or return_invoice.get("base_rounded_total")
+		or outstanding_amount
+	)
+	if total_amount > 0:
+		total_amount = -total_amount
+
+	for row in getattr(payment_entry, "references", None) or []:
+		if (
+			getattr(row, "reference_name", None) == return_invoice.name
+			and getattr(row, "reference_doctype", None) in {"Sales Invoice", "Purchase Invoice"}
+		):
+			row.total_amount = total_amount
+			row.outstanding_amount = outstanding_amount
+			row.allocated_amount = -abs(flt(allocated_amount))
 
 
 def create_supplier_refund(return_invoice_name: str, refund_amount: float, **kwargs):
@@ -751,6 +776,7 @@ def create_supplier_refund(return_invoice_name: str, refund_amount: float, **kwa
 			pe.mode_of_payment = kwargs.get("mode_of_payment") or pe.mode_of_payment or "Cash"
 			pe.reference_no = kwargs.get("reference_no") or _("供应商退款")
 			pe.reference_date = kwargs.get("reference_date") or nowdate()
+			_normalize_return_invoice_payment_reference_amounts(pe, return_invoice, refund_amount)
 			if kwargs.get("remarks"):
 				pe.remarks = kwargs["remarks"]
 
