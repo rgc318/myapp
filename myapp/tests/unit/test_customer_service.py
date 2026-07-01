@@ -16,10 +16,12 @@ class TestCustomerService(TestCase):
 	@patch("myapp.services.customer_service._serialize_address_doc")
 	@patch("myapp.services.customer_service._serialize_contact_doc")
 	@patch("myapp.services.customer_service._get_doc_if_exists")
+	@patch("myapp.services.customer_service._safe_doc_field", return_value=True)
 	@patch("myapp.services.customer_service.frappe.get_all")
 	def test_list_customers_v2_returns_summaries_with_meta(
 		self,
 		mock_get_all,
+		_mock_safe_doc_field,
 		mock_get_doc_if_exists,
 		mock_serialize_contact_doc,
 		mock_serialize_address_doc,
@@ -35,6 +37,9 @@ class TestCustomerService(TestCase):
 						"territory": "China",
 						"default_currency": "CNY",
 						"default_price_list": "Standard Selling",
+						"payment_terms": "Net 30",
+						"tax_id": "TAX-CUST-001",
+						"tax_category": "Domestic",
 						"mobile_no": None,
 						"email_id": None,
 						"disabled": 0,
@@ -67,6 +72,8 @@ class TestCustomerService(TestCase):
 		self.assertEqual(len(result["data"]), 1)
 		self.assertEqual(result["data"][0]["name"], "CUST-0001")
 		self.assertEqual(result["data"][0]["display_name"], "Palmer Productions Ltd.")
+		self.assertEqual(result["data"][0]["payment_terms"], "Net 30")
+		self.assertEqual(result["data"][0]["tax_id"], "TAX-CUST-001")
 		self.assertEqual(result["data"][0]["default_contact"]["display_name"], "张三")
 		self.assertEqual(result["meta"]["total"], 2)
 		self.assertEqual(result["meta"]["total_count"], 2)
@@ -86,10 +93,12 @@ class TestCustomerService(TestCase):
 	@patch("myapp.services.customer_service._serialize_address_doc")
 	@patch("myapp.services.customer_service._serialize_contact_doc")
 	@patch("myapp.services.customer_service._get_doc_if_exists")
+	@patch("myapp.services.customer_service._safe_doc_field", return_value=True)
 	@patch("myapp.services.customer_service.frappe.get_doc")
 	def test_get_customer_detail_v2_includes_recent_addresses(
 		self,
 		mock_get_doc,
+		_mock_safe_doc_field,
 		mock_get_doc_if_exists,
 		mock_serialize_contact_doc,
 		mock_serialize_address_doc,
@@ -104,6 +113,9 @@ class TestCustomerService(TestCase):
 				"territory": "China",
 				"default_currency": "CNY",
 				"default_price_list": "Standard Selling",
+				"payment_terms": "Net 30",
+				"tax_id": "TAX-CUST-001",
+				"tax_category": "Domestic",
 				"mobile_no": None,
 				"email_id": None,
 				"disabled": 0,
@@ -123,6 +135,8 @@ class TestCustomerService(TestCase):
 		result = get_customer_detail_v2("CUST-0001")
 
 		self.assertEqual(result["data"]["name"], "CUST-0001")
+		self.assertEqual(result["data"]["default_price_list"], "Standard Selling")
+		self.assertEqual(result["data"]["tax_category"], "Domestic")
 		self.assertEqual(result["data"]["recent_addresses"][0]["name"], "ADDR-001")
 
 	@patch("myapp.services.customer_service.run_idempotent")
@@ -138,10 +152,12 @@ class TestCustomerService(TestCase):
 	@patch("myapp.services.customer_service._upsert_primary_address")
 	@patch("myapp.services.customer_service._upsert_primary_contact")
 	@patch("myapp.services.customer_service._customer_name_exists")
+	@patch("myapp.services.customer_service._safe_doc_field", return_value=True)
 	@patch("myapp.services.customer_service._new_doc")
 	def test_create_customer_v2_creates_customer_contact_and_address(
 		self,
 		mock_new_doc,
+		_mock_safe_doc_field,
 		mock_exists,
 		mock_upsert_primary_contact,
 		mock_upsert_primary_address,
@@ -164,11 +180,19 @@ class TestCustomerService(TestCase):
 		result = create_customer_v2(
 			customer_name="Palmer Productions Ltd.",
 			customer_group="Retail",
+			default_price_list="Standard Selling",
+			payment_terms="Net 30",
+			tax_category="Domestic",
+			tax_id="TAX-CUST-001",
 			default_contact={"display_name": "张三", "phone": "13800000000", "email": "a@test.com"},
 			default_address={"address_line1": "测试路 100 号", "city": "北京", "country": "China"},
 		)
 
 		self.assertEqual(result["status"], "success")
+		self.assertEqual(customer_doc.default_price_list, "Standard Selling")
+		self.assertEqual(customer_doc.payment_terms, "Net 30")
+		self.assertEqual(customer_doc.tax_category, "Domestic")
+		self.assertEqual(customer_doc.tax_id, "TAX-CUST-001")
 		customer_doc.insert.assert_called_once()
 		customer_doc.save.assert_called_once()
 		mock_upsert_primary_contact.assert_called_once()
@@ -179,10 +203,12 @@ class TestCustomerService(TestCase):
 	@patch("myapp.services.customer_service._build_customer_payload")
 	@patch("myapp.services.customer_service._upsert_primary_address")
 	@patch("myapp.services.customer_service._upsert_primary_contact")
+	@patch("myapp.services.customer_service._safe_doc_field", return_value=True)
 	@patch("myapp.services.customer_service.frappe.get_doc")
 	def test_update_customer_v2_updates_customer_and_primary_links(
 		self,
 		mock_get_doc,
+		_mock_safe_doc_field,
 		mock_upsert_primary_contact,
 		mock_upsert_primary_address,
 		mock_build_customer_payload,
@@ -203,12 +229,20 @@ class TestCustomerService(TestCase):
 		result = update_customer_v2(
 			customer="CUST-0001",
 			customer_name="新客户",
+			default_price_list="Standard Selling",
+			payment_terms="Net 30",
+			tax_category="Domestic",
+			tax_id="TAX-CUST-001",
 			default_contact={"name": "CONT-001", "display_name": "李四"},
 			default_address={"name": "ADDR-001", "address_line1": "新地址", "city": "上海", "country": "China"},
 		)
 
 		self.assertEqual(result["status"], "success")
 		self.assertEqual(customer_doc.customer_name, "新客户")
+		self.assertEqual(customer_doc.default_price_list, "Standard Selling")
+		self.assertEqual(customer_doc.payment_terms, "Net 30")
+		self.assertEqual(customer_doc.tax_category, "Domestic")
+		self.assertEqual(customer_doc.tax_id, "TAX-CUST-001")
 		self.assertEqual(customer_doc.save.call_count, 2)
 		mock_upsert_primary_contact.assert_called_once()
 		mock_upsert_primary_address.assert_called_once()

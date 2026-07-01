@@ -1507,6 +1507,9 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `display_name`
 - `customer_group`
 - `default_price_list`
+- `payment_terms`
+- `tax_id`
+- `tax_category`
 - `disabled`
 - `default_contact`
 - `default_address`
@@ -1545,6 +1548,9 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `territory: str | None`
 - `default_currency: str | None`
 - `default_price_list: str | None`
+- `payment_terms: str | None`
+- `tax_id: str | None`
+- `tax_category: str | None`
 - `remarks: str | None`
 - `contact_phone: str | None`
 - `contact_email: str | None`
@@ -3483,6 +3489,10 @@ frappe.call({
 - `supplier_type: str | None`
 - `supplier_group: str | None`
 - `default_currency: str | None`
+- `default_price_list: str | None`
+- `payment_terms: str | None`
+- `tax_id: str | None`
+- `tax_category: str | None`
 - `remarks: str | None`
 - `contact_phone: str | None`
 - `contact_email: str | None`

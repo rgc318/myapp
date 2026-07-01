@@ -46,6 +46,13 @@ def _new_doc(doctype: str):
 	return frappe.new_doc(doctype)
 
 
+def _safe_doc_field(doctype: str, fieldname: str) -> bool:
+	try:
+		return bool(frappe.get_meta(doctype).has_field(fieldname))
+	except Exception:
+		return False
+
+
 def _customer_name_exists(customer_name: str):
 	return bool(frappe.db.exists("Customer", {"customer_name": customer_name}))
 
@@ -191,6 +198,9 @@ def _build_customer_payload(customer_doc, *, include_recent_addresses: bool = Fa
 		"territory": getattr(customer_doc, "territory", None),
 		"default_currency": getattr(customer_doc, "default_currency", None),
 		"default_price_list": getattr(customer_doc, "default_price_list", None),
+		"payment_terms": getattr(customer_doc, "payment_terms", None) if _safe_doc_field("Customer", "payment_terms") else None,
+		"tax_id": getattr(customer_doc, "tax_id", None) if _safe_doc_field("Customer", "tax_id") else None,
+		"tax_category": getattr(customer_doc, "tax_category", None) if _safe_doc_field("Customer", "tax_category") else None,
 		"disabled": cint(getattr(customer_doc, "disabled", 0)),
 		"remarks": getattr(customer_doc, "customer_details", None),
 		"default_contact": default_contact,
@@ -272,6 +282,13 @@ def list_customers_v2(
 		"customer_primary_address",
 		"customer_details",
 	]
+	for optional_field in [
+		"payment_terms",
+		"tax_id",
+		"tax_category",
+	]:
+		if _safe_doc_field("Customer", optional_field):
+			fields.append(optional_field)
 	rows = frappe.get_all(
 		"Customer",
 		filters=filters,
@@ -355,6 +372,12 @@ def create_customer_v2(customer_name: str, **kwargs):
 		customer.territory = _normalize_text(kwargs.get("territory"))
 		customer.default_currency = _normalize_text(kwargs.get("default_currency"))
 		customer.default_price_list = _normalize_text(kwargs.get("default_price_list"))
+		if _safe_doc_field("Customer", "payment_terms"):
+			customer.payment_terms = _normalize_text(kwargs.get("payment_terms"))
+		if _safe_doc_field("Customer", "tax_id"):
+			customer.tax_id = _normalize_text(kwargs.get("tax_id"))
+		if _safe_doc_field("Customer", "tax_category"):
+			customer.tax_category = _normalize_text(kwargs.get("tax_category"))
 		customer.disabled = cint(kwargs.get("disabled", 0))
 		customer.customer_details = kwargs.get("remarks")
 		if _normalize_text(kwargs.get("naming_series")):
@@ -405,6 +428,12 @@ def update_customer_v2(customer: str, **kwargs):
 			customer_doc.default_currency = _normalize_text(kwargs.get("default_currency"))
 		if kwargs.get("default_price_list") is not None:
 			customer_doc.default_price_list = _normalize_text(kwargs.get("default_price_list"))
+		if kwargs.get("payment_terms") is not None and _safe_doc_field("Customer", "payment_terms"):
+			customer_doc.payment_terms = _normalize_text(kwargs.get("payment_terms"))
+		if kwargs.get("tax_id") is not None and _safe_doc_field("Customer", "tax_id"):
+			customer_doc.tax_id = _normalize_text(kwargs.get("tax_id"))
+		if kwargs.get("tax_category") is not None and _safe_doc_field("Customer", "tax_category"):
+			customer_doc.tax_category = _normalize_text(kwargs.get("tax_category"))
 		if kwargs.get("disabled") is not None:
 			customer_doc.disabled = cint(kwargs.get("disabled"))
 		if kwargs.get("remarks") is not None:

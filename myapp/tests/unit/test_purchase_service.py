@@ -142,11 +142,18 @@ class TestPurchaseService(TestCase):
 
 	@patch("myapp.services.purchase_service._build_purchase_order_item")
 	@patch("myapp.services.purchase_service._insert_and_submit")
+	@patch("myapp.services.purchase_service._resolve_purchase_transaction_currency", return_value="CNY")
 	@patch("myapp.services.purchase_service.frappe.new_doc")
 	@patch("myapp.services.purchase_service.nowdate", return_value="2026-03-26")
 	@patch("myapp.services.purchase_service.frappe.defaults.get_user_default")
 	def test_create_purchase_order_builds_and_submits_document(
-		self, mock_get_user_default, mock_nowdate, mock_new_doc, mock_insert_and_submit, mock_build_purchase_order_item
+		self,
+		mock_get_user_default,
+		mock_nowdate,
+		mock_new_doc,
+		_mock_resolve_currency,
+		mock_insert_and_submit,
+		mock_build_purchase_order_item,
 	):
 		mock_get_user_default.return_value = "Test Company"
 		po = MagicMock()
@@ -165,11 +172,12 @@ class TestPurchaseService(TestCase):
 		po.append.assert_called_once()
 
 	@patch("myapp.services.purchase_service.nowdate", return_value="2026-03-26")
+	@patch("myapp.services.purchase_service._resolve_purchase_transaction_currency", return_value="CNY")
 	@patch(
 		"myapp.services.purchase_service.frappe.throw",
 		side_effect=frappe.ValidationError("无法创建空采购订单，请至少选择一个商品。"),
 	)
-	def test_create_purchase_order_rejects_empty_items(self, mock_throw, mock_nowdate):
+	def test_create_purchase_order_rejects_empty_items(self, mock_throw, _mock_resolve_currency, mock_nowdate):
 		with self.assertRaises(frappe.ValidationError):
 			create_purchase_order(supplier="Test Supplier", items=[], company="Test Company")
 		mock_throw.assert_called_once()
@@ -1302,12 +1310,14 @@ class TestPurchaseService(TestCase):
 	@patch("myapp.services.purchase_service._get_linked_parent_names")
 	@patch("myapp.services.purchase_service._get_doc_if_exists")
 	@patch("myapp.services.purchase_service._get_purchase_default_warehouse_for_company")
+	@patch("myapp.services.purchase_service._resolve_purchase_transaction_currency", return_value="CNY")
 	@patch("myapp.services.purchase_service.frappe.defaults.get_user_default")
 	@patch("myapp.services.purchase_service.frappe.get_doc")
 	def test_get_supplier_purchase_context_returns_defaults(
 		self,
 		mock_get_doc,
 		mock_user_default,
+		_mock_resolve_currency,
 		mock_default_warehouse,
 		mock_get_doc_if_exists,
 		mock_get_linked_parent_names,
@@ -1343,10 +1353,12 @@ class TestPurchaseService(TestCase):
 	@patch("myapp.services.purchase_service._serialize_address_doc")
 	@patch("myapp.services.purchase_service._serialize_contact_doc")
 	@patch("myapp.services.purchase_service._get_doc_if_exists")
+	@patch("myapp.services.purchase_service._safe_doc_field", return_value=True)
 	@patch("myapp.services.purchase_service.frappe.get_all")
 	def test_list_suppliers_v2_returns_summaries_with_meta(
 		self,
 		mock_get_all,
+		_mock_safe_doc_field,
 		mock_get_doc_if_exists,
 		mock_serialize_contact_doc,
 		mock_serialize_address_doc,
@@ -1360,6 +1372,10 @@ class TestPurchaseService(TestCase):
 						"supplier_type": "Company",
 						"supplier_group": "Raw",
 						"default_currency": "CNY",
+						"default_price_list": "Standard Buying",
+						"payment_terms": "Net 15",
+						"tax_id": "TAX-SUP-001",
+						"tax_category": "Domestic",
 						"disabled": 0,
 						"modified": "2026-03-26 10:00:00",
 						"creation": "2026-03-20 10:00:00",
@@ -1385,6 +1401,10 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["status"], "success")
 		self.assertEqual(len(result["data"]), 1)
 		self.assertEqual(result["data"][0]["name"], "SUP-001")
+		self.assertEqual(result["data"][0]["default_price_list"], "Standard Buying")
+		self.assertEqual(result["data"][0]["payment_terms"], "Net 15")
+		self.assertEqual(result["data"][0]["tax_id"], "TAX-SUP-001")
+		self.assertEqual(result["data"][0]["tax_category"], "Domestic")
 		self.assertEqual(result["meta"]["total"], 2)
 		self.assertEqual(result["meta"]["total_count"], 2)
 		self.assertEqual(result["pagination"]["total_count"], 2)
@@ -1435,11 +1455,19 @@ class TestPurchaseService(TestCase):
 		result = create_supplier_v2(
 			supplier_name="MA Inc.",
 			supplier_group="Raw",
+			default_price_list="Standard Buying",
+			payment_terms="Net 15",
+			tax_category="Domestic",
+			tax_id="TAX-SUP-001",
 			default_contact={"display_name": "张三", "phone": "13800000000"},
 			default_address={"address_line1": "测试路 100 号", "city": "上海", "country": "China"},
 		)
 
 		self.assertEqual(result["status"], "success")
+		self.assertEqual(supplier_doc.default_price_list, "Standard Buying")
+		self.assertEqual(supplier_doc.payment_terms, "Net 15")
+		self.assertEqual(supplier_doc.tax_category, "Domestic")
+		self.assertEqual(supplier_doc.tax_id, "TAX-SUP-001")
 		supplier_doc.insert.assert_called_once()
 		supplier_doc.save.assert_called_once()
 		mock_upsert_contact.assert_called_once()
@@ -1474,12 +1502,20 @@ class TestPurchaseService(TestCase):
 		result = update_supplier_v2(
 			supplier="SUP-001",
 			supplier_name="新供应商",
+			default_price_list="Standard Buying",
+			payment_terms="Net 15",
+			tax_category="Domestic",
+			tax_id="TAX-SUP-001",
 			default_contact={"name": "CONT-001", "display_name": "李四"},
 			default_address={"name": "ADDR-001", "address_line1": "新地址", "city": "杭州", "country": "China"},
 		)
 
 		self.assertEqual(result["status"], "success")
 		self.assertEqual(supplier_doc.supplier_name, "新供应商")
+		self.assertEqual(supplier_doc.default_price_list, "Standard Buying")
+		self.assertEqual(supplier_doc.payment_terms, "Net 15")
+		self.assertEqual(supplier_doc.tax_category, "Domestic")
+		self.assertEqual(supplier_doc.tax_id, "TAX-SUP-001")
 		self.assertEqual(supplier_doc.save.call_count, 2)
 		mock_upsert_contact.assert_called_once()
 		mock_upsert_address.assert_called_once()

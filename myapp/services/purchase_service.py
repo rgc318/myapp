@@ -1454,6 +1454,16 @@ def _build_supplier_payload(supplier_doc, *, include_recent_addresses: bool = Fa
 		"supplier_type": getattr(supplier_doc, "supplier_type", None),
 		"supplier_group": getattr(supplier_doc, "supplier_group", None),
 		"default_currency": getattr(supplier_doc, "default_currency", None),
+		"default_price_list": getattr(supplier_doc, "default_price_list", None)
+		if _safe_doc_field("Supplier", "default_price_list")
+		else None,
+		"payment_terms": getattr(supplier_doc, "payment_terms", None)
+		if _safe_doc_field("Supplier", "payment_terms")
+		else None,
+		"tax_id": getattr(supplier_doc, "tax_id", None) if _safe_doc_field("Supplier", "tax_id") else None,
+		"tax_category": getattr(supplier_doc, "tax_category", None)
+		if _safe_doc_field("Supplier", "tax_category")
+		else None,
 		"disabled": cint(getattr(supplier_doc, "disabled", 0)),
 		"remarks": getattr(supplier_doc, "supplier_details", None) if _safe_doc_field("Supplier", "supplier_details") else None,
 		"default_contact": default_contact,
@@ -1616,12 +1626,16 @@ def list_suppliers_v2(
 	fields = ["name", "supplier_name", "supplier_type", "supplier_group", "modified", "creation"]
 	for optional_field in [
 		"default_currency",
+		"default_price_list",
 		"disabled",
+		"payment_terms",
 		"supplier_primary_contact",
 		"supplier_primary_address",
 		"mobile_no",
 		"email_id",
 		"supplier_details",
+		"tax_id",
+		"tax_category",
 	]:
 		if _safe_doc_field("Supplier", optional_field):
 			fields.append(optional_field)
@@ -1709,6 +1723,14 @@ def create_supplier_v2(supplier_name: str, **kwargs):
 		supplier.supplier_group = _normalize_text(kwargs.get("supplier_group"))
 		if _safe_doc_field("Supplier", "default_currency"):
 			supplier.default_currency = _normalize_text(kwargs.get("default_currency"))
+		if _safe_doc_field("Supplier", "default_price_list"):
+			supplier.default_price_list = _normalize_text(kwargs.get("default_price_list"))
+		if _safe_doc_field("Supplier", "payment_terms"):
+			supplier.payment_terms = _normalize_text(kwargs.get("payment_terms"))
+		if _safe_doc_field("Supplier", "tax_id"):
+			supplier.tax_id = _normalize_text(kwargs.get("tax_id"))
+		if _safe_doc_field("Supplier", "tax_category"):
+			supplier.tax_category = _normalize_text(kwargs.get("tax_category"))
 		if _safe_doc_field("Supplier", "disabled"):
 			supplier.disabled = cint(kwargs.get("disabled", 0))
 		if _safe_doc_field("Supplier", "mobile_no"):
@@ -1761,6 +1783,14 @@ def update_supplier_v2(supplier: str, **kwargs):
 			supplier_doc.supplier_group = _normalize_text(kwargs.get("supplier_group"))
 		if kwargs.get("default_currency") is not None and _safe_doc_field("Supplier", "default_currency"):
 			supplier_doc.default_currency = _normalize_text(kwargs.get("default_currency"))
+		if kwargs.get("default_price_list") is not None and _safe_doc_field("Supplier", "default_price_list"):
+			supplier_doc.default_price_list = _normalize_text(kwargs.get("default_price_list"))
+		if kwargs.get("payment_terms") is not None and _safe_doc_field("Supplier", "payment_terms"):
+			supplier_doc.payment_terms = _normalize_text(kwargs.get("payment_terms"))
+		if kwargs.get("tax_id") is not None and _safe_doc_field("Supplier", "tax_id"):
+			supplier_doc.tax_id = _normalize_text(kwargs.get("tax_id"))
+		if kwargs.get("tax_category") is not None and _safe_doc_field("Supplier", "tax_category"):
+			supplier_doc.tax_category = _normalize_text(kwargs.get("tax_category"))
 		if kwargs.get("disabled") is not None and _safe_doc_field("Supplier", "disabled"):
 			supplier_doc.disabled = cint(kwargs.get("disabled"))
 		if kwargs.get("mobile_no") is not None and _safe_doc_field("Supplier", "mobile_no"):
