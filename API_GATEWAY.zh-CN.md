@@ -3250,6 +3250,12 @@ frappe.call({
   - `references`
   - `meta`
   - `items`
+- `items[]` 数量字段口径：
+  - `source_qty`：来源单据行原始数量的绝对值
+  - `returned_qty`：已通过提交状态退货单冲回的数量
+  - `max_returnable_qty`：当前剩余可退数量，等于 `source_qty - returned_qty`
+  - `default_return_qty`：页面默认本次退货数量，等于当前剩余可退数量
+- 当所有明细 `max_returnable_qty <= 0` 时，`actions.can_process_return = false`，前端应禁止继续提交退货。
 
 说明：
 

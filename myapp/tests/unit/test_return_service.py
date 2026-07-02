@@ -7,8 +7,9 @@ from myapp.services.return_service import get_return_source_context_v2
 
 
 class TestReturnService(TestCase):
+	@patch("myapp.services.return_service.frappe.get_all", return_value=[])
 	@patch("myapp.services.return_service._get_detail_loader")
-	def test_get_return_source_context_v2_maps_sales_invoice(self, mock_get_detail_loader):
+	def test_get_return_source_context_v2_maps_sales_invoice(self, mock_get_detail_loader, mock_get_all):
 		mock_get_detail_loader.return_value = lambda **kwargs: {
 			"status": "success",
 			"data": {
@@ -54,8 +55,47 @@ class TestReturnService(TestCase):
 		self.assertEqual(result["data"]["actions"]["detail_submit_key"], "sales_invoice_item")
 		self.assertEqual(result["data"]["items"][0]["detail_id"], "SII-001")
 		self.assertEqual(result["data"]["items"][0]["max_returnable_qty"], 2.0)
+		self.assertEqual(result["data"]["items"][0]["returned_qty"], 0)
 		self.assertEqual(result["data"]["items"][0]["uom_display"], "件")
 		self.assertEqual(result["data"]["amounts"]["primary_amount"], 120.0)
+		mock_get_all.assert_called_once()
+
+	@patch("myapp.services.return_service.frappe.get_all")
+	@patch("myapp.services.return_service._get_detail_loader")
+	def test_get_return_source_context_v2_accounts_for_existing_sales_returns(self, mock_get_detail_loader, mock_get_all):
+		mock_get_detail_loader.return_value = lambda **kwargs: {
+			"status": "success",
+			"data": {
+				"sales_invoice_name": "ACC-SINV-0001",
+				"document_status": "submitted",
+				"customer": {"name": "CUST-001", "display_name": "Test Customer"},
+				"amounts": {"invoice_amount_estimate": 120},
+				"actions": {"can_cancel_sales_invoice": True},
+				"items": [
+					{
+						"sales_invoice_item": "SII-001",
+						"item_code": "ITEM-001",
+						"item_name": "Item 1",
+						"qty": 2,
+						"rate": 60,
+						"amount": 120,
+					}
+				],
+				"meta": {"company": "Test Company", "currency": "CNY"},
+			},
+		}
+		mock_get_all.side_effect = [
+			["RET-SINV-0001"],
+			[{"sales_invoice_item": "SII-001", "qty": -2}],
+		]
+
+		result = get_return_source_context_v2("Sales Invoice", "ACC-SINV-0001")
+
+		self.assertFalse(result["data"]["actions"]["can_process_return"])
+		self.assertEqual(result["data"]["items"][0]["source_qty"], 2.0)
+		self.assertEqual(result["data"]["items"][0]["returned_qty"], 2.0)
+		self.assertEqual(result["data"]["items"][0]["max_returnable_qty"], 0.0)
+		self.assertEqual(result["data"]["items"][0]["default_return_qty"], 0.0)
 
 	@patch("myapp.services.return_service._get_detail_loader")
 	def test_get_return_source_context_v2_maps_purchase_receipt(self, mock_get_detail_loader):

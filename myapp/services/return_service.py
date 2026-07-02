@@ -79,13 +79,50 @@ def _map_party(detail_data: dict, business_type: str):
     }
 
 
-def _map_item_rows(items: list[dict], *, detail_name_key: str):
+def _collect_returned_qty_by_detail(source_doctype: str, source_name: str, detail_ids: list[str]):
+    if not detail_ids:
+        return {}
+
+    if source_doctype == "Sales Invoice":
+        return_invoices = frappe.get_all(
+            "Sales Invoice",
+            filters={"docstatus": 1, "is_return": 1, "return_against": source_name},
+            pluck="name",
+        )
+        if not return_invoices:
+            return {}
+
+        returned_rows = frappe.get_all(
+            "Sales Invoice Item",
+            filters={
+                "parent": ["in", return_invoices],
+                "sales_invoice_item": ["in", detail_ids],
+            },
+            fields=["sales_invoice_item", "qty"],
+        )
+        returned_qty_by_detail = {}
+        for row in returned_rows:
+            detail_id = row.get("sales_invoice_item")
+            if not detail_id:
+                continue
+            returned_qty_by_detail[detail_id] = returned_qty_by_detail.get(detail_id, 0.0) + abs(flt(row.get("qty") or 0))
+        return returned_qty_by_detail
+
+    return {}
+
+
+def _map_item_rows(items: list[dict], *, source_doctype: str, source_name: str, detail_name_key: str):
+    detail_ids = [item.get(detail_name_key) for item in items or [] if item.get(detail_name_key)]
+    returned_qty_by_detail = _collect_returned_qty_by_detail(source_doctype, source_name, detail_ids)
     mapped_rows = []
     for item in items or []:
+        detail_id = item.get(detail_name_key)
         source_qty = abs(flt(item.get("qty") or 0))
+        returned_qty = min(returned_qty_by_detail.get(detail_id, 0.0), source_qty)
+        max_returnable_qty = max(source_qty - returned_qty, 0.0)
         mapped_rows.append(
             {
-                "detail_id": item.get(detail_name_key),
+                "detail_id": detail_id,
                 "detail_submit_key": detail_name_key,
                 "item_code": item.get("item_code"),
                 "item_name": item.get("item_name"),
@@ -96,13 +133,17 @@ def _map_item_rows(items: list[dict], *, detail_name_key: str):
                 "rate": flt(item.get("rate") or 0),
                 "amount": flt(item.get("amount") or 0),
                 "source_qty": source_qty,
-                "returned_qty": 0,
-                "max_returnable_qty": source_qty,
-                "default_return_qty": source_qty,
+                "returned_qty": returned_qty,
+                "max_returnable_qty": max_returnable_qty,
+                "default_return_qty": max_returnable_qty,
                 "source_row": item,
             }
         )
     return mapped_rows
+
+
+def _has_returnable_item(item_rows: list[dict]):
+    return any(flt(row.get("max_returnable_qty") or 0) > 0 for row in item_rows or [])
 
 
 def _collect_return_references(return_doc):
@@ -209,6 +250,13 @@ def get_return_source_context_v2(source_doctype: str, source_name: str):
     detail_result = detail_loader(**{source_meta["loader_kwarg"]: source_name})
     detail_data = detail_result.get("data") or {}
     business_type = source_meta["business_type"]
+    item_rows = _map_item_rows(
+        detail_data.get("items") or [],
+        source_doctype=source_doctype,
+        source_name=source_name,
+        detail_name_key=source_meta["detail_name_key"],
+    )
+    can_process_return = _resolve_can_process_return(detail_data, source_doctype) and _has_returnable_item(item_rows)
 
     return {
         "status": "success",
@@ -224,7 +272,7 @@ def get_return_source_context_v2(source_doctype: str, source_name: str):
                 "primary_amount": _resolve_primary_amount(detail_data, source_doctype),
             },
             "actions": {
-                "can_process_return": _resolve_can_process_return(detail_data, source_doctype),
+                "can_process_return": can_process_return,
                 "supports_partial_return": True,
                 "detail_submit_key": source_meta["detail_submit_key"],
             },
@@ -234,10 +282,7 @@ def get_return_source_context_v2(source_doctype: str, source_name: str):
                 "company": (detail_data.get("meta") or {}).get("company"),
                 "currency": (detail_data.get("meta") or {}).get("currency"),
             },
-            "items": _map_item_rows(
-                detail_data.get("items") or [],
-                detail_name_key=source_meta["detail_name_key"],
-            ),
+            "items": item_rows,
         },
         "message": _("退货来源单据 {0} 上下文获取成功。").format(source_name),
     }
