@@ -1696,7 +1696,16 @@ def _collect_sales_order_reference_names(order_name: str):
 		filters={"sales_order": order_name, "docstatus": 1},
 		fields=["parent"],
 	)
-	invoice_names = sorted({row.parent for row in invoice_item_rows if getattr(row, "parent", None)})
+	invoice_parent_names = sorted({row.parent for row in invoice_item_rows if getattr(row, "parent", None)})
+	invoice_names = []
+	if invoice_parent_names:
+		invoice_rows = frappe.get_all(
+			"Sales Invoice",
+			filters={"name": ["in", invoice_parent_names], "docstatus": 1, "is_return": 0},
+			fields=["name"],
+			limit_page_length=0,
+		)
+		invoice_names = sorted({row.name for row in invoice_rows if getattr(row, "name", None)})
 	return delivery_note_names, invoice_names
 
 
@@ -1756,7 +1765,7 @@ def _build_sales_order_timeline(so, delivery_note_names: list[str], invoice_name
 	if invoice_names:
 		invoice_rows = frappe.get_all(
 			"Sales Invoice",
-			filters={"name": ["in", invoice_names]},
+			filters={"name": ["in", invoice_names], "is_return": 0},
 			fields=[
 				"name",
 				"docstatus",
@@ -1772,6 +1781,8 @@ def _build_sales_order_timeline(so, delivery_note_names: list[str], invoice_name
 			limit_page_length=0,
 		)
 		for row in invoice_rows:
+			if cint(getattr(row, "is_return", 0)):
+				continue
 			events.append(
 				{
 					"key": f"sales_invoice:{row.name}",

@@ -2459,6 +2459,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `items[].image`
 - `references.delivery_notes`
 - `references.sales_invoices`
+  - 仅包含正向销售发票，即 `Sales Invoice.is_return = 0`
+  - 销售退货发票不应混入该列表，应通过 `timeline[].type = "sales_return"`、退货 / 退款核对入口和相关退款历史展示
 - `timeline[].type`
 - `timeline[].title`
 - `timeline[].doctype`

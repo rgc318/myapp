@@ -7,6 +7,7 @@ from myapp.services.order_service import (
 	_build_action_flags,
 	_build_sales_order_timeline,
 	_collect_sales_invoice_payment_entries,
+	_collect_sales_order_reference_names,
 	_build_sales_order_summary_rows,
 	_serialize_delivery_note_items,
 	_serialize_order_items,
@@ -1376,6 +1377,7 @@ class TestOrderService(TestCase):
 		mock_get_all.side_effect = [
 			[frappe._dict({"parent": "DN-0001"})],
 			[frappe._dict({"parent": "SINV-0001"})],
+			[frappe._dict({"name": "SINV-0001"})],
 			[
 				frappe._dict(
 					{
@@ -1487,6 +1489,23 @@ class TestOrderService(TestCase):
 		mock_build_sales_order_timeline.assert_called_once_with(so, ["DN-0001"], ["SINV-0001"])
 
 	@patch("myapp.services.order_service.frappe.get_all")
+	def test_collect_sales_order_reference_names_excludes_return_invoices(self, mock_get_all):
+		mock_get_all.side_effect = [
+			[frappe._dict({"parent": "DN-0001"})],
+			[
+				frappe._dict({"parent": "SINV-0001"}),
+				frappe._dict({"parent": "SINV-RET-0001"}),
+			],
+			[frappe._dict({"name": "SINV-0001"})],
+		]
+
+		delivery_notes, sales_invoices = _collect_sales_order_reference_names("SO-0001")
+
+		self.assertEqual(delivery_notes, ["DN-0001"])
+		self.assertEqual(sales_invoices, ["SINV-0001"])
+		self.assertEqual(mock_get_all.call_args_list[2].kwargs["filters"]["is_return"], 0)
+
+	@patch("myapp.services.order_service.frappe.get_all")
 	def test_build_sales_order_timeline_includes_downstream_documents(self, mock_get_all):
 		so = frappe._dict(
 			{
@@ -1517,9 +1536,22 @@ class TestOrderService(TestCase):
 					"posting_date": "2026-03-19",
 					"grand_total": 200,
 					"outstanding_amount": 0,
+					"is_return": 0,
 					"modified": "2026-03-19 09:00:00",
 				}
-			)
+			),
+			frappe._dict(
+				{
+					"name": "SINV-RET-0001",
+					"docstatus": 1,
+					"posting_date": "2026-03-21",
+					"grand_total": -80,
+					"outstanding_amount": -20,
+					"is_return": 1,
+					"return_against": "SINV-0001",
+					"modified": "2026-03-21 09:00:00",
+				}
+			),
 		]
 		return_invoice_rows = [
 			frappe._dict(
