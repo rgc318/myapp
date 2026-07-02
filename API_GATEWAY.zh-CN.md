@@ -2637,11 +2637,14 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 返回销售发票详情聚合数据
 - 适合移动端发票详情页直接渲染
 - 返回来源销售订单与来源发货单引用
+- 返回来源销售发票关联的已提交退货发票引用
 - 返回结算摘要、最新收款结果与商品明细
+- 返回是否允许继续登记客户收款，以及不可登记时的原因提示
 - 返回 `payment.entries[]` 收款历史明细，用于发票详情和退款核对页展示分次收款、差额核销和多收保留
 - 详情侧的付款汇总字段当前与销售订单详情复用同一组写回辅助逻辑
 - 用于避免订单详情与发票详情分别重复装配 `latest_payment_*` 字段
 - 单票“最新收款结果”当前也会委托到工作台同源的批量付款摘要底座上计算
+- 已被退货发票全额冲回的来源销售发票应返回 `actions.can_record_payment = false`，即使底层发票重新出现未收金额，也不能通过原发票继续登记客户收款；如需重新销售，应重新发货并开票
 
 当前返回重点字段：
 
@@ -2671,7 +2674,10 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `payment.entries[].reference_date`
 - `references.sales_orders`
 - `references.delivery_notes`
+- `references.return_invoices`
 - `references.latest_payment_entry`
+- `actions.can_record_payment`
+- `actions.record_payment_hint`
 - `items[].item_code`
 - `items[].qty`
 - `items[].rate`

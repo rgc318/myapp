@@ -1151,9 +1151,25 @@ def _build_delivery_note_action_flags(*, docstatus: int, sales_invoices: list[st
 	}
 
 
-def _build_sales_invoice_action_flags(*, docstatus: int, latest_payment_entry: str | None, paid_amount: float):
+def _build_sales_invoice_action_flags(
+	*,
+	docstatus: int,
+	latest_payment_entry: str | None,
+	paid_amount: float,
+	outstanding_amount: float,
+	return_summary: dict | None = None,
+):
 	is_submitted = cint(docstatus) == 1
 	has_payment = bool(latest_payment_entry) or flt(paid_amount) > 0
+	return_summary = return_summary or {}
+	is_fully_returned = bool(return_summary.get("is_fully_returned"))
+	can_record_payment = is_submitted and flt(outstanding_amount or 0) > 0 and not is_fully_returned
+	record_payment_hint = None
+	if is_submitted and is_fully_returned:
+		record_payment_hint = _("来源销售发票已被退货发票全额冲回，不能继续登记客户收款；如需重新销售，请重新发货并开票。")
+	elif is_submitted and flt(outstanding_amount or 0) <= 0:
+		record_payment_hint = _("当前销售发票没有可登记的未收金额。")
+
 	return {
 		"can_cancel_sales_invoice": is_submitted,
 		"cancel_sales_invoice_hint": (
@@ -1161,6 +1177,29 @@ def _build_sales_invoice_action_flags(*, docstatus: int, latest_payment_entry: s
 			if is_submitted and has_payment
 			else None
 		),
+		"can_record_payment": can_record_payment,
+		"record_payment_hint": record_payment_hint,
+	}
+
+
+def _get_sales_invoice_return_summary(sales_invoice_name: str, invoice_amount: float):
+	return_rows = frappe.get_all(
+		"Sales Invoice",
+		filters={
+			"return_against": sales_invoice_name,
+			"is_return": 1,
+			"docstatus": 1,
+		},
+		fields=["name", "rounded_total", "grand_total"],
+		limit_page_length=0,
+	)
+	return_invoice_names = [row.get("name") for row in return_rows if row.get("name")]
+	returned_amount = sum(abs(flt(row.get("rounded_total") or row.get("grand_total") or 0)) for row in return_rows)
+	normalized_invoice_amount = abs(flt(invoice_amount or 0))
+	return {
+		"return_invoices": return_invoice_names,
+		"returned_amount": returned_amount,
+		"is_fully_returned": normalized_invoice_amount > 0 and returned_amount + 0.0001 >= normalized_invoice_amount,
 	}
 
 
@@ -2127,6 +2166,8 @@ def get_sales_invoice_detail(sales_invoice_name: str):
 		si = frappe.get_doc("Sales Invoice", sales_invoice_name)
 		invoice_items = list(si.get("items") or [])
 		references = _build_sales_invoice_references(invoice_items)
+		invoice_amount = flt(si.get("rounded_total") or si.get("grand_total") or 0)
+		return_summary = _get_sales_invoice_return_summary(si.name, invoice_amount) if not cint(si.get("is_return")) else {}
 		payment = _build_payment_summary([si])
 		latest_payment_entry = _get_latest_payment_entry_summary([si.name])
 		_apply_sales_latest_payment_metrics(payment, latest_payment_entry)
@@ -2140,7 +2181,7 @@ def get_sales_invoice_detail(sales_invoice_name: str):
 				"customer": _build_customer_snapshot_for_doc(si),
 				"shipping": _build_shipping_snapshot_for_doc(si),
 				"amounts": {
-					"invoice_amount_estimate": flt(si.get("rounded_total") or si.get("grand_total") or 0),
+					"invoice_amount_estimate": invoice_amount,
 					"receivable_amount": payment["receivable_amount"],
 					"paid_amount": payment["paid_amount"],
 					"outstanding_amount": payment["outstanding_amount"],
@@ -2150,9 +2191,12 @@ def get_sales_invoice_detail(sales_invoice_name: str):
 					docstatus=si.docstatus,
 					latest_payment_entry=latest_payment_entry.get("payment_entry"),
 					paid_amount=flt(payment.get("paid_amount") or 0),
+					outstanding_amount=flt(payment.get("outstanding_amount") or 0),
+					return_summary=return_summary,
 				),
 				"references": {
 					**references,
+					"return_invoices": return_summary.get("return_invoices") or [],
 					"latest_payment_entry": latest_payment_entry.get("payment_entry"),
 				},
 				"items": _serialize_sales_invoice_items(invoice_items),

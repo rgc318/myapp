@@ -132,6 +132,7 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 
 	try:
 		def _update_payment_status():
+			_validate_payment_reference_can_receive(reference_doctype, reference_name)
 			reference_outstanding = flt(frappe.db.get_value(reference_doctype, reference_name, "outstanding_amount"))
 			if reference_outstanding <= 0:
 				frappe.throw(_("单据 {0} 当前没有可核销的未收金额。").format(reference_name))
@@ -189,6 +190,49 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), _("收款录入失败"))
 		raise
+
+
+def _get_sales_invoice_full_return_hint(reference_doctype: str, reference_name: str):
+	if reference_doctype != "Sales Invoice":
+		return None
+
+	invoice = frappe.db.get_value(
+		"Sales Invoice",
+		reference_name,
+		["name", "is_return", "docstatus", "rounded_total", "grand_total"],
+		as_dict=True,
+	)
+	if not isinstance(invoice, dict):
+		return None
+	if cint(invoice.get("is_return")):
+		return _("销售退货发票应通过客户退款流程处理，不能登记客户收款。")
+	if cint(invoice.get("docstatus")) != 1:
+		return None
+
+	invoice_amount = abs(flt(invoice.get("rounded_total") or invoice.get("grand_total") or 0))
+	if invoice_amount <= 0:
+		return None
+
+	return_rows = frappe.get_all(
+		"Sales Invoice",
+		filters={
+			"return_against": reference_name,
+			"is_return": 1,
+			"docstatus": 1,
+		},
+		fields=["name", "rounded_total", "grand_total"],
+		limit_page_length=0,
+	)
+	returned_amount = sum(abs(flt(row.get("rounded_total") or row.get("grand_total") or 0)) for row in return_rows)
+	if returned_amount + 0.0001 >= invoice_amount:
+		return _("来源销售发票已被退货发票全额冲回，不能继续登记客户收款；如需重新销售，请重新发货并开票。")
+	return None
+
+
+def _validate_payment_reference_can_receive(reference_doctype: str, reference_name: str):
+	hint = _get_sales_invoice_full_return_hint(reference_doctype, reference_name)
+	if hint:
+		frappe.throw(hint)
 
 
 def cancel_payment_entry(payment_entry_name: str, **kwargs):

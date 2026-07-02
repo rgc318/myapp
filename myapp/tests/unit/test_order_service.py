@@ -299,6 +299,7 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["sales_invoices"], ["ACC-SINV-0009"])
 
 	@patch("myapp.services.order_service._serialize_sales_invoice_items")
+	@patch("myapp.services.order_service._get_sales_invoice_return_summary")
 	@patch("myapp.services.order_service._build_sales_invoice_references")
 	@patch("myapp.services.order_service._collect_sales_invoice_payment_entries")
 	@patch("myapp.services.order_service._get_latest_payment_entry_summary")
@@ -309,6 +310,7 @@ class TestOrderService(TestCase):
 		mock_get_latest_payment_entry_summary,
 		mock_collect_sales_invoice_payment_entries,
 		mock_build_sales_invoice_references,
+		mock_get_sales_invoice_return_summary,
 		mock_serialize_sales_invoice_items,
 	):
 		sales_invoice = frappe._dict(
@@ -324,7 +326,7 @@ class TestOrderService(TestCase):
 				"remarks": "测试开票",
 				"rounded_total": 2700,
 				"grand_total": 2700,
-				"outstanding_amount": 0,
+				"outstanding_amount": 100,
 				"contact_person": "CONT-001",
 				"contact_display": "张三",
 				"contact_mobile": "13800138000",
@@ -354,6 +356,11 @@ class TestOrderService(TestCase):
 		mock_build_sales_invoice_references.return_value = {
 			"sales_orders": ["SO-0001"],
 			"delivery_notes": ["MAT-DN-0001"],
+		}
+		mock_get_sales_invoice_return_summary.return_value = {
+			"return_invoices": [],
+			"returned_amount": 0,
+			"is_fully_returned": False,
 		}
 		mock_serialize_sales_invoice_items.return_value = [
 			{
@@ -395,8 +402,56 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"]["payment"]["entries"][0]["payment_entry"], "ACC-PAY-0001")
 		self.assertEqual(result["data"]["references"]["sales_orders"], ["SO-0001"])
 		self.assertEqual(result["data"]["references"]["delivery_notes"], ["MAT-DN-0001"])
+		self.assertTrue(result["data"]["actions"]["can_record_payment"])
 		self.assertEqual(result["data"]["items"][0]["item_code"], "SKU010")
 		self.assertEqual(result["data"]["items"][0]["specification"], "500ml")
+
+	@patch("myapp.services.order_service._serialize_sales_invoice_items", return_value=[])
+	@patch("myapp.services.order_service._get_sales_invoice_return_summary")
+	@patch("myapp.services.order_service._build_sales_invoice_references", return_value={"sales_orders": [], "delivery_notes": []})
+	@patch("myapp.services.order_service._collect_sales_invoice_payment_entries", return_value=[])
+	@patch("myapp.services.order_service._get_latest_payment_entry_summary")
+	@patch("myapp.services.order_service.frappe.get_doc")
+	def test_get_sales_invoice_detail_blocks_payment_for_fully_returned_source_invoice(
+		self,
+		mock_get_doc,
+		mock_get_latest_payment_entry_summary,
+		_mock_collect_sales_invoice_payment_entries,
+		_mock_build_sales_invoice_references,
+		mock_get_sales_invoice_return_summary,
+		_mock_serialize_sales_invoice_items,
+	):
+		mock_get_doc.return_value = frappe._dict(
+			{
+				"name": "ACC-SINV-0002",
+				"docstatus": 1,
+				"is_return": 0,
+				"customer": "Test Customer",
+				"company": "rgc (Demo)",
+				"currency": "CNY",
+				"rounded_total": 1000,
+				"grand_total": 1000,
+				"outstanding_amount": 1000,
+				"items": [],
+			}
+		)
+		mock_get_latest_payment_entry_summary.return_value = {
+			"payment_entry": None,
+			"total_actual_paid_amount": 0,
+			"total_writeoff_amount": 0,
+			"unallocated_amount": 0,
+		}
+		mock_get_sales_invoice_return_summary.return_value = {
+			"return_invoices": ["ACC-SINV-RET-0002"],
+			"returned_amount": 1000,
+			"is_fully_returned": True,
+		}
+
+		result = get_sales_invoice_detail("ACC-SINV-0002")
+
+		self.assertFalse(result["data"]["actions"]["can_record_payment"])
+		self.assertIn("全额冲回", result["data"]["actions"]["record_payment_hint"])
+		self.assertEqual(result["data"]["references"]["return_invoices"], ["ACC-SINV-RET-0002"])
 
 	@patch("myapp.services.order_service.frappe.get_all")
 	def test_collect_sales_invoice_payment_entries_returns_submitted_payments(self, mock_get_all):

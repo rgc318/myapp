@@ -235,6 +235,46 @@ class TestSettlementService(TestCase):
 		self.assertEqual(result["payment_entry"], "ACC-PAY-0003")
 		self.assertEqual(result["unallocated_amount"], 100)
 
+	@patch("myapp.services.settlement_service.frappe.throw")
+	@patch("myapp.services.settlement_service.frappe.get_all")
+	def test_update_payment_status_rejects_fully_returned_source_invoice(
+		self,
+		mock_get_all,
+		mock_throw,
+	):
+		mock_throw.side_effect = frappe.ValidationError
+		mock_get_all.return_value = [
+			frappe._dict(
+				{
+					"name": "SINV-RET-0001",
+					"rounded_total": -1000,
+					"grand_total": -1000,
+				}
+			)
+		]
+
+		with patch.object(
+			frappe,
+			"db",
+			MagicMock(
+				get_value=MagicMock(
+					return_value=frappe._dict(
+						{
+							"name": "SINV-0001",
+							"is_return": 0,
+							"docstatus": 1,
+							"rounded_total": 1000,
+							"grand_total": 1000,
+						}
+					)
+				)
+			),
+		):
+			with self.assertRaises(frappe.ValidationError):
+				update_payment_status("Sales Invoice", "SINV-0001", 100)
+
+		self.assertIn("全额冲回", str(mock_throw.call_args[0][0]))
+
 	@patch("myapp.services.settlement_service.run_idempotent")
 	def test_update_payment_status_returns_cached_result_for_same_request_id(self, mock_run_idempotent):
 		mock_run_idempotent.return_value = {
