@@ -1162,7 +1162,14 @@ def _build_sales_invoice_action_flags(
 	is_submitted = cint(docstatus) == 1
 	has_payment = bool(latest_payment_entry) or flt(paid_amount) > 0
 	return_summary = return_summary or {}
+	return_invoices = return_summary.get("return_invoices") or []
 	is_fully_returned = bool(return_summary.get("is_fully_returned"))
+	can_cancel_sales_invoice = is_submitted and not return_invoices
+	cancel_sales_invoice_hint = None
+	if is_submitted and return_invoices:
+		cancel_sales_invoice_hint = _("当前发票已关联退货发票，请先处理退货发票，不能直接作废来源发票。")
+	elif is_submitted and has_payment:
+		cancel_sales_invoice_hint = _("当前发票已经存在收款记录；若系统未启用作废时自动解绑收款，将需要先处理收款后才能作废。")
 	can_record_payment = is_submitted and flt(outstanding_amount or 0) > 0 and not is_fully_returned
 	record_payment_hint = None
 	if is_submitted and is_fully_returned:
@@ -1171,12 +1178,8 @@ def _build_sales_invoice_action_flags(
 		record_payment_hint = _("当前销售发票没有可登记的未收金额。")
 
 	return {
-		"can_cancel_sales_invoice": is_submitted,
-		"cancel_sales_invoice_hint": (
-			_("当前发票已经存在收款记录；若系统未启用作废时自动解绑收款，将需要先处理收款后才能作废。")
-			if is_submitted and has_payment
-			else None
-		),
+		"can_cancel_sales_invoice": can_cancel_sales_invoice,
+		"cancel_sales_invoice_hint": cancel_sales_invoice_hint,
 		"can_record_payment": can_record_payment,
 		"record_payment_hint": record_payment_hint,
 	}

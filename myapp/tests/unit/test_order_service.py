@@ -450,7 +450,9 @@ class TestOrderService(TestCase):
 		result = get_sales_invoice_detail("ACC-SINV-0002")
 
 		self.assertFalse(result["data"]["actions"]["can_record_payment"])
+		self.assertFalse(result["data"]["actions"]["can_cancel_sales_invoice"])
 		self.assertIn("全额冲回", result["data"]["actions"]["record_payment_hint"])
+		self.assertIn("退货发票", result["data"]["actions"]["cancel_sales_invoice_hint"])
 		self.assertEqual(result["data"]["references"]["return_invoices"], ["ACC-SINV-RET-0002"])
 
 	@patch("myapp.services.order_service.frappe.get_all")

@@ -2645,6 +2645,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 用于避免订单详情与发票详情分别重复装配 `latest_payment_*` 字段
 - 单票“最新收款结果”当前也会委托到工作台同源的批量付款摘要底座上计算
 - 已被退货发票全额冲回的来源销售发票应返回 `actions.can_record_payment = false`，即使底层发票重新出现未收金额，也不能通过原发票继续登记客户收款；如需重新销售，应重新发货并开票
+- 已关联已提交退货发票的来源销售发票应返回 `actions.can_cancel_sales_invoice = false`，不能在来源发票详情直接作废；需要先处理退货发票链路
 
 当前返回重点字段：
 
