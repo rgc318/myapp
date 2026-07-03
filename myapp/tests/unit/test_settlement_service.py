@@ -235,6 +235,96 @@ class TestSettlementService(TestCase):
 		self.assertEqual(result["payment_entry"], "ACC-PAY-0003")
 		self.assertEqual(result["unallocated_amount"], 100)
 
+	def test_update_payment_status_caps_allocation_after_partial_return(self):
+		pe = MagicMock()
+		pe.name = "ACC-PAY-0004"
+		pe.mode_of_payment = None
+		pe.company = "rgc (Demo)"
+		pe.unallocated_amount = 300
+
+		fake_payment_entry_module = ModuleType("payment_entry")
+		fake_get_payment_entry = MagicMock(return_value=pe)
+		fake_payment_entry_module.get_payment_entry = fake_get_payment_entry
+		invoice = frappe._dict(
+			{
+				"name": "SINV-0004",
+				"is_return": 0,
+				"docstatus": 1,
+				"rounded_total": 1000,
+				"grand_total": 1000,
+				"outstanding_amount": 400,
+			}
+		)
+
+		with patch.dict(
+			sys.modules,
+			{"erpnext.accounts.doctype.payment_entry.payment_entry": fake_payment_entry_module},
+		), patch.object(
+			frappe,
+			"db",
+			MagicMock(get_value=MagicMock(return_value=invoice)),
+		), patch(
+			"myapp.services.settlement_service.frappe.get_all",
+			return_value=[
+				frappe._dict(
+					{
+						"name": "SINV-RET-0004",
+						"rounded_total": -300,
+						"grand_total": -300,
+					}
+				)
+			],
+		):
+			result = update_payment_status(
+				"Sales Invoice",
+				"SINV-0004",
+				400,
+				reference_date="2026-03-19",
+			)
+
+		fake_get_payment_entry.assert_called_once_with("Sales Invoice", "SINV-0004", party_amount=100.0)
+		pe.set_amounts.assert_called_once()
+		self.assertEqual(result["payment_entry"], "ACC-PAY-0004")
+		self.assertEqual(result["unallocated_amount"], 300)
+
+	@patch("myapp.services.settlement_service.frappe.throw")
+	@patch("myapp.services.settlement_service.frappe.get_all")
+	def test_update_payment_status_rejects_after_partial_return_when_net_outstanding_is_zero(
+		self,
+		mock_get_all,
+		mock_throw,
+	):
+		mock_throw.side_effect = frappe.ValidationError
+		mock_get_all.return_value = [
+			frappe._dict(
+				{
+					"name": "SINV-RET-0005",
+					"rounded_total": -300,
+					"grand_total": -300,
+				}
+			)
+		]
+		invoice = frappe._dict(
+			{
+				"name": "SINV-0005",
+				"is_return": 0,
+				"docstatus": 1,
+				"rounded_total": 1000,
+				"grand_total": 1000,
+				"outstanding_amount": 300,
+			}
+		)
+
+		with patch.object(
+			frappe,
+			"db",
+			MagicMock(get_value=MagicMock(return_value=invoice)),
+		):
+			with self.assertRaises(frappe.ValidationError):
+				update_payment_status("Sales Invoice", "SINV-0005", 100)
+
+		self.assertIn("当前没有可核销的未收金额", str(mock_throw.call_args[0][0]))
+
 	@patch("myapp.services.settlement_service.frappe.throw")
 	@patch("myapp.services.settlement_service.frappe.get_all")
 	def test_update_payment_status_rejects_fully_returned_source_invoice(
@@ -301,8 +391,16 @@ class TestSettlementService(TestCase):
 		self.assertEqual(result["return_document"], "SINV-RET-0099")
 		mock_run_idempotent.assert_called_once()
 
+	@patch("myapp.services.settlement_service._ensure_customer_receipt_cancel_allowed")
+	@patch("myapp.services.settlement_service._get_invoice_reference_meta")
 	@patch("myapp.services.settlement_service.frappe.get_doc")
-	def test_cancel_payment_entry_cancels_submitted_payment(self, mock_get_doc):
+	def test_cancel_payment_entry_cancels_submitted_payment(
+		self,
+		mock_get_doc,
+		mock_get_invoice_reference_meta,
+		mock_ensure_cancel_allowed,
+	):
+		mock_get_invoice_reference_meta.return_value = {"is_return": False, "return_against": None}
 		pe = MagicMock()
 		pe.name = "ACC-PAY-0001"
 		pe.docstatus = 1
@@ -319,10 +417,59 @@ class TestSettlementService(TestCase):
 
 		result = cancel_payment_entry("ACC-PAY-0001")
 
+		mock_ensure_cancel_allowed.assert_called_once()
 		pe.cancel.assert_called_once()
 		self.assertEqual(result["payment_entry"], "ACC-PAY-0001")
 		self.assertEqual(result["document_status"], "cancelled")
 		self.assertEqual(result["references"][0]["reference_name"], "SINV-0001")
+		self.assertFalse(result["references"][0]["is_return"])
+
+	@patch("myapp.services.settlement_service.frappe.throw", side_effect=frappe.ValidationError)
+	@patch(
+		"myapp.services.settlement_service._get_customer_refund_entries_for_source_invoice",
+		return_value=[{"payment_entry": "ACC-PAY-REF-0001", "allocated_amount": -100}],
+	)
+	def test_ensure_customer_receipt_cancel_rejects_when_refund_exists(
+		self,
+		_mock_refund_entries,
+		mock_throw,
+	):
+		with self.assertRaises(frappe.ValidationError):
+			from myapp.services.settlement_service import _ensure_customer_receipt_cancel_allowed
+
+			_ensure_customer_receipt_cancel_allowed(
+				MagicMock(name="ACC-PAY-0001"),
+				[
+					{
+						"reference_doctype": "Sales Invoice",
+						"reference_name": "SINV-0001",
+						"is_return": False,
+					}
+				],
+			)
+
+		self.assertIn("已存在客户退款", str(mock_throw.call_args[0][0]))
+
+	@patch("myapp.services.settlement_service._get_customer_refund_entries_for_source_invoice")
+	def test_ensure_customer_receipt_cancel_allows_return_invoice_refund_cancellation(
+		self,
+		mock_refund_entries,
+	):
+		from myapp.services.settlement_service import _ensure_customer_receipt_cancel_allowed
+
+		_ensure_customer_receipt_cancel_allowed(
+			MagicMock(name="ACC-PAY-REF-0001"),
+			[
+				{
+					"reference_doctype": "Sales Invoice",
+					"reference_name": "SINV-RET-0001",
+					"is_return": True,
+					"return_against": "SINV-0001",
+				}
+			],
+		)
+
+		mock_refund_entries.assert_not_called()
 
 	@patch("myapp.services.settlement_service.frappe.get_doc")
 	def test_cancel_payment_entry_returns_idempotent_success_for_cancelled_doc(self, mock_get_doc):
@@ -489,8 +636,9 @@ class TestSettlementService(TestCase):
 		self.assertFalse(result["data"]["actions"]["can_cancel"])
 		self.assertTrue(result["data"]["actions"]["cancel_hint"])
 
+	@patch("myapp.services.settlement_service._get_customer_refundable_amount", return_value=100)
 	@patch("myapp.services.settlement_service.frappe.get_doc")
-	def test_create_customer_refund_creates_payment_entry_for_return_invoice(self, mock_get_doc):
+	def test_create_customer_refund_creates_payment_entry_for_return_invoice(self, mock_get_doc, _mock_refundable):
 		return_invoice = frappe._dict(
 			{
 				"name": "SINV-RET-0001",
@@ -568,9 +716,10 @@ class TestSettlementService(TestCase):
 		with self.assertRaises(frappe.ValidationError):
 			create_customer_refund("SINV-0001", 10)
 
+	@patch("myapp.services.settlement_service._get_customer_refundable_amount", return_value=50)
 	@patch("myapp.services.settlement_service.frappe.throw", side_effect=frappe.ValidationError)
 	@patch("myapp.services.settlement_service.frappe.get_doc")
-	def test_create_customer_refund_rejects_over_refund(self, mock_get_doc, _mock_throw):
+	def test_create_customer_refund_rejects_over_refund(self, mock_get_doc, _mock_throw, _mock_refundable):
 		mock_get_doc.return_value = frappe._dict(
 			{
 				"name": "SINV-RET-0002",
@@ -596,10 +745,12 @@ class TestSettlementService(TestCase):
 		mock_run_idempotent.assert_called_once()
 
 	@patch("myapp.services.order_service._collect_sales_invoice_payment_entries")
+	@patch("myapp.services.settlement_service.frappe.get_all")
 	@patch("myapp.services.settlement_service.frappe.get_doc")
 	def test_get_customer_refund_context_returns_refundable_amount_and_history(
 		self,
 		mock_get_doc,
+		mock_get_all,
 		mock_collect_payment_entries,
 	):
 		return_invoice = frappe._dict(
@@ -632,13 +783,22 @@ class TestSettlementService(TestCase):
 			}
 		)
 		mock_get_doc.side_effect = [return_invoice, source_invoice]
-		mock_collect_payment_entries.return_value = [
-			{
-				"payment_entry": "ACC-PAY-REF-0001",
-				"allocated_amount": 60,
-				"posting_date": "2026-06-22",
-			}
-		]
+		mock_get_all.return_value = [frappe._dict({"name": "SINV-RET-0001"})]
+
+		def fake_collect_entries(invoice_names):
+			if invoice_names == ["SINV-RET-0001"]:
+				return [
+					{
+						"payment_entry": "ACC-PAY-REF-0001",
+						"allocated_amount": 60,
+						"posting_date": "2026-06-22",
+					}
+				]
+			if invoice_names == ["SINV-0001"]:
+				return [{"payment_entry": "ACC-PAY-0001", "allocated_amount": 100, "actual_paid_amount": 100}]
+			return []
+
+		mock_collect_payment_entries.side_effect = fake_collect_entries
 
 		result = get_customer_refund_context("SINV-RET-0001")
 
@@ -652,6 +812,173 @@ class TestSettlementService(TestCase):
 		self.assertEqual(result["data"]["refund"]["status"], "partial_refunded")
 		self.assertTrue(result["data"]["actions"]["can_create_refund"])
 		self.assertEqual(result["data"]["entries"][0]["payment_entry"], "ACC-PAY-REF-0001")
+
+	@patch("myapp.services.order_service._collect_sales_invoice_payment_entries")
+	@patch("myapp.services.settlement_service.frappe.get_all")
+	@patch("myapp.services.settlement_service.frappe.get_doc")
+	def test_get_customer_refund_context_caps_refund_to_actual_source_receipt(
+		self,
+		mock_get_doc,
+		mock_get_all,
+		mock_collect_payment_entries,
+	):
+		return_invoice = frappe._dict(
+			{
+				"name": "SINV-RET-0002",
+				"docstatus": 1,
+				"is_return": 1,
+				"return_against": "SINV-0002",
+				"customer": "CUST-0001",
+				"company": "Test Company",
+				"currency": "CNY",
+				"grand_total": -5012,
+				"outstanding_amount": -5012,
+			}
+		)
+		source_invoice = frappe._dict(
+			{
+				"name": "SINV-0002",
+				"docstatus": 1,
+				"is_return": 0,
+				"customer": "CUST-0001",
+				"company": "Test Company",
+				"currency": "CNY",
+				"grand_total": 5012,
+				"outstanding_amount": 2012,
+			}
+		)
+		mock_get_doc.side_effect = [return_invoice, source_invoice]
+		mock_get_all.return_value = [frappe._dict({"name": "SINV-RET-0002"})]
+
+		def fake_collect_entries(invoice_names):
+			if invoice_names == ["SINV-0002"]:
+				return [
+					{"payment_entry": "ACC-PAY-0001", "allocated_amount": 1000, "actual_paid_amount": 1000},
+					{"payment_entry": "ACC-PAY-0002", "allocated_amount": 2000, "actual_paid_amount": 2000},
+				]
+			return []
+
+		mock_collect_payment_entries.side_effect = fake_collect_entries
+
+		result = get_customer_refund_context("SINV-RET-0002")
+
+		self.assertEqual(result["data"]["refund"]["return_amount"], 5012)
+		self.assertEqual(result["data"]["refund"]["refundable_amount"], 3000)
+		self.assertEqual(result["data"]["refund"]["suggested_refund_amount"], 3000)
+		self.assertTrue(result["data"]["actions"]["can_create_refund"])
+
+	@patch("myapp.services.order_service._collect_sales_invoice_payment_entries")
+	@patch("myapp.services.settlement_service.frappe.get_all")
+	@patch("myapp.services.settlement_service.frappe.get_doc")
+	def test_get_customer_refund_context_blocks_refund_after_source_receipt_cancelled(
+		self,
+		mock_get_doc,
+		mock_get_all,
+		mock_collect_payment_entries,
+	):
+		return_invoice = frappe._dict(
+			{
+				"name": "SINV-RET-0003",
+				"docstatus": 1,
+				"is_return": 1,
+				"return_against": "SINV-0003",
+				"customer": "CUST-0001",
+				"company": "Test Company",
+				"currency": "CNY",
+				"grand_total": -500,
+				"outstanding_amount": -500,
+			}
+		)
+		source_invoice = frappe._dict(
+			{
+				"name": "SINV-0003",
+				"docstatus": 1,
+				"is_return": 0,
+				"customer": "CUST-0001",
+				"company": "Test Company",
+				"currency": "CNY",
+				"grand_total": 500,
+				"outstanding_amount": 500,
+			}
+		)
+		mock_get_doc.side_effect = [return_invoice, source_invoice]
+		mock_get_all.return_value = [frappe._dict({"name": "SINV-RET-0003"})]
+		mock_collect_payment_entries.return_value = []
+
+		result = get_customer_refund_context("SINV-RET-0003")
+
+		self.assertEqual(result["data"]["refund"]["refundable_amount"], 0)
+		self.assertEqual(result["data"]["refund"]["suggested_refund_amount"], 0)
+		self.assertFalse(result["data"]["actions"]["can_create_refund"])
+		self.assertIn("没有可退金额", result["data"]["actions"]["create_refund_hint"])
+
+	@patch("myapp.services.order_service._collect_sales_invoice_payment_entries")
+	@patch("myapp.services.settlement_service.frappe.get_all")
+	def test_customer_refundable_amount_supports_partial_receipts_and_partial_refunds(
+		self,
+		mock_get_all,
+		mock_collect_payment_entries,
+	):
+		from myapp.services.settlement_service import _get_customer_refundable_amount
+
+		return_invoice = frappe._dict(
+			{
+				"name": "SINV-RET-0004",
+				"return_against": "SINV-0004",
+				"grand_total": -800,
+				"outstanding_amount": -500,
+			}
+		)
+		mock_get_all.return_value = [frappe._dict({"name": "SINV-RET-0004"})]
+
+		def fake_collect_entries(invoice_names):
+			if invoice_names == ["SINV-0004"]:
+				return [
+					{"payment_entry": "ACC-PAY-0001", "allocated_amount": 300, "actual_paid_amount": 300},
+					{"payment_entry": "ACC-PAY-0002", "allocated_amount": 300, "actual_paid_amount": 300},
+				]
+			if invoice_names == ["SINV-RET-0004"]:
+				return [{"payment_entry": "ACC-PAY-REF-0001", "allocated_amount": -300}]
+			return []
+
+		mock_collect_payment_entries.side_effect = fake_collect_entries
+
+		self.assertEqual(_get_customer_refundable_amount(return_invoice), 300)
+
+	@patch("myapp.services.order_service._collect_sales_invoice_payment_entries")
+	@patch("myapp.services.settlement_service.frappe.get_all")
+	def test_customer_refundable_amount_caps_across_multiple_return_invoices(
+		self,
+		mock_get_all,
+		mock_collect_payment_entries,
+	):
+		from myapp.services.settlement_service import _get_customer_refundable_amount
+
+		current_return_invoice = frappe._dict(
+			{
+				"name": "SINV-RET-0005-B",
+				"return_against": "SINV-0005",
+				"grand_total": -600,
+				"outstanding_amount": -600,
+			}
+		)
+		mock_get_all.return_value = [
+			frappe._dict({"name": "SINV-RET-0005-A"}),
+			frappe._dict({"name": "SINV-RET-0005-B"}),
+		]
+
+		def fake_collect_entries(invoice_names):
+			if invoice_names == ["SINV-0005"]:
+				return [{"payment_entry": "ACC-PAY-0001", "allocated_amount": 1000, "actual_paid_amount": 1000}]
+			if invoice_names == ["SINV-RET-0005-B"]:
+				return []
+			if invoice_names == ["SINV-RET-0005-A", "SINV-RET-0005-B"]:
+				return [{"payment_entry": "ACC-PAY-REF-0001", "allocated_amount": -700}]
+			return []
+
+		mock_collect_payment_entries.side_effect = fake_collect_entries
+
+		self.assertEqual(_get_customer_refundable_amount(current_return_invoice), 300)
 
 	@patch("myapp.services.order_service._collect_sales_invoice_payment_entries", return_value=[])
 	@patch("myapp.services.settlement_service.frappe.get_doc")
@@ -671,8 +998,9 @@ class TestSettlementService(TestCase):
 		self.assertFalse(result["data"]["actions"]["can_create_refund"])
 		self.assertEqual(result["data"]["refund"]["status"], "unavailable")
 
+	@patch("myapp.services.settlement_service._get_supplier_refundable_amount", return_value=100)
 	@patch("myapp.services.settlement_service.frappe.get_doc")
-	def test_create_supplier_refund_creates_payment_entry_for_return_invoice(self, mock_get_doc):
+	def test_create_supplier_refund_creates_payment_entry_for_return_invoice(self, mock_get_doc, _mock_refundable):
 		return_invoice = frappe._dict(
 			{
 				"name": "PINV-RET-0001",
@@ -763,10 +1091,12 @@ class TestSettlementService(TestCase):
 		mock_run_idempotent.assert_called_once()
 
 	@patch("myapp.services.settlement_service._collect_purchase_invoice_payment_entries")
+	@patch("myapp.services.settlement_service.frappe.get_all")
 	@patch("myapp.services.settlement_service.frappe.get_doc")
 	def test_get_supplier_refund_context_returns_refundable_amount_and_history(
 		self,
 		mock_get_doc,
+		mock_get_all,
 		mock_collect_payment_entries,
 	):
 		return_invoice = frappe._dict(
@@ -799,13 +1129,22 @@ class TestSettlementService(TestCase):
 			}
 		)
 		mock_get_doc.side_effect = [return_invoice, source_invoice]
-		mock_collect_payment_entries.return_value = [
-			{
-				"payment_entry": "ACC-PAY-SUP-REF-0001",
-				"allocated_amount": 60,
-				"posting_date": "2026-06-22",
-			}
-		]
+		mock_get_all.return_value = [frappe._dict({"name": "PINV-RET-0001"})]
+
+		def fake_collect_entries(invoice_names):
+			if invoice_names == ["PINV-RET-0001"]:
+				return [
+					{
+						"payment_entry": "ACC-PAY-SUP-REF-0001",
+						"allocated_amount": 60,
+						"posting_date": "2026-06-22",
+					}
+				]
+			if invoice_names == ["PINV-0001"]:
+				return [{"payment_entry": "ACC-PAY-SUP-0001", "allocated_amount": 100}]
+			return []
+
+		mock_collect_payment_entries.side_effect = fake_collect_entries
 
 		result = get_supplier_refund_context("PINV-RET-0001")
 

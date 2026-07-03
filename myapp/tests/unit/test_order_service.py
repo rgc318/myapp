@@ -1,13 +1,16 @@
 from unittest import TestCase
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import frappe
 
 from myapp.services.order_service import (
 	_build_action_flags,
+	_build_payment_summary,
+	_build_sales_invoice_action_flags,
 	_build_sales_order_timeline,
 	_collect_sales_invoice_payment_entries,
 	_collect_sales_order_reference_names,
+	_apply_sales_invoice_return_adjustments,
 	_build_sales_order_summary_rows,
 	_serialize_delivery_note_items,
 	_serialize_order_items,
@@ -34,6 +37,138 @@ from myapp.services.order_service import (
 
 
 class TestOrderService(TestCase):
+	def test_order_action_flags_require_invoice_outstanding_for_payment(self):
+		fulfillment = {"is_fully_delivered": True}
+
+		delivery_only = _build_action_flags(
+			fulfillment,
+			{"outstanding_amount": 0, "is_fully_paid": False},
+			invoice_names=[],
+			delivery_note_names=["DN-0001"],
+			docstatus=1,
+		)
+		self.assertFalse(delivery_only["can_record_payment"])
+		self.assertTrue(delivery_only["can_create_sales_invoice"])
+
+		invoiced_partial = _build_action_flags(
+			fulfillment,
+			{"outstanding_amount": 400, "is_fully_paid": False},
+			invoice_names=["SINV-0001"],
+			delivery_note_names=["DN-0001"],
+			docstatus=1,
+		)
+		self.assertTrue(invoiced_partial["can_record_payment"])
+		self.assertFalse(invoiced_partial["can_create_sales_invoice"])
+
+		invoiced_paid = _build_action_flags(
+			fulfillment,
+			{"outstanding_amount": 0, "is_fully_paid": True},
+			invoice_names=["SINV-0001"],
+			delivery_note_names=["DN-0001"],
+			docstatus=1,
+		)
+		self.assertFalse(invoiced_paid["can_record_payment"])
+
+	def test_sales_invoice_action_flags_block_collection_after_full_return(self):
+		normal_invoice = _build_sales_invoice_action_flags(
+			docstatus=1,
+			latest_payment_entry=None,
+			paid_amount=400,
+			outstanding_amount=600,
+			return_summary={},
+		)
+		self.assertTrue(normal_invoice["can_record_payment"])
+
+		partial_return = _build_sales_invoice_action_flags(
+			docstatus=1,
+			latest_payment_entry="ACC-PAY-0001",
+			paid_amount=600,
+			outstanding_amount=100,
+			return_summary={
+				"is_fully_returned": False,
+				"return_invoices": ["SINV-RET-0001"],
+			},
+		)
+		self.assertTrue(partial_return["can_record_payment"])
+		self.assertFalse(partial_return["can_cancel_sales_invoice"])
+
+		full_return = _build_sales_invoice_action_flags(
+			docstatus=1,
+			latest_payment_entry="ACC-PAY-0001",
+			paid_amount=600,
+			outstanding_amount=0,
+			return_summary={
+				"is_fully_returned": True,
+				"return_invoices": ["SINV-RET-0002"],
+			},
+		)
+		self.assertFalse(full_return["can_record_payment"])
+		self.assertIn("全额冲回", full_return["record_payment_hint"])
+
+	@patch("myapp.services.order_service.frappe.get_all")
+	def test_return_adjusted_invoice_rows_keep_collectable_balance_after_partial_return(self, mock_get_all):
+		mock_get_all.return_value = [
+			frappe._dict(
+				{
+					"return_against": "SINV-0001",
+					"rounded_total": -300,
+					"grand_total": -300,
+				}
+			)
+		]
+		rows = _apply_sales_invoice_return_adjustments(
+			[
+				frappe._dict(
+					{
+						"name": "SINV-0001",
+						"rounded_total": 1000,
+						"grand_total": 1000,
+						"outstanding_amount": 400,
+					}
+				)
+			]
+		)
+
+		self.assertEqual(rows[0].rounded_total, 700)
+		self.assertEqual(rows[0].outstanding_amount, 100)
+		payment = _build_payment_summary(rows)
+		self.assertEqual(payment["receivable_amount"], 700)
+		self.assertEqual(payment["paid_amount"], 600)
+		self.assertEqual(payment["outstanding_amount"], 100)
+		self.assertEqual(payment["status"], "partial")
+
+	@patch("myapp.services.order_service.frappe.get_all")
+	def test_return_adjusted_invoice_rows_close_invoice_after_full_return(self, mock_get_all):
+		mock_get_all.return_value = [
+			frappe._dict(
+				{
+					"return_against": "SINV-0002",
+					"rounded_total": -1000,
+					"grand_total": -1000,
+				}
+			)
+		]
+
+		rows = _apply_sales_invoice_return_adjustments(
+			[
+				frappe._dict(
+					{
+						"name": "SINV-0002",
+						"rounded_total": 1000,
+						"grand_total": 1000,
+						"outstanding_amount": 0,
+					}
+				)
+			]
+		)
+
+		self.assertEqual(rows[0].rounded_total, 0)
+		self.assertEqual(rows[0].outstanding_amount, 0)
+		payment = _build_payment_summary(rows)
+		self.assertEqual(payment["receivable_amount"], 0)
+		self.assertEqual(payment["outstanding_amount"], 0)
+		self.assertEqual(payment["status"], "paid")
+
 	@patch("myapp.services.order_service._get_item_meta_map", return_value={})
 	@patch("myapp.services.order_service.build_uom_display_map", return_value={"Box": "箱", "Nos": "件"})
 	def test_sales_document_item_serializers_include_uom_display(self, mock_build_uom_display_map, _mock_get_item_meta):
@@ -165,6 +300,88 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["receivable_amount"], 150)
 		self.assertEqual(result["paid_amount"], 150)
 		self.assertTrue(result["is_fully_paid"])
+
+	def test_build_payment_summary_treats_zero_net_invoice_as_paid(self):
+		from myapp.services.order_service import _build_payment_summary
+
+		result = _build_payment_summary([frappe._dict({"grand_total": 0, "outstanding_amount": 0})])
+
+		self.assertEqual(result["status"], "paid")
+		self.assertTrue(result["is_fully_paid"])
+
+	def test_build_payment_summary_without_invoice_stays_unpaid(self):
+		from myapp.services.order_service import _build_payment_summary
+
+		result = _build_payment_summary([])
+
+		self.assertEqual(result["status"], "unpaid")
+		self.assertFalse(result["is_fully_paid"])
+
+	@patch("myapp.services.order_service.frappe.get_all")
+	def test_load_sales_invoice_rows_nets_submitted_return_invoices(self, mock_get_all):
+		from myapp.services.order_service import _load_sales_invoice_rows
+
+		mock_get_all.side_effect = [
+			[
+				frappe._dict(
+					{
+						"name": "SINV-0001",
+						"grand_total": 5012,
+						"rounded_total": 5012,
+						"base_rounded_total": 5012,
+						"outstanding_amount": 2012,
+					}
+				)
+			],
+			[
+				frappe._dict(
+					{
+						"return_against": "SINV-0001",
+						"grand_total": -5012,
+						"rounded_total": -5012,
+						"base_rounded_total": -5012,
+					}
+				)
+			],
+		]
+
+		result = _load_sales_invoice_rows(["SINV-0001"])
+
+		self.assertEqual(result[0]["rounded_total"], 0)
+		self.assertEqual(result[0]["outstanding_amount"], 0)
+
+	@patch("myapp.services.order_service.frappe.get_all")
+	def test_load_sales_invoice_rows_reduces_partial_return_outstanding(self, mock_get_all):
+		from myapp.services.order_service import _load_sales_invoice_rows
+
+		mock_get_all.side_effect = [
+			[
+				frappe._dict(
+					{
+						"name": "SINV-0001",
+						"grand_total": 100,
+						"rounded_total": 100,
+						"base_rounded_total": 100,
+						"outstanding_amount": 50,
+					}
+				)
+			],
+			[
+				frappe._dict(
+					{
+						"return_against": "SINV-0001",
+						"grand_total": -30,
+						"rounded_total": -30,
+						"base_rounded_total": -30,
+					}
+				)
+			],
+		]
+
+		result = _load_sales_invoice_rows(["SINV-0001"])
+
+		self.assertEqual(result[0]["rounded_total"], 70)
+		self.assertEqual(result[0]["outstanding_amount"], 20)
 
 	@patch("myapp.services.order_service.frappe.get_all")
 	def test_get_latest_payment_entry_summary_returns_actual_paid_and_writeoff(self, mock_get_all):
@@ -451,6 +668,9 @@ class TestOrderService(TestCase):
 
 		self.assertFalse(result["data"]["actions"]["can_record_payment"])
 		self.assertFalse(result["data"]["actions"]["can_cancel_sales_invoice"])
+		self.assertEqual(result["data"]["amounts"]["receivable_amount"], 0)
+		self.assertEqual(result["data"]["amounts"]["outstanding_amount"], 0)
+		self.assertEqual(result["data"]["payment"]["status"], "paid")
 		self.assertIn("全额冲回", result["data"]["actions"]["record_payment_hint"])
 		self.assertIn("退货发票", result["data"]["actions"]["cancel_sales_invoice_hint"])
 		self.assertEqual(result["data"]["references"]["return_invoices"], ["ACC-SINV-RET-0002"])
@@ -1446,6 +1666,7 @@ class TestOrderService(TestCase):
 					}
 				)
 			],
+			[],
 			[
 				frappe._dict(
 					{
@@ -2215,12 +2436,14 @@ class TestOrderService(TestCase):
 	@patch("myapp.services.order_service.cancel_sales_invoice")
 	@patch("myapp.services.order_service.get_sales_order_detail")
 	@patch("myapp.services.order_service._collect_submitted_payment_entry_summaries")
+	@patch("myapp.services.order_service._collect_submitted_return_invoice_names", return_value=[])
 	@patch("myapp.services.order_service._collect_sales_order_reference_names")
 	@patch("myapp.services.order_service._get_sales_order_doc_for_update")
 	def test_quick_cancel_order_v2_rolls_back_in_safe_order(
 		self,
 		mock_get_sales_order_doc_for_update,
 		mock_collect_reference_names,
+		_mock_collect_return_invoice_names,
 		mock_collect_payment_entries,
 		mock_get_sales_order_detail,
 		mock_cancel_sales_invoice,
@@ -2229,17 +2452,20 @@ class TestOrderService(TestCase):
 	):
 		mock_get_sales_order_doc_for_update.return_value = frappe._dict({"name": "SO-0001"})
 		mock_collect_reference_names.return_value = (["DN-0001"], ["SINV-0001"])
-		mock_collect_payment_entries.return_value = [
-			{
-				"payment_entry": "PE-0001",
-				"references": [
-					{
-						"reference_doctype": "Sales Invoice",
-						"reference_name": "SINV-0001",
-						"allocated_amount": 100,
-					}
-				],
-			}
+		mock_collect_payment_entries.side_effect = [
+			[
+				{
+					"payment_entry": "PE-0001",
+					"references": [
+						{
+							"reference_doctype": "Sales Invoice",
+							"reference_name": "SINV-0001",
+							"allocated_amount": 100,
+						}
+					],
+				}
+			],
+			[],
 		]
 		mock_cancel_payment_entry.return_value = {
 			"payment_entry": "PE-0001",
@@ -2268,3 +2494,62 @@ class TestOrderService(TestCase):
 		self.assertFalse(result["detail_included"])
 		self.assertIsNone(result["detail"])
 		mock_get_sales_order_detail.assert_not_called()
+
+	@patch("myapp.services.settlement_service.cancel_payment_entry")
+	@patch("myapp.services.order_service.cancel_delivery_note")
+	@patch("myapp.services.order_service.cancel_sales_invoice")
+	@patch("myapp.services.order_service.get_sales_order_detail")
+	@patch("myapp.services.order_service._collect_submitted_payment_entry_summaries")
+	@patch("myapp.services.order_service._collect_submitted_return_invoice_names")
+	@patch("myapp.services.order_service._collect_sales_order_reference_names")
+	@patch("myapp.services.order_service._get_sales_order_doc_for_update")
+	def test_quick_cancel_order_v2_rolls_back_return_invoice_before_source_invoice(
+		self,
+		mock_get_sales_order_doc_for_update,
+		mock_collect_reference_names,
+		mock_collect_return_invoice_names,
+		mock_collect_payment_entries,
+		mock_get_sales_order_detail,
+		mock_cancel_sales_invoice,
+		mock_cancel_delivery_note,
+		mock_cancel_payment_entry,
+	):
+		mock_get_sales_order_doc_for_update.return_value = frappe._dict({"name": "SO-0001"})
+		mock_collect_reference_names.return_value = (["DN-0001"], ["SINV-0001"])
+		mock_collect_return_invoice_names.return_value = ["SINV-RET-0001"]
+		mock_collect_payment_entries.side_effect = [
+			[],
+			[
+				{
+					"payment_entry": "PE-REF-0001",
+					"references": [
+						{
+							"reference_doctype": "Sales Invoice",
+							"reference_name": "SINV-RET-0001",
+							"allocated_amount": -80,
+						}
+					],
+				}
+			],
+		]
+		mock_cancel_payment_entry.return_value = {"payment_entry": "PE-REF-0001"}
+		mock_cancel_sales_invoice.side_effect = [
+			{"sales_invoice": "SINV-RET-0001"},
+			{"sales_invoice": "SINV-0001"},
+		]
+		mock_cancel_delivery_note.return_value = {"delivery_note": "DN-0001"}
+
+		result = quick_cancel_order_v2(order_name="SO-0001")
+
+		mock_cancel_payment_entry.assert_called_once_with("PE-REF-0001")
+		self.assertEqual(
+			[call.args[0] for call in mock_cancel_sales_invoice.call_args_list],
+			["SINV-RET-0001", "SINV-0001"],
+		)
+		mock_cancel_delivery_note.assert_called_once_with("DN-0001")
+		self.assertEqual(
+			result["completed_steps"],
+			["customer_refund", "sales_return", "sales_invoice", "delivery_note"],
+		)
+		self.assertEqual(result["cancelled_refund_entries"], ["PE-REF-0001"])
+		self.assertEqual(result["cancelled_return_invoices"], ["SINV-RET-0001"])

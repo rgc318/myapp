@@ -1043,11 +1043,15 @@ curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.create_o
 
 - 这是面向前端“快速作废 / 回退并修改”的独立聚合接口
 - 默认按安全顺序回退：
-  - 先作废 `Payment Entry`
-  - 再作废 `Sales Invoice`
+  - 先作废退货发票关联的客户退款 `Payment Entry`
+  - 再作废已提交销售退货发票
+  - 再作废正向发票关联的客户收款 `Payment Entry`
+  - 再作废正向 `Sales Invoice`
   - 再作废 `Delivery Note`
 - 返回：
   - `cancelled_payment_entries`
+  - `cancelled_refund_entries`
+  - `cancelled_return_invoices`
   - `cancelled_sales_invoice`
   - `cancelled_delivery_note`
   - `completed_steps`
@@ -1062,8 +1066,9 @@ curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.create_o
   - 单订单
   - 单发货单
   - 单发票
+  - 单退货发票
   - 单收款单
-- 若发现多张发票、多张发货单或一笔收款关联多张发票：
+- 若发现多张发票、多张发货单、多张退货发票、多笔客户退款或一笔收付款关联多张发票：
   - 接口会明确拦截
   - 提示改用分步回退流程
 
@@ -2645,6 +2650,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 用于避免订单详情与发票详情分别重复装配 `latest_payment_*` 字段
 - 单票“最新收款结果”当前也会委托到工作台同源的批量付款摘要底座上计算
 - 已被退货发票全额冲回的来源销售发票应返回 `actions.can_record_payment = false`，即使底层发票重新出现未收金额，也不能通过原发票继续登记客户收款；如需重新销售，应重新发货并开票
+- 已被已提交退货发票冲回的来源销售发票，`amounts.receivable_amount` / `amounts.outstanding_amount` 按退货净额口径返回；全额退货时前端应看到 `outstanding_amount = 0`，不得继续引导客户收款
 - 已关联已提交退货发票的来源销售发票应返回 `actions.can_cancel_sales_invoice = false`，不能在来源发票详情直接作废；需要先处理退货发票链路
 
 当前返回重点字段：
@@ -2994,6 +3000,7 @@ create_purchase_order(
 - 支持部分收款，未收金额继续保留
 - 支持 `settlement_mode = "writeoff"` 的少收并结清场景，差额会按 Write Off Account 核销
 - 支持多收场景：当前发票按应收金额结清，超出部分作为 `unallocated_amount` 保留
+- 若销售发票已存在已提交退货发票，当前可核销金额按退货后的净未收金额计算；部分退货后仍可继续收取净未收余额，全额退货后拒绝继续收款
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的 `payment_entry`
 
 当前返回重点字段：
@@ -3038,6 +3045,7 @@ frappe.call({
 - `settlement_mode = "partial"`：保留未收金额，适用于部分收款
 - `settlement_mode = "writeoff"`：当 `paid_amount < outstanding_amount` 时，允许按差额核销后直接结清
 - 当 `paid_amount > outstanding_amount` 时，ERPNext 标准 `Payment Entry` 会将超出部分保留为 `unallocated_amount`
+- 对已发生销售退货的来源发票，前端传入金额不应超过退货净额口径的 `outstanding_amount`；后端会以净未收额作为发票引用行的核销基数，避免部分退货后继续按原始未收额多核销
 
 订单详情聚合补充：
 
@@ -3065,6 +3073,7 @@ frappe.call({
 - 基于销售退货发票返回客户退款页上下文
 - 校验并返回当前退货发票是否允许登记客户退款
 - 统一返回退货发票、来源销售发票、可退金额、已退金额、建议本次退款金额和退款历史
+- 销售客户退款的 `refundable_amount` 以来源销售发票实际已收且尚未退还的金额为上限，并同时受当前退货发票剩余可退金额限制；不能仅按退货发票 `abs(outstanding_amount)` 作为可退金额
 - 退款历史来自退货发票关联的已提交 `Payment Entry`
 - 前端不应再通过普通销售发票详情自行推导“可退金额 / 已退金额 / 是否可退款”
 
@@ -3122,7 +3131,7 @@ frappe.call({
 
 - 基于已提交的销售退货发票创建并提交退款 `Payment Entry`
 - 只支持 `Sales Invoice.is_return = 1` 的退货发票，不允许对普通销售发票直接登记退款
-- 退款金额不能大于退货发票当前可退金额，即 `abs(outstanding_amount)`
+- 退款金额不能大于当前可退金额；当前可退金额以来源销售发票实际已收且尚未退还的金额为上限，并同时受退货发票剩余可退金额限制
 - 退货发票在 ERPNext 中通常以负数 `outstanding_amount` 表示客户应退余额；接口创建 `Payment Entry` 时会按退货发票负数口径规范化引用行的 `total_amount`、`outstanding_amount` 和 `allocated_amount`，避免 ERPNext 校验误判“已分配金额大于未付金额”
 - 当使用相同 `request_id` 重试时，直接返回第一次成功的退款结果
 - 当前接口应明确理解为：

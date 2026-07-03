@@ -498,12 +498,7 @@ def _build_sales_order_summary_rows(order_rows):
 	)
 	invoice_row_map = {}
 	if all_invoice_names:
-		invoice_rows = frappe.get_all(
-			"Sales Invoice",
-			filters={"name": ["in", all_invoice_names], "docstatus": 1, "is_return": 0},
-			fields=["name", "grand_total", "rounded_total", "base_rounded_total", "outstanding_amount"],
-			limit_page_length=0,
-		)
+		invoice_rows = _load_sales_invoice_rows(all_invoice_names)
 		invoice_row_map = {getattr(row, "name", None): row for row in invoice_rows}
 
 	latest_payment_summary_map = _build_sales_latest_payment_summary_map(order_invoice_names_map)
@@ -898,6 +893,7 @@ def _build_fulfillment_summary(order_items):
 
 
 def _build_payment_summary(invoice_rows):
+	invoice_rows = list(invoice_rows or [])
 	receivable_amount = sum(
 		flt(
 			getattr(row, "rounded_total", None)
@@ -911,7 +907,7 @@ def _build_payment_summary(invoice_rows):
 	paid_amount = receivable_amount - outstanding_amount
 
 	if receivable_amount <= 0:
-		status = "unpaid"
+		status = "paid" if invoice_rows else "unpaid"
 	elif outstanding_amount <= 0:
 		status = "paid"
 	elif paid_amount <= 0:
@@ -924,7 +920,7 @@ def _build_payment_summary(invoice_rows):
 		"paid_amount": max(paid_amount, 0),
 		"outstanding_amount": max(outstanding_amount, 0),
 		"status": status,
-		"is_fully_paid": receivable_amount > 0 and outstanding_amount <= 0,
+		"is_fully_paid": bool(invoice_rows) and outstanding_amount <= 0,
 	}
 
 
@@ -1062,6 +1058,32 @@ def _build_sales_order_financial_summary(order_items, invoice_names: list[str], 
 	_apply_sales_latest_payment_metrics(payment, latest_payment_entry)
 	completion = _build_completion_summary(fulfillment, payment, docstatus=docstatus)
 	return fulfillment, payment, completion, latest_payment_entry
+
+
+def _build_return_adjusted_sales_invoice_row(invoice, return_summary: dict | None):
+	invoice_amount = flt(
+		invoice.get("rounded_total")
+		or invoice.get("grand_total")
+		or invoice.get("base_rounded_total")
+		or 0
+	)
+	outstanding_amount = flt(invoice.get("outstanding_amount") or 0)
+	returned_amount = flt((return_summary or {}).get("returned_amount") or 0)
+	if returned_amount <= 0:
+		return invoice
+
+	net_invoice_amount = max(invoice_amount - returned_amount, 0)
+	paid_amount = max(invoice_amount - outstanding_amount, 0)
+	net_outstanding_amount = max(net_invoice_amount - paid_amount, 0)
+	return frappe._dict(
+		{
+			"name": invoice.name,
+			"grand_total": net_invoice_amount,
+			"rounded_total": net_invoice_amount,
+			"base_rounded_total": net_invoice_amount,
+			"outstanding_amount": net_outstanding_amount,
+		}
+	)
 
 
 def _build_delivery_summary(fulfillment: dict, *, delivery_note_names: list[str], docstatus: int):
@@ -1912,11 +1934,69 @@ def _load_sales_invoice_rows(invoice_names: list[str]):
 	if not invoice_names:
 		return []
 
-	return frappe.get_all(
+	invoice_rows = frappe.get_all(
 		"Sales Invoice",
 		filters={"name": ["in", invoice_names], "docstatus": 1, "is_return": 0},
 		fields=["name", "grand_total", "rounded_total", "base_rounded_total", "outstanding_amount"],
 	)
+	return _apply_sales_invoice_return_adjustments(invoice_rows)
+
+
+def _apply_sales_invoice_return_adjustments(invoice_rows):
+	invoice_names = [getattr(row, "name", None) for row in invoice_rows or [] if getattr(row, "name", None)]
+	if not invoice_names:
+		return invoice_rows or []
+
+	return_rows = frappe.get_all(
+		"Sales Invoice",
+		filters={"return_against": ["in", invoice_names], "docstatus": 1, "is_return": 1},
+		fields=["return_against", "grand_total", "rounded_total", "base_rounded_total"],
+		limit_page_length=0,
+	)
+	returned_amount_by_invoice = {}
+	for row in return_rows:
+		source_invoice = getattr(row, "return_against", None)
+		if not source_invoice:
+			continue
+		returned_amount_by_invoice[source_invoice] = returned_amount_by_invoice.get(source_invoice, 0) + abs(
+			flt(
+				getattr(row, "rounded_total", None)
+				or getattr(row, "grand_total", None)
+				or getattr(row, "base_rounded_total", None)
+				or 0
+			)
+		)
+
+	adjusted_rows = []
+	for row in invoice_rows or []:
+		invoice_amount = flt(
+			getattr(row, "rounded_total", None)
+			or getattr(row, "grand_total", None)
+			or getattr(row, "base_rounded_total", None)
+			or 0
+		)
+		outstanding_amount = flt(getattr(row, "outstanding_amount", 0) or 0)
+		returned_amount = returned_amount_by_invoice.get(getattr(row, "name", None), 0)
+		if returned_amount <= 0:
+			adjusted_rows.append(row)
+			continue
+
+		net_invoice_amount = max(invoice_amount - returned_amount, 0)
+		paid_amount = max(invoice_amount - outstanding_amount, 0)
+		net_outstanding_amount = max(net_invoice_amount - paid_amount, 0)
+		adjusted_rows.append(
+			frappe._dict(
+				{
+					**dict(row),
+					"grand_total": net_invoice_amount,
+					"rounded_total": net_invoice_amount,
+					"base_rounded_total": net_invoice_amount,
+					"outstanding_amount": net_outstanding_amount,
+				}
+			)
+		)
+
+	return adjusted_rows
 
 
 def _get_sales_order_doc_for_update(order_name: str, *, allow_cancelled: bool = False):
@@ -2171,7 +2251,12 @@ def get_sales_invoice_detail(sales_invoice_name: str):
 		references = _build_sales_invoice_references(invoice_items)
 		invoice_amount = flt(si.get("rounded_total") or si.get("grand_total") or 0)
 		return_summary = _get_sales_invoice_return_summary(si.name, invoice_amount) if not cint(si.get("is_return")) else {}
-		payment = _build_payment_summary([si])
+		payment_invoice_row = (
+			_build_return_adjusted_sales_invoice_row(si, return_summary)
+			if not cint(si.get("is_return"))
+			else si
+		)
+		payment = _build_payment_summary([payment_invoice_row])
 		latest_payment_entry = _get_latest_payment_entry_summary([si.name])
 		_apply_sales_latest_payment_metrics(payment, latest_payment_entry)
 		payment["entries"] = _collect_sales_invoice_payment_entries([si.name])
@@ -3049,6 +3134,34 @@ def _ensure_single_quick_flow_reference(reference_names: list[str], *, label: st
 		)
 
 
+def _collect_submitted_return_invoice_names(invoice_names: list[str]):
+	if not invoice_names:
+		return []
+	rows = frappe.get_all(
+		"Sales Invoice",
+		filters={"return_against": ["in", invoice_names], "docstatus": 1, "is_return": 1},
+		fields=["name"],
+		limit_page_length=0,
+	)
+	return sorted({row.name for row in rows if getattr(row, "name", None)})
+
+
+def _validate_quick_cancel_payment_entry(payment_entry: dict, *, label: str):
+	references = payment_entry.get("references") or []
+	reference_names = {
+		row.get("reference_name")
+		for row in references
+		if row.get("reference_doctype") == "Sales Invoice" and row.get("reference_name")
+	}
+	if len(reference_names) > 1:
+		frappe.throw(
+			_("{0} {1} 同时关联多张销售发票，暂不支持快捷回退，请改用分步回退流程。").format(
+				label,
+				payment_entry.get("payment_entry"),
+			)
+		)
+
+
 def quick_cancel_order_v2(order_name: str, rollback_payment: bool = True, **kwargs):
 	request_id = kwargs.get("request_id")
 	include_detail = _include_detail_in_response(kwargs)
@@ -3061,6 +3174,8 @@ def quick_cancel_order_v2(order_name: str, rollback_payment: bool = True, **kwar
 			delivery_note_names, invoice_names = _collect_sales_order_reference_names(order_name)
 			_ensure_single_quick_flow_reference(delivery_note_names, label=_("发货单"), order_name=order_name)
 			_ensure_single_quick_flow_reference(invoice_names, label=_("销售发票"), order_name=order_name)
+			return_invoice_names = _collect_submitted_return_invoice_names(invoice_names)
+			_ensure_single_quick_flow_reference(return_invoice_names, label=_("销售退货发票"), order_name=order_name)
 
 			payment_entries = _collect_submitted_payment_entry_summaries(invoice_names)
 			if len(payment_entries) > 1:
@@ -3070,21 +3185,35 @@ def quick_cancel_order_v2(order_name: str, rollback_payment: bool = True, **kwar
 					)
 				)
 
-			cancelled_payment_entries = []
-			completed_steps = []
-			for payment_entry in payment_entries:
-				references = payment_entry.get("references") or []
-				reference_names = {
-					row.get("reference_name")
-					for row in references
-					if row.get("reference_doctype") == "Sales Invoice" and row.get("reference_name")
-				}
-				if len(reference_names) > 1:
-					frappe.throw(
-						_("收款单 {0} 同时关联多张销售发票，暂不支持快捷回退，请改用分步回退流程。").format(
-							payment_entry.get("payment_entry")
-						)
+			return_payment_entries = _collect_submitted_payment_entry_summaries(return_invoice_names)
+			if len(return_payment_entries) > 1:
+				frappe.throw(
+					_("销售订单 {0} 当前存在多笔有效客户退款，暂不支持快捷回退，请改用分步回退流程。").format(
+						order_name
 					)
+				)
+
+			cancelled_payment_entries = []
+			cancelled_refund_entries = []
+			cancelled_return_invoices = []
+			completed_steps = []
+			for payment_entry in return_payment_entries:
+				_validate_quick_cancel_payment_entry(payment_entry, label=_("客户退款单"))
+				if payment_entry.get("payment_entry") and not cint(rollback_payment):
+					frappe.throw(
+						_("销售订单 {0} 当前存在有效客户退款，快捷作废要求先回退客户退款。").format(order_name)
+					)
+				payment_result = cancel_payment_entry(payment_entry.get("payment_entry"))
+				cancelled_refund_entries.append(payment_result.get("payment_entry"))
+				completed_steps.append("customer_refund")
+
+			for return_invoice_name in return_invoice_names:
+				invoice_result = cancel_sales_invoice(return_invoice_name)
+				cancelled_return_invoices.append(invoice_result.get("sales_invoice"))
+				completed_steps.append("sales_return")
+
+			for payment_entry in payment_entries:
+				_validate_quick_cancel_payment_entry(payment_entry, label=_("收款单"))
 				if payment_entry.get("payment_entry") and not cint(rollback_payment):
 					frappe.throw(
 						_("销售订单 {0} 当前存在有效收款，快捷作废要求先回退收款。").format(order_name)
@@ -3110,6 +3239,8 @@ def quick_cancel_order_v2(order_name: str, rollback_payment: bool = True, **kwar
 				"status": "success",
 				"order": order_name,
 				"cancelled_payment_entries": cancelled_payment_entries,
+				"cancelled_refund_entries": cancelled_refund_entries,
+				"cancelled_return_invoices": cancelled_return_invoices,
 				"cancelled_sales_invoice": cancelled_invoice,
 				"cancelled_delivery_note": cancelled_delivery_note,
 				"completed_steps": completed_steps,

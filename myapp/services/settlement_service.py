@@ -133,7 +133,7 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 	try:
 		def _update_payment_status():
 			_validate_payment_reference_can_receive(reference_doctype, reference_name)
-			reference_outstanding = flt(frappe.db.get_value(reference_doctype, reference_name, "outstanding_amount"))
+			reference_outstanding = _get_payment_reference_outstanding(reference_doctype, reference_name)
 			if reference_outstanding <= 0:
 				frappe.throw(_("单据 {0} 当前没有可核销的未收金额。").format(reference_name))
 
@@ -235,6 +235,62 @@ def _validate_payment_reference_can_receive(reference_doctype: str, reference_na
 		frappe.throw(hint)
 
 
+def _get_payment_reference_outstanding(reference_doctype: str, reference_name: str):
+	if reference_doctype != "Sales Invoice":
+		return flt(frappe.db.get_value(reference_doctype, reference_name, "outstanding_amount"))
+
+	invoice = frappe.db.get_value(
+		"Sales Invoice",
+		reference_name,
+		["name", "is_return", "rounded_total", "grand_total", "base_rounded_total", "outstanding_amount"],
+		as_dict=True,
+	)
+	if not isinstance(invoice, dict):
+		return flt(invoice)
+	if cint(invoice.get("is_return")):
+		return flt(invoice.get("outstanding_amount") or 0)
+
+	invoice_amount = abs(
+		flt(
+			invoice.get("rounded_total")
+			or invoice.get("grand_total")
+			or invoice.get("base_rounded_total")
+			or 0
+		)
+	)
+	raw_outstanding = flt(invoice.get("outstanding_amount") or 0)
+	if invoice_amount <= 0:
+		return raw_outstanding
+
+	return_rows = frappe.get_all(
+		"Sales Invoice",
+		filters={
+			"return_against": reference_name,
+			"is_return": 1,
+			"docstatus": 1,
+		},
+		fields=["name", "rounded_total", "grand_total", "base_rounded_total"],
+		limit_page_length=0,
+	)
+	returned_amount = sum(
+		abs(
+			flt(
+				row.get("rounded_total")
+				or row.get("grand_total")
+				or row.get("base_rounded_total")
+				or 0
+			)
+		)
+		for row in return_rows
+	)
+	if returned_amount <= 0:
+		return raw_outstanding
+
+	paid_amount = max(invoice_amount - raw_outstanding, 0)
+	net_invoice_amount = max(invoice_amount - returned_amount, 0)
+	return max(net_invoice_amount - paid_amount, 0)
+
+
 def cancel_payment_entry(payment_entry_name: str, **kwargs):
 	if not payment_entry_name:
 		frappe.throw(_("payment_entry_name 不能为空。"))
@@ -249,6 +305,10 @@ def cancel_payment_entry(payment_entry_name: str, **kwargs):
 					"reference_doctype": getattr(row, "reference_doctype", None),
 					"reference_name": getattr(row, "reference_name", None),
 					"allocated_amount": flt(getattr(row, "allocated_amount", 0) or 0),
+					**_get_invoice_reference_meta(
+						getattr(row, "reference_doctype", None),
+						getattr(row, "reference_name", None),
+					),
 				}
 				for row in (pe.get("references") or [])
 				if getattr(row, "reference_name", None)
@@ -266,6 +326,7 @@ def cancel_payment_entry(payment_entry_name: str, **kwargs):
 			if cint(pe.docstatus) != 1:
 				frappe.throw(_("只有已提交的收款单才能作废。"))
 
+			_ensure_customer_receipt_cancel_allowed(pe, references)
 			pe.cancel()
 
 			return {
@@ -533,6 +594,62 @@ def _build_supplier_refund_action_hint(*, return_invoice, refundable_amount: flo
 	return ""
 
 
+def _sum_abs_allocated_amount(entries: list[dict]):
+	return sum(abs(flt(entry.get("allocated_amount") or 0)) for entry in entries or [])
+
+
+def _sum_actual_paid_amount(entries: list[dict]):
+	return sum(max(flt(entry.get("actual_paid_amount") or entry.get("allocated_amount") or 0), 0) for entry in entries or [])
+
+
+def _get_customer_refund_entries_for_source_invoice(source_invoice_name: str):
+	if not source_invoice_name:
+		return []
+
+	from myapp.services.order_service import _collect_sales_invoice_payment_entries
+
+	return_invoice_names = _get_return_invoice_names_for_source("Sales Invoice", source_invoice_name)
+	if not return_invoice_names:
+		return []
+
+	return _collect_sales_invoice_payment_entries(return_invoice_names)
+
+
+def _ensure_customer_receipt_cancel_allowed(payment_entry, references: list[dict]):
+	blocked_sources = []
+	for row in references or []:
+		if row.get("reference_doctype") != "Sales Invoice":
+			continue
+		if row.get("is_return"):
+			continue
+
+		source_invoice_name = row.get("reference_name")
+		refund_entries = _get_customer_refund_entries_for_source_invoice(source_invoice_name)
+		if refund_entries:
+			blocked_sources.append(
+				{
+					"source_invoice": source_invoice_name,
+					"refund_entries": refund_entries,
+				}
+			)
+
+	if not blocked_sources:
+		return
+
+	first = blocked_sources[0]
+	refund_names = [
+		entry.get("payment_entry")
+		for entry in first.get("refund_entries") or []
+		if entry.get("payment_entry")
+	]
+	frappe.throw(
+		_("销售发票 {0} 已存在客户退款 {1}，请先取消客户退款后再取消原客户收款。").format(
+			first.get("source_invoice"),
+			"、".join(refund_names) if refund_names else "",
+		)
+	)
+
+
 def _collect_purchase_invoice_payment_entries(invoice_names: list[str]):
 	if not invoice_names:
 		return []
@@ -593,9 +710,14 @@ def get_customer_refund_context(return_invoice_name: str):
 			source_invoice = frappe.get_doc("Sales Invoice", source_invoice_name)
 
 		refund_entries = _collect_sales_invoice_payment_entries([return_invoice.name])
-		refunded_amount = sum(abs(flt(entry.get("allocated_amount") or 0)) for entry in refund_entries)
-		refundable_amount = abs(flt(return_invoice.get("outstanding_amount") or 0))
 		return_amount = abs(flt(return_invoice.get("rounded_total") or return_invoice.get("grand_total") or 0))
+		refunded_amount = _sum_abs_allocated_amount(refund_entries)
+		refundable_amount = _get_customer_refundable_amount(
+			return_invoice,
+			return_amount=return_amount,
+			refunded_amount=refunded_amount,
+			collect_entries=_collect_sales_invoice_payment_entries,
+		)
 		action_hint = _build_customer_refund_action_hint(
 			return_invoice=return_invoice,
 			refundable_amount=refundable_amount,
@@ -653,9 +775,13 @@ def get_supplier_refund_context(return_invoice_name: str):
 			source_invoice = frappe.get_doc("Purchase Invoice", source_invoice_name)
 
 		refund_entries = _collect_purchase_invoice_payment_entries([return_invoice.name])
-		refunded_amount = sum(abs(flt(entry.get("allocated_amount") or 0)) for entry in refund_entries)
-		refundable_amount = abs(flt(return_invoice.get("outstanding_amount") or 0))
 		return_amount = abs(flt(return_invoice.get("rounded_total") or return_invoice.get("grand_total") or 0))
+		refunded_amount = _sum_abs_allocated_amount(refund_entries)
+		refundable_amount = _get_supplier_refundable_amount(
+			return_invoice,
+			return_amount=return_amount,
+			refunded_amount=refunded_amount,
+		)
 		action_hint = _build_supplier_refund_action_hint(
 			return_invoice=return_invoice,
 			refundable_amount=refundable_amount,
@@ -721,7 +847,7 @@ def create_customer_refund(return_invoice_name: str, refund_amount: float, **kwa
 			if not cint(return_invoice.get("is_return")):
 				frappe.throw(_("只能基于销售退货发票登记客户退款。"))
 
-			refundable_amount = abs(flt(return_invoice.get("outstanding_amount")))
+			refundable_amount = _get_customer_refundable_amount(return_invoice)
 			if refundable_amount <= 0:
 				frappe.throw(_("销售退货发票 {0} 当前没有可退金额。").format(return_invoice.name))
 			if refund_amount > refundable_amount:
@@ -788,6 +914,77 @@ def _normalize_return_invoice_payment_reference_amounts(payment_entry, return_in
 			row.allocated_amount = -abs(flt(allocated_amount))
 
 
+def _get_return_invoice_names_for_source(doctype: str, source_invoice_name: str | None):
+	if not source_invoice_name:
+		return []
+	rows = frappe.get_all(
+		doctype,
+		filters={"return_against": source_invoice_name, "is_return": 1, "docstatus": 1},
+		fields=["name"],
+		limit_page_length=0,
+	)
+	return [row.name for row in rows if getattr(row, "name", None)]
+
+
+def _get_customer_refundable_amount(
+	return_invoice,
+	*,
+	return_amount: float | None = None,
+	refunded_amount: float | None = None,
+	collect_entries=None,
+):
+	from myapp.services.order_service import _collect_sales_invoice_payment_entries
+
+	collect_entries = collect_entries or _collect_sales_invoice_payment_entries
+	source_invoice_name = return_invoice.get("return_against")
+	current_return_amount = (
+		flt(return_amount)
+		if return_amount is not None
+		else abs(flt(return_invoice.get("rounded_total") or return_invoice.get("grand_total") or 0))
+	)
+	current_refunded_amount = (
+		flt(refunded_amount)
+		if refunded_amount is not None
+		else _sum_abs_allocated_amount(collect_entries([return_invoice.name]))
+	)
+	current_return_remaining = max(
+		min(abs(flt(return_invoice.get("outstanding_amount") or 0)), current_return_amount - current_refunded_amount),
+		0,
+	)
+	if not source_invoice_name:
+		return current_return_remaining
+
+	source_paid_amount = _sum_actual_paid_amount(collect_entries([source_invoice_name]))
+	return_invoice_names = _get_return_invoice_names_for_source("Sales Invoice", source_invoice_name)
+	refunded_for_source = _sum_abs_allocated_amount(collect_entries(return_invoice_names))
+	return max(min(current_return_remaining, source_paid_amount - refunded_for_source), 0)
+
+
+def _get_supplier_refundable_amount(return_invoice, *, return_amount: float | None = None, refunded_amount: float | None = None):
+	source_invoice_name = return_invoice.get("return_against")
+	current_return_amount = (
+		flt(return_amount)
+		if return_amount is not None
+		else abs(flt(return_invoice.get("rounded_total") or return_invoice.get("grand_total") or 0))
+	)
+	current_refunded_amount = (
+		flt(refunded_amount)
+		if refunded_amount is not None
+		else _sum_abs_allocated_amount(_collect_purchase_invoice_payment_entries([return_invoice.name]))
+	)
+	current_return_remaining = max(
+		min(abs(flt(return_invoice.get("outstanding_amount") or 0)), current_return_amount - current_refunded_amount),
+		0,
+	)
+	if not source_invoice_name:
+		return current_return_remaining
+
+	source_paid_amount = _sum_abs_allocated_amount(_collect_purchase_invoice_payment_entries([source_invoice_name]))
+	return_invoice_names = _get_return_invoice_names_for_source("Purchase Invoice", source_invoice_name)
+	refunded_for_source = _sum_abs_allocated_amount(_collect_purchase_invoice_payment_entries(return_invoice_names))
+	return max(min(current_return_remaining, source_paid_amount - refunded_for_source), 0)
+
+
 def create_supplier_refund(return_invoice_name: str, refund_amount: float, **kwargs):
 	from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
 
@@ -808,7 +1005,7 @@ def create_supplier_refund(return_invoice_name: str, refund_amount: float, **kwa
 			if not cint(return_invoice.get("is_return")):
 				frappe.throw(_("只能基于采购退货发票登记供应商退款。"))
 
-			refundable_amount = abs(flt(return_invoice.get("outstanding_amount")))
+			refundable_amount = _get_supplier_refundable_amount(return_invoice)
 			if refundable_amount <= 0:
 				frappe.throw(_("采购退货发票 {0} 当前没有可退金额。").format(return_invoice.name))
 			if refund_amount > refundable_amount:
