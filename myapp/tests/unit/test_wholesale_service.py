@@ -589,6 +589,24 @@ class TestWholesaleService(TestCase):
 			order_by="modified desc",
 		)
 
+	@patch("myapp.services.wholesale_service._list_item_codes_by_filters")
+	def test_search_product_v2_empty_search_lists_context_candidates(
+		self,
+		mock_list_item_codes_by_filters,
+	):
+		mock_list_item_codes_by_filters.return_value = []
+
+		result = search_product_v2(search_key="", item_context="purchase", limit=20)
+
+		self.assertEqual(result["data"], [])
+		mock_list_item_codes_by_filters.assert_called_once_with(
+			limit=60,
+			item_context="purchase",
+			disabled=0,
+			item_group=None,
+			brand=None,
+		)
+
 	@patch(
 		"myapp.services.wholesale_service.frappe.throw",
 		side_effect=frappe.ValidationError("请先选择仓库，或在当前用户默认值中配置 warehouse。"),

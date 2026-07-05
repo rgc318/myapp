@@ -1249,7 +1249,7 @@ def search_product(
 
 @frappe.whitelist()
 def search_product_v2(
-	search_key: str,
+	search_key: str = "",
 	price_list: str = "Standard Selling",
 	currency: str | None = None,
 	warehouse: str | None = None,

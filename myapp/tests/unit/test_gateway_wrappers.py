@@ -939,6 +939,18 @@ class TestGatewayWrappers(TestCase):
 			item_context="purchase",
 		)
 
+	@patch("myapp.api.gateway.search_product_v2_service")
+	def test_search_product_v2_defaults_empty_search_key(self, mock_search_product_v2_service):
+		mock_search_product_v2_service.return_value = {
+			"status": "success",
+			"data": [],
+		}
+
+		search_product_v2(item_context="sales")
+
+		mock_search_product_v2_service.assert_called_once()
+		self.assertEqual(mock_search_product_v2_service.call_args.kwargs["search_key"], "")
+
 	@patch("myapp.api.gateway.get_product_detail_v2_service")
 	def test_get_product_detail_v2_passes_filters_to_service(self, mock_get_product_detail_v2_service):
 		mock_get_product_detail_v2_service.return_value = {

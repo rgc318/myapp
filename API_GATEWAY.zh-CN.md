@@ -713,7 +713,7 @@ curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.search_p
 
 参数：
 
-- `search_key: str`
+- `search_key: str = ""`
 - `price_list: str = "Standard Selling"`
 - `currency: str | None = None`
 - `warehouse: str | None = None`
@@ -2032,7 +2032,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `item_context="inventory"` 时返回 `disabled=0, is_stock_item=1` 的商品，用于库存类操作
 - `item_context="any"` 时仅按启停过滤，用于商品后台或通用管理入口
 - 支持只看有库存商品
-- 支持按商品分类 `item_group` 和品牌 `brand` 过滤；当 `search_key` 为空但传入 `item_group` 或 `brand` 时，接口按筛选条件返回候选商品
+- 支持按商品分类 `item_group` 和品牌 `brand` 过滤；当 `search_key` 为空时，接口按 `item_context`、分类、品牌、启停和库存条件返回候选商品第一页，用于交易选品自动加载
 - 支持仓库 / 公司口径库存过滤
 - `qty` 表示当前查询口径库存
 - `total_qty` 表示总库存汇总

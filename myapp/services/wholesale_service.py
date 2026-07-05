@@ -1248,9 +1248,6 @@ def search_product_v2(
 	in_stock_only = bool(cint(in_stock_only))
 	disabled = cint(disabled) if disabled is not None else None
 
-	if not search_key and not item_group and not brand:
-		return {"status": "success", "data": []}
-
 	if search_key:
 		item_codes = _search_item_codes(
 			search_key,
