@@ -756,6 +756,32 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self.assertIn("order", payload["message"]["data"])
 		self.assertIn("snapshot", payload["message"]["data"])
 
+	def test_create_order_v2_preserves_explicit_zero_price(self):
+		_product_request, product_payload = self._create_product_and_stock(
+			item_name=f"HTTP-V2-零价销售商品-{time.time_ns()}",
+			opening_qty=8,
+			standard_rate=123,
+			warehouse=SALES_WAREHOUSE,
+		)
+		item_code = product_payload["message"]["data"]["item_code"]
+		_order_request, order_payload = self._create_sales_order_v2(
+			item_code=item_code,
+			qty=3,
+			price=0,
+		)
+		order_name = order_payload["message"]["data"]["order"]
+
+		detail_status, detail_payload = self._call_gateway(
+			"myapp.api.gateway.get_sales_order_detail",
+			{"order_name": order_name},
+		)
+
+		self._assert_success(detail_status, detail_payload, code="ORDER_DETAIL_FETCHED")
+		item = detail_payload["message"]["data"]["items"][0]
+		self.assertEqual(item["item_code"], item_code)
+		self.assertEqual(float(item["rate"]), 0.0)
+		self.assertEqual(float(item["amount"]), 0.0)
+
 	def test_create_order_v2_idempotent_replay(self):
 		request_id = self._unique_request_id("http-v2-order-idem")
 		payload, first_response = self._create_sales_order_v2(request_id=request_id)

@@ -784,6 +784,8 @@ frappe.call({
 - `price` 可选
 - `delivery_date` 可选
 
+说明：`price` 只要在明细中显式传入就按成交价处理，`0` 是有效价格，不会在提交时回退为 ERPNext 价目表价格。
+
 ### quick_create_purchase_order_v2
 
 方法：
@@ -957,6 +959,8 @@ curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.create_o
 - `uom` 可选
 - `price` 可选
 - `delivery_date` 可选
+
+说明：`price` 只要在明细中显式传入就按成交价处理，`0` 是有效价格，不会在提交时回退为 ERPNext 价目表价格。
 
 `customer_info` 当前建议字段：
 
@@ -1197,6 +1201,8 @@ update_order_v2(
 - `uom` 可选
 - `price` 可选
 - `delivery_date` 可选
+
+说明：`price` 只要在明细中显式传入就按成交价处理，`0` 是有效价格，不会在提交时回退为 ERPNext 价目表价格。
 
 行为：
 
@@ -1446,6 +1452,7 @@ cancel_order_v2(
 - `opening_qty: float = 0`
 - `opening_uom: str | None`
 - `stock_uom: str | None`
+- `uom_conversions: list[dict] | json-string | None`
 - `standard_rate: float | None`
 - `barcode: str | None`
 - `image: str | None`
@@ -1461,6 +1468,7 @@ cancel_order_v2(
 - `warehouse` 为空时优先使用 `default_warehouse`，再回退到当前用户默认仓库
 - `opening_qty > 0` 时自动创建一张 `Material Receipt` 入库
 - `opening_uom` 有值时，后端会先将 `opening_qty` 换算为商品库存基准单位后再入库
+- 若 `opening_uom` 与 `stock_uom` 不同，必须通过 `uom_conversions` 提供换算关系；快捷新增商品可将用户选择的入库单位同时作为 `stock_uom`，并传入 1:1 换算行
 - `standard_rate` 有值时自动补一条 `Standard Selling` 价格
 - `image` 写入标准字段 `Item.image`
 - `nickname` 优先写入自定义字段 `Item.custom_nickname`；若站点尚未完成迁移，则回退为旧的 `description` 兼容口径

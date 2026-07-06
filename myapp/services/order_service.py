@@ -630,13 +630,82 @@ def _build_sales_order_item(
 	}
 
 	if item.get("price") is not None:
-		row["rate"] = flt(item["price"])
+		rate = flt(item["price"])
+		row.update(
+			{
+				"rate": rate,
+				"price_list_rate": rate,
+				"base_rate": rate,
+				"net_rate": rate,
+				"amount": flt(qty * rate),
+				"base_amount": flt(qty * rate),
+				"net_amount": flt(qty * rate),
+				"ignore_pricing_rule": 1,
+			}
+		)
 	sales_mode = _normalize_sales_mode(item.get("sales_mode"))
 	sales_mode_field = _get_order_item_sales_mode_field()
 	if sales_mode and sales_mode_field:
 		row[sales_mode_field] = sales_mode
 
 	return row
+
+
+def _get_row_value(row, fieldname: str):
+	if isinstance(row, dict):
+		return row.get(fieldname)
+	return getattr(row, fieldname, None)
+
+
+def _set_row_value(row, fieldname: str, value):
+	if isinstance(row, dict):
+		row[fieldname] = value
+		return
+	setattr(row, fieldname, value)
+
+
+def _capture_explicit_item_rates(items):
+	explicit_rates = []
+	for index, item in enumerate(items or []):
+		if _get_row_value(item, "rate") is None:
+			continue
+		explicit_rates.append((index, flt(_get_row_value(item, "rate"))))
+	return explicit_rates
+
+
+def _apply_explicit_rate_to_item(item, rate: float):
+	qty = flt(_get_row_value(item, "qty") or 0)
+	amount = flt(qty * rate)
+	for fieldname, value in {
+		"rate": rate,
+		"price_list_rate": rate,
+		"base_rate": rate,
+		"net_rate": rate,
+		"amount": amount,
+		"base_amount": amount,
+		"net_amount": amount,
+		"ignore_pricing_rule": 1,
+	}.items():
+		_set_row_value(item, fieldname, value)
+
+
+def _restore_explicit_item_rates(doc, explicit_rates):
+	if not explicit_rates:
+		return
+
+	items = list(doc.get("items") or [])
+	for index, rate in explicit_rates:
+		if index >= len(items):
+			continue
+		_apply_explicit_rate_to_item(items[index], rate)
+
+	calculate_taxes_and_totals = getattr(doc, "calculate_taxes_and_totals", None)
+	if callable(calculate_taxes_and_totals):
+		calculate_taxes_and_totals()
+		for index, rate in explicit_rates:
+			if index >= len(items):
+				continue
+			_apply_explicit_rate_to_item(items[index], rate)
 
 
 def _normalize_snapshot_payload(snapshot):
@@ -724,7 +793,9 @@ def _apply_sales_order_v2_snapshot(so, *, customer_info=None, shipping_info=None
 
 
 def _insert_and_submit(doc):
+	explicit_rates = _capture_explicit_item_rates(doc.get("items") or [])
 	doc.insert()
+	_restore_explicit_item_rates(doc, explicit_rates)
 	doc.submit()
 	return doc
 
@@ -1548,9 +1619,24 @@ def _serialize_address_doc(address_doc):
 	if not address_doc:
 		return None
 
+	address_display = _extract_first_non_empty(getattr(address_doc, "address_display", None))
+	if not address_display:
+		address_display = "\n".join(
+			part
+			for part in [
+				_extract_first_non_empty(getattr(address_doc, "address_line1", None)),
+				_extract_first_non_empty(getattr(address_doc, "address_line2", None)),
+				_extract_first_non_empty(getattr(address_doc, "city", None)),
+				_extract_first_non_empty(getattr(address_doc, "state", None)),
+				_extract_first_non_empty(getattr(address_doc, "pincode", None)),
+				_extract_first_non_empty(getattr(address_doc, "country", None)),
+			]
+			if part
+		)
+
 	return {
 		"name": getattr(address_doc, "name", None),
-		"address_display": _extract_first_non_empty(getattr(address_doc, "address_display", None)),
+		"address_display": address_display,
 		"address_line1": _extract_first_non_empty(getattr(address_doc, "address_line1", None)),
 		"address_line2": _extract_first_non_empty(getattr(address_doc, "address_line2", None)),
 		"city": _extract_first_non_empty(getattr(address_doc, "city", None)),

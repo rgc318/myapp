@@ -12,6 +12,7 @@ from myapp.services.order_service import (
 	_collect_sales_order_reference_names,
 	_apply_sales_invoice_return_adjustments,
 	_build_sales_order_summary_rows,
+	_insert_and_submit,
 	_serialize_delivery_note_items,
 	_serialize_order_items,
 	_serialize_sales_invoice_items,
@@ -1358,6 +1359,99 @@ class TestOrderService(TestCase):
 		self.assertEqual(row["stock_qty"], 48)
 		self.assertEqual(row["qty_for_stock_validation"], 48)
 		self.assertEqual(row["rate"], 25)
+		self.assertEqual(row["price_list_rate"], 25)
+		self.assertEqual(row["amount"], 50)
+		self.assertEqual(row["ignore_pricing_rule"], 1)
+
+	def test_build_sales_order_item_keeps_explicit_zero_price(self):
+		from myapp.services.order_service import _build_sales_order_item
+
+		with patch("myapp.services.order_service._validate_warehouse_company"), patch(
+			"myapp.services.order_service.resolve_item_quantity_to_stock",
+			return_value={
+				"uom": "Nos",
+				"stock_uom": "Nos",
+				"conversion_factor": 1,
+				"stock_qty": 3,
+			},
+		), patch("myapp.services.order_service._get_order_item_sales_mode_field", return_value=None):
+			row = _build_sales_order_item(
+				{
+					"item_code": "ITEM-001",
+					"qty": 3,
+					"warehouse": "Stores - TC",
+					"price": 0,
+				},
+				"2026-03-20",
+				None,
+				"Test Company",
+			)
+
+		self.assertEqual(row["rate"], 0)
+		self.assertEqual(row["price_list_rate"], 0)
+		self.assertEqual(row["amount"], 0)
+		self.assertEqual(row["ignore_pricing_rule"], 1)
+
+	def test_insert_and_submit_restores_explicit_zero_price_after_insert_pricing(self):
+		zero_price_item = frappe._dict(
+			{
+				"item_code": "ITEM-001",
+				"qty": 2,
+				"rate": 0,
+				"price_list_rate": 0,
+				"amount": 0,
+			}
+		)
+		default_price_item = frappe._dict({"item_code": "ITEM-002", "qty": 1})
+		manual_price_item = frappe._dict(
+			{
+				"item_code": "ITEM-003",
+				"qty": 3,
+				"rate": 5,
+				"price_list_rate": 5,
+				"amount": 15,
+			}
+		)
+		doc = frappe._dict({"items": [zero_price_item, default_price_item, manual_price_item]})
+		doc.get = lambda field, default=None: doc[field] if field in doc else default
+
+		def insert():
+			zero_price_item.rate = 12
+			zero_price_item.price_list_rate = 12
+			zero_price_item.amount = 24
+			default_price_item.rate = 19
+			default_price_item.price_list_rate = 19
+			default_price_item.amount = 19
+			manual_price_item.rate = 9
+			manual_price_item.price_list_rate = 9
+			manual_price_item.amount = 27
+
+		def calculate_taxes_and_totals():
+			zero_price_item.rate = 12
+			zero_price_item.price_list_rate = 12
+			zero_price_item.amount = 24
+			manual_price_item.rate = 9
+			manual_price_item.price_list_rate = 9
+			manual_price_item.amount = 27
+
+		doc.insert = MagicMock(side_effect=insert)
+		doc.calculate_taxes_and_totals = MagicMock(side_effect=calculate_taxes_and_totals)
+		doc.submit = MagicMock()
+
+		_insert_and_submit(doc)
+
+		self.assertEqual(zero_price_item.rate, 0)
+		self.assertEqual(zero_price_item.price_list_rate, 0)
+		self.assertEqual(zero_price_item.amount, 0)
+		self.assertEqual(zero_price_item.ignore_pricing_rule, 1)
+		self.assertEqual(default_price_item.rate, 19)
+		self.assertEqual(manual_price_item.rate, 5)
+		self.assertEqual(manual_price_item.price_list_rate, 5)
+		self.assertEqual(manual_price_item.amount, 15)
+		self.assertEqual(manual_price_item.ignore_pricing_rule, 1)
+		doc.insert.assert_called_once()
+		doc.calculate_taxes_and_totals.assert_called_once()
+		doc.submit.assert_called_once()
 
 	@patch("myapp.services.order_service.frappe.throw", side_effect=frappe.ValidationError("本次需要 12.0"))
 	@patch("myapp.services.order_service.frappe.get_all")

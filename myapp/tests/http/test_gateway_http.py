@@ -1281,7 +1281,7 @@ class GatewayHttpTestCase(TestCase):
 				"item_name": f"HTTP-报表规格商品-{time.time_ns()}",
 				"default_warehouse": SALES_WAREHOUSE,
 				"opening_qty": 10,
-				"standard_rate": 18,
+				"standard_rate": 123456,
 				"barcode": f"REPORT{time.time_ns()}"[-16:],
 				"specification": specification,
 				"request_id": self._unique_request_id("http-report-product-spec"),
@@ -1290,8 +1290,8 @@ class GatewayHttpTestCase(TestCase):
 		self._assert_success(create_status, create_payload, code="PRODUCT_CREATED")
 		item_code = create_payload["message"]["data"]["item_code"]
 
-		self._create_sales_order(item_code=item_code, price=18)
-		self._create_purchase_order(item_code=item_code, price=12)
+		self._create_sales_order(item_code=item_code, price=123456)
+		self._create_purchase_order(item_code=item_code, price=123456)
 		report_date = time.strftime("%Y-%m-%d")
 
 		status_code, response = self._call_gateway(

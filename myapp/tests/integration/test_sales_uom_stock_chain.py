@@ -163,6 +163,24 @@ class SalesUomStockChainTestCase(unittest.TestCase):
 		self.assertEqual(flt(sle_rows[0].actual_qty), -5.0)
 		self.assertEqual(flt(sle_rows[0].qty_after_transaction), after_qty)
 
+	def test_explicit_zero_price_is_not_replaced_by_item_price(self):
+		item_code = self._create_test_item("ZERO-PRICE", standard_rate=123)
+
+		order_name = self._create_order(
+			item_code=item_code,
+			qty=4,
+			uom="Nos",
+			price=0,
+			sales_mode="retail",
+		)
+		order = frappe.get_doc("Sales Order", order_name)
+		order_row = order.items[0]
+
+		self.assertEqual(flt(order_row.rate), 0.0)
+		self.assertEqual(flt(order_row.price_list_rate), 0.0)
+		self.assertEqual(flt(order_row.amount), 0.0)
+		self.assertEqual(flt(order.grand_total), 0.0)
+
 	def test_updating_order_uom_recomputes_stock_qty_before_delivery(self):
 		item_code = self._create_test_item("UPDATE")
 		before_qty = self._get_bin_qty(item_code)
