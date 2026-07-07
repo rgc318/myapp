@@ -43,13 +43,13 @@
 
 - 采购与结算：
 - `myapp.api.gateway.create_purchase_order`
-- `myapp.api.gateway.quick_create_purchase_order_v2`（规划中）
+- `myapp.api.gateway.quick_create_purchase_order_v2`
 - `myapp.api.gateway.receive_purchase_order`
 - `myapp.api.gateway.create_purchase_invoice`
 - `myapp.api.gateway.create_purchase_invoice_from_receipt`
 - `myapp.api.gateway.record_supplier_payment`
 - `myapp.api.gateway.process_purchase_return`
-- `myapp.api.gateway.quick_cancel_purchase_order_v2`（规划中）
+- `myapp.api.gateway.quick_cancel_purchase_order_v2`
 - `myapp.api.gateway.create_supplier_v2`
 - `myapp.api.gateway.update_supplier_v2`
 - `myapp.api.gateway.disable_supplier_v2`
@@ -71,8 +71,8 @@
 ### 模块导航
 
 - 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`add_product_barcode_v2`、`set_primary_product_barcode_v2`、`delete_product_barcode_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`list_business_documents_v1`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`get_payment_entry_detail_v1`、`get_customer_refund_context_v1`、`create_customer_refund`、`process_sales_return`
-- 采购与结算：`create_purchase_order`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`
-- 采购快捷链路（规划中）：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
+- 采购与结算：`create_purchase_order`、`quick_create_purchase_order_v2`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`、`quick_cancel_purchase_order_v2`
+- 采购快捷链路：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
 - 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`list_business_documents_v1`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`、`create_supplier_v2`、`update_supplier_v2`、`disable_supplier_v2`
 - 采购更新与作废：`update_purchase_order_v2`、`update_purchase_order_items_v2`、`cancel_purchase_order_v2`、`cancel_purchase_receipt_v2`、`cancel_purchase_invoice_v2`、`cancel_supplier_payment`
 - 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`、`list_stock_ledger_entries_v1`
@@ -3382,23 +3382,43 @@ frappe.call({
 - 详情侧的付款汇总字段当前与采购发票详情复用同一组写回辅助逻辑
 - `payment.latest_payment_*` 字段口径会在订单详情与采购发票详情之间保持一致
 - 单票“最新付款结果”当前也会委托到工作台同源的批量付款摘要底座上计算
+- 返回 `payment.entries[]` 供应商付款历史明细，用于订单详情页展示分次付款并支持逐笔回退
+- 返回 `timeline[]` 业务时间线，用于订单详情页串联采购订单、采购收货单、采购发票、供应商付款、采购退货和供应商退款
 
 当前返回重点字段：
 
 - `purchase_order_name`
 - `document_status`
 - `supplier.display_name`
-- `amounts.grand_total`
-- `amounts.received_amount_estimate`
-- `amounts.invoiced_amount_estimate`
+- `amounts.order_amount_estimate`
+- `amounts.receivable_amount`
+- `amounts.paid_amount`
+- `amounts.outstanding_amount`
 - `receiving.status`
 - `payment.status`
-- `actions.can_receive`
-- `actions.can_create_invoice`
-- `actions.can_update`
-- `actions.can_cancel`
+- `payment.entries[].payment_entry`
+- `payment.entries[].posting_date`
+- `payment.entries[].mode_of_payment`
+- `payment.entries[].allocated_amount`
+- `payment.entries[].actual_paid_amount`
+- `payment.entries[].reference_no`
+- `payment.entries[].reference_date`
+- `actions.can_receive_purchase_order`
+- `actions.can_create_purchase_invoice`
+- `actions.can_record_supplier_payment`
+- `actions.can_cancel_purchase_order`
 - `references.purchase_receipts`
 - `references.purchase_invoices`
+- `references.latest_payment_entry`
+- `timeline[].type`
+- `timeline[].title`
+- `timeline[].doctype`
+- `timeline[].docname`
+- `timeline[].status`
+- `timeline[].date`
+- `timeline[].amount`
+- `timeline[].related_doctype`
+- `timeline[].related_docname`
 - `items[].item_code`
 - `items[].qty`
 - `items[].received_qty`
@@ -3488,6 +3508,28 @@ frappe.call({
 - 返回采购收货单详情聚合数据
 - 返回来源采购单、关联采购发票、供应商快照、地址快照和商品明细
 - 适合收货详情页、退货确认页直接渲染
+- 返回 `actions.can_cancel_purchase_receipt` 和 `actions.cancel_purchase_receipt_hint`，用于详情页在已关联采购发票时提示先作废下游发票，再回退收货单
+
+当前返回重点字段：
+
+- `purchase_receipt_name`
+- `document_status`
+- `supplier.display_name`
+- `amounts.receipt_amount_estimate`
+- `receiving.total_qty`
+- `receiving.status`
+- `actions.can_cancel_purchase_receipt`
+- `actions.can_create_purchase_invoice`
+- `actions.cancel_purchase_receipt_hint`
+- `references.purchase_orders`
+- `references.purchase_invoices`
+- `items[].item_code`
+- `items[].qty`
+- `items[].rate`
+- `items[].amount`
+- `meta.company`
+- `meta.currency`
+- `meta.posting_date`
 
 ### get_purchase_invoice_detail_v2
 
@@ -3507,6 +3549,37 @@ frappe.call({
 - 详情侧的付款汇总字段当前与采购订单详情复用同一组写回辅助逻辑
 - 用于避免订单详情与发票详情分别重复装配 `latest_payment_*` 字段
 - 单票“最新付款结果”当前也会委托到工作台同源的批量付款摘要底座上计算
+- 返回 `payment.entries[]` 供应商付款历史明细，用于发票详情页展示分次付款、逐笔取消付款，以及作废发票前的付款清理确认
+
+当前返回重点字段：
+
+- `purchase_invoice_name`
+- `document_status`
+- `supplier.display_name`
+- `amounts.invoice_amount_estimate`
+- `amounts.receivable_amount`
+- `amounts.paid_amount`
+- `amounts.outstanding_amount`
+- `payment.status`
+- `payment.entries[].payment_entry`
+- `payment.entries[].posting_date`
+- `payment.entries[].mode_of_payment`
+- `payment.entries[].allocated_amount`
+- `payment.entries[].actual_paid_amount`
+- `payment.entries[].reference_no`
+- `payment.entries[].reference_date`
+- `actions.can_cancel_purchase_invoice`
+- `references.purchase_orders`
+- `references.purchase_receipts`
+- `references.latest_payment_entry`
+- `items[].item_code`
+- `items[].qty`
+- `items[].rate`
+- `items[].amount`
+- `meta.company`
+- `meta.currency`
+- `meta.posting_date`
+- `meta.due_date`
 
 ### get_supplier_purchase_context
 

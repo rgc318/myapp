@@ -1,7 +1,7 @@
 import frappe
 import heapq
 from frappe import _
-from frappe.utils import cint, flt, getdate, nowdate
+from frappe.utils import cint, flt, get_datetime, getdate, nowdate
 
 from myapp.services.order_service import (
 	_build_payment_summary,
@@ -587,6 +587,279 @@ def _build_purchase_latest_payment_summary_map(order_invoice_names_map: dict[str
 	return summary_map
 
 
+def _document_status_from_row(row):
+	return _document_status_label(cint(getattr(row, "docstatus", 0) or 0))
+
+
+def _timeline_datetime_key(event: dict):
+	value = event.get("datetime") or event.get("date") or event.get("modified")
+	try:
+		return get_datetime(value)
+	except Exception:
+		return get_datetime("1900-01-01")
+
+
+def _collect_purchase_invoice_payment_entries(invoice_names: list[str]):
+	if not invoice_names:
+		return []
+
+	reference_rows = frappe.get_all(
+		"Payment Entry Reference",
+		filters={
+			"reference_doctype": "Purchase Invoice",
+			"reference_name": ["in", invoice_names],
+			"parenttype": "Payment Entry",
+			"parentfield": "references",
+		},
+		fields=["parent", "reference_name", "allocated_amount", "modified"],
+		limit_page_length=0,
+	)
+	if not reference_rows:
+		return []
+
+	parent_names = []
+	total_allocated_by_parent = {}
+	for row in reference_rows:
+		parent = getattr(row, "parent", None)
+		if not parent:
+			continue
+		if parent not in parent_names:
+			parent_names.append(parent)
+		total_allocated_by_parent[parent] = total_allocated_by_parent.get(parent, 0) + flt(
+			getattr(row, "allocated_amount", 0) or 0
+		)
+
+	if not parent_names:
+		return []
+
+	payment_entry_rows = frappe.get_all(
+		"Payment Entry",
+		filters={"name": ["in", parent_names], "docstatus": 1},
+		fields=[
+			"name",
+			"posting_date",
+			"payment_type",
+			"mode_of_payment",
+			"party",
+			"paid_amount",
+			"received_amount",
+			"unallocated_amount",
+			"reference_no",
+			"reference_date",
+			"modified",
+		],
+		order_by="modified desc",
+		limit_page_length=0,
+	)
+	if not payment_entry_rows:
+		return []
+
+	payment_entry_map = {getattr(row, "name", None): row for row in payment_entry_rows}
+	entries = []
+	for row in reference_rows:
+		parent = getattr(row, "parent", None)
+		payment_entry = payment_entry_map.get(parent)
+		if not payment_entry:
+			continue
+		allocated_amount = flt(getattr(row, "allocated_amount", 0) or 0)
+		parent_total_allocated = flt(total_allocated_by_parent.get(parent, 0) or 0)
+		parent_paid_amount = flt(
+			getattr(payment_entry, "paid_amount", None)
+			or getattr(payment_entry, "received_amount", None)
+			or 0
+		)
+		parent_effective_paid_amount = min(parent_paid_amount, parent_total_allocated)
+		actual_paid_amount = (
+			parent_effective_paid_amount * allocated_amount / parent_total_allocated
+			if parent_total_allocated > 0
+			else 0
+		)
+		entries.append(
+			{
+				"payment_entry": parent,
+				"invoice_name": getattr(row, "reference_name", None),
+				"posting_date": getattr(payment_entry, "posting_date", None),
+				"payment_type": getattr(payment_entry, "payment_type", None),
+				"mode_of_payment": getattr(payment_entry, "mode_of_payment", None),
+				"party": getattr(payment_entry, "party", None),
+				"paid_amount": parent_paid_amount,
+				"allocated_amount": allocated_amount,
+				"actual_paid_amount": max(actual_paid_amount, 0),
+				"writeoff_amount": max(allocated_amount - actual_paid_amount, 0),
+				"unallocated_amount": flt(getattr(payment_entry, "unallocated_amount", 0) or 0),
+				"reference_no": getattr(payment_entry, "reference_no", None),
+				"reference_date": getattr(payment_entry, "reference_date", None),
+				"modified": getattr(payment_entry, "modified", None),
+			}
+		)
+
+	return sorted(entries, key=lambda entry: str(entry.get("modified") or ""), reverse=True)
+
+
+def _build_purchase_order_timeline(po, receipt_names: list[str], invoice_names: list[str]):
+	events = [
+		{
+			"key": f"purchase_order:{po.name}",
+			"type": "purchase_order",
+			"title": _("采购订单"),
+			"doctype": "Purchase Order",
+			"docname": po.name,
+			"status": _document_status_label(po.docstatus),
+			"date": po.get("transaction_date"),
+			"datetime": po.get("transaction_date"),
+			"amount": flt(po.get("rounded_total") or po.get("grand_total") or 0),
+			"description": _("订单创建 / 提交"),
+		}
+	]
+
+	if receipt_names:
+		receipt_rows = frappe.get_all(
+			"Purchase Receipt",
+			filters={"name": ["in", receipt_names], "is_return": 0},
+			fields=["name", "docstatus", "posting_date", "posting_time", "grand_total", "rounded_total", "modified", "is_return"],
+			limit_page_length=0,
+		)
+		for row in receipt_rows:
+			if cint(getattr(row, "is_return", 0)):
+				continue
+			events.append(
+				{
+					"key": f"purchase_receipt:{row.name}",
+					"type": "purchase_receipt",
+					"title": _("采购收货"),
+					"doctype": "Purchase Receipt",
+					"docname": row.name,
+					"status": _document_status_from_row(row),
+					"date": getattr(row, "posting_date", None),
+					"datetime": f"{getattr(row, 'posting_date', '')} {getattr(row, 'posting_time', '')}".strip(),
+					"modified": getattr(row, "modified", None),
+					"amount": flt(getattr(row, "rounded_total", None) or getattr(row, "grand_total", None) or 0),
+					"description": _("采购收货单"),
+				}
+			)
+
+	if invoice_names:
+		invoice_rows = frappe.get_all(
+			"Purchase Invoice",
+			filters={"name": ["in", invoice_names], "is_return": 0},
+			fields=[
+				"name",
+				"docstatus",
+				"posting_date",
+				"due_date",
+				"grand_total",
+				"rounded_total",
+				"outstanding_amount",
+				"is_return",
+				"return_against",
+				"modified",
+			],
+			limit_page_length=0,
+		)
+		for row in invoice_rows:
+			if cint(getattr(row, "is_return", 0)):
+				continue
+			events.append(
+				{
+					"key": f"purchase_invoice:{row.name}",
+					"type": "purchase_invoice",
+					"title": _("采购开票"),
+					"doctype": "Purchase Invoice",
+					"docname": row.name,
+					"status": _document_status_from_row(row),
+					"date": getattr(row, "posting_date", None),
+					"datetime": getattr(row, "posting_date", None),
+					"modified": getattr(row, "modified", None),
+					"amount": flt(getattr(row, "rounded_total", None) or getattr(row, "grand_total", None) or 0),
+					"outstanding_amount": flt(getattr(row, "outstanding_amount", 0) or 0),
+					"description": _("采购发票"),
+				}
+			)
+
+	return_receipt_rows = []
+	if receipt_names:
+		return_receipt_rows = frappe.get_all(
+			"Purchase Receipt",
+			filters={"return_against": ["in", receipt_names], "is_return": 1},
+			fields=["name", "docstatus", "posting_date", "posting_time", "grand_total", "rounded_total", "return_against", "modified"],
+			limit_page_length=0,
+		)
+		for row in return_receipt_rows:
+			events.append(
+				{
+					"key": f"purchase_return_receipt:{row.name}",
+					"type": "purchase_return",
+					"title": _("采购退货"),
+					"doctype": "Purchase Receipt",
+					"docname": row.name,
+					"status": _document_status_from_row(row),
+					"date": getattr(row, "posting_date", None),
+					"datetime": f"{getattr(row, 'posting_date', '')} {getattr(row, 'posting_time', '')}".strip(),
+					"modified": getattr(row, "modified", None),
+					"amount": abs(flt(getattr(row, "rounded_total", None) or getattr(row, "grand_total", None) or 0)),
+					"related_doctype": "Purchase Receipt",
+					"related_docname": getattr(row, "return_against", None),
+					"description": _("退货收货单"),
+				}
+			)
+
+	return_invoice_rows = []
+	if invoice_names:
+		return_invoice_rows = frappe.get_all(
+			"Purchase Invoice",
+			filters={"return_against": ["in", invoice_names], "is_return": 1},
+			fields=["name", "docstatus", "posting_date", "grand_total", "rounded_total", "outstanding_amount", "return_against", "modified"],
+			limit_page_length=0,
+		)
+		for row in return_invoice_rows:
+			events.append(
+				{
+					"key": f"purchase_return_invoice:{row.name}",
+					"type": "purchase_return",
+					"title": _("采购退货"),
+					"doctype": "Purchase Invoice",
+					"docname": row.name,
+					"status": _document_status_from_row(row),
+					"date": getattr(row, "posting_date", None),
+					"datetime": getattr(row, "posting_date", None),
+					"modified": getattr(row, "modified", None),
+					"amount": abs(flt(getattr(row, "rounded_total", None) or getattr(row, "grand_total", None) or 0)),
+					"outstanding_amount": abs(flt(getattr(row, "outstanding_amount", 0) or 0)),
+					"related_doctype": "Purchase Invoice",
+					"related_docname": getattr(row, "return_against", None),
+					"description": _("退货发票"),
+				}
+			)
+
+	return_invoice_names = {
+		getattr(row, "name", None) for row in return_invoice_rows if getattr(row, "name", None)
+	}
+	payment_invoice_names = invoice_names + list(return_invoice_names)
+	for entry in _collect_purchase_invoice_payment_entries(payment_invoice_names):
+		is_refund = entry.get("invoice_name") in return_invoice_names
+		events.append(
+			{
+				"key": f"payment_entry:{entry.get('payment_entry')}:{entry.get('invoice_name')}",
+				"type": "supplier_refund" if is_refund else "payment_entry",
+				"title": _("供应商退款") if is_refund else _("供应商付款"),
+				"doctype": "Payment Entry",
+				"docname": entry.get("payment_entry"),
+				"status": "submitted",
+				"date": entry.get("posting_date"),
+				"datetime": entry.get("posting_date") or entry.get("modified"),
+				"modified": entry.get("modified"),
+				"amount": flt(entry.get("allocated_amount") or 0),
+				"related_doctype": "Purchase Invoice",
+				"related_docname": entry.get("invoice_name"),
+				"mode_of_payment": entry.get("mode_of_payment"),
+				"reference_no": entry.get("reference_no"),
+				"description": _("退款核销退货发票") if is_refund else _("付款核销采购发票"),
+			}
+		)
+
+	return sorted(events, key=_timeline_datetime_key)
+
+
 def _build_purchase_order_summary_rows(order_rows):
 	if not order_rows:
 		return []
@@ -1019,6 +1292,7 @@ def get_purchase_order_detail_v2(order_name: str):
 			invoice_names,
 			docstatus=po.docstatus,
 		)
+		payment["entries"] = _collect_purchase_invoice_payment_entries(invoice_names)
 
 		return {
 			"status": "success",
@@ -1049,6 +1323,7 @@ def get_purchase_order_detail_v2(order_name: str):
 					"purchase_invoices": invoice_names,
 					"latest_payment_entry": latest_payment_entry.get("payment_entry"),
 				},
+				"timeline": _build_purchase_order_timeline(po, receipt_names, invoice_names),
 				"meta": {
 					"company": po.company,
 					"currency": po.get("currency"),
@@ -1129,6 +1404,7 @@ def get_purchase_invoice_detail_v2(invoice_name: str):
 		payment = _build_payment_summary([pi])
 		latest_payment_entry = _get_latest_purchase_payment_entry_summary([pi.name])
 		_apply_purchase_latest_payment_metrics(payment, latest_payment_entry)
+		payment["entries"] = _collect_purchase_invoice_payment_entries([pi.name])
 
 		return {
 			"status": "success",
