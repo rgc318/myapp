@@ -20,6 +20,10 @@ from myapp.utils.idempotency import run_idempotent
 from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom import resolve_item_quantity_to_stock
 from myapp.utils.uom_display import build_uom_display_map
+from myapp.utils.warehouse import validate_transaction_warehouse
+
+
+PURCHASE_ORDER_REMARK_FIELD = "custom_order_remark"
 
 
 def _coerce_json_value(value, default):
@@ -42,6 +46,35 @@ def _new_doc(doctype: str):
 
 def _normalize_text(value: str | None):
 	return (value or "").strip()
+
+
+def _has_purchase_order_field(fieldname: str) -> bool:
+	try:
+		return bool(frappe.get_meta("Purchase Order").has_field(fieldname))
+	except Exception:
+		return False
+
+
+def _get_purchase_order_remark_field() -> str | None:
+	if _has_purchase_order_field(PURCHASE_ORDER_REMARK_FIELD):
+		return PURCHASE_ORDER_REMARK_FIELD
+	if _has_purchase_order_field("remarks"):
+		return "remarks"
+	return None
+
+
+def _set_purchase_order_remark(doc, value):
+	fieldname = _get_purchase_order_remark_field()
+	if not fieldname:
+		return
+	doc.set(fieldname, value)
+
+
+def _get_purchase_order_remark(doc):
+	fieldname = _get_purchase_order_remark_field()
+	if not fieldname:
+		return None
+	return doc.get(fieldname)
 
 
 def _normalize_limit(limit: int | None):
@@ -298,11 +331,14 @@ def _get_purchase_default_warehouse_for_company(company: str | None):
 
 	user_warehouse = _extract_first_non_empty(frappe.defaults.get_user_default("warehouse"))
 	if user_warehouse:
-		warehouse_company = frappe.db.get_value("Warehouse", user_warehouse, "company")
-		if warehouse_company == company:
+		try:
+			warehouse_row = validate_transaction_warehouse(user_warehouse, company=company)
+		except frappe.ValidationError:
+			warehouse_row = None
+		if warehouse_row and warehouse_row.company == company:
 			return user_warehouse
 
-	return frappe.db.get_value("Warehouse", {"company": company, "is_group": 0}, "name")
+	return frappe.db.get_value("Warehouse", {"company": company, "disabled": 0, "is_group": 0}, "name")
 
 
 def _is_purchase_summary_cancelled(summary_row: dict):
@@ -1010,6 +1046,28 @@ def _build_purchase_receiving_summary(order_items):
 	}
 
 
+def _build_purchase_billing_summary(order_items):
+	total_qty = _sum_row_values(order_items, "qty")
+	billed_qty_map = _get_purchase_order_billed_qty_map(order_items)
+	billed_qty = sum(flt(value or 0) for value in billed_qty_map.values())
+	remaining_qty = max(total_qty - billed_qty, 0)
+
+	if billed_qty <= 0:
+		status = "pending"
+	elif billed_qty < total_qty:
+		status = "partial"
+	else:
+		status = "billed"
+
+	return {
+		"total_qty": total_qty,
+		"billed_qty": billed_qty,
+		"remaining_qty": remaining_qty,
+		"status": status,
+		"is_fully_billed": total_qty > 0 and remaining_qty <= 0,
+	}
+
+
 def _apply_purchase_latest_payment_metrics(payment: dict, latest_payment_entry: dict):
 	payment["actual_paid_amount"] = latest_payment_entry.get("total_actual_paid_amount")
 	payment["total_writeoff_amount"] = latest_payment_entry.get("total_writeoff_amount")
@@ -1035,14 +1093,15 @@ def _build_purchase_completion_summary(receiving: dict, payment: dict, *, docsta
 def _build_purchase_order_financial_summary(order_items, invoice_names: list[str], *, docstatus: int):
 	invoice_rows = _load_purchase_invoice_rows(invoice_names)
 	receiving = _build_purchase_receiving_summary(order_items)
+	billing = _build_purchase_billing_summary(order_items)
 	payment = _build_payment_summary(invoice_rows)
 	latest_payment_entry = _get_latest_purchase_payment_entry_summary(invoice_names)
 	_apply_purchase_latest_payment_metrics(payment, latest_payment_entry)
 	completion = _build_purchase_completion_summary(receiving, payment, docstatus=docstatus)
-	return receiving, payment, completion, latest_payment_entry
+	return receiving, billing, payment, completion, latest_payment_entry
 
 
-def _build_purchase_order_action_flags(receiving: dict, payment: dict, *, invoice_names: list[str], receipt_names: list[str], docstatus: int):
+def _build_purchase_order_action_flags(receiving: dict, billing: dict, payment: dict, *, invoice_names: list[str], receipt_names: list[str], docstatus: int):
 	is_submitted = cint(docstatus) == 1
 	can_cancel_purchase_order = is_submitted and not invoice_names and not receipt_names
 	cancel_purchase_order_hint = None
@@ -1053,7 +1112,7 @@ def _build_purchase_order_action_flags(receiving: dict, payment: dict, *, invoic
 
 	return {
 		"can_receive_purchase_order": is_submitted and not receiving.get("is_fully_received"),
-		"can_create_purchase_invoice": is_submitted and not payment.get("is_fully_paid"),
+		"can_create_purchase_invoice": is_submitted and not billing.get("is_fully_billed"),
 		"can_record_supplier_payment": is_submitted and payment.get("outstanding_amount", 0) > 0,
 		"can_process_purchase_return": bool(is_submitted and (invoice_names or receipt_names)),
 		"can_cancel_purchase_order": can_cancel_purchase_order,
@@ -1090,19 +1149,27 @@ def _build_purchase_invoice_action_flags(*, docstatus: int, latest_payment_entry
 
 
 def _serialize_purchase_order_items(order_items):
-	item_specification_map = _get_item_specification_map(order_items)
+	item_meta_map = _get_item_meta_map(order_items)
+	billed_qty_map = _get_purchase_order_billed_qty_map(order_items)
 	uom_display_map = _build_item_row_uom_display_map(order_items)
 	return [
 		{
 			"purchase_order_item": getattr(item, "name", None),
 			"item_code": getattr(item, "item_code", None),
 			"item_name": getattr(item, "item_name", None),
-			"specification": item_specification_map.get(getattr(item, "item_code", None)),
+			"specification": (item_meta_map.get(getattr(item, "item_code", None)) or {}).get("specification"),
+			"image": (item_meta_map.get(getattr(item, "item_code", None)) or {}).get("image"),
 			"uom": getattr(item, "uom", None),
 			"uom_display": _resolve_item_row_uom_display(item, uom_display_map),
 			"warehouse": getattr(item, "warehouse", None),
 			"qty": flt(getattr(item, "qty", 0) or 0),
 			"received_qty": flt(getattr(item, "received_qty", 0) or 0),
+			"billed_qty": flt(billed_qty_map.get(getattr(item, "name", None)) or 0),
+			"pending_billing_qty": max(
+				flt(getattr(item, "qty", 0) or 0)
+				- flt(billed_qty_map.get(getattr(item, "name", None)) or 0),
+				0,
+			),
 			"billed_amt": flt(getattr(item, "billed_amt", 0) or 0),
 			"rate": flt(getattr(item, "rate", 0) or 0),
 			"amount": flt(getattr(item, "amount", 0) or 0),
@@ -1129,14 +1196,15 @@ def _resolve_item_row_uom_display(item, uom_display_map):
 
 
 def _serialize_purchase_receipt_items(receipt_items):
-	item_specification_map = _get_item_specification_map(receipt_items)
+	item_meta_map = _get_item_meta_map(receipt_items)
 	uom_display_map = _build_item_row_uom_display_map(receipt_items)
 	return [
 		{
 			"purchase_receipt_item": getattr(item, "name", None),
 			"item_code": getattr(item, "item_code", None),
 			"item_name": getattr(item, "item_name", None),
-			"specification": item_specification_map.get(getattr(item, "item_code", None)),
+			"specification": (item_meta_map.get(getattr(item, "item_code", None)) or {}).get("specification"),
+			"image": (item_meta_map.get(getattr(item, "item_code", None)) or {}).get("image"),
 			"uom": getattr(item, "uom", None),
 			"uom_display": _resolve_item_row_uom_display(item, uom_display_map),
 			"warehouse": getattr(item, "warehouse", None),
@@ -1151,14 +1219,15 @@ def _serialize_purchase_receipt_items(receipt_items):
 
 
 def _serialize_purchase_invoice_items(invoice_items):
-	item_specification_map = _get_item_specification_map(invoice_items)
+	item_meta_map = _get_item_meta_map(invoice_items)
 	uom_display_map = _build_item_row_uom_display_map(invoice_items)
 	return [
 		{
 			"purchase_invoice_item": getattr(item, "name", None),
 			"item_code": getattr(item, "item_code", None),
 			"item_name": getattr(item, "item_name", None),
-			"specification": item_specification_map.get(getattr(item, "item_code", None)),
+			"specification": (item_meta_map.get(getattr(item, "item_code", None)) or {}).get("specification"),
+			"image": (item_meta_map.get(getattr(item, "item_code", None)) or {}).get("image"),
 			"uom": getattr(item, "uom", None),
 			"uom_display": _resolve_item_row_uom_display(item, uom_display_map),
 			"warehouse": getattr(item, "warehouse", None),
@@ -1175,27 +1244,64 @@ def _serialize_purchase_invoice_items(invoice_items):
 
 
 def _get_item_specification_map(items):
+	return {
+		item_code: meta.get("specification")
+		for item_code, meta in _get_item_meta_map(items).items()
+	}
+
+
+def _get_item_meta_map(items):
 	item_codes = []
 	for item in items or []:
 		item_code = getattr(item, "item_code", None)
 		if isinstance(item_code, str) and item_code and item_code not in item_codes:
 			item_codes.append(item_code)
 
-	specification_map = {}
+	item_meta_map = {}
 	specification_field = _get_item_specification_field()
-	if not item_codes or not specification_field:
-		return specification_map
+	if not item_codes:
+		return item_meta_map
+
+	fields = ["name", "image"]
+	if specification_field:
+		fields.append(specification_field)
 
 	for row in frappe.get_all(
 		"Item",
 		filters={"name": ["in", item_codes]},
-		fields=["name", specification_field],
+		fields=fields,
 		limit_page_length=len(item_codes),
 	):
 		item_code = getattr(row, "name", None)
 		if item_code:
-			specification_map[item_code] = getattr(row, specification_field, None)
-	return specification_map
+			item_meta_map[item_code] = {
+				"image": getattr(row, "image", None),
+				"specification": getattr(row, specification_field, None) if specification_field else None,
+			}
+	return item_meta_map
+
+
+def _get_purchase_order_billed_qty_map(order_items):
+	order_item_names = []
+	for item in order_items or []:
+		row_name = getattr(item, "name", None)
+		if isinstance(row_name, str) and row_name and row_name not in order_item_names:
+			order_item_names.append(row_name)
+
+	if not order_item_names:
+		return {}
+
+	billed_qty_map = {row_name: 0 for row_name in order_item_names}
+	for row in frappe.get_all(
+		"Purchase Invoice Item",
+		filters={"po_detail": ["in", order_item_names], "docstatus": 1},
+		fields=["po_detail", "qty"],
+		limit_page_length=0,
+	):
+		po_detail = getattr(row, "po_detail", None)
+		if po_detail:
+			billed_qty_map[po_detail] = billed_qty_map.get(po_detail, 0) + flt(getattr(row, "qty", 0) or 0)
+	return billed_qty_map
 
 
 def _collect_purchase_order_reference_names(order_name: str):
@@ -1287,7 +1393,7 @@ def get_purchase_order_detail_v2(order_name: str):
 		po = frappe.get_doc("Purchase Order", order_name)
 		order_items = list(po.get("items") or [])
 		receipt_names, invoice_names = _collect_purchase_order_reference_names(order_name)
-		receiving, payment, completion, latest_payment_entry = _build_purchase_order_financial_summary(
+		receiving, billing, payment, completion, latest_payment_entry = _build_purchase_order_financial_summary(
 			order_items,
 			invoice_names,
 			docstatus=po.docstatus,
@@ -1308,10 +1414,12 @@ def get_purchase_order_detail_v2(order_name: str):
 					"outstanding_amount": payment["outstanding_amount"],
 				},
 				"receiving": receiving,
+				"billing": billing,
 				"payment": payment,
 				"completion": completion,
 				"actions": _build_purchase_order_action_flags(
 					receiving,
+					billing,
 					payment,
 					invoice_names=invoice_names,
 					receipt_names=receipt_names,
@@ -1329,7 +1437,7 @@ def get_purchase_order_detail_v2(order_name: str):
 					"currency": po.get("currency"),
 					"transaction_date": po.get("transaction_date"),
 					"schedule_date": po.get("schedule_date"),
-					"remarks": po.get("remarks"),
+					"remarks": _get_purchase_order_remark(po),
 					"supplier_ref": po.get("supplier_ref"),
 				},
 			},
@@ -2184,15 +2292,16 @@ def update_purchase_order_v2(order_name: str, **kwargs):
 			if kwargs.get("schedule_date") is not None:
 				po.schedule_date = kwargs.get("schedule_date") or None
 			if kwargs.get("remarks") is not None:
-				po.remarks = kwargs.get("remarks") or None
+				_set_purchase_order_remark(po, kwargs.get("remarks") or None)
 			if kwargs.get("supplier_ref") is not None and po.meta.has_field("supplier_ref"):
 				po.supplier_ref = kwargs.get("supplier_ref") or None
 
 			if cint(po.docstatus) == 1:
 				po.db_set("transaction_date", po.get("transaction_date"), update_modified=True)
 				po.db_set("schedule_date", po.get("schedule_date"), update_modified=True)
-				if po.meta.has_field("remarks"):
-					po.db_set("remarks", po.get("remarks"), update_modified=True)
+				remark_field = _get_purchase_order_remark_field()
+				if remark_field:
+					po.db_set(remark_field, po.get(remark_field), update_modified=True)
 				if po.meta.has_field("supplier_ref"):
 					po.db_set("supplier_ref", po.get("supplier_ref"), update_modified=True)
 				po.reload()
@@ -2207,7 +2316,7 @@ def update_purchase_order_v2(order_name: str, **kwargs):
 				"meta": {
 					"transaction_date": po.get("transaction_date"),
 					"schedule_date": po.get("schedule_date"),
-					"remarks": po.get("remarks"),
+					"remarks": _get_purchase_order_remark(po),
 					"supplier_ref": po.get("supplier_ref"),
 				},
 			}
@@ -2495,14 +2604,12 @@ def _validate_purchase_rate_override_allowed(items, *, action_label: str):
 
 
 def _validate_warehouse_company(warehouse: str, company: str, item_code: str):
-	warehouse_company = frappe.db.get_value("Warehouse", warehouse, "company")
-	if not warehouse_company:
-		frappe.throw(_("仓库 {0} 不存在。").format(warehouse))
+	warehouse_row = validate_transaction_warehouse(warehouse)
 
-	if warehouse_company != company:
+	if warehouse_row.company != company:
 		frappe.throw(
 			_("商品 {0} 的仓库 {1} 属于公司 {2}，与采购单公司 {3} 不一致。").format(
-				item_code, warehouse, warehouse_company, company
+				item_code, warehouse, warehouse_row.company, company
 			)
 		)
 
@@ -2576,7 +2683,7 @@ def create_purchase_order(supplier: str, items, **kwargs):
 			if kwargs.get("supplier_ref"):
 				po.supplier_ref = kwargs["supplier_ref"]
 			if kwargs.get("remarks"):
-				po.remarks = kwargs["remarks"]
+				_set_purchase_order_remark(po, kwargs["remarks"])
 
 			for item in items:
 				po.append("items", _build_purchase_order_item(item, schedule_date, default_warehouse, company))

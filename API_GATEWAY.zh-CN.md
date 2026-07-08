@@ -413,6 +413,7 @@ Method:
 
 - 商品必须存在、未停用且为库存商品。
 - 转出仓库和转入仓库不能为空且不能相同。
+- 转出仓库和转入仓库必须是可交易仓库：存在、未停用、`is_group = 0` 且绑定公司。
 - 转仓只能在同一公司仓库之间进行。
 - 数量必须大于 0。
 - 转出仓当前库存不能小于换算后的库存基准数量。
@@ -463,7 +464,7 @@ Method:
 业务规则：
 
 - 商品必须存在、未停用且为库存商品。
-- 仓库必须存在并绑定公司。
+- 仓库必须是可交易仓库：存在、未停用、`is_group = 0` 且绑定公司。
 - 目标库存不能为负数。
 - 接口支持 `request_id` 幂等。
 
@@ -512,7 +513,7 @@ Method:
 
 - 盘点明细不能为空，单次最多 200 行。
 - 每行商品必须存在、未停用且为库存商品。
-- 每行仓库必须存在并绑定公司。
+- 每行仓库必须是可交易仓库：存在、未停用、`is_group = 0` 且绑定公司。
 - 同一次盘点明细必须属于同一公司；传入 `company` 时明细仓库必须匹配该公司。
 - 同一商品和仓库组合不能重复。
 - 实盘数量不能为负数。
@@ -877,6 +878,15 @@ frappe.call({
   - `conversion_factor`
   - `stock_qty`
   - `stock_uom`
+
+仓库校验说明：
+
+- 采购订单明细仓库和 `default_warehouse` 必须是可交易仓库：
+  - 仓库存在
+  - 与采购单公司一致
+  - `disabled = 0`
+  - `is_group = 0`
+- 父级 / 汇总仓，例如 `All Warehouses - ...`，仅用于仓库树和汇总，不允许用于采购明细。
 - 若 `uom` 为空，则默认按商品库存基准单位处理
 - 若 `uom` 已传但商品未配置对应换算系数，接口会直接报错
 
@@ -961,6 +971,15 @@ curl -X POST https://your-site.example.com/api/method/myapp.api.gateway.create_o
 - `delivery_date` 可选
 
 说明：`price` 只要在明细中显式传入就按成交价处理，`0` 是有效价格，不会在提交时回退为 ERPNext 价目表价格。
+
+仓库校验说明：
+
+- 销售订单明细仓库和 `default_warehouse` 必须是可交易仓库：
+  - 仓库存在
+  - 与销售订单公司一致
+  - `disabled = 0`
+  - `is_group = 0`
+- 父级 / 汇总仓，例如 `All Warehouses - ...`，仅用于仓库树和汇总，不允许用于销售明细。
 
 `customer_info` 当前建议字段：
 
@@ -2747,6 +2766,10 @@ frappe.call({
 - `supplier_ref: str | None`
 - `remarks: str | None`
 
+备注字段说明：
+
+- `remarks` 当前优先写入正式自定义字段 `Purchase Order.custom_order_remark`；若站点尚未迁移，则回退兼容原生 `remarks` 字段口径。
+
 明细字段：
 
 - `item_code`
@@ -3395,6 +3418,9 @@ frappe.call({
 - `amounts.paid_amount`
 - `amounts.outstanding_amount`
 - `receiving.status`
+- `billing.status`
+- `billing.billed_qty`
+- `billing.remaining_qty`
 - `payment.status`
 - `payment.entries[].payment_entry`
 - `payment.entries[].posting_date`
@@ -3420,14 +3446,18 @@ frappe.call({
 - `timeline[].related_doctype`
 - `timeline[].related_docname`
 - `items[].item_code`
+- `items[].image`
 - `items[].qty`
 - `items[].received_qty`
+- `items[].billed_qty`
+- `items[].pending_billing_qty`
 - `items[].rate`
 - `items[].amount`
 - `meta.company`
 - `meta.currency`
 - `meta.transaction_date`
 - `meta.schedule_date`
+- `meta.remarks`
 
 ### get_purchase_order_status_summary
 
@@ -3524,6 +3554,7 @@ frappe.call({
 - `references.purchase_orders`
 - `references.purchase_invoices`
 - `items[].item_code`
+- `items[].image`
 - `items[].qty`
 - `items[].rate`
 - `items[].amount`
@@ -3573,6 +3604,7 @@ frappe.call({
 - `references.purchase_receipts`
 - `references.latest_payment_entry`
 - `items[].item_code`
+- `items[].image`
 - `items[].qty`
 - `items[].rate`
 - `items[].amount`
@@ -3580,6 +3612,8 @@ frappe.call({
 - `meta.currency`
 - `meta.posting_date`
 - `meta.due_date`
+
+其中 `items[].image` 来自 `Item.image`，用于避免前端采购订单、采购收货和采购发票详情页逐行再次查询商品主数据。
 
 ### get_supplier_purchase_context
 
@@ -3719,6 +3753,7 @@ frappe.call({
 
 - 按 v2 语义更新采购订单头信息
 - 适用于采购订单编辑页保存头部字段
+- `remarks` 当前优先更新正式自定义字段 `Purchase Order.custom_order_remark`；若站点尚未迁移，则回退兼容原生 `remarks` 字段口径。
 - 当使用相同 `request_id` 重试时，直接返回第一次成功结果
 
 ### update_purchase_order_items_v2

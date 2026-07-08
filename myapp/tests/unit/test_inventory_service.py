@@ -275,9 +275,9 @@ class TestInventoryService(TestCase):
 					"is_stock_item": 1,
 				}
 			),
-			"Test Company",
-			"Test Company",
-			12,
+				frappe._dict({"name": "Stores - TC", "company": "Test Company", "disabled": 0, "is_group": 0}),
+				frappe._dict({"name": "Transit - TC", "company": "Test Company", "disabled": 0, "is_group": 0}),
+				12,
 		]
 		mock_resolve_item_quantity_to_stock.return_value = {
 			"uom": "Box",
@@ -345,8 +345,8 @@ class TestInventoryService(TestCase):
 					"is_stock_item": 1,
 				}
 			),
-			"Test Company",
-			3,
+				frappe._dict({"name": "Stores - TC", "company": "Test Company", "disabled": 0, "is_group": 0}),
+				3,
 		]
 		mock_resolve_item_quantity_to_stock.return_value = {
 			"uom": "Box",
@@ -411,8 +411,8 @@ class TestInventoryService(TestCase):
 					"is_stock_item": 1,
 				}
 			),
-			"Test Company",
-			3,
+				frappe._dict({"name": "Stores - TC", "company": "Test Company", "disabled": 0, "is_group": 0}),
+				3,
 			frappe._dict(
 				{
 					"name": "ITEM-002",
@@ -422,8 +422,8 @@ class TestInventoryService(TestCase):
 					"is_stock_item": 1,
 				}
 			),
-			"Test Company",
-			5,
+				frappe._dict({"name": "Stores - TC", "company": "Test Company", "disabled": 0, "is_group": 0}),
+				5,
 		]
 		mock_resolve_item_quantity_to_stock.side_effect = [
 			{
@@ -500,8 +500,8 @@ class TestInventoryService(TestCase):
 					"is_stock_item": 1,
 				}
 			),
-			"Test Company",
-			12,
+				frappe._dict({"name": "Stores - TC", "company": "Test Company", "disabled": 0, "is_group": 0}),
+				12,
 		]
 		mock_resolve_item_quantity_to_stock.return_value = {
 			"uom": "Nos",

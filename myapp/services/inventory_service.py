@@ -4,6 +4,7 @@ from frappe.utils import add_days, cint, flt, getdate, nowdate
 
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.uom import resolve_item_quantity_to_stock
+from myapp.utils.warehouse import validate_transaction_warehouse
 
 
 DEFAULT_STOCK_LEDGER_PAGE_SIZE = 20
@@ -137,7 +138,7 @@ def _get_company_warehouses(company: str | None):
 		return None
 	rows = frappe.get_all(
 		"Warehouse",
-		filters={"company": resolved_company, "disabled": 0},
+		filters={"company": resolved_company, "disabled": 0, "is_group": 0},
 		fields=["name", "company"],
 	)
 	return [row.name for row in rows]
@@ -172,10 +173,7 @@ def _get_item_stock_context(item_code: str):
 
 
 def _resolve_warehouse_company(warehouse: str):
-	company = frappe.db.get_value("Warehouse", warehouse, "company")
-	if not company:
-		frappe.throw(_("仓库 {0} 不存在，或未绑定公司。").format(warehouse))
-	return company
+	return validate_transaction_warehouse(warehouse).company
 
 
 def _get_bin_actual_qty(item_code: str, warehouse: str):

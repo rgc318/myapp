@@ -8,6 +8,7 @@ myapp.patches.add_item_nickname_field
 myapp.patches.add_item_specification_field
 myapp.patches.add_item_sales_mode_uom_fields
 myapp.patches.add_sales_order_remark_field
+myapp.patches.add_purchase_order_remark_field
 myapp.patches.add_sales_mode_fields
 myapp.patches.fix_sales_mode_field_options
 myapp.patches.add_workbench_query_indexes

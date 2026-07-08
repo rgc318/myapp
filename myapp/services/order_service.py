@@ -11,6 +11,7 @@ from myapp.utils.idempotency import run_idempotent
 from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom import resolve_item_quantity_to_stock
 from myapp.utils.uom_display import build_uom_display_map
+from myapp.utils.warehouse import validate_transaction_warehouse
 
 
 ORDER_REMARK_FIELD = "custom_order_remark"
@@ -99,14 +100,12 @@ def _validate_order_inputs(customer: str, items: list[dict], company: str | None
 
 
 def _validate_warehouse_company(warehouse: str, company: str, item_code: str):
-	warehouse_company = frappe.db.get_value("Warehouse", warehouse, "company")
-	if not warehouse_company:
-		frappe.throw(_("仓库 {0} 不存在。").format(warehouse))
+	warehouse_row = validate_transaction_warehouse(warehouse)
 
-	if warehouse_company != company:
+	if warehouse_row.company != company:
 		frappe.throw(
 			_("商品 {0} 的仓库 {1} 属于公司 {2}，与订单公司 {3} 不一致。").format(
-				item_code, warehouse, warehouse_company, company
+				item_code, warehouse, warehouse_row.company, company
 			)
 		)
 
@@ -1710,7 +1709,7 @@ def _get_default_warehouse_for_context(company: str | None):
 	if not company:
 		return None
 
-	return frappe.db.get_value("Warehouse", {"company": company, "is_group": 0}, "name")
+	return frappe.db.get_value("Warehouse", {"company": company, "disabled": 0, "is_group": 0}, "name")
 
 
 def get_customer_sales_context(customer: str):
