@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import frappe
 
 from myapp.services.purchase_service import (
+	_collect_purchase_order_reference_names,
 	_serialize_purchase_invoice_items,
 	_serialize_purchase_order_items,
 	_serialize_purchase_receipt_items,
@@ -32,6 +33,21 @@ from myapp.services.purchase_service import (
 
 
 class TestPurchaseService(TestCase):
+	@patch("myapp.services.purchase_service.frappe.get_all")
+	def test_collect_purchase_order_reference_names_excludes_return_documents(self, mock_get_all):
+		mock_get_all.side_effect = [
+			[frappe._dict({"parent": "PR-0001"}), frappe._dict({"parent": "PR-RETURN-0001"})],
+			[frappe._dict({"name": "PR-0001"})],
+			[frappe._dict({"parent": "PINV-0001"}), frappe._dict({"parent": "PINV-RETURN-0001"})],
+			[frappe._dict({"name": "PINV-0001"})],
+		]
+
+		receipt_names, invoice_names = _collect_purchase_order_reference_names("PO-0001")
+
+		self.assertEqual(receipt_names, ["PR-0001"])
+		self.assertEqual(invoice_names, ["PINV-0001"])
+		self.assertEqual(mock_get_all.call_count, 4)
+
 	@patch("myapp.services.purchase_service._get_item_specification_field", return_value="custom_specification")
 	@patch("myapp.services.purchase_service.frappe.get_all")
 	@patch("myapp.services.purchase_service.build_uom_display_map", return_value={"Box": "箱"})
@@ -479,7 +495,7 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["return_document"], "PINV-RET-0099")
 		mock_run_idempotent.assert_called_once()
 
-	@patch("myapp.services.purchase_service.run_idempotent", side_effect=lambda namespace, request_id, callback: callback())
+	@patch("myapp.services.purchase_service.run_idempotent", side_effect=lambda namespace, request_id, callback, **kwargs: callback())
 	@patch("myapp.services.purchase_service.get_purchase_order_detail_v2")
 	@patch("myapp.services.purchase_service.record_supplier_payment")
 	@patch("myapp.services.purchase_service.create_purchase_invoice_from_receipt")
@@ -531,12 +547,14 @@ class TestPurchaseService(TestCase):
 			mode_of_payment="微信支付",
 			reference_no=None,
 			reference_date="2026-04-01",
-			request_id="quick-po-001",
+			request_id=None,
 		)
 		mock_run_idempotent.assert_called_once()
+		self.assertIn("request_payload", mock_run_idempotent.call_args.kwargs)
+		self.assertIn(frappe.ValidationError, mock_run_idempotent.call_args.kwargs["retryable_exceptions"])
 		mock_get_purchase_order_detail.assert_not_called()
 
-	@patch("myapp.services.purchase_service.run_idempotent", side_effect=lambda namespace, request_id, callback: callback())
+	@patch("myapp.services.purchase_service.run_idempotent", side_effect=lambda namespace, request_id, callback, **kwargs: callback())
 	@patch("myapp.services.purchase_service.get_purchase_order_detail_v2")
 	@patch("myapp.services.purchase_service.record_supplier_payment")
 	@patch("myapp.services.purchase_service.create_purchase_invoice_from_receipt")

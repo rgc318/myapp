@@ -1120,6 +1120,24 @@ def _build_purchase_order_action_flags(receiving: dict, billing: dict, payment: 
 	}
 
 
+def _build_quick_purchase_order_idempotency_payload(supplier: str, items, kwargs: dict):
+	retry_mutable_payment_keys = {
+		"mode_of_payment",
+		"paid_amount",
+		"reference_no",
+		"reference_date",
+	}
+	return {
+		"supplier": supplier,
+		"items": _coerce_json_value(items, []),
+		"kwargs": {
+			key: value
+			for key, value in sorted((kwargs or {}).items())
+			if key not in retry_mutable_payment_keys and not str(key).startswith("_")
+		},
+	}
+
+
 def _build_purchase_receipt_action_flags(*, docstatus: int, purchase_invoices: list[str]):
 	is_submitted = cint(docstatus) == 1
 	can_cancel = is_submitted and not purchase_invoices
@@ -1311,6 +1329,18 @@ def _collect_purchase_order_reference_names(order_name: str):
 		fields=["parent"],
 	)
 	receipt_names = sorted({row.parent for row in receipt_rows if getattr(row, "parent", None)})
+	if receipt_names:
+		receipt_names = sorted(
+			{
+				row.name
+				for row in frappe.get_all(
+					"Purchase Receipt",
+					filters={"name": ["in", receipt_names], "docstatus": 1, "is_return": 0},
+					fields=["name"],
+					limit_page_length=0,
+				)
+			}
+		)
 
 	invoice_rows = frappe.get_all(
 		"Purchase Invoice Item",
@@ -1318,6 +1348,18 @@ def _collect_purchase_order_reference_names(order_name: str):
 		fields=["parent"],
 	)
 	invoice_names = sorted({row.parent for row in invoice_rows if getattr(row, "parent", None)})
+	if invoice_names:
+		invoice_names = sorted(
+			{
+				row.name
+				for row in frappe.get_all(
+					"Purchase Invoice",
+					filters={"name": ["in", invoice_names], "docstatus": 1, "is_return": 0},
+					fields=["name"],
+					limit_page_length=0,
+				)
+			}
+		)
 	return receipt_names, invoice_names
 
 
@@ -2665,6 +2707,7 @@ def create_purchase_order(supplier: str, items, **kwargs):
 	schedule_date = kwargs.get("schedule_date") or nowdate()
 	default_warehouse = kwargs.get("default_warehouse")
 	request_id = kwargs.get("request_id")
+	request_payload = kwargs.get("_idempotency_request_payload")
 	currency = _resolve_purchase_transaction_currency(supplier, company, kwargs.get("currency"))
 
 	_validate_purchase_inputs(supplier, items, company)
@@ -2696,7 +2739,12 @@ def create_purchase_order(supplier: str, items, **kwargs):
 				"message": _("采购订单 {0} 已创建并提交。").format(po.name),
 			}
 
-		return run_idempotent("create_purchase_order", request_id, _create_purchase_order)
+		return run_idempotent(
+			"create_purchase_order",
+			request_id,
+			_create_purchase_order,
+			request_payload=request_payload,
+		)
 	except frappe.ValidationError:
 		raise
 	except Exception:
@@ -2707,10 +2755,12 @@ def create_purchase_order(supplier: str, items, **kwargs):
 def quick_create_purchase_order_v2(supplier: str, items, **kwargs):
 	request_id = kwargs.get("request_id")
 	include_detail = _include_detail_in_response(kwargs)
+	quick_idempotency_payload = _build_quick_purchase_order_idempotency_payload(supplier, items, kwargs)
+	quick_step_kwargs = {**kwargs, "_idempotency_request_payload": quick_idempotency_payload}
 
 	try:
 		def _quick_create_purchase_order_v2():
-			result = create_purchase_order(supplier=supplier, items=items, **kwargs)
+			result = create_purchase_order(supplier=supplier, items=items, **quick_step_kwargs)
 			order_name = result.get("purchase_order")
 			receipt_name = None
 			invoice_name = None
@@ -2721,7 +2771,7 @@ def quick_create_purchase_order_v2(supplier: str, items, **kwargs):
 				receipt_result = receive_purchase_order(
 					order_name,
 					receipt_items=kwargs.get("receipt_items"),
-					kwargs=kwargs,
+					kwargs=quick_step_kwargs,
 				)
 				receipt_name = receipt_result.get("purchase_receipt")
 				if receipt_name:
@@ -2732,13 +2782,13 @@ def quick_create_purchase_order_v2(supplier: str, items, **kwargs):
 					invoice_result = create_purchase_invoice_from_receipt(
 						receipt_name,
 						invoice_items=kwargs.get("invoice_items"),
-						kwargs=kwargs,
+						kwargs=quick_step_kwargs,
 					)
 				elif order_name:
 					invoice_result = create_purchase_invoice(
 						order_name,
 						invoice_items=kwargs.get("invoice_items"),
-						kwargs=kwargs,
+						kwargs=quick_step_kwargs,
 					)
 				else:
 					invoice_result = {}
@@ -2757,7 +2807,7 @@ def quick_create_purchase_order_v2(supplier: str, items, **kwargs):
 					mode_of_payment=kwargs.get("mode_of_payment"),
 					reference_no=kwargs.get("reference_no"),
 					reference_date=kwargs.get("reference_date"),
-					request_id=kwargs.get("request_id"),
+					request_id=None,
 				)
 				payment_entry_name = payment_result.get("payment_entry")
 				if payment_entry_name:
@@ -2776,7 +2826,13 @@ def quick_create_purchase_order_v2(supplier: str, items, **kwargs):
 				"detail_included": bool(detail),
 			}
 
-		return run_idempotent("quick_create_purchase_order_v2", request_id, _quick_create_purchase_order_v2)
+		return run_idempotent(
+			"quick_create_purchase_order_v2",
+			request_id,
+			_quick_create_purchase_order_v2,
+			request_payload=quick_idempotency_payload,
+			retryable_exceptions=(frappe.ValidationError,),
+		)
 	except frappe.ValidationError:
 		raise
 	except Exception:
@@ -2793,6 +2849,7 @@ def receive_purchase_order(order_name: str, receipt_items=None, kwargs: dict | N
 	receipt_items = _coerce_json_value(receipt_items, [])
 	kwargs = _coerce_json_value(kwargs, {}) or {}
 	request_id = kwargs.get("request_id")
+	request_payload = kwargs.get("_idempotency_request_payload")
 
 	try:
 		def _receive_purchase_order():
@@ -2825,7 +2882,12 @@ def receive_purchase_order(order_name: str, receipt_items=None, kwargs: dict | N
 				"message": _("采购收货单 {0} 已创建并提交。").format(pr.name),
 			}
 
-		return run_idempotent("receive_purchase_order", request_id, _receive_purchase_order)
+		return run_idempotent(
+			"receive_purchase_order",
+			request_id,
+			_receive_purchase_order,
+			request_payload=request_payload,
+		)
 	except frappe.ValidationError:
 		raise
 	except Exception:
@@ -2842,6 +2904,7 @@ def create_purchase_invoice(source_name: str, invoice_items=None, kwargs: dict |
 	invoice_items = _coerce_json_value(invoice_items, [])
 	kwargs = _coerce_json_value(kwargs, {}) or {}
 	request_id = kwargs.get("request_id")
+	request_payload = kwargs.get("_idempotency_request_payload")
 
 	try:
 		def _create_purchase_invoice():
@@ -2872,7 +2935,12 @@ def create_purchase_invoice(source_name: str, invoice_items=None, kwargs: dict |
 				"message": _("采购发票 {0} 已创建并提交。").format(pi.name),
 			}
 
-		return run_idempotent("create_purchase_invoice", request_id, _create_purchase_invoice)
+		return run_idempotent(
+			"create_purchase_invoice",
+			request_id,
+			_create_purchase_invoice,
+			request_payload=request_payload,
+		)
 	except frappe.ValidationError:
 		raise
 	except Exception:
@@ -2891,6 +2959,7 @@ def create_purchase_invoice_from_receipt(
 	invoice_items = _coerce_json_value(invoice_items, [])
 	kwargs = _coerce_json_value(kwargs, {}) or {}
 	request_id = kwargs.get("request_id")
+	request_payload = kwargs.get("_idempotency_request_payload")
 
 	try:
 		def _create_purchase_invoice_from_receipt():
@@ -2925,6 +2994,7 @@ def create_purchase_invoice_from_receipt(
 			"create_purchase_invoice_from_receipt",
 			request_id,
 			_create_purchase_invoice_from_receipt,
+			request_payload=request_payload,
 		)
 	except frappe.ValidationError:
 		raise

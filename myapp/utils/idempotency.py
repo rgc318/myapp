@@ -139,7 +139,9 @@ def _expires_at(ttl_seconds: int):
 	return add_to_date(now_datetime(), seconds=ttl_seconds)
 
 
-def _is_retryable_exception(exc: Exception) -> bool:
+def _is_retryable_exception(exc: Exception, retryable_exceptions: tuple[type[Exception], ...] = ()) -> bool:
+	if retryable_exceptions and isinstance(exc, retryable_exceptions):
+		return True
 	return not isinstance(exc, FINAL_FAILURE_EXCEPTIONS)
 
 
@@ -338,11 +340,23 @@ def _wait_for_record_result(namespace: str, request_id: str, request_hash: str |
 	frappe.throw("相同 request_id 的请求正在处理中，请稍后重试。")
 
 
-def _execute_and_store_result(namespace: str, request_id: str, callback, ttl_seconds: int):
+def _execute_and_store_result(
+	namespace: str,
+	request_id: str,
+	callback,
+	ttl_seconds: int,
+	retryable_exceptions: tuple[type[Exception], ...] = (),
+):
 	try:
 		result = callback()
 	except Exception as exc:
-		_mark_record_failed(namespace, request_id, exc, ttl_seconds, retryable=_is_retryable_exception(exc))
+		_mark_record_failed(
+			namespace,
+			request_id,
+			exc,
+			ttl_seconds,
+			retryable=_is_retryable_exception(exc, retryable_exceptions),
+		)
 		raise
 
 	store_idempotent_result(namespace, request_id, result, ttl_seconds=ttl_seconds)
@@ -357,12 +371,13 @@ def _run_persistent_idempotent(
 	request_json: str | None,
 	callback,
 	ttl_seconds: int,
+	retryable_exceptions: tuple[type[Exception], ...] = (),
 ):
 	if _insert_processing_record(namespace, request_id, request_hash, request_json, ttl_seconds):
-		return _execute_and_store_result(namespace, request_id, callback, ttl_seconds)
+		return _execute_and_store_result(namespace, request_id, callback, ttl_seconds, retryable_exceptions)
 
 	if _claim_retryable_record(namespace, request_id, request_hash, request_json, ttl_seconds):
-		return _execute_and_store_result(namespace, request_id, callback, ttl_seconds)
+		return _execute_and_store_result(namespace, request_id, callback, ttl_seconds, retryable_exceptions)
 
 	return _wait_for_record_result(namespace, request_id, request_hash)
 
@@ -403,7 +418,14 @@ def _run_filelock_idempotent(namespace: str, request_id: str, callback, ttl_seco
 		return store_idempotent_result(namespace, request_id, result, ttl_seconds=ttl_seconds)
 
 
-def run_idempotent(namespace: str, request_id, callback, ttl_seconds: int = DEFAULT_TTL, request_payload=None):
+def run_idempotent(
+	namespace: str,
+	request_id,
+	callback,
+	ttl_seconds: int = DEFAULT_TTL,
+	request_payload=None,
+	retryable_exceptions: tuple[type[Exception], ...] = (),
+):
 	request_id = _get_current_request_id(request_id)
 	request_hash, request_json = build_request_fingerprint(
 		_get_current_request_payload() if request_payload is None else request_payload
@@ -414,7 +436,15 @@ def run_idempotent(namespace: str, request_id, callback, ttl_seconds: int = DEFA
 		return store_idempotent_result(namespace, request_id, result, ttl_seconds=ttl_seconds)
 
 	if _table_exists():
-		return _run_persistent_idempotent(namespace, request_id, request_hash, request_json, callback, ttl_seconds)
+		return _run_persistent_idempotent(
+			namespace,
+			request_id,
+			request_hash,
+			request_json,
+			callback,
+			ttl_seconds,
+			retryable_exceptions,
+		)
 
 	if cached_result := get_idempotent_result(namespace, request_id):
 		return cached_result

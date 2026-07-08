@@ -498,16 +498,18 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			self._cancel_purchase_order(order_name)
 
 	def test_search_purchase_orders_v2_supports_amount_asc_sort(self):
-		low_order = self._create_purchase_order(qty=2)
-		high_order = self._create_purchase_order(qty=3)
+		supplier = self._create_supplier_v2(f"HTTP Sort Supplier {time.time_ns()}")
+		low_order = self._create_purchase_order(supplier=supplier, qty=2)
+		high_order = self._create_purchase_order(supplier=supplier, qty=3)
 
 		try:
 			payload = self._search_purchase_orders(
+				search_key=supplier,
 				company=PURCHASE_COMPANY,
 				status_filter="unfinished",
 				exclude_cancelled=True,
 				sort_by="amount_asc",
-				limit=120,
+				limit=20,
 			)
 			items = payload["items"]
 			order_positions = {row["purchase_order_name"]: index for index, row in enumerate(items)}
@@ -1003,7 +1005,13 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			self._assert_success(detail_status, detail_payload, code="PURCHASE_ORDER_DETAIL_FETCHED")
 			detail_data = detail_payload["message"]["data"]
 			self.assertIn(receipt_name, detail_data["references"]["purchase_receipts"])
-			self.assertEqual(len(detail_data["references"]["purchase_receipts"]), 2)
+			self.assertEqual(detail_data["references"]["purchase_receipts"], [receipt_name])
+			self.assertTrue(
+				any(
+					event.get("doctype") == return_doctype and event.get("docname") == return_name
+					for event in detail_data["timeline"]
+				)
+			)
 			self.assertEqual(detail_data["receiving"]["status"], "pending")
 		finally:
 			self._cancel_doc_via_client(return_doctype, return_name)
@@ -1219,7 +1227,13 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			self._assert_success(detail_status, detail_payload, code="PURCHASE_ORDER_DETAIL_FETCHED")
 			detail_data = detail_payload["message"]["data"]
 			self.assertIn(invoice_name, detail_data["references"]["purchase_invoices"])
-			self.assertEqual(len(detail_data["references"]["purchase_invoices"]), 2)
+			self.assertEqual(detail_data["references"]["purchase_invoices"], [invoice_name])
+			self.assertTrue(
+				any(
+					event.get("doctype") == return_doctype and event.get("docname") == return_name
+					for event in detail_data["timeline"]
+				)
+			)
 			self.assertIn(detail_data["payment"]["status"], {"unpaid", "partial", "paid"})
 		finally:
 			self._cancel_doc_via_client(return_doctype, return_name)
