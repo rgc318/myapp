@@ -24,6 +24,7 @@ from myapp.api.gateway import (
 	get_current_user_workspace_preferences_v1,
 	get_print_file_v1,
 	get_print_preview_v1,
+	get_print_templates_v1,
 	get_business_report_overview_v1,
 	get_business_report_v1,
 	get_cashflow_report_v1,
@@ -43,6 +44,8 @@ from myapp.api.gateway import (
 	transfer_inventory_stock_v1,
 	list_cashflow_entries_v1,
 	list_business_documents_v1,
+	list_print_doctypes_v1,
+	list_print_jobs_v1,
 	search_purchase_orders_v2,
 	create_product_and_stock,
 	create_sales_invoice,
@@ -103,6 +106,7 @@ from myapp.api.gateway import (
 	record_supplier_payment,
 	submit_delivery,
 	confirm_pending_document,
+	record_print_job_v1,
 )
 
 
@@ -117,6 +121,7 @@ class TestGatewayWrappers(TestCase):
 			get_current_user_workspace_preferences_v1,
 			get_print_file_v1,
 			get_print_preview_v1,
+			get_print_templates_v1,
 			get_business_report_overview_v1,
 			get_business_report_v1,
 			get_cashflow_report_v1,
@@ -125,6 +130,8 @@ class TestGatewayWrappers(TestCase):
 			get_receivable_payable_report_v1,
 			search_link_options_v1,
 			list_business_documents_v1,
+			list_print_doctypes_v1,
+			list_print_jobs_v1,
 			list_cashflow_entries_v1,
 			list_inventory_stock_summary_v1,
 			list_stock_ledger_entries_v1,
@@ -186,6 +193,7 @@ class TestGatewayWrappers(TestCase):
 				update_purchase_order_items_v2,
 				update_supplier_v2,
 			record_supplier_payment,
+			record_print_job_v1,
 			update_current_user_workspace_preferences_v1,
 			process_sales_return,
 			process_purchase_return,
@@ -656,6 +664,78 @@ class TestGatewayWrappers(TestCase):
 			company="Test Company",
 			date_from="2026-03-01",
 			date_to="2026-03-31",
+			limit=5,
+		)
+
+	@patch("myapp.api.gateway.list_print_doctypes_v1_service")
+	def test_list_print_doctypes_v1_passes_through_service(self, mock_list_print_doctypes_v1_service):
+		mock_list_print_doctypes_v1_service.return_value = {"status": "success", "data": {"doctypes": []}}
+
+		list_print_doctypes_v1()
+
+		mock_list_print_doctypes_v1_service.assert_called_once_with()
+
+	@patch("myapp.api.gateway.get_print_templates_v1_service")
+	def test_get_print_templates_v1_passes_filters_to_service(self, mock_get_print_templates_v1_service):
+		mock_get_print_templates_v1_service.return_value = {"status": "success", "data": {"templates": []}}
+
+		get_print_templates_v1(doctype="Sales Invoice")
+
+		mock_get_print_templates_v1_service.assert_called_once_with(doctype="Sales Invoice")
+
+	@patch("myapp.api.gateway.record_print_job_v1_service")
+	def test_record_print_job_v1_passes_payload_to_service(self, mock_record_print_job_v1_service):
+		mock_record_print_job_v1_service.return_value = {"status": "success", "data": {"recorded": True}}
+
+		record_print_job_v1(
+			doctype="Sales Invoice",
+			docname="SINV-0001",
+			template="standard",
+			action="download",
+			output="pdf",
+			status="success",
+			filename="invoice.pdf",
+			file_url="/private/files/invoice.pdf",
+			error=None,
+			metadata={"source": "web"},
+		)
+
+		mock_record_print_job_v1_service.assert_called_once_with(
+			doctype="Sales Invoice",
+			docname="SINV-0001",
+			template="standard",
+			action="download",
+			output="pdf",
+			status="success",
+			filename="invoice.pdf",
+			file_url="/private/files/invoice.pdf",
+			error=None,
+			metadata={"source": "web"},
+		)
+
+	@patch("myapp.api.gateway.list_print_jobs_v1_service")
+	def test_list_print_jobs_v1_passes_filters_to_service(self, mock_list_print_jobs_v1_service):
+		mock_list_print_jobs_v1_service.return_value = {"status": "success", "data": {"jobs": []}}
+
+		list_print_jobs_v1(
+			doctype="Sales Invoice",
+			docname="SINV-0001",
+			action="download",
+			template="standard",
+			date_from="2026-07-01",
+			date_to="2026-07-09",
+			user="test@example.com",
+			limit=5,
+		)
+
+		mock_list_print_jobs_v1_service.assert_called_once_with(
+			doctype="Sales Invoice",
+			docname="SINV-0001",
+			action="download",
+			template="standard",
+			date_from="2026-07-01",
+			date_to="2026-07-09",
+			user="test@example.com",
 			limit=5,
 		)
 

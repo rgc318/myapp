@@ -2886,6 +2886,143 @@ create_purchase_order(
 - Web 端已在销售发票、销售订单、销售发货单、采购订单、采购收货单和采购发票详情页接入打印预览和 PDF 下载。
 - 新增单据类型时应先在打印 registry 中白名单登记，再由 Web 通过 `get_print_preview_v1` / `get_print_file_v1` / `download_print_file_v1` 接入，不直接拼 Frappe 打印 URL。
 
+### list_print_doctypes_v1
+
+方法：
+
+- `myapp.api.gateway.list_print_doctypes_v1`
+
+参数：
+
+- 无
+
+返回重点字段：
+
+- `doctypes[].doctype`
+- `doctypes[].label`
+- `doctypes[].module`
+- `doctypes[].capabilities`
+- `doctypes[].templates`
+- `doctypes[].default_template`
+
+行为：
+
+- 返回当前系统打印 registry 中已启用的可打印单据类型。
+- 每个单据类型都会带出模板元数据，供 Web/Mobile 通用打印入口选择模板。
+
+### get_print_templates_v1
+
+方法：
+
+- `myapp.api.gateway.get_print_templates_v1`
+
+参数：
+
+- `doctype: str`
+
+返回重点字段：
+
+- `doctype`
+- `default_template`
+- `templates[].key`
+- `templates[].label`
+- `templates[].print_format`
+- `templates[].is_default`
+- `templates[].source`
+- `templates[].category`
+- `templates[].paper_size`
+- `templates[].orientation`
+- `templates[].description`
+- `templates[].enabled`
+- `templates[].managed`
+- `templates[].template_version`
+- `templates[].template_hash`
+- `capabilities`
+
+行为：
+
+- 只返回打印 registry 白名单中该 `doctype` 的已启用模板。
+- 不生成预览或文件，只用于前端打印入口初始化模板菜单。
+
+### record_print_job_v1
+
+方法：
+
+- `myapp.api.gateway.record_print_job_v1`
+
+参数：
+
+- `doctype: str`
+- `docname: str`
+- `template: str | None`
+- `action: "preview" | "download" | "print" | "share" | "archive" = "print"`
+- `output: "html" | "pdf" = "pdf"`
+- `status: "success" | "failed" | "skipped" = "success"`
+- `filename: str | None`
+- `file_url: str | None`
+- `error: str | None`
+- `metadata: dict | str | None`
+
+返回重点字段：
+
+- `recorded`
+- `job_id`
+- `doctype`
+- `docname`
+- `template`
+- `action`
+- `output`
+- `status`
+- `printed_by`
+- `printed_at`
+
+行为：
+
+- 显式记录一次打印相关动作，用于打印历史、补打审计和下载 / 分享追踪。
+- 会校验单据存在、当前用户有读权限、模板在打印 registry 中存在且启用。
+- 如果站点尚未执行创建 `tabMyApp Print Job` 的迁移，接口返回 `recorded=false`，不会阻断调用方。
+- 该接口不会被旧的 `get_print_preview_v1` / `get_print_file_v1` / `download_print_file_v1` 自动调用，现有 Mobile 打印链路不受影响。
+
+### list_print_jobs_v1
+
+方法：
+
+- `myapp.api.gateway.list_print_jobs_v1`
+
+参数：
+
+- `doctype: str`
+- `docname: str`
+- `action: str | None`
+- `template: str | None`
+- `date_from: str | None`
+- `date_to: str | None`
+- `user: str | None`
+- `limit: int = 20`
+
+返回重点字段：
+
+- `jobs[].job_id`
+- `jobs[].doctype`
+- `jobs[].docname`
+- `jobs[].template`
+- `jobs[].action`
+- `jobs[].output`
+- `jobs[].status`
+- `jobs[].filename`
+- `jobs[].file_url`
+- `jobs[].printed_by`
+- `jobs[].printed_at`
+- `jobs[].error`
+- `jobs[].metadata`
+
+行为：
+
+- 按单据查询打印历史，支持动作、模板、日期和用户过滤。
+- 会先校验当前用户对目标单据有读权限。
+- 如果打印记录表尚未创建，返回空列表和 `table_ready=false`。
+- 托管模板打印记录的 `metadata` 会包含 `template_version`、`template_hash`、`template_managed` 和 `print_format`，用于追溯打印时模板版本。
+
 ### list_business_documents_v1
 
 方法：

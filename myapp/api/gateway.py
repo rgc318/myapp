@@ -73,6 +73,10 @@ from .purchase_api import update_purchase_order_v2 as update_purchase_order_v2_s
 from .printing_api import build_print_file_download_v1 as build_print_file_download_v1_service
 from .printing_api import get_print_file_v1 as get_print_file_v1_service
 from .printing_api import get_print_preview_v1 as get_print_preview_v1_service
+from .printing_api import get_print_templates_v1 as get_print_templates_v1_service
+from .printing_api import list_print_doctypes_v1 as list_print_doctypes_v1_service
+from .printing_api import list_print_jobs_v1 as list_print_jobs_v1_service
+from .printing_api import record_print_job_v1 as record_print_job_v1_service
 from .reports_api import get_business_report_overview_v1 as get_business_report_overview_v1_service
 from .reports_api import get_business_report_v1 as get_business_report_v1_service
 from .reports_api import get_cashflow_report_v1 as get_cashflow_report_v1_service
@@ -179,6 +183,78 @@ def get_business_report_v1(
 			limit=limit,
 		),
 		success_code="BUSINESS_REPORT_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def list_print_doctypes_v1():
+	return _handle_gateway_call(
+		lambda: list_print_doctypes_v1_service(),
+		success_code="PRINT_DOCTYPES_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_print_templates_v1(doctype: str):
+	return _handle_gateway_call(
+		lambda: get_print_templates_v1_service(doctype=doctype),
+		success_code="PRINT_TEMPLATES_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def record_print_job_v1(
+	doctype: str,
+	docname: str,
+	template: str | None = None,
+	action: str = "print",
+	output: str = "pdf",
+	status: str = "success",
+	filename: str | None = None,
+	file_url: str | None = None,
+	error: str | None = None,
+	metadata: dict | str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: record_print_job_v1_service(
+			doctype=doctype,
+			docname=docname,
+			template=template,
+			action=action,
+			output=output,
+			status=status,
+			filename=filename,
+			file_url=file_url,
+			error=error,
+			metadata=metadata,
+		),
+		success_code="PRINT_JOB_RECORDED",
+	)
+
+
+@frappe.whitelist()
+def list_print_jobs_v1(
+	doctype: str,
+	docname: str,
+	action: str | None = None,
+	template: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	user: str | None = None,
+	limit: int = 20,
+):
+	return _handle_gateway_call(
+		lambda: list_print_jobs_v1_service(
+			doctype=doctype,
+			docname=docname,
+			action=action,
+			template=template,
+			date_from=date_from,
+			date_to=date_to,
+			user=user,
+			limit=limit,
+		),
+		success_code="PRINT_JOBS_FETCHED",
 	)
 
 

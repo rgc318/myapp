@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 import frappe
@@ -106,6 +107,24 @@ def ensure_managed_print_format(print_format_name: str | None):
 		frappe.db.commit()
 
 	return doc
+
+
+def get_managed_print_format_version(print_format_name: str | None):
+	if not print_format_name:
+		return None
+
+	definition = _MANAGED_PRINT_FORMATS.get(print_format_name)
+	if not definition:
+		return None
+
+	html = _read_template_file(definition.html_path)
+	css = _read_template_file(definition.css_path) if definition.css_path else ""
+	fingerprint = sha256(f"{html}\n{css}".encode("utf-8")).hexdigest()
+	return {
+		"managed": True,
+		"version": fingerprint[:12],
+		"hash": fingerprint,
+	}
 
 
 def _read_template_file(filename: str):

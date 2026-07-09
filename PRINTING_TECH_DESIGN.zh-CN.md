@@ -601,3 +601,522 @@
   - 提供 `适宽`
   - 提供 `缩小 / 重置 / 放大`
 - 如果后续仍需更强的自由拖动和文档交互控制，再评估更重的查看器方案
+
+## 16. 通用打印平台升级设计
+
+当前代码已经具备第一阶段基础：
+
+- 后端已有统一入口：
+  - `get_print_preview_v1`
+  - `get_print_file_v1`
+  - `download_print_file_v1`
+- 后端已有打印 registry：
+  - `myapp/printing/registry.py`
+- 后端已有托管 Print Format 同步机制：
+  - `myapp/printing/templates.py`
+- 当前已接入：
+  - `Sales Invoice`
+  - `Purchase Invoice`
+  - `Purchase Receipt`
+  - `Sales Order`
+  - `Purchase Order`
+  - `Delivery Note`
+
+下一阶段目标不是继续为每个页面单独拼打印，而是把现有能力升级为“通用打印平台”：
+
+- 任意受支持单据都可以通过同一个打印入口打印
+- 一个单据可以拥有多个模板
+- 打印能力覆盖主流业务系统常见功能
+- 后续新增单据时只做 registry / 模板 / 字段策略扩展，不新增一套页面级打印逻辑
+
+### 16.1 总体原则
+
+打印模块必须遵守以下原则：
+
+- **通用入口**：所有单据统一调用 `doctype + docname + template + output`，不为每种单据新增专用打印 API。
+- **显式白名单**：不是所有 Frappe DocType 默认可打印，必须在 registry 中登记后才能通过 myapp 打印入口访问。
+- **多模板**：同一 DocType 支持多个模板，例如 `standard`、`compact`、`warehouse`、`finance`、`external`。
+- **模板后端控制**：模板可选项、默认模板、禁用状态和适用场景由后端统一返回，前端不硬编码模板清单。
+- **权限一致**：打印权限必须与单据详情读取权限一致，不能因为知道打印 URL 就绕过业务权限。
+- **数据口径一致**：打印数据必须来自后端单据和共享领域能力，不能由前端临时计算金额、单位、状态或上下游关系。
+- **正式输出优先**：A4 / 半 A4 正式 PDF 与 HTML 预览优先，小票、标签和设备厂商协议作为后续扩展。
+
+### 16.2 通用单据接入模型
+
+未来 registry 不应只保存 `doctype -> template list`，而应扩展为完整打印能力定义：
+
+```python
+PrintDocumentDefinition(
+    doctype="Sales Invoice",
+    label="销售发票",
+    enabled=True,
+    permission_ptype="read",
+    title_field="name",
+    party_field="customer",
+    date_field="posting_date",
+    amount_field="rounded_total",
+    templates=(...),
+    capabilities={...},
+)
+```
+
+单据定义需要包含：
+
+- `doctype`：Frappe / ERPNext 原生 DocType
+- `label`：前端展示名
+- `enabled`：是否启用打印
+- `permission_ptype`：权限类型，默认 `read`
+- `title_field`：文件名和标题默认字段
+- `party_field`：客户 / 供应商 / 往来方字段
+- `date_field`：打印日期或单据日期字段
+- `amount_field`：金额摘要字段
+- `status_field`：可选，用于在打印历史和补打列表中展示状态
+- `templates`：该单据可用模板
+- `capabilities`：该单据允许的输出和动作
+
+模板定义需要包含：
+
+```python
+PrintTemplateDefinition(
+    key="standard",
+    label="标准模板",
+    print_format="myapp Sales Invoice Standard",
+    is_default=True,
+    source="myapp",
+    paper_size="A4",
+    orientation="portrait",
+    category="external",
+    enabled=True,
+)
+```
+
+模板字段建议：
+
+- `key`：稳定模板编码，前端调用时传该值
+- `label`：展示名
+- `print_format`：Frappe Print Format 名称
+- `is_default`：是否默认模板
+- `source`：`myapp` / `erpnext` / `custom`
+- `paper_size`：`A4` / `A5` / `half_a4` / `thermal_80mm` / `label`
+- `orientation`：`portrait` / `landscape`
+- `category`：`external` / `internal` / `warehouse` / `finance`
+- `enabled`：模板是否启用
+- `description`：模板说明
+
+### 16.3 多模板策略
+
+第一批模板分层建议：
+
+#### 标准对外模板 `standard`
+
+适用：
+
+- 客户 / 供应商确认
+- 对账
+- 正式留档
+
+特点：
+
+- A4 或半 A4
+- 正式抬头
+- 明细完整
+- 金额和备注清晰
+- 不展示内部调试字段
+
+#### 仓库执行模板 `warehouse`
+
+适用：
+
+- 拣货
+- 发货
+- 收货
+- 复核
+
+特点：
+
+- 商品名称、规格、单位、数量加大
+- 可展示仓库、货位、批号、条码
+- 金额可选，默认弱化
+- 支持大字号和少装饰
+
+#### 财务模板 `finance`
+
+适用：
+
+- 发票留档
+- 收付款凭证
+- 内部审核
+
+特点：
+
+- 强调金额、已收 / 已付、未结、核销关系
+- 展示关联发票、收付款单、退款单
+- 可展示制单人、审核人、打印时间
+
+#### 紧凑模板 `compact`
+
+适用：
+
+- 大批量补打
+- 快速随货
+- 节省纸张
+
+特点：
+
+- 更小页边距
+- 更紧密表格
+- 可隐藏低频字段
+- 多页表头重复
+
+#### 内部模板 `internal`
+
+适用：
+
+- 内部运营
+- 排错
+- 管理审核
+
+特点：
+
+- 可展示内部编码、商品编码、单据状态、上下游单据号
+- 不作为对外模板默认项
+
+模板命名约定：
+
+- Print Format 名称：`myapp <DocType> <Template Label>`
+- 模板 key 使用小写英文和下划线，例如：
+  - `standard`
+  - `warehouse`
+  - `finance`
+  - `compact`
+  - `internal`
+
+### 16.4 主流打印功能清单
+
+打印模块最终应覆盖以下主流能力。
+
+#### 预览与输出
+
+- HTML 预览
+- PDF 预览
+- PDF 下载
+- PDF 分享
+- 浏览器系统打印
+- 移动端系统打印
+- 后端流式下载
+- 可选归档到私有 `File`
+
+#### 页面与版式
+
+- 纸张大小：A4、A5、半 A4
+- 方向：纵向、横向
+- 页边距
+- 页眉页脚
+- 页码
+- 打印时间
+- 打印人
+- 公司抬头
+- 公司地址、电话、税号
+- 签字栏 / 盖章栏
+- 多页表头重复
+- 汇总区尽量保持在末页
+- 明细跨页不断裂或最小化断裂
+
+#### 数据展示
+
+- 商品名称
+- 内部昵称
+- 规格型号
+- 单位展示名 `uom_display`
+- 数量
+- 单价
+- 金额
+- 税额 / 折扣 / 运费等扩展字段
+- 金额大写
+- 客户 / 供应商信息
+- 联系人和地址
+- 备注
+- 关联单据
+
+#### 条码与标识
+
+- 单据号条码
+- 单据二维码
+- 商品条码
+- 后续可扩展标签打印
+
+#### 操作与治理
+
+- 模板选择
+- 默认模板
+- 打印前预览
+- 下载 PDF
+- 归档 PDF
+- 补打
+- 打印历史
+- 打印次数
+- 最近打印时间
+- 最近打印人
+- 水印
+- 作废 / 草稿状态标识
+- 权限控制
+
+### 16.5 后端接口升级
+
+现有接口继续保留：
+
+- `get_print_preview_v1`
+- `get_print_file_v1`
+- `download_print_file_v1`
+
+已新增查询能力：
+
+#### `list_print_doctypes_v1`
+
+用途：
+
+- 返回当前用户可打印的单据类型和能力。
+
+返回：
+
+- `doctype`
+- `label`
+- `templates`
+- `capabilities`
+- `default_template`
+
+#### `get_print_templates_v1`
+
+用途：
+
+- 返回某个 `doctype` 可用模板。
+
+入参：
+
+- `doctype`
+
+返回：
+
+- `default_template`
+- `templates[]`
+- `capabilities`
+
+当前模板元数据包含：
+
+- `key`
+- `label`
+- `print_format`
+- `is_default`
+- `source`
+- `category`
+- `paper_size`
+- `orientation`
+- `description`
+- `enabled`
+- `managed`
+- `template_version`
+- `template_hash`
+
+#### `list_print_jobs_v1`
+
+用途：
+
+- 打印历史 / 补打列表。当前已实现基础版。
+
+入参：
+
+- `doctype`
+- `docname`
+- `date_from`
+- `date_to`
+- `user`
+- `template`
+- `action`
+- `limit`
+
+返回：
+
+- `job_id`
+- `doctype`
+- `docname`
+- `template`
+- `action`
+- `output`
+- `filename`
+- `file_url`
+- `printed_by`
+- `printed_at`
+- `status`
+- `metadata`
+
+说明：
+
+- 当前按目标单据查询，会先校验当前用户对该单据有读权限。
+- 如果 `tabMyApp Print Job` 尚未迁移创建，返回空列表和 `table_ready=false`，不影响打印主流程。
+
+#### `record_print_job_v1`
+
+用途：
+
+- 前端实际触发系统打印、下载或分享后记录行为。当前已实现基础版。
+
+入参：
+
+- `doctype`
+- `docname`
+- `template`
+- `action`: `preview` / `print` / `download` / `share` / `archive`
+- `output`: `html` / `pdf`
+- `status`: `success` / `failed` / `skipped`
+- `filename`
+- `file_url`
+- `error`
+- `metadata`
+
+说明：
+
+- 当前设计为显式记录，不由旧的预览 / 元数据 / 下载接口自动写入，避免改变 Web/Mobile 原有调用副作用。
+- 调用时会校验单据存在、读权限、模板白名单和模板启用状态。
+- 如果 `tabMyApp Print Job` 尚未迁移创建，返回 `recorded=false`，不阻断前端打印流程。
+- 托管模板会自动把 `template_version`、`template_hash`、`template_managed` 和 `print_format` 固化到打印记录 `metadata`，用于审计追溯。
+
+### 16.6 数据模型建议
+
+如果要达到“主流打印功能级别”，建议新增轻量级治理 DocType。
+
+#### `MyApp Print Template`
+
+用于管理模板元数据，而不是替代 Frappe `Print Format`。
+
+字段建议：
+
+- `doctype`
+- `template_key`
+- `template_label`
+- `print_format`
+- `source`
+- `paper_size`
+- `orientation`
+- `category`
+- `is_default`
+- `enabled`
+- `description`
+- `version`
+
+第一阶段可以继续使用 Python registry；进入运营配置阶段后，再迁移到 DocType 管理。
+
+#### `MyApp Print Job`
+
+用于记录打印行为。
+
+字段建议：
+
+- `doctype`
+- `docname`
+- `template_key`
+- `print_format`
+- `output`
+- `action`
+- `file_url`
+- `file_size`
+- `printed_by`
+- `printed_at`
+- `client`
+- `status`
+- `error`
+
+打印历史不是交易账本，不应影响原业务单据提交、作废和回退。
+
+### 16.7 前端通用打印入口
+
+Web 和 Mobile 都不应在业务页里拼打印 URL。
+
+前端应封装统一服务：
+
+- `getPrintPreview`
+- `getPrintFile`
+- `downloadPrintFile`
+- `getPrintTemplates`
+- `recordPrintAction`
+
+业务页只传：
+
+- `doctype`
+- `docname`
+- 可选 `template`
+
+前端通用组件建议：
+
+- `PrintButton`
+- `PrintTemplateSelect`
+- `PrintPreviewDrawer` / `PrintPreviewPage`
+- `PrintActionMenu`
+- `PrintHistoryPanel`
+
+页面接入方式：
+
+- 详情页主操作区统一放 `打印` 按钮
+- 下拉菜单展示可选模板
+- 默认模板可一键预览
+- `下载 PDF` 和 `系统打印` 进入统一流程
+
+### 16.8 任意单据接入流程
+
+新增单据打印时，必须按以下流程：
+
+1. 确认该 DocType 是否允许打印。
+2. 在 registry 或 `MyApp Print Template` 中登记 DocType。
+3. 配置至少一个默认模板。
+4. 如需正式业务模板，在 `myapp/printing/templates/` 增加托管模板。
+5. 如模板需要派生字段，在后端打印上下文中统一补齐。
+6. 补充单元测试：
+   - 模板解析
+   - 权限校验
+   - HTML 预览
+   - PDF 文件元数据
+7. 前端业务页只接统一打印组件，不新增页面级打印拼装逻辑。
+
+### 16.9 下一步实施路线
+
+建议分三步推进。
+
+#### 阶段 A：强化现有通用能力
+
+- 扩展 registry 数据结构，支持模板元数据和 capabilities
+- 新增 `get_print_templates_v1`
+- Web 端详情页统一改用同一个 `PrintAction` 组件
+- 保持现有 6 类单据模板不变，先统一入口
+
+#### 阶段 B：多模板落地
+
+- 为销售发货单新增 `warehouse` 模板
+- 为采购收货单新增 `warehouse` 模板
+- 为销售 / 采购订单新增 `compact` 模板
+- 为收付款单新增 `finance` 模板
+- 模板选择由后端返回，前端动态展示
+
+#### 阶段 C：打印治理
+
+- 新增打印历史
+- 新增打印归档策略
+- 新增打印次数 / 最近打印人 / 最近打印时间
+- 评估 `MyApp Print Template` 和 `MyApp Print Job` DocType
+- 增加补打列表和批量打印入口
+
+### 16.10 第一批建议落地范围
+
+结合当前销售 / 采购主链路状态，下一轮建议优先做：
+
+1. 后端扩展 registry 元数据。
+2. 新增模板查询接口。
+3. Web 端抽通用打印按钮和模板选择。
+4. 给现有 6 类单据全部切到统一打印按钮。
+5. 新增 `Payment Entry / finance` 打印模板，用于收款单 / 付款单。
+6. 为销售发货和采购收货补 `warehouse` 模板。
+
+这样可以先满足：
+
+- 任意已登记单据都能通过统一入口打印
+- 同一单据可以选择多模板
+- Web 页面不再各自实现打印动作
+- 后续继续扩展打印历史和批量补打时，不需要重做业务页集成

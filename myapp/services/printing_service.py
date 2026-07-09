@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from html import escape
 from decimal import Decimal, ROUND_HALF_UP
+from html import escape
+import json
+from uuid import uuid4
 
 import frappe
 from frappe import _
 from frappe.core.api.file import create_new_folder
+from frappe.utils import get_datetime, now_datetime
 from frappe.utils.file_manager import save_file
 
-from myapp.printing.registry import get_print_template_options, resolve_print_template
+from myapp.printing.registry import get_print_doctype_options, get_print_template_options, resolve_print_template
 from myapp.printing.templates import ensure_managed_print_format
 
 
@@ -18,6 +21,216 @@ SUPPORTED_PRINT_OUTPUTS = (PRINT_OUTPUT_HTML, PRINT_OUTPUT_PDF)
 PRINT_ARCHIVE_FOLDER = "Home/Attachments/MyApp Print Files/Archive"
 PRINT_STORAGE_STREAM = "stream"
 PRINT_STORAGE_ARCHIVE = "archive"
+PRINT_JOB_TABLE = "MyApp Print Job"
+PRINT_JOB_ACTIONS = ("preview", "download", "print", "share", "archive")
+PRINT_JOB_STATUSES = ("success", "failed", "skipped")
+
+
+def list_print_doctypes_v1():
+	doctypes = get_print_doctype_options()
+	return {
+		"status": "success",
+		"message": _("可打印单据类型已获取。"),
+		"data": {
+			"doctypes": doctypes,
+			"count": len(doctypes),
+		},
+	}
+
+
+def get_print_templates_v1(doctype: str):
+	resolved_doctype = _normalize_required_str(doctype, field_label="doctype")
+	default_template = resolve_print_template(resolved_doctype)
+	templates = get_print_template_options(resolved_doctype)
+	return {
+		"status": "success",
+		"message": _("打印模板已获取。"),
+		"data": {
+			"doctype": resolved_doctype,
+			"default_template": default_template["key"],
+			"templates": templates,
+			"capabilities": ["preview", "download_pdf", "archive_pdf"],
+		},
+		"meta": {
+			"doctype": resolved_doctype,
+			"default_template": default_template["key"],
+		},
+	}
+
+
+def record_print_job_v1(
+	doctype: str,
+	docname: str,
+	template: str | None = None,
+	action: str = "print",
+	output: str = PRINT_OUTPUT_PDF,
+	status: str = "success",
+	filename: str | None = None,
+	file_url: str | None = None,
+	error: str | None = None,
+	metadata: dict | str | None = None,
+):
+	resolved_doctype = _normalize_required_str(doctype, field_label="doctype")
+	resolved_docname = _normalize_required_str(docname, field_label="docname")
+	resolved_action = _resolve_print_job_action(action)
+	resolved_output = _resolve_output(output)
+	resolved_status = _resolve_print_job_status(status)
+	template_info = resolve_print_template(resolved_doctype, template)
+	document = _load_print_document(resolved_doctype, resolved_docname)
+	if not _print_job_table_exists():
+		return {
+			"status": "success",
+			"message": _("打印记录表尚未创建，已跳过记录。"),
+			"data": {
+				"recorded": False,
+				"reason": "table_missing",
+				"doctype": document.doctype,
+				"docname": document.name,
+			},
+		}
+
+	now = now_datetime()
+	user = _current_user()
+	job_name = f"PRN-JOB-{now.strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
+	metadata_json = _coerce_metadata_json(_build_print_job_metadata(metadata, template_info))
+	request = getattr(frappe.local, "request", None)
+	frappe.db.sql(
+		"""
+		INSERT INTO `tabMyApp Print Job`
+			(`name`, `creation`, `modified`, `modified_by`, `owner`, `docstatus`, `idx`,
+			 `reference_doctype`, `reference_name`, `template`, `template_label`, `print_format`,
+			 `action`, `output`, `status`, `filename`, `file_url`, `printed_by`, `printed_at`,
+			 `user_agent`, `ip_address`, `error`, `metadata_json`)
+		VALUES
+			(%s, %s, %s, %s, %s, 0, 0,
+			 %s, %s, %s, %s, %s,
+			 %s, %s, %s, %s, %s, %s, %s,
+			 %s, %s, %s, %s)
+		""",
+		(
+			job_name,
+			now,
+			now,
+			user,
+			user,
+			resolved_doctype,
+			resolved_docname,
+			template_info["key"],
+			template_info["label"],
+			template_info.get("print_format"),
+			resolved_action,
+			resolved_output,
+			resolved_status,
+			_normalize_optional_str(filename),
+			_normalize_optional_str(file_url),
+			user,
+			now,
+			_get_request_user_agent(request),
+			_get_request_ip_address(request),
+			_normalize_optional_str(error),
+			metadata_json,
+		),
+	)
+	frappe.db.commit()
+
+	return {
+		"status": "success",
+		"message": _("打印记录已保存。"),
+		"data": {
+			"recorded": True,
+			"job_id": job_name,
+			"doctype": resolved_doctype,
+			"docname": resolved_docname,
+			"template": template_info,
+			"action": resolved_action,
+			"output": resolved_output,
+			"status": resolved_status,
+			"printed_by": user,
+			"printed_at": now,
+		},
+	}
+
+
+def list_print_jobs_v1(
+	doctype: str,
+	docname: str,
+	action: str | None = None,
+	template: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	user: str | None = None,
+	limit: int = 20,
+):
+	resolved_doctype = _normalize_required_str(doctype, field_label="doctype")
+	resolved_docname = _normalize_required_str(docname, field_label="docname")
+	_load_print_document(resolved_doctype, resolved_docname)
+	if not _print_job_table_exists():
+		return {
+			"status": "success",
+			"message": _("打印记录表尚未创建。"),
+			"data": {
+				"jobs": [],
+				"count": 0,
+				"table_ready": False,
+			},
+		}
+
+	conditions = ["reference_doctype = %s", "reference_name = %s"]
+	values: list = [resolved_doctype, resolved_docname]
+	resolved_action = (action or "").strip().lower()
+	if resolved_action:
+		if resolved_action not in PRINT_JOB_ACTIONS:
+			frappe.throw(_("不支持的打印动作。"))
+		conditions.append("action = %s")
+		values.append(resolved_action)
+
+	resolved_template = (template or "").strip()
+	if resolved_template:
+		conditions.append("template = %s")
+		values.append(resolved_template)
+
+	resolved_user = (user or "").strip()
+	if resolved_user:
+		conditions.append("printed_by = %s")
+		values.append(resolved_user)
+
+	if date_from:
+		conditions.append("printed_at >= %s")
+		values.append(get_datetime(date_from))
+	if date_to:
+		conditions.append("printed_at <= %s")
+		values.append(get_datetime(date_to))
+
+	resolved_limit = _coerce_positive_int(limit, default=20, maximum=100)
+	values.append(resolved_limit)
+	rows = frappe.db.sql(
+		f"""
+		SELECT
+			name, reference_doctype, reference_name, template, template_label, print_format,
+			action, output, status, filename, file_url, printed_by, printed_at, error, metadata_json
+		FROM `tabMyApp Print Job`
+		WHERE {" AND ".join(conditions)}
+		ORDER BY printed_at DESC, creation DESC
+		LIMIT %s
+		""",
+		tuple(values),
+		as_dict=True,
+	)
+	jobs = [_serialize_print_job(row) for row in rows]
+	return {
+		"status": "success",
+		"message": _("打印记录已获取。"),
+		"data": {
+			"jobs": jobs,
+			"count": len(jobs),
+			"table_ready": True,
+		},
+		"meta": {
+			"doctype": resolved_doctype,
+			"docname": resolved_docname,
+			"limit": resolved_limit,
+		},
+	}
 
 
 def get_print_preview_v1(
@@ -157,6 +370,114 @@ def _coerce_bool_flag(value) -> bool:
 	return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _resolve_print_job_action(action: str | None):
+	resolved = (action or "print").strip().lower()
+	if resolved not in PRINT_JOB_ACTIONS:
+		frappe.throw(_("不支持的打印动作。"))
+	return resolved
+
+
+def _resolve_print_job_status(status: str | None):
+	resolved = (status or "success").strip().lower()
+	if resolved not in PRINT_JOB_STATUSES:
+		frappe.throw(_("不支持的打印记录状态。"))
+	return resolved
+
+
+def _normalize_optional_str(value):
+	resolved = (str(value) if value is not None else "").strip()
+	return resolved or None
+
+
+def _coerce_positive_int(value, *, default: int, maximum: int):
+	try:
+		resolved = int(value)
+	except Exception:
+		return default
+	if resolved <= 0:
+		return default
+	return min(resolved, maximum)
+
+
+def _coerce_metadata_json(metadata):
+	if metadata is None or metadata == "":
+		return None
+	if isinstance(metadata, str):
+		return metadata
+	return json.dumps(metadata, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _build_print_job_metadata(metadata, template_info: dict):
+	base = {}
+	if isinstance(metadata, dict):
+		base.update(metadata)
+	elif metadata:
+		base["source_metadata"] = metadata
+
+	base.setdefault("template_version", template_info.get("template_version"))
+	base.setdefault("template_hash", template_info.get("template_hash"))
+	base.setdefault("template_managed", template_info.get("managed"))
+	base.setdefault("print_format", template_info.get("print_format"))
+	return base
+
+
+def _current_user():
+	session = getattr(frappe, "session", None)
+	user = getattr(session, "user", None)
+	return user or "Administrator"
+
+
+def _get_request_user_agent(request):
+	if not request:
+		return None
+	headers = getattr(request, "headers", None)
+	if headers and hasattr(headers, "get"):
+		return headers.get("User-Agent")
+	return None
+
+
+def _get_request_ip_address(request):
+	if not request:
+		return None
+	return getattr(request, "remote_addr", None)
+
+
+def _print_job_table_exists():
+	try:
+		return bool(frappe.db.table_exists(PRINT_JOB_TABLE))
+	except Exception:
+		return False
+
+
+def _serialize_print_job(row):
+	metadata = None
+	metadata_json = row.get("metadata_json")
+	if metadata_json:
+		try:
+			metadata = json.loads(metadata_json)
+		except Exception:
+			metadata = metadata_json
+	return {
+		"job_id": row.get("name"),
+		"doctype": row.get("reference_doctype"),
+		"docname": row.get("reference_name"),
+		"template": {
+			"key": row.get("template"),
+			"label": row.get("template_label") or row.get("template"),
+			"print_format": row.get("print_format"),
+		},
+		"action": row.get("action"),
+		"output": row.get("output"),
+		"status": row.get("status"),
+		"filename": row.get("filename"),
+		"file_url": row.get("file_url"),
+		"printed_by": row.get("printed_by"),
+		"printed_at": row.get("printed_at"),
+		"error": row.get("error"),
+		"metadata": metadata,
+	}
+
+
 def _load_print_document(doctype: str, docname: str):
 	if not frappe.db.exists(doctype, docname):
 		raise frappe.DoesNotExistError(_("{0} {1} 不存在。").format(doctype, docname))
@@ -174,6 +495,94 @@ def _attach_printing_derived_fields(document):
 		fallback=getattr(document, "grand_total", None),
 	)
 	document.myapp_amount_in_words_zh = _to_chinese_financial_words(total_amount)
+	status_label = _resolve_print_status_label(document)
+	history_summary = _get_print_history_summary(document.doctype, document.name)
+	document.myapp_print_status_label = status_label
+	document.myapp_print_history_summary = history_summary
+	document.myapp_print_copy_label = _resolve_print_copy_label(history_summary)
+	document.myapp_print_watermark = _resolve_print_watermark(
+		status_label=status_label,
+		history_summary=history_summary,
+	)
+
+
+def _resolve_print_status_label(document):
+	docstatus = getattr(document, "docstatus", None)
+	if docstatus == 0:
+		return "草稿"
+	if docstatus == 2:
+		return "已作废"
+	return "正式"
+
+
+def _get_print_history_summary(doctype: str, docname: str):
+	summary = {
+		"total_count": 0,
+		"successful_count": 0,
+		"latest_printed_by": None,
+		"latest_printed_at": None,
+	}
+	if not _print_job_table_exists():
+		return summary
+
+	try:
+		rows = frappe.db.sql(
+			"""
+			SELECT
+				COUNT(*) AS total_count,
+				SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS successful_count,
+				MAX(printed_at) AS latest_printed_at
+			FROM `tabMyApp Print Job`
+			WHERE reference_doctype = %s AND reference_name = %s
+			""",
+			(doctype, docname),
+			as_dict=True,
+		)
+		if not rows:
+			return summary
+		row = rows[0]
+		summary["total_count"] = int(row.get("total_count") or 0)
+		summary["successful_count"] = int(row.get("successful_count") or 0)
+		summary["latest_printed_at"] = row.get("latest_printed_at")
+		if summary["latest_printed_at"]:
+			user_rows = frappe.db.sql(
+				"""
+				SELECT printed_by
+				FROM `tabMyApp Print Job`
+				WHERE reference_doctype = %s AND reference_name = %s AND printed_at = %s
+				ORDER BY creation DESC
+				LIMIT 1
+				""",
+				(doctype, docname, summary["latest_printed_at"]),
+				as_dict=True,
+			)
+			if user_rows:
+				summary["latest_printed_by"] = user_rows[0].get("printed_by")
+	except Exception:
+		return {
+			"total_count": 0,
+			"successful_count": 0,
+			"latest_printed_by": None,
+			"latest_printed_at": None,
+		}
+	return summary
+
+
+def _resolve_print_copy_label(history_summary: dict):
+	successful_count = int(history_summary.get("successful_count") or 0)
+	if successful_count <= 0:
+		return "首次打印"
+	return f"第 {successful_count + 1} 次打印"
+
+
+def _resolve_print_watermark(*, status_label: str, history_summary: dict):
+	if status_label == "草稿":
+		return "草稿"
+	if status_label == "已作废":
+		return "已作废"
+	if int(history_summary.get("successful_count") or 0) > 0:
+		return "补打"
+	return None
 
 
 def _ensure_template_ready(template_info: dict):
@@ -294,8 +703,10 @@ _CN_BIG_UNITS = ["", "万", "亿", "兆"]
 
 def _coerce_decimal_print_amount(value, *, fallback=None):
 	for candidate in (value, fallback, 0):
+		if candidate is None or candidate == "":
+			continue
 		try:
-			return Decimal(str(candidate or 0))
+			return Decimal(str(candidate))
 		except Exception:
 			continue
 	return Decimal("0")

@@ -79,10 +79,20 @@
 		.footer-grid { width: 100%; border-collapse: collapse; }
 		.footer-grid td { width: 50%; padding: 1px 0; vertical-align: top; }
 		.footer-label { display: inline-block; min-width: 58px; font-weight: 700; }
+		.print-watermark { position: fixed; top: 42%; left: 50%; z-index: 0; transform: translate(-50%, -50%) rotate(-28deg); color: rgba(120, 120, 120, 0.14); font-size: 76px; font-weight: 700; letter-spacing: 12px; pointer-events: none; }
+		.print-meta-strip { display: flex; justify-content: space-between; gap: 12px; margin: 0 0 6px; color: #555; font-size: 11px; }
+		.print-meta-strip span { white-space: nowrap; }
 	</style>
 </head>
 <body>
 	<div class="document">
+		{% if doc.myapp_print_watermark %}
+		<div class="print-watermark">{{ doc.myapp_print_watermark }}</div>
+		{% endif %}
+		<div class="print-meta-strip">
+			<span>状态：{{ doc.myapp_print_status_label or "-" }}</span>
+			<span>{{ doc.myapp_print_copy_label or "首次打印" }}</span>
+		</div>
 		<h1 class="document-title">采购订单</h1>
 
 		<table class="meta-grid">

@@ -38,7 +38,15 @@ from .purchase_service import (
 	update_purchase_order_items_v2,
 	update_purchase_order_v2,
 )
-from .printing_service import build_print_file_download_v1, get_print_file_v1, get_print_preview_v1
+from .printing_service import (
+	build_print_file_download_v1,
+	get_print_file_v1,
+	get_print_preview_v1,
+	get_print_templates_v1,
+	list_print_doctypes_v1,
+	list_print_jobs_v1,
+	record_print_job_v1,
+)
 from .report_service import (
 	get_business_report_overview_v1,
 	get_business_report_v1,
@@ -80,6 +88,10 @@ __all__ = [
 	"build_print_file_download_v1",
 	"get_print_file_v1",
 	"get_print_preview_v1",
+	"get_print_templates_v1",
+	"list_print_doctypes_v1",
+	"list_print_jobs_v1",
+	"record_print_job_v1",
 	"get_business_report_overview_v1",
 	"get_business_report_v1",
 	"get_cashflow_report_v1",
