@@ -25,6 +25,9 @@
 	"Set": "套",
 	"Pair": "双"
 } -%}
+{%- set template_key = doc.myapp_print_template_key or "standard" -%}
+{%- set template_label = doc.myapp_print_template_label or "标准发货单" -%}
+{%- set template_suffix = "" if template_key == "standard" else "（" ~ template_label ~ "）" -%}
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -94,8 +97,9 @@
 		<div class="print-meta-strip">
 			<span>状态：{{ doc.myapp_print_status_label or "-" }}</span>
 			<span>{{ doc.myapp_print_copy_label or "首次打印" }}</span>
+			<span>模板：{{ template_label }}</span>
 		</div>
-		<h1 class="document-title">销售发货单</h1>
+		<h1 class="document-title">销售发货单{{ template_suffix }}</h1>
 
 		<table class="meta-grid">
 			<tr>

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import frappe
 from frappe import _
 
+PRINT_SETTING_TABLE = "MyApp Print Setting"
+
 
 @dataclass(frozen=True)
 class PrintTemplateDefinition:
@@ -18,6 +20,7 @@ class PrintTemplateDefinition:
 	orientation: str = "Portrait"
 	description: str | None = None
 	enabled: bool = True
+	allowed_roles: tuple[str, ...] = ()
 
 	def as_dict(self):
 		version_info = _get_template_version_info(self.print_format)
@@ -35,6 +38,8 @@ class PrintTemplateDefinition:
 			"managed": bool(version_info.get("managed")) if version_info else False,
 			"template_version": version_info.get("version") if version_info else None,
 			"template_hash": version_info.get("hash") if version_info else None,
+			"restricted": bool(self.allowed_roles),
+			"allowed_roles": list(self.allowed_roles),
 		}
 
 
@@ -46,12 +51,13 @@ class PrintDocumentDefinition:
 	capabilities: tuple[str, ...] = ("preview", "download_pdf", "archive_pdf")
 
 	def as_dict(self):
+		templates = get_print_template_options(self.doctype)
 		return {
 			"doctype": self.doctype,
 			"label": self.label,
 			"module": self.module,
 			"capabilities": list(self.capabilities),
-			"templates": get_print_template_options(self.doctype),
+			"templates": templates,
 			"default_template": resolve_print_template(self.doctype)["key"],
 		}
 
@@ -74,6 +80,17 @@ _PRINT_TEMPLATE_REGISTRY: dict[str, tuple[PrintTemplateDefinition, ...]] = {
 			print_format="myapp Sales Invoice Standard",
 			is_default=True,
 			source="myapp",
+			category="external",
+			description="面向客户的正式发票模板，包含购方、销方、明细和金额大写。",
+		),
+		PrintTemplateDefinition(
+			key="finance",
+			label="财务留档",
+			print_format="myapp Sales Invoice Finance",
+			source="myapp",
+			category="finance",
+			description="面向财务复核和归档的销售发票模板。",
+			allowed_roles=("Accounts Manager", "Accounts User"),
 		),
 	),
 	"Purchase Invoice": (
@@ -83,6 +100,17 @@ _PRINT_TEMPLATE_REGISTRY: dict[str, tuple[PrintTemplateDefinition, ...]] = {
 			print_format="myapp Purchase Invoice Standard",
 			is_default=True,
 			source="myapp",
+			category="external",
+			description="面向供应商核对的正式采购发票模板。",
+		),
+		PrintTemplateDefinition(
+			key="finance",
+			label="财务留档",
+			print_format="myapp Purchase Invoice Finance",
+			source="myapp",
+			category="finance",
+			description="面向财务复核和归档的采购发票模板。",
+			allowed_roles=("Accounts Manager", "Accounts User"),
 		),
 	),
 	"Purchase Receipt": (
@@ -92,6 +120,17 @@ _PRINT_TEMPLATE_REGISTRY: dict[str, tuple[PrintTemplateDefinition, ...]] = {
 			print_format="myapp Purchase Receipt Standard",
 			is_default=True,
 			source="myapp",
+			category="warehouse",
+			description="采购收货正式模板，兼顾供应商信息、仓库和金额。",
+		),
+		PrintTemplateDefinition(
+			key="warehouse",
+			label="仓库执行版",
+			print_format="myapp Purchase Receipt Warehouse",
+			source="myapp",
+			category="warehouse",
+			description="面向仓库收货、复核和入库留档的执行模板。",
+			allowed_roles=("Stock Manager", "Stock User", "Purchase Manager", "Purchase User"),
 		),
 	),
 	"Sales Order": (
@@ -101,6 +140,17 @@ _PRINT_TEMPLATE_REGISTRY: dict[str, tuple[PrintTemplateDefinition, ...]] = {
 			print_format="myapp Sales Order Standard",
 			is_default=True,
 			source="myapp",
+			category="external",
+			description="面向客户确认和销售留档的正式销售订单模板。",
+		),
+		PrintTemplateDefinition(
+			key="external",
+			label="客户确认版",
+			print_format="myapp Sales Order External",
+			source="myapp",
+			category="external",
+			description="面向客户确认、对账和外部沟通的销售订单模板。",
+			allowed_roles=("Sales Manager", "Sales User"),
 		),
 	),
 	"Purchase Order": (
@@ -110,6 +160,17 @@ _PRINT_TEMPLATE_REGISTRY: dict[str, tuple[PrintTemplateDefinition, ...]] = {
 			print_format="myapp Purchase Order Standard",
 			is_default=True,
 			source="myapp",
+			category="external",
+			description="面向供应商确认和采购留档的正式采购订单模板。",
+		),
+		PrintTemplateDefinition(
+			key="external",
+			label="供应商确认版",
+			print_format="myapp Purchase Order External",
+			source="myapp",
+			category="external",
+			description="面向供应商确认、对账和外部沟通的采购订单模板。",
+			allowed_roles=("Purchase Manager", "Purchase User"),
 		),
 	),
 	"Delivery Note": (
@@ -119,6 +180,17 @@ _PRINT_TEMPLATE_REGISTRY: dict[str, tuple[PrintTemplateDefinition, ...]] = {
 			print_format="myapp Delivery Note Standard",
 			is_default=True,
 			source="myapp",
+			category="warehouse",
+			description="销售发货正式模板，兼顾客户信息、出库复核和金额。",
+		),
+		PrintTemplateDefinition(
+			key="warehouse",
+			label="仓库执行版",
+			print_format="myapp Delivery Note Warehouse",
+			source="myapp",
+			category="warehouse",
+			description="面向仓库拣货、发货和复核的执行模板。",
+			allowed_roles=("Stock Manager", "Stock User", "Sales Manager", "Sales User"),
 		),
 	),
 }
@@ -129,21 +201,24 @@ def get_supported_print_doctypes():
 
 
 def get_print_doctype_options():
-	return [
-		_PRINT_DOCUMENT_REGISTRY.get(
-			doctype,
-			PrintDocumentDefinition(doctype=doctype, label=doctype, module="unknown"),
-		).as_dict()
-		for doctype in get_supported_print_doctypes()
-		if _get_doctype_template_definitions(doctype)
-	]
+	options = []
+	for doctype in get_supported_print_doctypes():
+		if not get_print_template_options(doctype):
+			continue
+		options.append(
+			_PRINT_DOCUMENT_REGISTRY.get(
+				doctype,
+				PrintDocumentDefinition(doctype=doctype, label=doctype, module="unknown"),
+			).as_dict()
+		)
+	return options
 
 
 def get_print_template_options(doctype: str):
 	return [
 		item.as_dict()
 		for item in _get_doctype_template_definitions(doctype)
-		if item.enabled
+		if item.enabled and _is_template_allowed_for_current_user(item)
 	]
 
 
@@ -155,16 +230,22 @@ def resolve_print_template(doctype: str, template_key: str | None = None):
 	if template_key:
 		resolved_key = template_key.strip()
 		for item in definitions:
-			if item.enabled and item.key == resolved_key:
+			if item.enabled and item.key == resolved_key and _is_template_allowed_for_current_user(item):
 				return item.as_dict()
 		frappe.throw(_("所选打印模板不存在或未启用。"))
 
+	configured_default = _get_configured_default_template_key(doctype)
+	if configured_default:
+		for item in definitions:
+			if item.enabled and item.key == configured_default and _is_template_allowed_for_current_user(item):
+				return item.as_dict()
+
 	for item in definitions:
-		if item.enabled and item.is_default:
+		if item.enabled and item.is_default and _is_template_allowed_for_current_user(item):
 			return item.as_dict()
 
 	for item in definitions:
-		if item.enabled:
+		if item.enabled and _is_template_allowed_for_current_user(item):
 			return item.as_dict()
 
 	frappe.throw(_("该单据类型没有启用的打印模板。"))
@@ -172,6 +253,44 @@ def resolve_print_template(doctype: str, template_key: str | None = None):
 
 def _get_doctype_template_definitions(doctype: str):
 	return _PRINT_TEMPLATE_REGISTRY.get((doctype or "").strip(), ())
+
+
+def _is_template_allowed_for_current_user(template: PrintTemplateDefinition):
+	if not template.allowed_roles:
+		return True
+	user_roles = _get_current_user_roles()
+	if "System Manager" in user_roles:
+		return True
+	return bool(set(template.allowed_roles).intersection(user_roles))
+
+
+def _get_current_user_roles():
+	try:
+		roles = frappe.get_roles()
+	except Exception:
+		return set()
+	return set(roles or [])
+
+
+def _get_configured_default_template_key(doctype: str):
+	try:
+		if not frappe.db.table_exists(PRINT_SETTING_TABLE):
+			return None
+		rows = frappe.db.sql(
+			"""
+			SELECT default_template
+			FROM `tabMyApp Print Setting`
+			WHERE reference_doctype = %s AND enabled = 1
+			LIMIT 1
+			""",
+			((doctype or "").strip(),),
+			as_dict=True,
+		)
+	except Exception:
+		return None
+	if not rows:
+		return None
+	return (rows[0].get("default_template") or "").strip() or None
 
 
 def _get_template_version_info(print_format: str | None):

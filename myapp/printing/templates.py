@@ -29,8 +29,20 @@ _MANAGED_PRINT_FORMATS: dict[str, ManagedPrintFormatDefinition] = {
 		module="myapp",
 		html_path="sales_invoice_standard.html",
 	),
+	"myapp Sales Invoice Finance": ManagedPrintFormatDefinition(
+		name="myapp Sales Invoice Finance",
+		doctype="Sales Invoice",
+		module="myapp",
+		html_path="sales_invoice_standard.html",
+	),
 	"myapp Purchase Invoice Standard": ManagedPrintFormatDefinition(
 		name="myapp Purchase Invoice Standard",
+		doctype="Purchase Invoice",
+		module="myapp",
+		html_path="purchase_invoice_standard.html",
+	),
+	"myapp Purchase Invoice Finance": ManagedPrintFormatDefinition(
+		name="myapp Purchase Invoice Finance",
 		doctype="Purchase Invoice",
 		module="myapp",
 		html_path="purchase_invoice_standard.html",
@@ -41,8 +53,20 @@ _MANAGED_PRINT_FORMATS: dict[str, ManagedPrintFormatDefinition] = {
 		module="myapp",
 		html_path="purchase_receipt_standard.html",
 	),
+	"myapp Purchase Receipt Warehouse": ManagedPrintFormatDefinition(
+		name="myapp Purchase Receipt Warehouse",
+		doctype="Purchase Receipt",
+		module="myapp",
+		html_path="purchase_receipt_standard.html",
+	),
 	"myapp Sales Order Standard": ManagedPrintFormatDefinition(
 		name="myapp Sales Order Standard",
+		doctype="Sales Order",
+		module="myapp",
+		html_path="sales_order_standard.html",
+	),
+	"myapp Sales Order External": ManagedPrintFormatDefinition(
+		name="myapp Sales Order External",
 		doctype="Sales Order",
 		module="myapp",
 		html_path="sales_order_standard.html",
@@ -53,8 +77,20 @@ _MANAGED_PRINT_FORMATS: dict[str, ManagedPrintFormatDefinition] = {
 		module="myapp",
 		html_path="purchase_order_standard.html",
 	),
+	"myapp Purchase Order External": ManagedPrintFormatDefinition(
+		name="myapp Purchase Order External",
+		doctype="Purchase Order",
+		module="myapp",
+		html_path="purchase_order_standard.html",
+	),
 	"myapp Delivery Note Standard": ManagedPrintFormatDefinition(
 		name="myapp Delivery Note Standard",
+		doctype="Delivery Note",
+		module="myapp",
+		html_path="delivery_note_standard.html",
+	),
+	"myapp Delivery Note Warehouse": ManagedPrintFormatDefinition(
+		name="myapp Delivery Note Warehouse",
 		doctype="Delivery Note",
 		module="myapp",
 		html_path="delivery_note_standard.html",

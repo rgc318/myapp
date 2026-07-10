@@ -17,3 +17,5 @@ myapp.patches.optimize_report_query_indexes_v2
 myapp.patches.create_idempotency_key_table
 myapp.patches.add_idempotency_request_fingerprint
 myapp.patches.create_print_job_table
+myapp.patches.create_print_batch_table
+myapp.patches.create_print_setting_table

@@ -7,6 +7,7 @@ from myapp.api.gateway import (
 	add_product_barcode_v2,
 	cancel_delivery_note,
 	cancel_payment_entry,
+	cancel_print_batch_v1,
 	cancel_purchase_invoice_v2,
 	cancel_purchase_order_v2,
 	cancel_purchase_receipt_v2,
@@ -15,15 +16,19 @@ from myapp.api.gateway import (
 	cancel_supplier_payment,
 	create_customer_v2,
 	create_customer_refund,
+	create_print_batch_v1,
 	create_supplier_refund,
 	create_product_v2,
 	create_supplier_v2,
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
+	download_print_batch_archive_v1,
 	download_print_file_v1,
 	get_current_user_workspace_preferences_v1,
+	get_print_batch_v1,
 	get_print_file_v1,
 	get_print_preview_v1,
+	get_print_settings_v1,
 	get_print_templates_v1,
 	get_business_report_overview_v1,
 	get_business_report_v1,
@@ -90,6 +95,7 @@ from myapp.api.gateway import (
 	receive_purchase_order,
 	search_product,
 	search_product_v2,
+	set_print_default_template_v1,
 	set_primary_product_barcode_v2,
 	test_remote_debug,
 	update_payment_status,
@@ -107,6 +113,7 @@ from myapp.api.gateway import (
 	submit_delivery,
 	confirm_pending_document,
 	record_print_job_v1,
+	retry_print_batch_failed_v1,
 )
 
 
@@ -117,11 +124,15 @@ class TestGatewayWrappers(TestCase):
 			create_order,
 			create_purchase_order,
 			quick_create_purchase_order_v2,
+			download_print_batch_archive_v1,
 			download_print_file_v1,
 			get_current_user_workspace_preferences_v1,
 			get_print_file_v1,
 			get_print_preview_v1,
+			get_print_settings_v1,
 			get_print_templates_v1,
+			create_print_batch_v1,
+			get_print_batch_v1,
 			get_business_report_overview_v1,
 			get_business_report_v1,
 			get_cashflow_report_v1,
@@ -148,6 +159,7 @@ class TestGatewayWrappers(TestCase):
 			get_supplier_purchase_context,
 			cancel_delivery_note,
 			cancel_payment_entry,
+			cancel_print_batch_v1,
 			cancel_purchase_invoice_v2,
 			cancel_purchase_order_v2,
 			cancel_purchase_receipt_v2,
@@ -167,6 +179,7 @@ class TestGatewayWrappers(TestCase):
 			create_purchase_invoice,
 			create_purchase_invoice_from_receipt,
 			search_product,
+			set_print_default_template_v1,
 			search_product_v2,
 			create_product_and_stock,
 			get_product_detail_v2,
@@ -194,6 +207,7 @@ class TestGatewayWrappers(TestCase):
 				update_supplier_v2,
 			record_supplier_payment,
 			record_print_job_v1,
+			retry_print_batch_failed_v1,
 			update_current_user_workspace_preferences_v1,
 			process_sales_return,
 			process_purchase_return,
@@ -683,6 +697,85 @@ class TestGatewayWrappers(TestCase):
 
 		mock_get_print_templates_v1_service.assert_called_once_with(doctype="Sales Invoice")
 
+	@patch("myapp.api.gateway.create_print_batch_v1_service")
+	def test_create_print_batch_v1_passes_payload_to_service(self, mock_create_print_batch_v1_service):
+		mock_create_print_batch_v1_service.return_value = {"status": "success", "data": {"batch_id": "PRN-BATCH-001"}}
+		documents = [{"doctype": "Sales Invoice", "docname": "SINV-0001"}]
+
+		create_print_batch_v1(
+			documents=documents,
+			output="pdf",
+			template="finance",
+			run_async=1,
+			metadata={"source": "web"},
+		)
+
+		mock_create_print_batch_v1_service.assert_called_once_with(
+			documents=documents,
+			output="pdf",
+			template="finance",
+			run_async=1,
+			metadata={"source": "web"},
+		)
+
+	@patch("myapp.api.gateway.get_print_batch_v1_service")
+	def test_get_print_batch_v1_passes_batch_id_to_service(self, mock_get_print_batch_v1_service):
+		mock_get_print_batch_v1_service.return_value = {"status": "success", "data": {"batch_id": "PRN-BATCH-001"}}
+
+		get_print_batch_v1(batch_id="PRN-BATCH-001")
+
+		mock_get_print_batch_v1_service.assert_called_once_with(batch_id="PRN-BATCH-001")
+
+	@patch("myapp.api.gateway.get_print_settings_v1_service")
+	def test_get_print_settings_v1_passes_through_service(self, mock_get_print_settings_v1_service):
+		mock_get_print_settings_v1_service.return_value = {"status": "success", "data": {"settings": []}}
+
+		get_print_settings_v1()
+
+		mock_get_print_settings_v1_service.assert_called_once_with()
+
+	@patch("myapp.api.gateway.set_print_default_template_v1_service")
+	def test_set_print_default_template_v1_passes_payload_to_service(self, mock_set_print_default_template_v1_service):
+		mock_set_print_default_template_v1_service.return_value = {"status": "success", "data": {"saved": True}}
+
+		set_print_default_template_v1(
+			doctype="Sales Invoice",
+			template="finance",
+			enabled=1,
+			metadata={"source": "admin"},
+		)
+
+		mock_set_print_default_template_v1_service.assert_called_once_with(
+			doctype="Sales Invoice",
+			template="finance",
+			enabled=1,
+			metadata={"source": "admin"},
+		)
+
+	@patch("myapp.api.gateway.cancel_print_batch_v1_service")
+	def test_cancel_print_batch_v1_passes_batch_id_to_service(self, mock_cancel_print_batch_v1_service):
+		mock_cancel_print_batch_v1_service.return_value = {"status": "success", "data": {"batch_id": "PRN-BATCH-001"}}
+
+		cancel_print_batch_v1(batch_id="PRN-BATCH-001")
+
+		mock_cancel_print_batch_v1_service.assert_called_once_with(batch_id="PRN-BATCH-001")
+
+	@patch("myapp.api.gateway.retry_print_batch_failed_v1_service")
+	def test_retry_print_batch_failed_v1_passes_payload_to_service(self, mock_retry_print_batch_failed_v1_service):
+		mock_retry_print_batch_failed_v1_service.return_value = {"status": "success", "data": {"batch_id": "PRN-BATCH-002"}}
+
+		retry_print_batch_failed_v1(
+			batch_id="PRN-BATCH-001",
+			run_async=0,
+			metadata={"source": "web"},
+		)
+
+		mock_retry_print_batch_failed_v1_service.assert_called_once_with(
+			batch_id="PRN-BATCH-001",
+			run_async=0,
+			metadata={"source": "web"},
+		)
+
 	@patch("myapp.api.gateway.record_print_job_v1_service")
 	def test_record_print_job_v1_passes_payload_to_service(self, mock_record_print_job_v1_service):
 		mock_record_print_job_v1_service.return_value = {"status": "success", "data": {"recorded": True}}
@@ -795,6 +888,32 @@ class TestGatewayWrappers(TestCase):
 		self.assertEqual(response.filename, "invoice.pdf")
 		self.assertEqual(response.filecontent, b"%PDF-download")
 		self.assertEqual(response.type, "download")
+
+	@patch("myapp.api.gateway.build_print_batch_archive_download_v1_service")
+	def test_download_print_batch_archive_v1_sets_download_response(
+		self,
+		mock_build_print_batch_archive_download_v1_service,
+	):
+		mock_build_print_batch_archive_download_v1_service.return_value = {
+			"filename": "batch.zip",
+			"content": b"PK-test",
+			"mime_type": "application/zip",
+		}
+
+		response = frappe._dict()
+		with patch("myapp.api.gateway.frappe.local", frappe._dict(response=response)):
+			result = download_print_batch_archive_v1(batch_id="PRN-BATCH-001", filename="batch.zip")
+
+		self.assertIsNone(result)
+		self.assertEqual(response.filename, "batch.zip")
+		self.assertEqual(response.filecontent, b"PK-test")
+		self.assertEqual(response.type, "download")
+		self.assertEqual(response.display_content_as, "attachment")
+		self.assertEqual(response["content_type"], "application/zip")
+		mock_build_print_batch_archive_download_v1_service.assert_called_once_with(
+			batch_id="PRN-BATCH-001",
+			filename="batch.zip",
+		)
 
 	@patch("myapp.api.gateway.quick_create_purchase_order_v2_service")
 	def test_quick_create_purchase_order_v2_passes_payload_to_service(

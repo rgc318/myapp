@@ -2937,12 +2937,257 @@ create_purchase_order(
 - `templates[].managed`
 - `templates[].template_version`
 - `templates[].template_hash`
+- `templates[].restricted`
+- `templates[].allowed_roles`
 - `capabilities`
 
 行为：
 
 - 只返回打印 registry 白名单中该 `doctype` 的已启用模板。
+- 只返回当前用户角色可见的模板；模板权限由后端 registry 控制，前端不应硬编码角色判断。
 - 不生成预览或文件，只用于前端打印入口初始化模板菜单。
+- 当前 6 类核心单据均至少返回 2 个模板：
+  - 销售 / 采购发票：`standard`、`finance`
+  - 销售 / 采购订单：`standard`、`external`
+  - 发货单 / 采购收货单：`standard`、`warehouse`
+- 第二模板已登记为独立托管 Print Format，并具备独立模板 key、分类、说明、版本号和 hash；当前先复用对应标准模板的基础 HTML，并通过打印上下文显示模板名和标题差异，后续可在不改接口的前提下替换为更完整的独立版式。
+- 角色可见性第一版：
+  - `finance`：`Accounts Manager`、`Accounts User`、`System Manager`
+  - 销售 `external`：`Sales Manager`、`Sales User`、`System Manager`
+  - 采购 `external`：`Purchase Manager`、`Purchase User`、`System Manager`
+  - `warehouse`：`Stock Manager`、`Stock User`，并按销售 / 采购业务侧分别允许对应销售或采购角色；`System Manager` 可见全部模板。
+- 默认模板解析优先读取 `tabMyApp Print Setting` 中启用的全局默认模板；如果该模板对当前用户不可见，会自动回退到 registry 默认模板。
+
+### get_print_settings_v1
+
+方法：
+
+- `myapp.api.gateway.get_print_settings_v1`
+
+参数：
+
+- 无
+
+返回重点字段：
+
+- `settings[].doctype`
+- `settings[].default_template`
+- `settings[].enabled`
+- `settings[].metadata`
+- `settings[].modified`
+- `settings[].modified_by`
+- `table_ready`
+
+行为：
+
+- 返回后端打印设置表中的全局默认模板配置。
+- 如果站点尚未执行创建 `tabMyApp Print Setting` 的迁移，返回空列表和 `table_ready=false`。
+
+### set_print_default_template_v1
+
+方法：
+
+- `myapp.api.gateway.set_print_default_template_v1`
+
+参数：
+
+- `doctype: str`
+- `template: str`
+- `enabled: bool | int | str = true`
+- `metadata: dict | str | None`
+
+返回重点字段：
+
+- `saved`
+- `doctype`
+- `default_template`
+- `template`
+- `enabled`
+
+行为：
+
+- 设置某个 DocType 的全局默认打印模板。
+- 仅 `System Manager` 可维护。
+- 会校验目标模板在 registry 中存在、启用且当前维护用户可见。
+- 设置后，未显式传 `template` 的打印调用会优先使用该默认模板；当前用户无权使用该默认模板时会回退 registry 默认模板。
+- 如果站点尚未执行创建 `tabMyApp Print Setting` 的迁移，返回 `saved=false` 和 `reason=table_missing`。
+
+### create_print_batch_v1
+
+方法：
+
+- `myapp.api.gateway.create_print_batch_v1`
+
+参数：
+
+- `documents: list | JSON str`
+  - 每行包含：
+    - `doctype`
+    - `docname` 或 `name`
+    - `template: str | None`
+    - `filename: str | None`
+- `output: "pdf" = "pdf"`
+- `template: str | None`
+  - 批次默认模板；单据行里的 `template` 优先级更高。
+- `run_async: bool | int | str = true`
+- `metadata: dict | str | None`
+
+返回重点字段：
+
+- `batch_id`
+- `status`
+- `queued`
+- `enqueue_job_id`
+- `total_count`
+- `success_count`
+- `failed_count`
+- `skipped_count`
+- `progress`
+- `items[]`
+- `results[]`
+
+行为：
+
+- 创建一个批量打印任务，默认通过 Frappe background job 异步处理。
+- 当前仅支持 PDF 输出，每批最多 100 张单据。
+- 创建时会解析每行 `doctype/docname/template`，模板必须在打印 registry 中存在且启用。
+- Worker 会逐单调用现有 `get_print_file_v1(..., archive=1)`，将 PDF 归档到私有 `File`，并显式写入 `record_print_job_v1(action="archive")`。
+- 当前第一版不合并 PDF；调用方可以通过 `get_print_batch_v1` 查询每张单据的 `file_url` 和失败原因，也可以通过 `download_print_batch_archive_v1` 下载成功 PDF 的 ZIP 包。
+- 如果站点尚未执行创建 `tabMyApp Print Batch` 的迁移，接口返回 `queued=false` 和 `reason=table_missing`。
+- 后端已接入定时清理任务 `myapp.tasks.cleanup_print_batches`，默认每小时执行一次；只清理 90 天以前的最终态批次，并默认删除这些批次成功项引用的归档 PDF 文件，`tabMyApp Print Job` 审计记录会保留。
+
+### get_print_batch_v1
+
+方法：
+
+- `myapp.api.gateway.get_print_batch_v1`
+
+参数：
+
+- `batch_id: str`
+
+返回重点字段：
+
+- `batch_id`
+- `status: queued | processing | cancel_requested | canceled | completed | partial_failed | failed`
+- `output`
+- `requested_by`
+- `requested_at`
+- `started_at`
+- `completed_at`
+- `enqueue_job_id`
+- `total_count`
+- `done_count`
+- `success_count`
+- `failed_count`
+- `skipped_count`
+- `progress`
+- `items[]`
+- `results[]`
+- `metadata`
+- `table_ready`
+
+行为：
+
+- 查询批量打印任务进度和逐单结果。
+- `results[]` 中成功项包含 `filename`、`file_url`、`file_size`；失败项包含 `error`。
+- 如果批次表尚未创建，返回 `table_ready=false`。
+
+### cancel_print_batch_v1
+
+方法：
+
+- `myapp.api.gateway.cancel_print_batch_v1`
+
+参数：
+
+- `batch_id: str`
+
+返回重点字段：
+
+- `batch_id`
+- `canceled`
+- `cancel_requested`
+- `status`
+- `reason`
+
+行为：
+
+- 如果批次仍为 `queued`，直接标记为 `canceled`，并把所有单据结果记为 `skipped`。
+- 如果批次为 `processing`，标记为 `cancel_requested`；Worker 会在当前单据完成后跳过后续单据，最终进入 `canceled`。
+- 已经 `completed` / `partial_failed` / `failed` / `canceled` 的批次不会回滚，也不会删除已归档文件。
+
+### retry_print_batch_failed_v1
+
+方法：
+
+- `myapp.api.gateway.retry_print_batch_failed_v1`
+
+参数：
+
+- `batch_id: str`
+- `run_async: bool | int | str = true`
+- `metadata: dict | str | None`
+
+返回重点字段：
+
+- 新批次的 `batch_id`
+- `retry_of`
+- `queued`
+- `status`
+
+行为：
+
+- 只读取原批次 `results[]` 中 `status=failed` 的单据，并创建一个新的批量打印任务。
+- 不修改原批次结果，保留原始审计和失败原因。
+- 新批次 `metadata.retry_of` 会记录原批次号。
+- 如果原批次没有失败项，返回业务校验错误。
+
+### download_print_batch_archive_v1
+
+方法：
+
+- `myapp.api.gateway.download_print_batch_archive_v1`
+
+参数：
+
+- `batch_id: str`
+- `filename: str | None`
+
+响应：
+
+- 直接返回 ZIP 文件下载流。
+- `content_type = application/zip`
+
+行为：
+
+- 读取目标批次 `results[]` 中 `status=success` 且有 `file_url` 的 PDF 文件，打包为 ZIP。
+- 失败项不会进入 ZIP；失败原因仍通过 `get_print_batch_v1.results[]` 查询。
+- ZIP 内文件名使用批次结果中的 `filename`，重名时自动追加序号。
+- 当前只支持本地 `/private/files/` 和 `/files/` 文件 URL；未来接入对象存储时应改由统一文件读取适配层处理。
+
+### cleanup_print_batches 定时任务
+
+任务：
+
+- `myapp.tasks.cleanup_print_batches`
+
+默认策略：
+
+- 每小时由 scheduler 执行。
+- 清理 90 天以前的最终态批次：
+  - `completed`
+  - `partial_failed`
+  - `failed`
+  - `canceled`
+- 默认删除批次成功项 `results[].file_url` 对应的归档 PDF 文件。
+- 删除 `tabMyApp Print Batch` 批次记录。
+- 不删除 `tabMyApp Print Job`，保留逐单打印审计。
+
+说明：
+
+- `queued`、`processing`、`cancel_requested` 不会被定时清理。
+- 当前文件清理只支持 Frappe 本地 `File` 记录；对象存储后续需接统一文件读取 / 删除适配层。
 
 ### record_print_job_v1
 

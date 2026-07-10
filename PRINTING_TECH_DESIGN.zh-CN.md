@@ -791,6 +791,53 @@ PrintTemplateDefinition(
   - `compact`
   - `internal`
 
+当前多模板阶段性落地：
+
+- 6 类核心单据已从“单一标准模板”扩展为“标准模板 + 业务变体模板”：
+  - `Sales Invoice`：`standard`、`finance`
+  - `Purchase Invoice`：`standard`、`finance`
+  - `Sales Order`：`standard`、`external`
+  - `Purchase Order`：`standard`、`external`
+  - `Delivery Note`：`standard`、`warehouse`
+  - `Purchase Receipt`：`standard`、`warehouse`
+- 每个业务变体都已登记为独立托管 Print Format，例如 `myapp Sales Invoice Finance`、`myapp Delivery Note Warehouse`。
+- 业务变体已经具备独立模板 key、分类、说明、版本号和 hash，可被 Web 通用打印入口选择，也会被打印历史记录。
+- 当前变体先复用对应标准模板的基础 HTML，并通过打印上下文输出模板名和标题差异；目的是先固定接口、registry、审计和 Web 选择链路。下一步再逐个替换为真正不同的客户联、财务联、仓库联和供应商确认版版式。
+- 模板角色可见性已在后端 registry 第一版落地：
+  - `finance` 仅对 `Accounts Manager`、`Accounts User` 和 `System Manager` 可见。
+  - 销售 `external` 对 `Sales Manager`、`Sales User` 和 `System Manager` 可见。
+  - 采购 `external` 对 `Purchase Manager`、`Purchase User` 和 `System Manager` 可见。
+  - `warehouse` 对 `Stock Manager`、`Stock User` 以及对应销售 / 采购业务角色可见。
+  - `standard` 作为默认模板暂不限制角色。
+- 前端只消费 `get_print_templates_v1` 返回的可见模板，不自行硬编码模板角色判断；后端 `resolve_print_template` 会再次校验，绕过前端传入不可见模板也会被拒绝。
+
+#### 全局默认模板设置
+
+当前已落地第一版后端打印设置表：
+
+- 表名：`tabMyApp Print Setting`
+- patch：`myapp.patches.create_print_setting_table`
+- 唯一维度：`reference_doctype`
+
+字段：
+
+- `reference_doctype`：目标 DocType
+- `default_template`：全局默认模板 key
+- `enabled`：是否启用该默认设置
+- `metadata_json`：预留扩展配置，当前可保存结构化 metadata
+
+默认模板解析优先级：
+
+1. 调用方显式传入 `template` 时，显式模板优先，并按 registry 和当前用户角色严格校验。
+2. 未显式传入 `template` 时，优先读取启用状态的 `tabMyApp Print Setting.default_template`。
+3. 如果配置的默认模板不存在、禁用或对当前用户不可见，则回退到 registry 中 `is_default=True` 的模板。
+
+治理边界：
+
+- 当前仅 `System Manager` 可以维护全局默认模板设置。
+- 设置表缺失时，查询接口返回 `table_ready=false`，打印主流程自动回退 registry 默认模板，不阻断普通打印。
+- 当前配置中心只覆盖默认模板；纸张、页边距、水印开关等仍由 registry / 模板版式控制，后续可沿用 `metadata_json` 扩展。
+
 ### 16.4 主流打印功能清单
 
 打印模块最终应覆盖以下主流能力。
@@ -916,6 +963,67 @@ PrintTemplateDefinition(
 - `managed`
 - `template_version`
 - `template_hash`
+- `restricted`
+- `allowed_roles`
+
+说明：
+
+- 当前只返回当前用户角色可见的模板。
+- 模板可见性由后端 registry 控制；`System Manager` 可见所有模板。
+- 默认模板会优先读取启用状态的 `tabMyApp Print Setting` 配置；配置模板对当前用户不可见时回退 registry 默认模板。
+
+#### `get_print_settings_v1`
+
+用途：
+
+- 查询打印设置表中的全局默认模板配置。
+
+返回：
+
+- `settings[]`
+- `table_ready`
+
+`settings[]` 字段：
+
+- `doctype`
+- `default_template`
+- `enabled`
+- `metadata`
+- `modified`
+- `modified_by`
+
+说明：
+
+- 仅返回已写入设置表的配置项，不替代 `list_print_doctypes_v1` 的可打印 DocType 清单。
+- 如果 `tabMyApp Print Setting` 尚未迁移创建，返回空列表和 `table_ready=false`。
+
+#### `set_print_default_template_v1`
+
+用途：
+
+- 维护某个 DocType 的全局默认打印模板。
+
+入参：
+
+- `doctype`
+- `template`
+- `enabled`
+- `metadata`
+
+返回：
+
+- `saved`
+- `doctype`
+- `default_template`
+- `template`
+- `enabled`
+
+说明：
+
+- 仅 `System Manager` 可调用。
+- 会按 registry 校验目标模板存在、启用且对当前维护用户可见。
+- 更新后，未显式传 `template` 的预览、PDF、下载和批量打印都会走该默认模板解析规则。
+- 如果设置表尚未迁移创建，返回 `saved=false` 和 `reason=table_missing`。
 
 #### `list_print_jobs_v1`
 
@@ -953,6 +1061,113 @@ PrintTemplateDefinition(
 
 - 当前按目标单据查询，会先校验当前用户对该单据有读权限。
 - 如果 `tabMyApp Print Job` 尚未迁移创建，返回空列表和 `table_ready=false`，不影响打印主流程。
+
+#### `create_print_batch_v1`
+
+用途：
+
+- 创建批量打印任务。当前已实现第一版。
+
+入参：
+
+- `documents[]`
+  - `doctype`
+  - `docname`
+  - `template`
+  - `filename`
+- `output`: 当前仅支持 `pdf`
+- `template`: 批次默认模板
+- `run_async`: 是否进入 Frappe background job
+- `metadata`
+
+说明：
+
+- 每批最多 100 张单据，避免同步请求或单个后台任务无限膨胀。
+- 创建时校验模板 registry；实际 worker 逐单执行时继续沿用单据读取权限、模板同步、PDF 归档和文件命名规则。
+- 默认异步入队；开发和测试可以传 `run_async=0` 直接同步处理。
+- 第一版不合并 PDF；成功结果返回每张单据归档后的私有 `file_url`，并支持通过 `download_print_batch_archive_v1` 把成功项打包为 ZIP。
+- Worker 对每张单据显式记录 `record_print_job_v1(action="archive")`，metadata 包含 `batch_id` 和 `batch_idx`。
+- 如果 `tabMyApp Print Batch` 尚未迁移创建，返回 `queued=false` 和 `reason=table_missing`，不影响普通单据打印。
+- 批次清理已接入 `myapp.tasks.cleanup_print_batches`，默认每小时清理 90 天以前最终态批次和其成功项归档 PDF，逐单 `MyApp Print Job` 审计记录保留。
+
+#### `get_print_batch_v1`
+
+用途：
+
+- 查询批量打印任务进度、成功文件和失败原因。当前已实现第一版。
+
+返回：
+
+- `batch_id`
+- `status`: `queued` / `processing` / `cancel_requested` / `canceled` / `completed` / `partial_failed` / `failed`
+- `requested_by`
+- `requested_at`
+- `started_at`
+- `completed_at`
+- `enqueue_job_id`
+- `total_count`
+- `done_count`
+- `success_count`
+- `failed_count`
+- `skipped_count`
+- `progress`
+- `items[]`
+- `results[]`
+- `metadata`
+
+#### `cancel_print_batch_v1`
+
+用途：
+
+- 取消批量打印任务。当前已实现第一版。
+
+入参：
+
+- `batch_id`
+
+说明：
+
+- `queued` 批次会直接进入 `canceled`，所有未处理单据记为 `skipped`。
+- `processing` 批次会先进入 `cancel_requested`，Worker 在当前单据完成后跳过后续单据并最终进入 `canceled`。
+- 已完成、部分失败、失败或已取消批次不做回滚。
+- 取消不会删除已经归档的 PDF，也不会删除已写入的 `MyApp Print Job` 审计记录。
+
+#### `retry_print_batch_failed_v1`
+
+用途：
+
+- 对批量打印失败项创建重试批次。当前已实现第一版。
+
+入参：
+
+- `batch_id`
+- `run_async`
+- `metadata`
+
+说明：
+
+- 只选择原批次 `results[]` 中 `status=failed` 的单据。
+- 重试会创建新批次，不覆盖原批次结果，保证失败原因和历史审计可追溯。
+- 新批次 metadata 会写入 `retry_of=<原批次号>`。
+- 原批次没有失败项时返回业务校验错误。
+
+#### `download_print_batch_archive_v1`
+
+用途：
+
+- 下载批次中所有成功 PDF 的 ZIP 包。当前已实现第一版。
+
+入参：
+
+- `batch_id`
+- `filename`
+
+说明：
+
+- 只打包 `results[]` 中 `status=success` 且存在 `file_url` 的文件。
+- 失败项不会阻断下载，失败原因仍通过 `get_print_batch_v1` 查看。
+- ZIP 内文件名来自逐单结果 `filename`，重名自动追加序号。
+- 当前文件读取支持本地 `/private/files/` 和 `/files/`；对象存储场景后续需要统一文件读取适配层。
 
 #### `record_print_job_v1`
 
@@ -1027,6 +1242,60 @@ PrintTemplateDefinition(
 
 打印历史不是交易账本，不应影响原业务单据提交、作废和回退。
 
+#### `MyApp Print Batch`
+
+用于记录批量异步打印任务。
+
+当前已由 patch `myapp.patches.create_print_batch_table` 创建物理表：
+
+- 表名：`tabMyApp Print Batch`
+
+核心字段：
+
+- `status`
+- `output`
+- `requested_by`
+- `requested_at`
+- `started_at`
+- `completed_at`
+- `enqueue_job_id`
+- `total_count`
+- `success_count`
+- `failed_count`
+- `skipped_count`
+- `items_json`
+- `results_json`
+- `metadata_json`
+- `error`
+
+当前边界：
+
+- 批次表保存任务级状态，逐单打印审计仍写入 `tabMyApp Print Job`。
+- 第一版采用逐单归档 PDF，支持取消、失败项重试、将成功项打包下载为 ZIP，并已接入 90 天最终态批次 / 归档文件清理；后续可基于 `results_json[].file_url` 继续扩展合并 PDF。
+
+#### 批次清理任务
+
+任务：
+
+- `myapp.tasks.cleanup_print_batches`
+
+默认策略：
+
+- 每小时执行。
+- 清理 90 天以前的最终态批次：
+  - `completed`
+  - `partial_failed`
+  - `failed`
+  - `canceled`
+- 默认删除批次成功项对应的归档 PDF `File`。
+- 删除 `tabMyApp Print Batch` 批次记录。
+- 保留 `tabMyApp Print Job` 逐单审计记录。
+
+当前边界：
+
+- 不清理 `queued`、`processing`、`cancel_requested` 批次。
+- 文件删除当前只覆盖 Frappe 本地 `File`；对象存储后续需要统一文件删除适配层。
+
 ### 16.7 前端通用打印入口
 
 Web 和 Mobile 都不应在业务页里拼打印 URL。
@@ -1076,47 +1345,48 @@ Web 和 Mobile 都不应在业务页里拼打印 URL。
    - PDF 文件元数据
 7. 前端业务页只接统一打印组件，不新增页面级打印拼装逻辑。
 
-### 16.9 下一步实施路线
+### 16.9 当前完成基线与后续路线
 
-建议分三步推进。
+截至 2026-07-10，原阶段 A、阶段 B 的 6 类核心单据范围，以及阶段 C 的主要后端治理能力已经完成：
 
-#### 阶段 A：强化现有通用能力
+- registry 已支持模板元数据、capabilities、模板版本 / hash 和角色可见性。
+- `get_print_templates_v1`、`list_print_doctypes_v1` 已作为模板发现接口落地。
+- Web 端 6 类单据详情页已统一使用通用打印组件，模板清单由后端动态返回。
+- 6 类核心单据均具备标准模板和第二业务模板：发票 `finance`、订单 `external`、发货 / 收货 `warehouse`。
+- 打印历史、打印归档、补打标识、水印、最近打印摘要和显式打印动作审计已落地。
+- 批量打印已支持异步处理、进度查询、ZIP 下载、取消、失败项重试和过期清理。
+- 全局默认模板设置和第一版模板角色权限已落地。
 
-- 扩展 registry 数据结构，支持模板元数据和 capabilities
-- 新增 `get_print_templates_v1`
-- Web 端详情页统一改用同一个 `PrintAction` 组件
-- 保持现有 6 类单据模板不变，先统一入口
+当前后端功能完成度按“现有 6 类核心单据打印平台”口径约为 94%。剩余工作不阻断现有单据的单张和批量打印，但会影响更完整的单据覆盖、运营配置和复杂部署场景。
 
-#### 阶段 B：多模板落地
+后续建议按以下顺序推进：
 
-- 为销售发货单新增 `warehouse` 模板
-- 为采购收货单新增 `warehouse` 模板
-- 为销售 / 采购订单新增 `compact` 模板
-- 为收付款单新增 `finance` 模板
-- 模板选择由后端返回，前端动态展示
+1. 为 `Payment Entry` 增加收款单 / 付款单 `finance` 模板，补齐原 P1 单据范围。
+2. 将 `finance`、`external`、`warehouse` 从复用标准 HTML 升级为真正差异化的业务版式。
+3. 增加批次合并 PDF；现有 ZIP 下载继续作为稳定兜底能力。
+4. 把模板角色、纸张、页边距和水印策略扩展为可运营维护的设置能力。
+5. 为对象存储补统一文件读取和删除适配层。
+6. 上线前执行真实 HTTP、后台队列、角色权限、ZIP 下载和 scheduler 清理冒烟验证。
 
-#### 阶段 C：打印治理
+### 16.10 当前可交付范围
 
-- 新增打印历史
-- 新增打印归档策略
-- 新增打印次数 / 最近打印人 / 最近打印时间
-- 评估 `MyApp Print Template` 和 `MyApp Print Job` DocType
-- 增加补打列表和批量打印入口
+当前可交付范围包括：
 
-### 16.10 第一批建议落地范围
+- `Sales Invoice`
+- `Purchase Invoice`
+- `Sales Order`
+- `Purchase Order`
+- `Delivery Note`
+- `Purchase Receipt`
 
-结合当前销售 / 采购主链路状态，下一轮建议优先做：
+这些单据均支持：
 
-1. 后端扩展 registry 元数据。
-2. 新增模板查询接口。
-3. Web 端抽通用打印按钮和模板选择。
-4. 给现有 6 类单据全部切到统一打印按钮。
-5. 新增 `Payment Entry / finance` 打印模板，用于收款单 / 付款单。
-6. 为销售发货和采购收货补 `warehouse` 模板。
+- HTML / PDF 预览
+- PDF 流式下载和可选私有归档
+- 后端单据读取权限校验
+- 后端模板白名单和角色可见性校验
+- 模板动态查询和全局默认模板解析
+- 打印历史和显式动作审计
+- 异步批量归档、进度查询、ZIP 下载、取消、失败项重试和 90 天清理
 
-这样可以先满足：
-
-- 任意已登记单据都能通过统一入口打印
-- 同一单据可以选择多模板
-- Web 页面不再各自实现打印动作
-- 后续继续扩展打印历史和批量补打时，不需要重做业务页集成
+发布时必须执行 `bench --site <site> migrate`，以创建或更新打印批次表和打印设置表。普通单张打印在相关治理表尚未创建时会尽量降级运行，但批量打印、设置维护和完整审计能力依赖迁移完成。

@@ -147,6 +147,7 @@ scheduler_events = {
 	"hourly": [
 		"myapp.tasks.cleanup_temporary_item_images",
 		"myapp.tasks.cleanup_idempotency_records",
+		"myapp.tasks.cleanup_print_batches",
 	],
 }
 

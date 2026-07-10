@@ -71,12 +71,19 @@ from .purchase_api import update_supplier_v2 as update_supplier_v2_service
 from .purchase_api import update_purchase_order_items_v2 as update_purchase_order_items_v2_service
 from .purchase_api import update_purchase_order_v2 as update_purchase_order_v2_service
 from .printing_api import build_print_file_download_v1 as build_print_file_download_v1_service
+from .printing_api import build_print_batch_archive_download_v1 as build_print_batch_archive_download_v1_service
+from .printing_api import cancel_print_batch_v1 as cancel_print_batch_v1_service
+from .printing_api import create_print_batch_v1 as create_print_batch_v1_service
 from .printing_api import get_print_file_v1 as get_print_file_v1_service
+from .printing_api import get_print_batch_v1 as get_print_batch_v1_service
 from .printing_api import get_print_preview_v1 as get_print_preview_v1_service
+from .printing_api import get_print_settings_v1 as get_print_settings_v1_service
 from .printing_api import get_print_templates_v1 as get_print_templates_v1_service
 from .printing_api import list_print_doctypes_v1 as list_print_doctypes_v1_service
 from .printing_api import list_print_jobs_v1 as list_print_jobs_v1_service
 from .printing_api import record_print_job_v1 as record_print_job_v1_service
+from .printing_api import retry_print_batch_failed_v1 as retry_print_batch_failed_v1_service
+from .printing_api import set_print_default_template_v1 as set_print_default_template_v1_service
 from .reports_api import get_business_report_overview_v1 as get_business_report_overview_v1_service
 from .reports_api import get_business_report_v1 as get_business_report_v1_service
 from .reports_api import get_cashflow_report_v1 as get_cashflow_report_v1_service
@@ -203,6 +210,84 @@ def get_print_templates_v1(doctype: str):
 
 
 @frappe.whitelist()
+def create_print_batch_v1(
+	documents,
+	output: str = "pdf",
+	template: str | None = None,
+	run_async: bool | int | str = True,
+	metadata: dict | str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: create_print_batch_v1_service(
+			documents=documents,
+			output=output,
+			template=template,
+			run_async=run_async,
+			metadata=metadata,
+		),
+		success_code="PRINT_BATCH_CREATED",
+	)
+
+
+@frappe.whitelist()
+def get_print_batch_v1(batch_id: str):
+	return _handle_gateway_call(
+		lambda: get_print_batch_v1_service(batch_id=batch_id),
+		success_code="PRINT_BATCH_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_print_settings_v1():
+	return _handle_gateway_call(
+		lambda: get_print_settings_v1_service(),
+		success_code="PRINT_SETTINGS_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def set_print_default_template_v1(
+	doctype: str,
+	template: str,
+	enabled: bool | int | str = True,
+	metadata: dict | str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: set_print_default_template_v1_service(
+			doctype=doctype,
+			template=template,
+			enabled=enabled,
+			metadata=metadata,
+		),
+		success_code="PRINT_DEFAULT_TEMPLATE_SET",
+	)
+
+
+@frappe.whitelist()
+def cancel_print_batch_v1(batch_id: str):
+	return _handle_gateway_call(
+		lambda: cancel_print_batch_v1_service(batch_id=batch_id),
+		success_code="PRINT_BATCH_CANCELED",
+	)
+
+
+@frappe.whitelist()
+def retry_print_batch_failed_v1(
+	batch_id: str,
+	run_async: bool | int | str = True,
+	metadata: dict | str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: retry_print_batch_failed_v1_service(
+			batch_id=batch_id,
+			run_async=run_async,
+			metadata=metadata,
+		),
+		success_code="PRINT_BATCH_RETRY_CREATED",
+	)
+
+
+@frappe.whitelist()
 def record_print_job_v1(
 	doctype: str,
 	docname: str,
@@ -314,6 +399,20 @@ def download_print_file_v1(
 	frappe.local.response.type = "download"
 	frappe.local.response.display_content_as = "attachment"
 	frappe.local.response["content_type"] = "application/pdf"
+	return None
+
+
+@frappe.whitelist()
+def download_print_batch_archive_v1(batch_id: str, filename: str | None = None):
+	payload = build_print_batch_archive_download_v1_service(
+		batch_id=batch_id,
+		filename=filename,
+	)
+	frappe.local.response.filename = payload["filename"]
+	frappe.local.response.filecontent = payload["content"]
+	frappe.local.response.type = "download"
+	frappe.local.response.display_content_as = "attachment"
+	frappe.local.response["content_type"] = payload.get("mime_type") or "application/zip"
 	return None
 
 
