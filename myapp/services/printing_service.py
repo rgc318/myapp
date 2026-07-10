@@ -1420,7 +1420,12 @@ def _get_print_history_summary(doctype: str, docname: str):
 			"""
 			SELECT
 				COUNT(*) AS total_count,
-				SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS successful_count,
+				SUM(
+					CASE
+						WHEN status = 'success' AND action IN ('download', 'print', 'share', 'archive') THEN 1
+						ELSE 0
+					END
+				) AS successful_count,
 				MAX(printed_at) AS latest_printed_at
 			FROM `tabMyApp Print Job`
 			WHERE reference_doctype = %s AND reference_name = %s

@@ -1194,6 +1194,8 @@ PrintTemplateDefinition(
 - 调用时会校验单据存在、读权限、模板白名单和模板启用状态。
 - 如果 `tabMyApp Print Job` 尚未迁移创建，返回 `recorded=false`，不阻断前端打印流程。
 - 托管模板会自动把 `template_version`、`template_hash`、`template_managed` 和 `print_format` 固化到打印记录 `metadata`，用于审计追溯。
+- `preview` 会保留在完整审计历史中，但不计入模板上的“打印副本次数”，因此单纯查看预览不会导致下一次显示“补打”。
+- 当前计入打印副本次数的成功动作是 `download`、`print`、`share` 和 `archive`；Web 的 `print` 表示浏览器打印对话框已触发，无法承诺用户最终没有取消。
 
 ### 16.6 数据模型建议
 

@@ -588,6 +588,30 @@ class TestPrintingService(TestCase):
 		self.assertEqual(document.myapp_print_copy_label, "第 3 次打印")
 		self.assertEqual(document.myapp_print_watermark, "补打")
 
+	@patch("myapp.services.printing_service._print_job_table_exists", return_value=True)
+	def test_print_history_summary_does_not_count_preview_as_print_copy(self, mock_table_exists):
+		from myapp.services.printing_service import _get_print_history_summary
+
+		with patch("myapp.services.printing_service.frappe") as mock_frappe:
+			mock_frappe.db.sql.side_effect = [
+				[
+					frappe._dict(
+						{
+							"total_count": 3,
+							"successful_count": 1,
+							"latest_printed_at": "2026-07-10 10:00:00",
+						}
+					)
+				],
+				[frappe._dict({"printed_by": "test@example.com"})],
+			]
+
+			summary = _get_print_history_summary("Sales Invoice", "SINV-0001")
+
+		self.assertEqual(summary["total_count"], 3)
+		self.assertEqual(summary["successful_count"], 1)
+		self.assertIn("action IN ('download', 'print', 'share', 'archive')", mock_frappe.db.sql.call_args_list[0].args[0])
+
 	def test_attach_print_template_fields_adds_template_context(self):
 		from myapp.services.printing_service import _attach_print_template_fields
 
