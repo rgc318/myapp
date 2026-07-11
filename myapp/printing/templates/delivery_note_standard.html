@@ -180,6 +180,12 @@
 				</tr>
 			</table>
 		</div>
+		{% if template_key == "warehouse" %}
+		<div class="footer-block">
+			<p class="info-heading">仓库执行与复核</p>
+			<table class="footer-grid"><tr><td>拣货人：________</td><td>复核人：________</td></tr><tr><td>出库仓：{{ doc.set_warehouse or "见明细" }}</td><td>交接人：________</td></tr></table>
+		</div>
+		{% endif %}
 	</div>
 </body>
 </html>

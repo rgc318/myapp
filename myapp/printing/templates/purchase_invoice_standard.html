@@ -355,6 +355,15 @@
 				</tr>
 			</table>
 		</div>
+		{% if template_key == "finance" %}
+		<div class="summary-block">
+			<table class="summary-table">
+				<tr><td class="summary-label">已付金额</td><td>{{ frappe.utils.fmt_money(doc.paid_amount or 0, currency=doc.currency) }}</td></tr>
+				<tr><td class="summary-label">未付金额</td><td>{{ frappe.utils.fmt_money(doc.outstanding_amount or 0, currency=doc.currency) }}</td></tr>
+				<tr><td class="summary-label">财务复核</td><td>核销：________　复核：________　归档：________</td></tr>
+			</table>
+		</div>
+		{% endif %}
 	</div>
 </body>
 </html>

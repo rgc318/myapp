@@ -40,6 +40,7 @@ from .purchase_service import (
 )
 from .printing_service import (
 	build_print_batch_archive_download_v1,
+	build_print_batch_merged_pdf_v1,
 	build_print_file_download_v1,
 	cancel_print_batch_v1,
 	create_print_batch_v1,
@@ -96,6 +97,7 @@ __all__ = [
 	"get_purchase_company_context",
 	"build_print_file_download_v1",
 	"build_print_batch_archive_download_v1",
+	"build_print_batch_merged_pdf_v1",
 	"cancel_print_batch_v1",
 	"create_print_batch_v1",
 	"get_print_file_v1",

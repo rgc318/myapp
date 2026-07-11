@@ -153,11 +153,13 @@ def create_print_batch_v1(
 	template: str | None = None,
 	run_async: bool | int | str = True,
 	metadata: dict | str | None = None,
+	request_id: str | None = None,
 ):
 	resolved_output = _resolve_output(output)
 	if resolved_output != PRINT_OUTPUT_PDF:
 		frappe.throw(_("批量打印当前仅支持 PDF 输出。"))
 	items = _coerce_print_batch_items(documents, default_template=template)
+	resolved_request_id = _normalize_print_batch_request_id(request_id)
 	if not _print_batch_table_exists():
 		return {
 			"status": "success",
@@ -169,11 +171,30 @@ def create_print_batch_v1(
 			},
 		}
 
-	batch_name = _insert_print_batch(
-		items=items,
-		output=resolved_output,
-		metadata=metadata,
-	)
+	if resolved_request_id:
+		existing_batch = _get_print_batch_by_request_id(_current_user(), resolved_request_id)
+		if existing_batch:
+			batch = get_print_batch_v1(existing_batch["name"])
+			batch["data"]["deduplicated"] = True
+			batch["data"]["request_id"] = resolved_request_id
+			return batch
+
+	try:
+		batch_name = _insert_print_batch(
+			items=items,
+			output=resolved_output,
+			metadata=metadata,
+			request_id=resolved_request_id,
+		)
+	except Exception:
+		if resolved_request_id:
+			existing_batch = _get_print_batch_by_request_id(_current_user(), resolved_request_id)
+			if existing_batch:
+				batch = get_print_batch_v1(existing_batch["name"])
+				batch["data"]["deduplicated"] = True
+				batch["data"]["request_id"] = resolved_request_id
+				return batch
+		raise
 	should_enqueue = _coerce_bool_flag(run_async)
 	enqueue_job_id = None
 	if should_enqueue:
@@ -190,6 +211,8 @@ def create_print_batch_v1(
 			**batch["data"],
 			"queued": should_enqueue,
 			"enqueue_job_id": enqueue_job_id or batch["data"].get("enqueue_job_id"),
+			"deduplicated": False,
+			"request_id": resolved_request_id,
 		},
 	}
 
@@ -269,7 +292,7 @@ def list_print_batches_v1(
 	rows = frappe.db.sql(
 		f"""
 		SELECT
-			name, creation, modified, owner, status, output, requested_by, requested_at,
+			name, creation, modified, owner, status, output, request_id, requested_by, requested_at,
 			started_at, completed_at, enqueue_job_id, total_count, success_count,
 			failed_count, skipped_count, items_json, results_json, metadata_json, error
 		FROM `tabMyApp Print Batch`
@@ -395,6 +418,7 @@ def retry_print_batch_failed_v1(
 		output=data.get("output") or PRINT_OUTPUT_PDF,
 		run_async=run_async,
 		metadata=retry_metadata,
+		request_id=None,
 	)
 	result["data"]["retry_of"] = resolved_batch_id
 	return result
@@ -897,6 +921,36 @@ def build_print_batch_archive_download_v1(batch_id: str, filename: str | None = 
 	}
 
 
+def build_print_batch_merged_pdf_v1(batch_id: str, filename: str | None = None):
+	from pypdf import PdfReader, PdfWriter
+
+	batch = get_print_batch_v1(batch_id)
+	data = batch["data"]
+	if not data.get("table_ready"):
+		frappe.throw(_("打印批次表尚未创建。"))
+	results = data.get("results") or []
+	successful_results = [item for item in results if item.get("status") == "success" and item.get("file_url")]
+	if not successful_results:
+		frappe.throw(_("该打印批次没有可合并的成功文件。"))
+
+	writer = PdfWriter()
+	for item in successful_results:
+		reader = PdfReader(BytesIO(_read_file_url_bytes(item["file_url"])))
+		for page in reader.pages:
+			writer.add_page(page)
+	buffer = BytesIO()
+	writer.write(buffer)
+	resolved_filename = _normalize_pdf_filename(filename) or f"{data['batch_id']}-merged.pdf"
+	return {
+		"filename": resolved_filename,
+		"content": buffer.getvalue(),
+		"batch_id": data["batch_id"],
+		"file_count": len(successful_results),
+		"page_count": len(writer.pages),
+		"mime_type": "application/pdf",
+	}
+
+
 def cleanup_expired_print_batches(
 	retention_days: int = PRINT_BATCH_CLEANUP_RETENTION_DAYS,
 	batch_size: int = PRINT_BATCH_CLEANUP_BATCH_SIZE,
@@ -1057,6 +1111,15 @@ def _normalize_optional_str(value):
 	return resolved or None
 
 
+def _normalize_print_batch_request_id(value):
+	resolved = _normalize_optional_str(value)
+	if not resolved:
+		return None
+	if len(resolved) > 140:
+		frappe.throw(_("request_id 长度不能超过 140 个字符。"))
+	return resolved
+
+
 def _coerce_positive_int(value, *, default: int, maximum: int):
 	try:
 		resolved = int(value)
@@ -1085,7 +1148,7 @@ def _coerce_metadata_json(metadata):
 	return json.dumps(metadata, ensure_ascii=False, sort_keys=True, default=str)
 
 
-def _insert_print_batch(*, items: list[dict], output: str, metadata):
+def _insert_print_batch(*, items: list[dict], output: str, metadata, request_id: str | None = None):
 	now = now_datetime()
 	user = _current_user()
 	batch_name = f"PRN-BATCH-{now.strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
@@ -1093,12 +1156,12 @@ def _insert_print_batch(*, items: list[dict], output: str, metadata):
 		"""
 		INSERT INTO `tabMyApp Print Batch`
 			(`name`, `creation`, `modified`, `modified_by`, `owner`, `docstatus`, `idx`,
-			 `status`, `output`, `requested_by`, `requested_at`, `total_count`,
+			 `status`, `output`, `request_id`, `requested_by`, `requested_at`, `total_count`,
 			 `success_count`, `failed_count`, `skipped_count`, `items_json`, `results_json`,
 			 `metadata_json`)
 		VALUES
 			(%s, %s, %s, %s, %s, 0, 0,
-			 'queued', %s, %s, %s, %s,
+			 'queued', %s, %s, %s, %s, %s,
 			 0, 0, 0, %s, %s, %s)
 		""",
 		(
@@ -1108,6 +1171,7 @@ def _insert_print_batch(*, items: list[dict], output: str, metadata):
 			user,
 			user,
 			output,
+			request_id,
 			user,
 			now,
 			len(items),
@@ -1118,6 +1182,20 @@ def _insert_print_batch(*, items: list[dict], output: str, metadata):
 	)
 	frappe.db.commit()
 	return batch_name
+
+
+def _get_print_batch_by_request_id(requested_by: str, request_id: str):
+	rows = frappe.db.sql(
+		"""
+		SELECT name
+		FROM `tabMyApp Print Batch`
+		WHERE requested_by = %s AND request_id = %s
+		LIMIT 1
+		""",
+		(requested_by, request_id),
+		as_dict=True,
+	)
+	return rows[0] if rows else None
 
 
 def _enqueue_print_batch(batch_name: str):
@@ -1150,7 +1228,7 @@ def _get_print_batch_row(batch_name: str):
 	rows = frappe.db.sql(
 		"""
 		SELECT
-			name, creation, modified, owner, status, output, requested_by, requested_at,
+			name, creation, modified, owner, status, output, request_id, requested_by, requested_at,
 			started_at, completed_at, enqueue_job_id, total_count, success_count,
 			failed_count, skipped_count, items_json, results_json, metadata_json, error
 		FROM `tabMyApp Print Batch`
@@ -1344,23 +1422,32 @@ def _normalize_zip_filename(value):
 	return resolved
 
 
+def _normalize_pdf_filename(value):
+	if not value:
+		return None
+	resolved = _safe_archive_filename(value)
+	if not resolved.lower().endswith(".pdf"):
+		resolved = f"{resolved}.pdf"
+	return resolved
+
+
 def _read_file_url_bytes(file_url: str):
 	resolved_file_url = _normalize_required_str(file_url, field_label="file_url")
+	file_rows = frappe.get_all("File", filters={"file_url": resolved_file_url}, fields=["name"], limit=1)
+	if file_rows:
+		try:
+			content = frappe.get_doc("File", file_rows[0]["name"]).get_content()
+			if isinstance(content, bytes):
+				return content
+			if isinstance(content, str):
+				return content.encode()
+		except Exception:
+			pass
 	relative_path = None
 	if resolved_file_url.startswith("/private/files/"):
 		relative_path = ("private", "files", Path(resolved_file_url).name)
 	elif resolved_file_url.startswith("/files/"):
 		relative_path = ("public", "files", Path(resolved_file_url).name)
-	else:
-		rows = frappe.db.get_all(
-			"File",
-			filters={"file_url": resolved_file_url},
-			fields=["file_url", "is_private"],
-			limit=1,
-		)
-		if rows:
-			file_name = Path(rows[0].get("file_url") or resolved_file_url).name
-			relative_path = ("private" if rows[0].get("is_private") else "public", "files", file_name)
 	if not relative_path:
 		frappe.throw(_("不支持的打印文件地址：{0}").format(resolved_file_url))
 	path = Path(frappe.get_site_path(*relative_path))
@@ -1547,6 +1634,7 @@ def _serialize_print_batch(row):
 		"batch_id": row.get("name"),
 		"status": row.get("status"),
 		"output": row.get("output"),
+		"request_id": row.get("request_id"),
 		"requested_by": row.get("requested_by"),
 		"requested_at": row.get("requested_at"),
 		"started_at": row.get("started_at"),
@@ -1603,10 +1691,13 @@ def _load_print_document(doctype: str, docname: str):
 
 
 def _attach_printing_derived_fields(document):
-	total_amount = _coerce_decimal_print_amount(
-		getattr(document, "rounded_total", None),
-		fallback=getattr(document, "grand_total", None),
-	)
+	amount_value = None
+	for fieldname in ("rounded_total", "grand_total", "received_amount", "paid_amount"):
+		candidate = getattr(document, fieldname, None)
+		if candidate is not None:
+			amount_value = candidate
+			break
+	total_amount = _coerce_decimal_print_amount(amount_value)
 	document.myapp_amount_in_words_zh = _to_chinese_financial_words(total_amount)
 	status_label = _resolve_print_status_label(document)
 	history_summary = _get_print_history_summary(document.doctype, document.name)

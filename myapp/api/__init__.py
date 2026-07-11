@@ -41,6 +41,7 @@ from .purchase_api import (
 )
 from .printing_api import (
 	build_print_batch_archive_download_v1,
+	build_print_batch_merged_pdf_v1,
 	build_print_file_download_v1,
 	cancel_print_batch_v1,
 	create_print_batch_v1,
@@ -114,6 +115,7 @@ __all__ = [
 	"create_customer_refund",
 	"create_supplier_refund",
 	"build_print_batch_archive_download_v1",
+	"build_print_batch_merged_pdf_v1",
 	"build_print_file_download_v1",
 	"cancel_print_batch_v1",
 	"create_print_batch_v1",

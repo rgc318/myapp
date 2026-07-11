@@ -182,6 +182,12 @@
 				</tr>
 			</table>
 		</div>
+		{% if template_key == "warehouse" %}
+		<div class="footer-block">
+			<p class="info-heading">仓库收货与复核</p>
+			<table class="footer-grid"><tr><td>收货人：________</td><td>复核人：________</td></tr><tr><td>目标仓：{{ doc.set_warehouse or "见明细" }}</td><td>质检/异常：________________</td></tr></table>
+		</div>
+		{% endif %}
 	</div>
 </body>
 </html>

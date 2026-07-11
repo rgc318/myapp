@@ -23,6 +23,7 @@ from myapp.api.gateway import (
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
 	download_print_batch_archive_v1,
+	download_print_batch_merged_pdf_v1,
 	download_print_file_v1,
 	get_current_user_workspace_preferences_v1,
 	get_print_batch_v1,
@@ -136,6 +137,7 @@ class TestGatewayWrappers(TestCase):
 			create_purchase_order,
 			quick_create_purchase_order_v2,
 			download_print_batch_archive_v1,
+			download_print_batch_merged_pdf_v1,
 			download_print_file_v1,
 			get_current_user_workspace_preferences_v1,
 			get_print_file_v1,
@@ -721,6 +723,7 @@ class TestGatewayWrappers(TestCase):
 			template="finance",
 			run_async=1,
 			metadata={"source": "web"},
+			request_id="print-batch-001",
 		)
 
 		mock_create_print_batch_v1_service.assert_called_once_with(
@@ -729,6 +732,7 @@ class TestGatewayWrappers(TestCase):
 			template="finance",
 			run_async=1,
 			metadata={"source": "web"},
+			request_id="print-batch-001",
 		)
 
 	@patch("myapp.api.gateway.get_print_batch_v1_service")
@@ -979,6 +983,29 @@ class TestGatewayWrappers(TestCase):
 			batch_id="PRN-BATCH-001",
 			filename="batch.zip",
 		)
+
+	@patch("myapp.api.gateway.build_print_batch_merged_pdf_v1_service")
+	def test_download_print_batch_merged_pdf_v1_sets_download_response(
+		self,
+		mock_build_print_batch_merged_pdf_v1_service,
+	):
+		mock_build_print_batch_merged_pdf_v1_service.return_value = {
+			"filename": "batch-merged.pdf",
+			"content": b"%PDF-merged",
+			"mime_type": "application/pdf",
+		}
+
+		response = frappe._dict()
+		with patch("myapp.api.gateway.frappe.local", frappe._dict(response=response)):
+			result = download_print_batch_merged_pdf_v1(
+				batch_id="PRN-BATCH-001",
+				filename="batch-merged.pdf",
+			)
+
+		self.assertIsNone(result)
+		self.assertEqual(response.filename, "batch-merged.pdf")
+		self.assertEqual(response.filecontent, b"%PDF-merged")
+		self.assertEqual(response["content_type"], "application/pdf")
 
 	@patch("myapp.api.gateway.quick_create_purchase_order_v2_service")
 	def test_quick_create_purchase_order_v2_passes_payload_to_service(

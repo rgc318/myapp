@@ -2946,10 +2946,11 @@ create_purchase_order(
 - 只返回打印 registry 白名单中该 `doctype` 的已启用模板。
 - 只返回当前用户角色可见的模板；模板权限由后端 registry 控制，前端不应硬编码角色判断。
 - 不生成预览或文件，只用于前端打印入口初始化模板菜单。
-- 当前 6 类核心单据均至少返回 2 个模板：
+- 当前 7 类核心单据均至少返回 2 个模板：
   - 销售 / 采购发票：`standard`、`finance`
   - 销售 / 采购订单：`standard`、`external`
   - 发货单 / 采购收货单：`standard`、`warehouse`
+  - 收付款凭证：`standard`、`finance`
 - 第二模板已登记为独立托管 Print Format，并具备独立模板 key、分类、说明、版本号和 hash；当前先复用对应标准模板的基础 HTML，并通过打印上下文显示模板名和标题差异，后续可在不改接口的前提下替换为更完整的独立版式。
 - 角色可见性第一版：
   - `finance`：`Accounts Manager`、`Accounts User`、`System Manager`
@@ -2995,6 +2996,7 @@ create_purchase_order(
 - `template: str`
 - `enabled: bool | int | str = true`
 - `metadata: dict | str | None`
+- `request_id: str | None`
 
 返回重点字段：
 
@@ -3052,7 +3054,8 @@ create_purchase_order(
 - 当前仅支持 PDF 输出，每批最多 100 张单据。
 - 创建时会解析每行 `doctype/docname/template`，模板必须在打印 registry 中存在且启用。
 - Worker 会逐单调用现有 `get_print_file_v1(..., archive=1)`，将 PDF 归档到私有 `File`，并显式写入 `record_print_job_v1(action="archive")`。
-- 当前第一版不合并 PDF；调用方可以通过 `get_print_batch_v1` 查询每张单据的 `file_url` 和失败原因，也可以通过 `download_print_batch_archive_v1` 下载成功 PDF 的 ZIP 包。
+- `request_id` 按“当前申请人 + request_id”建立数据库唯一约束；网络重试或重复点击会返回原批次，并标记 `deduplicated=true`，并发竞争也由唯一索引兜底。
+- 调用方可以通过 `get_print_batch_v1` 查询每张单据的 `file_url` 和失败原因，通过 `download_print_batch_archive_v1` 下载成功 PDF 的 ZIP，或通过 `download_print_batch_merged_pdf_v1` 下载合并 PDF。
 - 如果站点尚未执行创建 `tabMyApp Print Batch` 的迁移，接口返回 `queued=false` 和 `reason=table_missing`。
 - 后端已接入定时清理任务 `myapp.tasks.cleanup_print_batches`，默认每小时执行一次；只清理 90 天以前的最终态批次，并默认删除这些批次成功项引用的归档 PDF 文件，`tabMyApp Print Job` 审计记录会保留。
 
@@ -3207,7 +3210,25 @@ create_purchase_order(
 - 读取目标批次 `results[]` 中 `status=success` 且有 `file_url` 的 PDF 文件，打包为 ZIP。
 - 失败项不会进入 ZIP；失败原因仍通过 `get_print_batch_v1.results[]` 查询。
 - ZIP 内文件名使用批次结果中的 `filename`，重名时自动追加序号。
-- 当前只支持本地 `/private/files/` 和 `/files/` 文件 URL；未来接入对象存储时应改由统一文件读取适配层处理。
+- 文件读取优先通过 Frappe `File.get_content()`，可复用站点文件存储实现；本地 `/private/files/` 和 `/files/` 保留为兼容兜底。
+
+### download_print_batch_merged_pdf_v1
+
+方法：
+
+- `myapp.api.gateway.download_print_batch_merged_pdf_v1`
+
+参数：
+
+- `batch_id: str`
+- `filename: str | None`
+
+响应：
+
+- 直接返回合并后的 PDF 下载流。
+- 只合并批次中 `status=success` 且存在归档文件的结果，失败项不会阻断成功 PDF 合并。
+- PDF 顺序与批次 `results[]` 顺序一致。
+- 沿用批次申请人 / `System Manager` 访问控制。
 
 ### cleanup_print_batches 定时任务
 
@@ -3230,7 +3251,7 @@ create_purchase_order(
 说明：
 
 - `queued`、`processing`、`cancel_requested` 不会被定时清理。
-- 当前文件清理只支持 Frappe 本地 `File` 记录；对象存储后续需接统一文件读取 / 删除适配层。
+- 文件清理通过删除 Frappe `File` 文档执行，具体底层文件删除遵循站点 File 存储实现；读取则统一优先使用 `File.get_content()`。
 
 ### record_print_job_v1
 

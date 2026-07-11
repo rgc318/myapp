@@ -793,16 +793,17 @@ PrintTemplateDefinition(
 
 当前多模板阶段性落地：
 
-- 6 类核心单据已从“单一标准模板”扩展为“标准模板 + 业务变体模板”：
+- 7 类核心单据已从“单一标准模板”扩展为“标准模板 + 业务变体模板”：
   - `Sales Invoice`：`standard`、`finance`
   - `Purchase Invoice`：`standard`、`finance`
   - `Sales Order`：`standard`、`external`
   - `Purchase Order`：`standard`、`external`
   - `Delivery Note`：`standard`、`warehouse`
+  - `Payment Entry`：`standard`、`finance`
   - `Purchase Receipt`：`standard`、`warehouse`
 - 每个业务变体都已登记为独立托管 Print Format，例如 `myapp Sales Invoice Finance`、`myapp Delivery Note Warehouse`。
 - 业务变体已经具备独立模板 key、分类、说明、版本号和 hash，可被 Web 通用打印入口选择，也会被打印历史记录。
-- 当前变体先复用对应标准模板的基础 HTML，并通过打印上下文输出模板名和标题差异；目的是先固定接口、registry、审计和 Web 选择链路。下一步再逐个替换为真正不同的客户联、财务联、仓库联和供应商确认版版式。
+- 业务变体继续共享稳定的基础模板结构，但已经通过模板 key 输出实际业务差异：财务版强化已收 / 已付、未结、核销与复核信息；仓库版增加拣货 / 收货 / 复核栏；外部确认版增加确认条款和签章栏。
 - 模板角色可见性已在后端 registry 第一版落地：
   - `finance` 仅对 `Accounts Manager`、`Accounts User` 和 `System Manager` 可见。
   - 销售 `external` 对 `Sales Manager`、`Sales User` 和 `System Manager` 可见。
@@ -1097,7 +1098,8 @@ PrintTemplateDefinition(
 - 每批最多 100 张单据，避免同步请求或单个后台任务无限膨胀。
 - 创建时校验模板 registry；实际 worker 逐单执行时继续沿用单据读取权限、模板同步、PDF 归档和文件命名规则。
 - 默认异步入队；开发和测试可以传 `run_async=0` 直接同步处理。
-- 第一版不合并 PDF；成功结果返回每张单据归档后的私有 `file_url`，并支持通过 `download_print_batch_archive_v1` 把成功项打包为 ZIP。
+- 成功结果返回每张单据归档后的私有 `file_url`，支持通过 `download_print_batch_archive_v1` 打包 ZIP，也支持通过 `download_print_batch_merged_pdf_v1` 按结果顺序合并 PDF。
+- `request_id` 通过 `(requested_by, request_id)` 唯一约束提供严格幂等，重复请求返回原批次。
 - Worker 对每张单据显式记录 `record_print_job_v1(action="archive")`，metadata 包含 `batch_id` 和 `batch_idx`。
 - 如果 `tabMyApp Print Batch` 尚未迁移创建，返回 `queued=false` 和 `reason=table_missing`，不影响普通单据打印。
 - 批次清理已接入 `myapp.tasks.cleanup_print_batches`，默认每小时清理 90 天以前最终态批次和其成功项归档 PDF，逐单 `MyApp Print Job` 审计记录保留。
@@ -1196,7 +1198,7 @@ PrintTemplateDefinition(
 - 只打包 `results[]` 中 `status=success` 且存在 `file_url` 的文件。
 - 失败项不会阻断下载，失败原因仍通过 `get_print_batch_v1` 查看。
 - ZIP 内文件名来自逐单结果 `filename`，重名自动追加序号。
-- 当前文件读取支持本地 `/private/files/` 和 `/files/`；对象存储场景后续需要统一文件读取适配层。
+- 文件读取优先使用 Frappe `File.get_content()`，从而复用站点本地文件或对象存储实现；本地路径读取保留为兼容兜底。
 
 #### `record_print_job_v1`
 
@@ -1302,7 +1304,7 @@ PrintTemplateDefinition(
 当前边界：
 
 - 批次表保存任务级状态，逐单打印审计仍写入 `tabMyApp Print Job`。
-- 第一版采用逐单归档 PDF，支持取消、失败项重试、将成功项打包下载为 ZIP，并已接入 90 天最终态批次 / 归档文件清理；后续可基于 `results_json[].file_url` 继续扩展合并 PDF。
+- 批次采用逐单归档 PDF，支持严格幂等、取消、失败项重试、ZIP 下载、合并 PDF，并已接入 90 天最终态批次 / 归档文件清理。
 
 #### 批次清理任务
 
@@ -1325,7 +1327,7 @@ PrintTemplateDefinition(
 当前边界：
 
 - 不清理 `queued`、`processing`、`cancel_requested` 批次。
-- 文件删除当前只覆盖 Frappe 本地 `File`；对象存储后续需要统一文件删除适配层。
+- 文件删除通过 Frappe `File` 文档生命周期执行，读取通过 `File.get_content()`；具体本地或对象存储行为由站点 File 存储实现负责。
 
 ### 16.7 前端通用打印入口
 
@@ -1378,26 +1380,23 @@ Web 和 Mobile 都不应在业务页里拼打印 URL。
 
 ### 16.9 当前完成基线与后续路线
 
-截至 2026-07-10，原阶段 A、阶段 B 的 6 类核心单据范围，以及阶段 C 的主要后端治理能力已经完成：
+截至 2026-07-11，原阶段 A、阶段 B 的核心单据范围，以及阶段 C 的主要后端治理能力已经完成：
 
 - registry 已支持模板元数据、capabilities、模板版本 / hash 和角色可见性。
 - `get_print_templates_v1`、`list_print_doctypes_v1` 已作为模板发现接口落地。
-- Web 端 6 类单据详情页已统一使用通用打印组件，模板清单由后端动态返回。
-- 6 类核心单据均具备标准模板和第二业务模板：发票 `finance`、订单 `external`、发货 / 收货 `warehouse`。
+- Web 端 7 类单据详情页已统一使用通用打印组件，模板清单由后端动态返回。
+- 7 类核心单据均具备标准模板和第二业务模板：发票和收付款凭证 `finance`、订单 `external`、发货 / 收货 `warehouse`。
 - 打印历史、打印归档、补打标识、水印、最近打印摘要和显式打印动作审计已落地。
 - 批量打印已支持异步处理、进度查询、ZIP 下载、取消、失败项重试和过期清理。
 - 全局默认模板设置和第一版模板角色权限已落地。
 
-当前后端功能完成度按“现有 6 类核心单据打印平台”口径约为 94%。剩余工作不阻断现有单据的单张和批量打印，但会影响更完整的单据覆盖、运营配置和复杂部署场景。
+当前后端功能完成度按核心打印平台口径已接近完整：单张、批量、幂等、审计、设置、权限、ZIP、合并 PDF、收付款凭证和文件存储抽象均已落地。
 
 后续建议按以下顺序推进：
 
-1. 为 `Payment Entry` 增加收款单 / 付款单 `finance` 模板，补齐原 P1 单据范围。
-2. 将 `finance`、`external`、`warehouse` 从复用标准 HTML 升级为真正差异化的业务版式。
-3. 增加批次合并 PDF；现有 ZIP 下载继续作为稳定兜底能力。
-4. 把模板角色、纸张、页边距和水印策略扩展为可运营维护的设置能力。
-5. 为对象存储补统一文件读取和删除适配层。
-6. 上线前执行真实 HTTP、后台队列、角色权限、ZIP 下载和 scheduler 清理冒烟验证。
+1. 根据真实纸张样张继续微调各业务模板的分页和字号。
+2. 把模板角色、纸张、页边距和水印策略进一步扩展为可运营维护的设置能力。
+3. 上线前执行真实浏览器、后台队列、角色权限、ZIP / 合并 PDF 和 scheduler 清理冒烟验证。
 
 ### 16.10 当前可交付范围
 
@@ -1409,6 +1408,7 @@ Web 和 Mobile 都不应在业务页里拼打印 URL。
 - `Purchase Order`
 - `Delivery Note`
 - `Purchase Receipt`
+- `Payment Entry`
 
 这些单据均支持：
 

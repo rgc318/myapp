@@ -95,6 +95,18 @@ _MANAGED_PRINT_FORMATS: dict[str, ManagedPrintFormatDefinition] = {
 		module="myapp",
 		html_path="delivery_note_standard.html",
 	),
+	"myapp Payment Entry Standard": ManagedPrintFormatDefinition(
+		name="myapp Payment Entry Standard",
+		doctype="Payment Entry",
+		module="myapp",
+		html_path="payment_entry_standard.html",
+	),
+	"myapp Payment Entry Finance": ManagedPrintFormatDefinition(
+		name="myapp Payment Entry Finance",
+		doctype="Payment Entry",
+		module="myapp",
+		html_path="payment_entry_standard.html",
+	),
 }
 
 

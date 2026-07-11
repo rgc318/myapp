@@ -17,6 +17,7 @@ def execute():
 			`idx` int(8) NOT NULL DEFAULT 0,
 			`status` varchar(20) NOT NULL,
 			`output` varchar(20) NOT NULL,
+			`request_id` varchar(140) DEFAULT NULL,
 			`requested_by` varchar(140) DEFAULT NULL,
 			`requested_at` datetime(6) DEFAULT NULL,
 			`started_at` datetime(6) DEFAULT NULL,
@@ -32,7 +33,8 @@ def execute():
 			`error` text DEFAULT NULL,
 			PRIMARY KEY (`name`),
 			KEY `idx_myapp_print_batch_status` (`status`, `requested_at`),
-			KEY `idx_myapp_print_batch_user` (`requested_by`, `requested_at`)
+			KEY `idx_myapp_print_batch_user` (`requested_by`, `requested_at`),
+			UNIQUE KEY `uniq_myapp_print_batch_request` (`requested_by`, `request_id`)
 		) ENGINE=InnoDB ROW_FORMAT=DYNAMIC
 		"""
 	)

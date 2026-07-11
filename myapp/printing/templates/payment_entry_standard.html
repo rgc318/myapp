@@ -1,0 +1,72 @@
+{%- set template_key = doc.myapp_print_template_key or "standard" -%}
+{%- set template_label = doc.myapp_print_template_label or "标准收付款凭证" -%}
+{%- set is_finance = template_key == "finance" -%}
+{%- set amount = doc.received_amount or doc.paid_amount or 0 -%}
+{%- set party_name = doc.party_name or doc.party or "-" -%}
+{%- set voucher_title = "收款凭证" if doc.payment_type == "Receive" else ("付款凭证" if doc.payment_type == "Pay" else "内部转账凭证") -%}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8" />
+	<title>{{ doc.name }}</title>
+	<style>
+		@page { size: A4; margin: 12mm; }
+		* { box-sizing: border-box; }
+		body { margin: 0; color: #111; font-family: "Noto Sans SC", "Microsoft YaHei", SimSun, sans-serif; font-size: 12px; line-height: 1.5; }
+		.document { width: 100%; max-width: 760px; margin: 0 auto; }
+		.title { margin: 0 0 8px; text-align: center; font-size: 21px; letter-spacing: 2px; }
+		.meta-strip { display: flex; justify-content: space-between; margin-bottom: 8px; color: #555; font-size: 11px; }
+		table { width: 100%; border-collapse: collapse; }
+		td, th { border: 1px solid #333; padding: 7px 9px; vertical-align: top; }
+		.label { width: 110px; background: #f5f5f5; font-weight: 700; }
+		.amount { font-size: 18px; font-weight: 700; text-align: right; }
+		.references { margin-top: 10px; }
+		.references th { background: #f5f5f5; }
+		.text-right { text-align: right; }
+		.signatures { margin-top: 28px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; }
+		.signature { border-top: 1px solid #555; padding-top: 5px; text-align: center; }
+		.watermark { position: fixed; top: 42%; left: 50%; transform: translate(-50%, -50%) rotate(-28deg); color: rgba(120,120,120,.14); font-size: 72px; font-weight: 700; letter-spacing: 10px; }
+	</style>
+</head>
+<body>
+	<div class="document">
+		{% if doc.myapp_print_watermark %}<div class="watermark">{{ doc.myapp_print_watermark }}</div>{% endif %}
+		<div class="meta-strip">
+			<span>状态：{{ doc.myapp_print_status_label or "-" }}</span>
+			<span>{{ doc.myapp_print_copy_label or "首次打印" }}</span>
+			<span>模板：{{ template_label }}</span>
+		</div>
+		<h1 class="title">{{ voucher_title }}{% if is_finance %}（财务核销版）{% endif %}</h1>
+		<table>
+			<tr><td class="label">凭证编号</td><td>{{ doc.name }}</td><td class="label">过账日期</td><td>{{ frappe.utils.formatdate(doc.posting_date) if doc.posting_date else "-" }}</td></tr>
+			<tr><td class="label">公司</td><td>{{ doc.company or "-" }}</td><td class="label">支付方式</td><td>{{ doc.mode_of_payment or "-" }}</td></tr>
+			<tr><td class="label">往来类型</td><td>{{ doc.party_type or "-" }}</td><td class="label">往来单位</td><td>{{ party_name }}</td></tr>
+			<tr><td class="label">付款账户</td><td>{{ doc.paid_from or "-" }}</td><td class="label">收款账户</td><td>{{ doc.paid_to or "-" }}</td></tr>
+			<tr><td class="label">参考号</td><td>{{ doc.reference_no or "-" }}</td><td class="label">参考日期</td><td>{{ frappe.utils.formatdate(doc.reference_date) if doc.reference_date else "-" }}</td></tr>
+			<tr><td class="label">金额大写</td><td colspan="2">{{ doc.myapp_amount_in_words_zh or "-" }}</td><td class="amount">{{ frappe.utils.fmt_money(amount, currency=doc.paid_to_account_currency or doc.paid_from_account_currency or "CNY") }}</td></tr>
+			{% if is_finance %}
+			<tr><td class="label">支付金额</td><td>{{ frappe.utils.fmt_money(doc.paid_amount or 0, currency=doc.paid_from_account_currency) }}</td><td class="label">收款金额</td><td>{{ frappe.utils.fmt_money(doc.received_amount or 0, currency=doc.paid_to_account_currency) }}</td></tr>
+			<tr><td class="label">未分配金额</td><td>{{ frappe.utils.fmt_money(doc.unallocated_amount or 0, currency=doc.paid_to_account_currency or doc.paid_from_account_currency) }}</td><td class="label">汇兑差额</td><td>{{ frappe.utils.fmt_money(doc.difference_amount or 0, currency=doc.paid_to_account_currency or doc.paid_from_account_currency) }}</td></tr>
+			{% endif %}
+			<tr><td class="label">备注</td><td colspan="3">{{ doc.remarks or "无备注" }}</td></tr>
+		</table>
+
+		{% if doc.references %}
+		<table class="references">
+			<thead><tr><th>引用单据类型</th><th>引用单据</th><th>单据金额</th><th>未结金额</th><th>本次核销</th></tr></thead>
+			<tbody>
+			{% for row in doc.references %}
+			<tr>
+				<td>{{ row.reference_doctype or "-" }}</td><td>{{ row.reference_name or "-" }}</td>
+				<td class="text-right">{{ frappe.utils.fmt_money(row.total_amount or 0, currency=doc.paid_to_account_currency or doc.paid_from_account_currency) }}</td>
+				<td class="text-right">{{ frappe.utils.fmt_money(row.outstanding_amount or 0, currency=doc.paid_to_account_currency or doc.paid_from_account_currency) }}</td>
+				<td class="text-right">{{ frappe.utils.fmt_money(row.allocated_amount or 0, currency=doc.paid_to_account_currency or doc.paid_from_account_currency) }}</td>
+			</tr>
+			{% endfor %}
+			</tbody>
+		</table>
+		{% endif %}
+		<div class="signatures"><div class="signature">制单</div><div class="signature">复核</div><div class="signature">出纳/收款确认</div></div>
+	</div>
+</body>
+</html>

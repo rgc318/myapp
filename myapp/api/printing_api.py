@@ -1,5 +1,6 @@
 from myapp.services.printing_service import build_print_file_download_v1 as build_print_file_download_v1_service
 from myapp.services.printing_service import build_print_batch_archive_download_v1 as build_print_batch_archive_download_v1_service
+from myapp.services.printing_service import build_print_batch_merged_pdf_v1 as build_print_batch_merged_pdf_v1_service
 from myapp.services.printing_service import cancel_print_batch_v1 as cancel_print_batch_v1_service
 from myapp.services.printing_service import create_print_batch_v1 as create_print_batch_v1_service
 from myapp.services.printing_service import get_print_file_v1 as get_print_file_v1_service
@@ -30,6 +31,7 @@ def create_print_batch_v1(
 	template: str | None = None,
 	run_async: bool | int | str = True,
 	metadata: dict | str | None = None,
+	request_id: str | None = None,
 ):
 	return create_print_batch_v1_service(
 		documents=documents,
@@ -37,6 +39,7 @@ def create_print_batch_v1(
 		template=template,
 		run_async=run_async,
 		metadata=metadata,
+		request_id=request_id,
 	)
 
 
@@ -216,3 +219,7 @@ def build_print_file_download_v1(
 
 def build_print_batch_archive_download_v1(batch_id: str, filename: str | None = None):
 	return build_print_batch_archive_download_v1_service(batch_id=batch_id, filename=filename)
+
+
+def build_print_batch_merged_pdf_v1(batch_id: str, filename: str | None = None):
+	return build_print_batch_merged_pdf_v1_service(batch_id=batch_id, filename=filename)

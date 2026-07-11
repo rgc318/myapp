@@ -188,6 +188,13 @@
 				</tr>
 			</table>
 		</div>
+		{% if template_key == "external" %}
+		<div class="footer-block">
+			<p class="info-heading">客户确认</p>
+			<p>请确认商品、数量、价格和交货日期。签字或盖章后视为接受本订单内容。</p>
+			<table class="footer-grid"><tr><td>客户签字/盖章：________________</td><td>确认日期：________________</td></tr></table>
+		</div>
+		{% endif %}
 	</div>
 </body>
 </html>

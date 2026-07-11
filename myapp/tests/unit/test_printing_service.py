@@ -7,6 +7,7 @@ import frappe
 
 from myapp.services.printing_service import (
 	build_print_batch_archive_download_v1,
+	build_print_batch_merged_pdf_v1,
 	build_print_file_download_v1,
 	cancel_print_batch_v1,
 	cleanup_expired_print_batches,
@@ -71,6 +72,14 @@ class TestPrintingService(TestCase):
 		result = get_print_templates_v1("Sales Invoice")
 
 		self.assertEqual([item["key"] for item in result["data"]["templates"]], ["standard", "finance"])
+
+	@patch("myapp.printing.registry.frappe.get_roles", return_value=["Accounts User"])
+	def test_get_print_templates_v1_supports_payment_entry(self, mock_get_roles):
+		result = get_print_templates_v1("Payment Entry")
+
+		self.assertEqual(result["data"]["default_template"], "standard")
+		self.assertEqual([item["key"] for item in result["data"]["templates"]], ["standard", "finance"])
+		self.assertEqual(result["data"]["templates"][1]["print_format"], "myapp Payment Entry Finance")
 
 	@patch("myapp.printing.registry.frappe.get_roles", return_value=["Sales User"])
 	def test_resolve_print_template_rejects_restricted_template_without_role(self, mock_get_roles):
@@ -240,6 +249,34 @@ class TestPrintingService(TestCase):
 		self.assertEqual(insert_items[1]["template"], "standard")
 		mock_enqueue_print_batch.assert_called_once_with("PRN-BATCH-001")
 		mock_update_enqueue_job_id.assert_called_once_with("PRN-BATCH-001", "rq-job-001")
+
+	@patch("myapp.services.printing_service._insert_print_batch")
+	@patch("myapp.services.printing_service._get_print_batch_by_request_id")
+	@patch("myapp.services.printing_service.get_print_batch_v1")
+	@patch("myapp.services.printing_service._print_batch_table_exists", return_value=True)
+	@patch("myapp.printing.registry.frappe.get_roles", return_value=["System Manager"])
+	def test_create_print_batch_v1_deduplicates_request_id(
+		self,
+		mock_get_roles,
+		mock_table_exists,
+		mock_get_print_batch,
+		mock_get_by_request_id,
+		mock_insert_print_batch,
+	):
+		mock_get_by_request_id.return_value = {"name": "PRN-BATCH-001"}
+		mock_get_print_batch.return_value = {
+			"status": "success",
+			"data": {"batch_id": "PRN-BATCH-001", "status": "queued"},
+		}
+
+		result = create_print_batch_v1(
+			documents=[{"doctype": "Sales Invoice", "docname": "SINV-0001"}],
+			request_id="web-print-001",
+		)
+
+		self.assertTrue(result["data"]["deduplicated"])
+		self.assertEqual(result["data"]["request_id"], "web-print-001")
+		mock_insert_print_batch.assert_not_called()
 
 	@patch("myapp.services.printing_service._print_batch_table_exists", return_value=True)
 	def test_get_print_batch_v1_returns_progress(self, mock_table_exists):
@@ -468,6 +505,43 @@ class TestPrintingService(TestCase):
 			self.assertEqual(archive.read("invoice-2.pdf"), b"%PDF-2")
 		mock_get_print_batch.assert_called_once_with("PRN-BATCH-001")
 
+	@patch("myapp.services.printing_service._read_file_url_bytes")
+	@patch("myapp.services.printing_service.get_print_batch_v1")
+	def test_build_print_batch_merged_pdf_v1_merges_successful_files(
+		self,
+		mock_get_print_batch,
+		mock_read_file_url_bytes,
+	):
+		from pypdf import PdfReader, PdfWriter
+
+		def pdf_bytes():
+			writer = PdfWriter()
+			writer.add_blank_page(width=100, height=100)
+			buffer = BytesIO()
+			writer.write(buffer)
+			return buffer.getvalue()
+
+		mock_get_print_batch.return_value = {
+			"status": "success",
+			"data": {
+				"batch_id": "PRN-BATCH-001",
+				"table_ready": True,
+				"results": [
+					{"status": "success", "file_url": "/private/files/a.pdf"},
+					{"status": "success", "file_url": "/private/files/b.pdf"},
+					{"status": "failed", "error": "boom"},
+				],
+			},
+		}
+		mock_read_file_url_bytes.side_effect = [pdf_bytes(), pdf_bytes()]
+
+		result = build_print_batch_merged_pdf_v1("PRN-BATCH-001", filename="merged")
+
+		self.assertEqual(result["filename"], "merged.pdf")
+		self.assertEqual(result["file_count"], 2)
+		self.assertEqual(result["page_count"], 2)
+		self.assertEqual(len(PdfReader(BytesIO(result["content"])).pages), 2)
+
 	@patch("myapp.services.printing_service._update_print_batch_results")
 	@patch("myapp.services.printing_service._get_print_batch_row")
 	@patch("myapp.services.printing_service._print_batch_table_exists", return_value=True)
@@ -551,6 +625,7 @@ class TestPrintingService(TestCase):
 			output="pdf",
 			run_async=0,
 			metadata={"source": "retry-button", "retry_of": "PRN-BATCH-001"},
+			request_id=None,
 		)
 
 	@patch("myapp.services.printing_service._print_batch_table_exists", return_value=True)

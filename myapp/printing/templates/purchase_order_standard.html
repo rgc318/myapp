@@ -188,6 +188,13 @@
 				</tr>
 			</table>
 		</div>
+		{% if template_key == "external" %}
+		<div class="footer-block">
+			<p class="info-heading">供应商确认</p>
+			<p>请确认商品、数量、价格和交货日期。如有差异，请在签章前书面反馈。</p>
+			<table class="footer-grid"><tr><td>供应商签字/盖章：________________</td><td>确认日期：________________</td></tr></table>
+		</div>
+		{% endif %}
 	</div>
 </body>
 </html>

@@ -19,3 +19,4 @@ myapp.patches.add_idempotency_request_fingerprint
 myapp.patches.create_print_job_table
 myapp.patches.create_print_batch_table
 myapp.patches.create_print_setting_table
+myapp.patches.add_print_batch_request_id

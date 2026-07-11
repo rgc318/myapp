@@ -72,6 +72,7 @@ from .purchase_api import update_purchase_order_items_v2 as update_purchase_orde
 from .purchase_api import update_purchase_order_v2 as update_purchase_order_v2_service
 from .printing_api import build_print_file_download_v1 as build_print_file_download_v1_service
 from .printing_api import build_print_batch_archive_download_v1 as build_print_batch_archive_download_v1_service
+from .printing_api import build_print_batch_merged_pdf_v1 as build_print_batch_merged_pdf_v1_service
 from .printing_api import cancel_print_batch_v1 as cancel_print_batch_v1_service
 from .printing_api import create_print_batch_v1 as create_print_batch_v1_service
 from .printing_api import get_print_file_v1 as get_print_file_v1_service
@@ -218,6 +219,7 @@ def create_print_batch_v1(
 	template: str | None = None,
 	run_async: bool | int | str = True,
 	metadata: dict | str | None = None,
+	request_id: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: create_print_batch_v1_service(
@@ -226,6 +228,7 @@ def create_print_batch_v1(
 			template=template,
 			run_async=run_async,
 			metadata=metadata,
+			request_id=request_id,
 		),
 		success_code="PRINT_BATCH_CREATED",
 	)
@@ -467,6 +470,17 @@ def download_print_batch_archive_v1(batch_id: str, filename: str | None = None):
 	frappe.local.response.type = "download"
 	frappe.local.response.display_content_as = "attachment"
 	frappe.local.response["content_type"] = payload.get("mime_type") or "application/zip"
+	return None
+
+
+@frappe.whitelist()
+def download_print_batch_merged_pdf_v1(batch_id: str, filename: str | None = None):
+	payload = build_print_batch_merged_pdf_v1_service(batch_id=batch_id, filename=filename)
+	frappe.local.response.filename = payload["filename"]
+	frappe.local.response.filecontent = payload["content"]
+	frappe.local.response.type = "download"
+	frappe.local.response.display_content_as = "attachment"
+	frappe.local.response["content_type"] = "application/pdf"
 	return None
 
 

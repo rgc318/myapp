@@ -69,6 +69,7 @@ _PRINT_DOCUMENT_REGISTRY: dict[str, PrintDocumentDefinition] = {
 	"Sales Order": PrintDocumentDefinition(doctype="Sales Order", label="销售订单", module="sales"),
 	"Purchase Order": PrintDocumentDefinition(doctype="Purchase Order", label="采购订单", module="purchase"),
 	"Delivery Note": PrintDocumentDefinition(doctype="Delivery Note", label="发货单", module="sales"),
+	"Payment Entry": PrintDocumentDefinition(doctype="Payment Entry", label="收付款凭证", module="finance"),
 }
 
 
@@ -191,6 +192,27 @@ _PRINT_TEMPLATE_REGISTRY: dict[str, tuple[PrintTemplateDefinition, ...]] = {
 			category="warehouse",
 			description="面向仓库拣货、发货和复核的执行模板。",
 			allowed_roles=("Stock Manager", "Stock User", "Sales Manager", "Sales User"),
+		),
+	),
+	"Payment Entry": (
+		PrintTemplateDefinition(
+			key="standard",
+			label="标准收付款凭证",
+			print_format="myapp Payment Entry Standard",
+			is_default=True,
+			source="myapp",
+			category="finance",
+			description="收款、付款、退款和内部转账的标准凭证模板。",
+			allowed_roles=("Accounts Manager", "Accounts User"),
+		),
+		PrintTemplateDefinition(
+			key="finance",
+			label="财务核销版",
+			print_format="myapp Payment Entry Finance",
+			source="myapp",
+			category="finance",
+			description="强化账户方向、核销明细、差额和制单信息的财务模板。",
+			allowed_roles=("Accounts Manager", "Accounts User"),
 		),
 	),
 }
