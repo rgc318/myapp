@@ -4480,3 +4480,24 @@ curl -X GET \
 - 销售退货
 - 采购退货
 - 草稿确认与工作流动作
+
+## 用户、个人资料与权限治理接口
+
+用户模块基于 Frappe 标准 `User`、`Role`、`Has Role`、`User Permission` 和 `Version`，详细架构见 `USER_MANAGEMENT_TECH_DESIGN.zh-CN.md`。
+
+当前用户接口：
+
+- `get_current_user_profile_v1`：读取本人主档、角色、能力摘要、工作偏好和数据权限。
+- `update_current_user_profile_v1`：维护本人姓名、联系方式、语言、时区、头像地址和简介。
+- `change_current_user_password_v1`：校验旧密码并应用 Frappe 密码强度策略；成功后客户端应重新登录。
+
+系统管理员接口：
+
+- `list_users_v1`：按关键词、启停状态、用户类型和角色服务端分页查询。
+- `get_user_detail_v1`：读取用户主档、角色、数据范围和 `Version` 变更记录。
+- `create_user_v1`、`update_user_v1`、`set_user_enabled_v1`：管理用户生命周期，不开放硬删除。
+- `update_user_roles_v1`：整体替换可分配角色，并保护最后一个启用的 `System Manager`。
+- `list_roles_v1`：读取启用角色、Desk 访问属性和已分配用户数。
+- `add_user_permission_v1`、`delete_user_permission_v1`：维护标准 Frappe 记录级数据权限。
+
+所有管理接口都在服务层再次检查 `System Manager`；Web 路由和按钮隐藏不构成安全边界。`Administrator`、`Guest`、当前操作者和最后一个启用系统管理员受到额外保护。

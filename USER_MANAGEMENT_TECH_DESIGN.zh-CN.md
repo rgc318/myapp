@@ -1,0 +1,92 @@
+# 企业级用户与权限模块技术设计
+
+## 1. 目标与边界
+
+用户模块负责“谁可以进入系统、可以做什么、可以看到哪些数据、账号发生过什么变化”。模块不复制 Frappe 的身份与权限模型，而是在标准 `User`、`Role`、`Has Role`、`User Permission` 和 `Version` 之上提供适合 Web 管理端的领域服务、统一 API 与运营界面。
+
+首期交付范围：
+
+- 个人中心：身份信息、联系方式、语言时区、头像地址、简介、岗位与工作偏好。
+- 个人安全：修改密码、查看最近登录和活跃信息。
+- 用户管理：分页查询、创建、编辑、启停、角色分配、用户详情和变更记录。
+- 角色治理：角色目录、启停状态、用户数量和权限规则摘要。
+- 数据范围：维护标准 Frappe `User Permission`，支持公司、仓库等任意合法 DocType 的数据授权。
+- 权限边界：普通用户只维护本人资料；只有 `System Manager` 可以管理其他用户、角色和数据权限。
+
+不在首期重复实现 Frappe 已有能力：自定义 DocPerm 编辑器、OAuth/LDAP 配置、双因素认证配置和 HR 员工档案。后续应通过独立安全中心接入，而不是在用户列表中堆叠底层配置。
+
+## 2. 领域模型
+
+```text
+User（身份与个人主档）
+ ├─ Has Role -> Role（功能权限集合）
+ ├─ User Permission（公司/仓库/客户等数据范围）
+ ├─ DefaultValue（默认公司、默认仓库）
+ ├─ Version（用户主档变更审计）
+ └─ JWT / Session（认证会话）
+```
+
+核心原则：
+
+- `User` 是账号唯一事实来源，邮箱账号不在 myapp 建影子表。
+- `Role` 决定功能权限，页面不保存独立角色副本。
+- `User Permission` 决定记录级数据范围，业务服务仍必须调用 Frappe 权限引擎。
+- 前端 `access.ts` 只控制菜单和按钮可见性，不能替代后端鉴权。
+- 用户停用后，JWT 鉴权钩子立即拒绝后续访问。
+
+## 3. 服务与 API
+
+个人接口：
+
+- `get_current_user_profile_v1`
+- `update_current_user_profile_v1`
+- `change_current_user_password_v1`
+
+管理员接口：
+
+- `list_users_v1`
+- `get_user_detail_v1`
+- `create_user_v1`
+- `update_user_v1`
+- `set_user_enabled_v1`
+- `update_user_roles_v1`
+- `list_roles_v1`
+- `add_user_permission_v1`
+- `delete_user_permission_v1`
+
+所有管理员接口在服务层再次检查 `System Manager`，不能只依赖路由或按钮隐藏。创建与修改操作使用 Frappe Document API，从而保留标准校验、联系人同步、密码策略与版本记录。
+
+## 4. 生命周期与保护规则
+
+- 创建：邮箱唯一，默认 `System User`，角色必须存在、启用且不能包含自动角色。
+- 启用：恢复登录资格，但不自动补角色或数据权限。
+- 停用：禁止停用 `Administrator`、当前操作者和最后一个启用的 `System Manager`。
+- 角色调整：禁止从最后一个启用的系统管理员移除 `System Manager`。
+- 删除：首期不开放硬删除。账号属于审计主体，应通过停用退出生命周期。
+- 密码：本人修改必须提供旧密码并通过 Frappe 密码强度策略；成功后要求客户端重新登录。
+
+## 5. Web 信息架构
+
+```text
+个人中心
+ ├─ /account/center       身份、角色、数据范围和最近活动
+ └─ /account/settings     个人资料、工作偏好和密码
+
+系统管理（System Manager）
+ └─ /administration
+     ├─ /users            用户列表、创建和启停
+     ├─ /users/:user      主档、角色、数据权限、审计
+     └─ /roles            角色目录与使用情况
+```
+
+列表使用 `ProTable` 服务端分页；详情使用 `PageContainer + ProCard + Tabs + Descriptions`；角色与数据权限通过明确的保存动作提交，不在页面本地推断最终权限。
+
+## 6. 后续增强
+
+- 统一会话中心：展示并吊销 JWT refresh token 与 Frappe Session。
+- MFA、可信设备、IP 白名单和异常登录告警。
+- 角色申请、审批、定期复核和临时授权到期。
+- 组织架构、岗位、员工档案与代理授权。
+- 权限模拟器：以指定用户预览菜单、DocPerm 和 User Permission 的合并结果。
+- 高风险操作二次确认、双人复核和安全事件报表。
+

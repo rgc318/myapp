@@ -38,10 +38,32 @@ def _token_pair_payload(pair):
 
 
 def _current_user_payload(user: str) -> dict:
+	profile = frappe.db.get_value(
+		"User",
+		user,
+		[
+			"email",
+			"full_name",
+			"user_image",
+			"phone",
+			"mobile_no",
+			"location",
+			"language",
+			"time_zone",
+		],
+		as_dict=True,
+	) or {}
 	return {
 		"user": user,
 		"roles": frappe.get_roles(user),
-		"full_name": frappe.db.get_value("User", user, "full_name"),
+		"email": profile.get("email") or user,
+		"full_name": profile.get("full_name") or user,
+		"user_image": profile.get("user_image"),
+		"phone": profile.get("phone"),
+		"mobile_no": profile.get("mobile_no"),
+		"location": profile.get("location"),
+		"language": profile.get("language"),
+		"time_zone": profile.get("time_zone"),
 	}
 
 

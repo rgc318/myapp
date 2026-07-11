@@ -265,3 +265,9 @@ python3 -m unittest apps.myapp.myapp.tests.http.test_jwt_token_http
 - JWT 生命周期 HTTP 测试 + 3 个核心并发幂等场景综合回归：`Ran 6 tests ... OK`
 
 已使用 `apps/myapp/.env.http-test` 中配置的测试账号完成真实站点上下文验证。为避免泄露凭据，文档不记录明文密码。
+
+## 用户资料扩展
+
+`me_v1` 当前返回账号、邮箱、姓名、角色、头像、电话、所在地、语言和时区，供 Web 初始化用户态与头像菜单。完整个人资料、工作偏好、能力摘要和数据权限应通过网关 `get_current_user_profile_v1` 获取。
+
+用户停用后，`myapp.auth.jwt_auth.validate` 会在每次请求检查 `User.enabled` 并立即拒绝现有 JWT。本人修改密码由 `change_current_user_password_v1` 调用 Frappe 原生密码策略，Web 成功后清理本地令牌并要求重新登录。

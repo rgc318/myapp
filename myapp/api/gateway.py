@@ -129,6 +129,18 @@ from .user_preferences_api import (
 from .user_preferences_api import (
 	update_current_user_workspace_preferences_v1 as update_current_user_workspace_preferences_v1_service,
 )
+from .user_management_api import add_user_permission_v1 as add_user_permission_v1_service
+from .user_management_api import change_current_user_password_v1 as change_current_user_password_v1_service
+from .user_management_api import create_user_v1 as create_user_v1_service
+from .user_management_api import delete_user_permission_v1 as delete_user_permission_v1_service
+from .user_management_api import get_current_user_profile_v1 as get_current_user_profile_v1_service
+from .user_management_api import get_user_detail_v1 as get_user_detail_v1_service
+from .user_management_api import list_roles_v1 as list_roles_v1_service
+from .user_management_api import list_users_v1 as list_users_v1_service
+from .user_management_api import set_user_enabled_v1 as set_user_enabled_v1_service
+from .user_management_api import update_current_user_profile_v1 as update_current_user_profile_v1_service
+from .user_management_api import update_user_roles_v1 as update_user_roles_v1_service
+from .user_management_api import update_user_v1 as update_user_v1_service
 from myapp.services.mobile_release_service import get_mobile_release_info as get_mobile_release_info_service
 from myapp.utils.api_response import (
 	error_response,
@@ -489,6 +501,81 @@ def get_current_user_workspace_preferences_v1():
 	return _handle_gateway_call(
 		lambda: get_current_user_workspace_preferences_v1_service(),
 		success_code="USER_WORKSPACE_PREFERENCES_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_current_user_profile_v1():
+	return _handle_gateway_call(lambda: get_current_user_profile_v1_service(), success_code="CURRENT_USER_PROFILE_FETCHED")
+
+
+@frappe.whitelist()
+def update_current_user_profile_v1(**kwargs):
+	return _handle_gateway_call(lambda: update_current_user_profile_v1_service(**kwargs), success_code="CURRENT_USER_PROFILE_UPDATED")
+
+
+@frappe.whitelist()
+def change_current_user_password_v1(old_password: str, new_password: str, logout_all_sessions=1):
+	return _handle_gateway_call(
+		lambda: change_current_user_password_v1_service(old_password=old_password, new_password=new_password, logout_all_sessions=logout_all_sessions),
+		success_code="CURRENT_USER_PASSWORD_CHANGED",
+	)
+
+
+@frappe.whitelist()
+def list_users_v1(search=None, enabled=None, role=None, user_type=None, page=1, page_size=20):
+	return _handle_gateway_call(
+		lambda: list_users_v1_service(search=search, enabled=enabled, role=role, user_type=user_type, page=page, page_size=page_size),
+		success_code="USERS_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_user_detail_v1(user: str):
+	return _handle_gateway_call(lambda: get_user_detail_v1_service(user=user), success_code="USER_DETAIL_FETCHED")
+
+
+@frappe.whitelist()
+def create_user_v1(email: str, first_name: str, roles=None, password=None, send_welcome_email=0, enabled=1, **kwargs):
+	return _handle_gateway_call(
+		lambda: create_user_v1_service(email=email, first_name=first_name, roles=roles, password=password, send_welcome_email=send_welcome_email, enabled=enabled, **kwargs),
+		success_code="USER_CREATED",
+	)
+
+
+@frappe.whitelist()
+def update_user_v1(user: str, **kwargs):
+	return _handle_gateway_call(lambda: update_user_v1_service(user=user, **kwargs), success_code="USER_UPDATED")
+
+
+@frappe.whitelist()
+def set_user_enabled_v1(user: str, enabled=1):
+	return _handle_gateway_call(lambda: set_user_enabled_v1_service(user=user, enabled=enabled), success_code="USER_STATUS_UPDATED")
+
+
+@frappe.whitelist()
+def update_user_roles_v1(user: str, roles=None):
+	return _handle_gateway_call(lambda: update_user_roles_v1_service(user=user, roles=roles), success_code="USER_ROLES_UPDATED")
+
+
+@frappe.whitelist()
+def list_roles_v1(search=None):
+	return _handle_gateway_call(lambda: list_roles_v1_service(search=search), success_code="ROLES_FETCHED")
+
+
+@frappe.whitelist()
+def add_user_permission_v1(user: str, allow: str, for_value: str, is_default=0, apply_to_all_doctypes=1, applicable_for=None, hide_descendants=0):
+	return _handle_gateway_call(
+		lambda: add_user_permission_v1_service(user=user, allow=allow, for_value=for_value, is_default=is_default, apply_to_all_doctypes=apply_to_all_doctypes, applicable_for=applicable_for, hide_descendants=hide_descendants),
+		success_code="USER_PERMISSION_CREATED",
+	)
+
+
+@frappe.whitelist()
+def delete_user_permission_v1(user: str, permission_name: str):
+	return _handle_gateway_call(
+		lambda: delete_user_permission_v1_service(user=user, permission_name=permission_name),
+		success_code="USER_PERMISSION_DELETED",
 	)
 
 
