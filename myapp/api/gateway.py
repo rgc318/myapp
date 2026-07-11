@@ -80,7 +80,9 @@ from .printing_api import get_print_preview_v1 as get_print_preview_v1_service
 from .printing_api import get_print_settings_v1 as get_print_settings_v1_service
 from .printing_api import get_print_templates_v1 as get_print_templates_v1_service
 from .printing_api import list_print_doctypes_v1 as list_print_doctypes_v1_service
+from .printing_api import list_print_batches_v1 as list_print_batches_v1_service
 from .printing_api import list_print_jobs_v1 as list_print_jobs_v1_service
+from .printing_api import list_print_jobs_v2 as list_print_jobs_v2_service
 from .printing_api import record_print_job_v1 as record_print_job_v1_service
 from .printing_api import retry_print_batch_failed_v1 as retry_print_batch_failed_v1_service
 from .printing_api import set_print_default_template_v1 as set_print_default_template_v1_service
@@ -238,6 +240,28 @@ def get_print_batch_v1(batch_id: str):
 
 
 @frappe.whitelist()
+def list_print_batches_v1(
+	status: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	requested_by: str | None = None,
+	start: int = 0,
+	limit: int = 20,
+):
+	return _handle_gateway_call(
+		lambda: list_print_batches_v1_service(
+			status=status,
+			date_from=date_from,
+			date_to=date_to,
+			requested_by=requested_by,
+			start=start,
+			limit=limit,
+		),
+		success_code="PRINT_BATCHES_FETCHED",
+	)
+
+
+@frappe.whitelist()
 def get_print_settings_v1():
 	return _handle_gateway_call(
 		lambda: get_print_settings_v1_service(),
@@ -337,6 +361,36 @@ def list_print_jobs_v1(
 			date_from=date_from,
 			date_to=date_to,
 			user=user,
+			limit=limit,
+		),
+		success_code="PRINT_JOBS_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def list_print_jobs_v2(
+	doctype: str | None = None,
+	docname: str | None = None,
+	action: str | None = None,
+	status: str | None = None,
+	template: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	user: str | None = None,
+	start: int = 0,
+	limit: int = 20,
+):
+	return _handle_gateway_call(
+		lambda: list_print_jobs_v2_service(
+			doctype=doctype,
+			docname=docname,
+			action=action,
+			status=status,
+			template=template,
+			date_from=date_from,
+			date_to=date_to,
+			user=user,
+			start=start,
 			limit=limit,
 		),
 		success_code="PRINT_JOBS_FETCHED",

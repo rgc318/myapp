@@ -50,7 +50,9 @@ from myapp.api.gateway import (
 	list_cashflow_entries_v1,
 	list_business_documents_v1,
 	list_print_doctypes_v1,
+	list_print_batches_v1,
 	list_print_jobs_v1,
+	list_print_jobs_v2,
 	search_purchase_orders_v2,
 	create_product_and_stock,
 	create_sales_invoice,
@@ -118,6 +120,15 @@ from myapp.api.gateway import (
 
 
 class TestGatewayWrappers(TestCase):
+	def test_api_aggregator_exports_print_center_methods(self):
+		from myapp.api.api import download_print_file_v1 as aggregated_download
+		from myapp.api.api import list_print_batches_v1 as aggregated_batches
+		from myapp.api.api import list_print_jobs_v2 as aggregated_jobs
+
+		self.assertIs(aggregated_download, download_print_file_v1)
+		self.assertIs(aggregated_batches, list_print_batches_v1)
+		self.assertIs(aggregated_jobs, list_print_jobs_v2)
+
 	def test_gateway_methods_are_not_exposed_to_guest(self):
 		for method in (
 			test_remote_debug,
@@ -128,6 +139,8 @@ class TestGatewayWrappers(TestCase):
 			download_print_file_v1,
 			get_current_user_workspace_preferences_v1,
 			get_print_file_v1,
+			list_print_batches_v1,
+			list_print_jobs_v2,
 			get_print_preview_v1,
 			get_print_settings_v1,
 			get_print_templates_v1,
@@ -726,6 +739,28 @@ class TestGatewayWrappers(TestCase):
 
 		mock_get_print_batch_v1_service.assert_called_once_with(batch_id="PRN-BATCH-001")
 
+	@patch("myapp.api.gateway.list_print_batches_v1_service")
+	def test_list_print_batches_v1_passes_filters_to_service(self, mock_list_print_batches_v1_service):
+		mock_list_print_batches_v1_service.return_value = {"status": "success", "data": {"batches": []}}
+
+		list_print_batches_v1(
+			status="completed",
+			date_from="2026-07-01",
+			date_to="2026-07-10",
+			requested_by="test@example.com",
+			start=20,
+			limit=20,
+		)
+
+		mock_list_print_batches_v1_service.assert_called_once_with(
+			status="completed",
+			date_from="2026-07-01",
+			date_to="2026-07-10",
+			requested_by="test@example.com",
+			start=20,
+			limit=20,
+		)
+
 	@patch("myapp.api.gateway.get_print_settings_v1_service")
 	def test_get_print_settings_v1_passes_through_service(self, mock_get_print_settings_v1_service):
 		mock_get_print_settings_v1_service.return_value = {"status": "success", "data": {"settings": []}}
@@ -830,6 +865,36 @@ class TestGatewayWrappers(TestCase):
 			date_to="2026-07-09",
 			user="test@example.com",
 			limit=5,
+		)
+
+	@patch("myapp.api.gateway.list_print_jobs_v2_service")
+	def test_list_print_jobs_v2_passes_pagination_to_service(self, mock_list_print_jobs_v2_service):
+		mock_list_print_jobs_v2_service.return_value = {"status": "success", "data": {"jobs": []}}
+
+		list_print_jobs_v2(
+			doctype="Sales Invoice",
+			docname=None,
+			action="download",
+			status="success",
+			template="standard",
+			date_from="2026-07-01",
+			date_to="2026-07-09",
+			user="test@example.com",
+			start=20,
+			limit=20,
+		)
+
+		mock_list_print_jobs_v2_service.assert_called_once_with(
+			doctype="Sales Invoice",
+			docname=None,
+			action="download",
+			status="success",
+			template="standard",
+			date_from="2026-07-01",
+			date_to="2026-07-09",
+			user="test@example.com",
+			start=20,
+			limit=20,
 		)
 
 	@patch("myapp.api.gateway.get_print_preview_v1_service")

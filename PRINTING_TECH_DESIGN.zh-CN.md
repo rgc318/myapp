@@ -1062,6 +1062,18 @@ PrintTemplateDefinition(
 - 当前按目标单据查询，会先校验当前用户对该单据有读权限。
 - 如果 `tabMyApp Print Job` 尚未迁移创建，返回空列表和 `table_ready=false`，不影响打印主流程。
 
+#### `list_print_jobs_v2`
+
+用途：
+
+- 为 Web 打印中心提供跨单据、可分页的全局打印历史。
+
+权限与兼容：
+
+- 普通用户只查看本人产生的打印动作；`System Manager` 可以查看全部并按操作人筛选。
+- 指定 `doctype + docname` 时仍校验目标单据读权限。
+- `list_print_jobs_v1` 保留给详情页历史 Drawer，避免破坏现有 Web/Mobile 调用。
+
 #### `create_print_batch_v1`
 
 用途：
@@ -1114,6 +1126,23 @@ PrintTemplateDefinition(
 - `items[]`
 - `results[]`
 - `metadata`
+
+说明：
+
+- 批次详情、取消、失败重试和 ZIP 下载只允许批次申请人或 `System Manager` 访问。
+
+#### `list_print_batches_v1`
+
+用途：
+
+- 为 Web 打印中心提供可恢复的批次任务分页列表。
+
+说明：
+
+- 普通用户只返回本人创建的批次。
+- `System Manager` 可以查看全部批次并按申请人筛选。
+- 列表返回状态、进度、成功 / 失败 / 跳过计数、涉及单据类型和前 5 个单据号摘要。
+- 逐单完整结果继续通过 `get_print_batch_v1` 按需加载，避免列表查询搬运大段 JSON。
 
 #### `cancel_print_batch_v1`
 

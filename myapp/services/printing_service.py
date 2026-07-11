@@ -208,10 +208,90 @@ def get_print_batch_v1(batch_id: str):
 	row = _get_print_batch_row(resolved_batch_id)
 	if not row:
 		raise frappe.DoesNotExistError(_("打印批次 {0} 不存在。").format(resolved_batch_id))
+	_require_print_batch_access(row)
 	return {
 		"status": "success",
 		"message": _("打印批次已获取。"),
 		"data": _serialize_print_batch(row),
+	}
+
+
+def list_print_batches_v1(
+	status: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	requested_by: str | None = None,
+	start: int = 0,
+	limit: int = 20,
+):
+	if not _print_batch_table_exists():
+		return {
+			"status": "success",
+			"message": _("打印批次表尚未创建。"),
+			"data": {"batches": [], "count": 0, "total": 0, "table_ready": False},
+		}
+
+	conditions = []
+	values: list = []
+	resolved_status = (status or "").strip().lower()
+	if resolved_status:
+		if resolved_status not in PRINT_BATCH_STATUSES:
+			frappe.throw(_("不支持的打印批次状态。"))
+		conditions.append("status = %s")
+		values.append(resolved_status)
+
+	current_user = _current_user()
+	resolved_requested_by = (requested_by or "").strip()
+	if _is_system_manager():
+		if resolved_requested_by:
+			conditions.append("requested_by = %s")
+			values.append(resolved_requested_by)
+	else:
+		conditions.append("requested_by = %s")
+		values.append(current_user)
+
+	if date_from:
+		conditions.append("requested_at >= %s")
+		values.append(get_datetime(date_from))
+	if date_to:
+		conditions.append("requested_at <= %s")
+		values.append(get_datetime(date_to))
+
+	where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+	resolved_start = _coerce_non_negative_int(start, default=0, maximum=100000)
+	resolved_limit = _coerce_positive_int(limit, default=20, maximum=100)
+	count_rows = frappe.db.sql(
+		f"SELECT COUNT(*) AS total FROM `tabMyApp Print Batch` {where_clause}",
+		tuple(values),
+		as_dict=True,
+	)
+	total = int(count_rows[0].get("total") or 0) if count_rows else 0
+	rows = frappe.db.sql(
+		f"""
+		SELECT
+			name, creation, modified, owner, status, output, requested_by, requested_at,
+			started_at, completed_at, enqueue_job_id, total_count, success_count,
+			failed_count, skipped_count, items_json, results_json, metadata_json, error
+		FROM `tabMyApp Print Batch`
+		{where_clause}
+		ORDER BY requested_at DESC, creation DESC
+		LIMIT %s OFFSET %s
+		""",
+		tuple([*values, resolved_limit, resolved_start]),
+		as_dict=True,
+	)
+	batches = [_serialize_print_batch_summary(row) for row in rows]
+	return {
+		"status": "success",
+		"message": _("打印批次列表已获取。"),
+		"data": {
+			"batches": batches,
+			"count": len(batches),
+			"total": total,
+			"start": resolved_start,
+			"limit": resolved_limit,
+			"table_ready": True,
+		},
 	}
 
 
@@ -230,6 +310,7 @@ def cancel_print_batch_v1(batch_id: str):
 	row = _get_print_batch_row(resolved_batch_id)
 	if not row:
 		raise frappe.DoesNotExistError(_("打印批次 {0} 不存在。").format(resolved_batch_id))
+	_require_print_batch_access(row)
 
 	current_status = row.get("status")
 	if current_status == "queued":
@@ -568,6 +649,110 @@ def list_print_jobs_v1(
 	}
 
 
+def list_print_jobs_v2(
+	doctype: str | None = None,
+	docname: str | None = None,
+	action: str | None = None,
+	status: str | None = None,
+	template: str | None = None,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	user: str | None = None,
+	start: int = 0,
+	limit: int = 20,
+):
+	if not _print_job_table_exists():
+		return {
+			"status": "success",
+			"message": _("打印记录表尚未创建。"),
+			"data": {"jobs": [], "count": 0, "total": 0, "table_ready": False},
+		}
+
+	conditions = []
+	values: list = []
+	resolved_doctype = (doctype or "").strip()
+	resolved_docname = (docname or "").strip()
+	if resolved_docname and not resolved_doctype:
+		frappe.throw(_("按单据号筛选时必须同时提供 doctype。"))
+	if resolved_doctype:
+		conditions.append("reference_doctype = %s")
+		values.append(resolved_doctype)
+	if resolved_docname:
+		_load_print_document(resolved_doctype, resolved_docname)
+		conditions.append("reference_name = %s")
+		values.append(resolved_docname)
+
+	resolved_action = (action or "").strip().lower()
+	if resolved_action:
+		if resolved_action not in PRINT_JOB_ACTIONS:
+			frappe.throw(_("不支持的打印动作。"))
+		conditions.append("action = %s")
+		values.append(resolved_action)
+	resolved_status = (status or "").strip().lower()
+	if resolved_status:
+		if resolved_status not in PRINT_JOB_STATUSES:
+			frappe.throw(_("不支持的打印记录状态。"))
+		conditions.append("status = %s")
+		values.append(resolved_status)
+	resolved_template = (template or "").strip()
+	if resolved_template:
+		conditions.append("template = %s")
+		values.append(resolved_template)
+
+	current_user = _current_user()
+	resolved_user = (user or "").strip()
+	if _is_system_manager():
+		if resolved_user:
+			conditions.append("printed_by = %s")
+			values.append(resolved_user)
+	else:
+		conditions.append("printed_by = %s")
+		values.append(current_user)
+
+	if date_from:
+		conditions.append("printed_at >= %s")
+		values.append(get_datetime(date_from))
+	if date_to:
+		conditions.append("printed_at <= %s")
+		values.append(get_datetime(date_to))
+
+	where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+	resolved_start = _coerce_non_negative_int(start, default=0, maximum=100000)
+	resolved_limit = _coerce_positive_int(limit, default=20, maximum=100)
+	count_rows = frappe.db.sql(
+		f"SELECT COUNT(*) AS total FROM `tabMyApp Print Job` {where_clause}",
+		tuple(values),
+		as_dict=True,
+	)
+	total = int(count_rows[0].get("total") or 0) if count_rows else 0
+	rows = frappe.db.sql(
+		f"""
+		SELECT
+			name, reference_doctype, reference_name, template, template_label, print_format,
+			action, output, status, filename, file_url, printed_by, printed_at, error, metadata_json
+		FROM `tabMyApp Print Job`
+		{where_clause}
+		ORDER BY printed_at DESC, creation DESC
+		LIMIT %s OFFSET %s
+		""",
+		tuple([*values, resolved_limit, resolved_start]),
+		as_dict=True,
+	)
+	jobs = [_serialize_print_job(row) for row in rows]
+	return {
+		"status": "success",
+		"message": _("打印历史已获取。"),
+		"data": {
+			"jobs": jobs,
+			"count": len(jobs),
+			"total": total,
+			"start": resolved_start,
+			"limit": resolved_limit,
+			"table_ready": True,
+		},
+	}
+
+
 def get_print_preview_v1(
 	doctype: str,
 	docname: str,
@@ -878,6 +1063,16 @@ def _coerce_positive_int(value, *, default: int, maximum: int):
 	except Exception:
 		return default
 	if resolved <= 0:
+		return default
+	return min(resolved, maximum)
+
+
+def _coerce_non_negative_int(value, *, default: int, maximum: int):
+	try:
+		resolved = int(value)
+	except Exception:
+		return default
+	if resolved < 0:
 		return default
 	return min(resolved, maximum)
 
@@ -1215,9 +1410,28 @@ def _build_print_job_metadata(metadata, template_info: dict):
 
 
 def _current_user():
-	session = getattr(frappe, "session", None)
-	user = getattr(session, "user", None)
-	return user or "Administrator"
+	try:
+		session = getattr(frappe, "session", None)
+		user = getattr(session, "user", None)
+	except Exception:
+		user = None
+	return user if isinstance(user, str) and user else "Administrator"
+
+
+def _is_system_manager():
+	try:
+		return "System Manager" in set(frappe.get_roles() or [])
+	except Exception:
+		return False
+
+
+def _require_print_batch_access(row):
+	requested_by = (row.get("requested_by") or "").strip()
+	if requested_by and requested_by == _current_user():
+		return
+	if _is_system_manager():
+		return
+	raise frappe.PermissionError(_("无权访问该打印批次。"))
 
 
 def _get_request_user_agent(request):
@@ -1350,6 +1564,15 @@ def _serialize_print_batch(row):
 		"error": row.get("error"),
 		"table_ready": True,
 	}
+
+
+def _serialize_print_batch_summary(row):
+	data = _serialize_print_batch(row)
+	items = data.pop("items", [])
+	data.pop("results", None)
+	data["doctypes"] = list(dict.fromkeys(item.get("doctype") for item in items if item.get("doctype")))
+	data["document_names"] = [item.get("docname") for item in items[:5] if item.get("docname")]
+	return data
 
 
 def _parse_json_list(value):

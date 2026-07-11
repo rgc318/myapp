@@ -3092,6 +3092,49 @@ create_purchase_order(
 - 查询批量打印任务进度和逐单结果。
 - `results[]` 中成功项包含 `filename`、`file_url`、`file_size`；失败项包含 `error`。
 - 如果批次表尚未创建，返回 `table_ready=false`。
+- 批次详情只允许批次申请人或 `System Manager` 访问；取消、失败重试和 ZIP 下载沿用同一访问边界。
+
+### list_print_batches_v1
+
+方法：
+
+- `myapp.api.gateway.list_print_batches_v1`
+
+参数：
+
+- `status: str | None`
+- `date_from: str | None`
+- `date_to: str | None`
+- `requested_by: str | None`
+- `start: int = 0`
+- `limit: int = 20`
+
+返回重点字段：
+
+- `batches[]`
+- `batches[].batch_id`
+- `batches[].status`
+- `batches[].requested_by`
+- `batches[].requested_at`
+- `batches[].total_count`
+- `batches[].success_count`
+- `batches[].failed_count`
+- `batches[].skipped_count`
+- `batches[].progress`
+- `batches[].doctypes`
+- `batches[].document_names`
+- `total`
+- `start`
+- `limit`
+- `table_ready`
+
+行为：
+
+- 提供打印中心批次任务的服务端分页查询。
+- 普通用户强制只返回 `requested_by=当前用户` 的批次，即使前端传入其他用户也不会扩大范围。
+- `System Manager` 可以查看全部批次，并可通过 `requested_by` 筛选。
+- 列表只返回批次摘要，不返回完整 `items[]` / `results[]`；查看逐单结果时调用 `get_print_batch_v1`。
+- 如果批次表尚未创建，返回空列表、`total=0` 和 `table_ready=false`。
 
 ### cancel_print_batch_v1
 
@@ -3267,6 +3310,34 @@ create_purchase_order(
 - 会先校验当前用户对目标单据有读权限。
 - 如果打印记录表尚未创建，返回空列表和 `table_ready=false`。
 - 托管模板打印记录的 `metadata` 会包含 `template_version`、`template_hash`、`template_managed` 和 `print_format`，用于追溯打印时模板版本。
+
+### list_print_jobs_v2
+
+方法：
+
+- `myapp.api.gateway.list_print_jobs_v2`
+
+参数：
+
+- `doctype: str | None`
+- `docname: str | None`
+- `action: str | None`
+- `status: str | None`
+- `template: str | None`
+- `date_from: str | None`
+- `date_to: str | None`
+- `user: str | None`
+- `start: int = 0`
+- `limit: int = 20`
+
+行为：
+
+- 为 Web 打印中心提供跨单据打印历史分页查询。
+- 支持单据类型、单据号、动作、结果状态、模板、日期和操作人筛选。
+- 传入 `docname` 时必须同时传入 `doctype`，并校验当前用户对目标单据的读权限。
+- 普通用户强制只返回 `printed_by=当前用户` 的记录；`System Manager` 可以查看全部记录，并可按 `user` 筛选。
+- 返回 `total`、`start`、`limit`，供 `ProTable` 服务端分页。
+- `list_print_jobs_v1` 继续保留，用于单据详情页按目标单据读取历史，保持现有调用兼容。
 
 ### list_business_documents_v1
 

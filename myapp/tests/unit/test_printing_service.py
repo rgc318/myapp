@@ -16,7 +16,9 @@ from myapp.services.printing_service import (
 	get_print_preview_v1,
 	get_print_settings_v1,
 	get_print_templates_v1,
+	list_print_batches_v1,
 	list_print_jobs_v1,
+	list_print_jobs_v2,
 	list_print_doctypes_v1,
 	process_print_batch_v1,
 	record_print_job_v1,
@@ -242,6 +244,7 @@ class TestPrintingService(TestCase):
 	@patch("myapp.services.printing_service._print_batch_table_exists", return_value=True)
 	def test_get_print_batch_v1_returns_progress(self, mock_table_exists):
 		with patch("myapp.services.printing_service.frappe") as mock_frappe:
+			mock_frappe.session.user = "test@example.com"
 			mock_frappe.db.sql.return_value = [
 				frappe._dict(
 					{
@@ -273,6 +276,53 @@ class TestPrintingService(TestCase):
 		self.assertEqual(result["data"]["metadata"]["source"], "web")
 		mock_table_exists.assert_called_once()
 
+	@patch("myapp.services.printing_service._current_user", return_value="test@example.com")
+	@patch("myapp.services.printing_service._is_system_manager", return_value=False)
+	@patch("myapp.services.printing_service._print_batch_table_exists", return_value=True)
+	def test_list_print_batches_v1_limits_regular_user_to_own_batches(
+		self,
+		mock_table_exists,
+		mock_is_system_manager,
+		mock_current_user,
+	):
+		with patch("myapp.services.printing_service.frappe") as mock_frappe:
+			mock_frappe.db.sql.side_effect = [
+				[frappe._dict({"total": 1})],
+				[
+					frappe._dict(
+						{
+							"name": "PRN-BATCH-001",
+							"status": "completed",
+							"output": "pdf",
+							"requested_by": "test@example.com",
+							"requested_at": "2026-07-10 10:00:00",
+							"total_count": 1,
+							"success_count": 1,
+							"failed_count": 0,
+							"skipped_count": 0,
+							"items_json": '[{"doctype": "Sales Order", "docname": "SO-0001"}]',
+							"results_json": "[]",
+						}
+					)
+				],
+			]
+
+			result = list_print_batches_v1(status="completed", start=0, limit=20)
+
+		self.assertEqual(result["data"]["total"], 1)
+		self.assertEqual(result["data"]["batches"][0]["doctypes"], ["Sales Order"])
+		self.assertNotIn("items", result["data"]["batches"][0])
+		self.assertIn("requested_by = %s", mock_frappe.db.sql.call_args_list[0].args[0])
+		self.assertIn("test@example.com", mock_frappe.db.sql.call_args_list[0].args[1])
+
+	@patch("myapp.services.printing_service._is_system_manager", return_value=False)
+	@patch("myapp.services.printing_service._current_user", return_value="other@example.com")
+	def test_print_batch_access_rejects_non_owner(self, mock_current_user, mock_is_system_manager):
+		from myapp.services.printing_service import _require_print_batch_access
+
+		with self.assertRaises(frappe.PermissionError):
+			_require_print_batch_access(frappe._dict({"requested_by": "owner@example.com"}))
+
 	@patch("myapp.services.printing_service._update_print_batch_results")
 	@patch("myapp.services.printing_service._update_print_batch_status")
 	@patch("myapp.services.printing_service._process_print_batch_item")
@@ -290,6 +340,7 @@ class TestPrintingService(TestCase):
 			{
 				"name": "PRN-BATCH-001",
 				"status": "queued",
+				"requested_by": "Administrator",
 				"requested_by": "test@example.com",
 				"items_json": '[{"idx": 1, "doctype": "Sales Invoice", "docname": "SINV-0001"}, {"idx": 2, "doctype": "Sales Invoice", "docname": "SINV-0002"}]',
 			}
@@ -430,6 +481,7 @@ class TestPrintingService(TestCase):
 			{
 				"name": "PRN-BATCH-001",
 				"status": "queued",
+				"requested_by": "Administrator",
 				"items_json": '[{"idx": 1, "doctype": "Sales Invoice", "docname": "SINV-0001"}]',
 			}
 		)
@@ -451,7 +503,9 @@ class TestPrintingService(TestCase):
 		mock_get_print_batch_row,
 		mock_update_print_batch_status,
 	):
-		mock_get_print_batch_row.return_value = frappe._dict({"name": "PRN-BATCH-001", "status": "processing"})
+		mock_get_print_batch_row.return_value = frappe._dict(
+			{"name": "PRN-BATCH-001", "status": "processing", "requested_by": "Administrator"}
+		)
 
 		result = cancel_print_batch_v1("PRN-BATCH-001")
 
@@ -713,6 +767,43 @@ class TestPrintingService(TestCase):
 		self.assertEqual(result["data"]["jobs"][0]["job_id"], "PRN-JOB-001")
 		self.assertEqual(result["data"]["jobs"][0]["metadata"]["source"], "web")
 		mock_frappe.db.sql.assert_called_once()
+
+	@patch("myapp.services.printing_service._current_user", return_value="test@example.com")
+	@patch("myapp.services.printing_service._is_system_manager", return_value=False)
+	@patch("myapp.services.printing_service._print_job_table_exists", return_value=True)
+	def test_list_print_jobs_v2_returns_paginated_current_user_history(
+		self,
+		mock_table_exists,
+		mock_is_system_manager,
+		mock_current_user,
+	):
+		with patch("myapp.services.printing_service.frappe") as mock_frappe:
+			mock_frappe.db.sql.side_effect = [
+				[frappe._dict({"total": 1})],
+				[
+					frappe._dict(
+						{
+							"name": "PRN-JOB-001",
+							"reference_doctype": "Sales Order",
+							"reference_name": "SO-0001",
+							"template": "standard",
+							"template_label": "标准模板",
+							"action": "print",
+							"output": "html",
+							"status": "success",
+							"printed_by": "test@example.com",
+							"printed_at": "2026-07-10 10:00:00",
+						}
+					)
+				],
+			]
+
+			result = list_print_jobs_v2(doctype="Sales Order", action="print", start=0, limit=20)
+
+		self.assertEqual(result["data"]["total"], 1)
+		self.assertEqual(result["data"]["jobs"][0]["docname"], "SO-0001")
+		self.assertIn("printed_by = %s", mock_frappe.db.sql.call_args_list[0].args[0])
+		self.assertIn("test@example.com", mock_frappe.db.sql.call_args_list[0].args[1])
 
 	@patch("myapp.services.printing_service._render_print_preview_payload")
 	@patch("myapp.services.printing_service._load_print_document")
