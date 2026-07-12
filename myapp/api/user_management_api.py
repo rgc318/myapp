@@ -2,17 +2,23 @@ import frappe
 
 from myapp.services.user_management_service import (
 	add_user_permission,
+	batch_set_users_enabled,
 	change_current_user_password,
 	create_user,
 	delete_user_permission,
 	get_current_user_profile,
+	get_user_permission_snapshot,
+	get_user_security,
+	get_user_management_overview,
 	get_user_detail,
 	list_roles,
 	list_users,
+	revoke_user_sessions,
 	set_user_enabled,
 	update_current_user_profile,
 	update_user,
 	update_user_roles,
+	upload_current_user_avatar,
 )
 
 
@@ -27,6 +33,11 @@ def update_current_user_profile_v1(**kwargs):
 
 
 @frappe.whitelist()
+def upload_current_user_avatar_v1(filename: str, file_content_base64: str, content_type=None):
+	return upload_current_user_avatar(filename, file_content_base64, content_type)
+
+
+@frappe.whitelist()
 def change_current_user_password_v1(old_password: str, new_password: str, logout_all_sessions=1):
 	return change_current_user_password(old_password, new_password, logout_all_sessions)
 
@@ -37,8 +48,33 @@ def list_users_v1(search=None, enabled=None, role=None, user_type=None, page=1, 
 
 
 @frappe.whitelist()
+def get_user_management_overview_v1():
+	return get_user_management_overview()
+
+
+@frappe.whitelist()
+def batch_set_users_enabled_v1(users=None, enabled=1):
+	return batch_set_users_enabled(users, enabled)
+
+
+@frappe.whitelist()
 def get_user_detail_v1(user: str):
 	return get_user_detail(user)
+
+
+@frappe.whitelist()
+def get_user_security_v1(user: str | None = None):
+	return get_user_security(user)
+
+
+@frappe.whitelist()
+def revoke_user_sessions_v1(user: str | None = None):
+	return revoke_user_sessions(user)
+
+
+@frappe.whitelist()
+def get_user_permission_snapshot_v1(user: str):
+	return get_user_permission_snapshot(user)
 
 
 @frappe.whitelist()

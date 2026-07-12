@@ -11,8 +11,10 @@ class TestTokenApi(TestCase):
 	@patch("myapp.auth.token_api._find_user_by_credentials", return_value="user@example.com")
 	@patch("myapp.auth.token_api.frappe.get_roles", return_value=["System Manager"])
 	@patch("myapp.auth.token_api._current_user_payload", return_value={"user": "user@example.com"})
+	@patch("myapp.auth.token_api._validate_two_factor", return_value=None)
+	@patch("myapp.auth.token_api.get_user_auth_generation", return_value=3)
 	@patch("myapp.auth.token_api.issue_token_pair")
-	def test_login_v1_issues_jwt_pair(self, mock_issue_token_pair, mock_current_user_payload, mock_get_roles, mock_find_user):
+	def test_login_v1_issues_jwt_pair(self, mock_issue_token_pair, _mock_generation, _mock_two_factor, mock_current_user_payload, mock_get_roles, mock_find_user):
 		mock_issue_token_pair.return_value = Mock(
 			access_token="access-token",
 			refresh_token="refresh-token",
@@ -31,7 +33,22 @@ class TestTokenApi(TestCase):
 		self.assertEqual(result["data"]["refresh_token"], "refresh-token")
 		self.assertEqual(result["data"]["user"], {"user": "user@example.com"})
 		mock_find_user.assert_called_once_with("user@example.com", "password")
-		mock_issue_token_pair.assert_called_once_with("user@example.com", {"roles": ["System Manager"]}, remember_me=True)
+		mock_issue_token_pair.assert_called_once_with(
+			"user@example.com",
+			{"auth_generation": 3, "roles": ["System Manager"]},
+			remember_me=True,
+		)
+
+	@patch("myapp.auth.token_api._find_user_by_credentials", return_value="user@example.com")
+	@patch(
+		"myapp.auth.token_api._validate_two_factor",
+		return_value={"requires_two_factor": True, "method": "OTP App", "prompt": "请输入验证码"},
+	)
+	def test_login_v1_returns_two_factor_challenge(self, _mock_two_factor, _mock_find_user):
+		result = token_api.login_v1(username="user@example.com", password="password")
+
+		self.assertEqual(result["code"], "JWT_TWO_FACTOR_REQUIRED")
+		self.assertTrue(result["data"]["requires_two_factor"])
 
 	@patch("myapp.auth.token_api.rotate_refresh_token")
 	def test_refresh_v1_rotates_refresh_token(self, mock_rotate_refresh_token):

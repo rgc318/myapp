@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import frappe
 
-from myapp.auth.jwt_service import decode_access_token
+from myapp.auth.jwt_service import decode_access_token, validate_auth_generation
 
 
 def _get_bearer_token() -> str | None:
@@ -31,6 +31,10 @@ def validate():
 
 	if not _is_enabled_user(payload.subject):
 		raise frappe.AuthenticationError("JWT 用户不存在或已被禁用。")
+	try:
+		validate_auth_generation(payload)
+	except Exception:
+		raise frappe.AuthenticationError("JWT 访问令牌已被注销，请重新登录。")
 
 	form_dict = getattr(frappe.local, "form_dict", None)
 	frappe.set_user(payload.subject)

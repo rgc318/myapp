@@ -43,7 +43,10 @@ def decode_access_token(token: str):
 
 
 def rotate_refresh_token(refresh_token: str, claims: dict[str, Any] | None = None):
-	return run_async(get_jwt_manager().rotate_refresh_token(refresh_token, claims))
+	manager = get_jwt_manager()
+	payload = run_async(manager.decode_refresh_token(refresh_token))
+	_validate_auth_generation(payload)
+	return run_async(manager.rotate_refresh_token(refresh_token, claims))
 
 
 def decode_refresh_token(refresh_token: str):
@@ -59,3 +62,25 @@ def delete_refresh_token(refresh_token: str) -> None:
 	payload = run_async(manager.decode_refresh_token(refresh_token))
 	run_async(manager.token_store.delete_refresh_token(payload.subject, payload.jti))
 
+
+def get_user_auth_generation(user: str) -> int:
+	return FrappeCacheTokenStore().get_user_auth_generation(user)
+
+
+def revoke_all_user_tokens(user: str) -> int:
+	return FrappeCacheTokenStore().revoke_all_user_tokens(user)
+
+
+def count_user_refresh_tokens(user: str) -> int:
+	return FrappeCacheTokenStore().count_user_refresh_tokens(user)
+
+
+def validate_auth_generation(payload) -> None:
+	_validate_auth_generation(payload)
+
+
+def _validate_auth_generation(payload) -> None:
+	claims = payload.claims if isinstance(payload.claims, dict) else {}
+	token_generation = int(claims.get("auth_generation") or 0)
+	if token_generation != get_user_auth_generation(payload.subject):
+		raise InvalidTokenError("Token authorization generation is no longer valid.")

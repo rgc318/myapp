@@ -1,13 +1,26 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 
 import frappe
 from frappe import _
 from frappe.permissions import AUTOMATIC_ROLES
-from frappe.utils import cint
+from frappe.query_builder import Order
+from frappe.utils import cint, sha256_hash
+from frappe.utils.file_manager import save_file
 
+from myapp.auth.jwt_service import (
+	count_user_refresh_tokens,
+	get_user_auth_generation,
+	revoke_all_user_tokens,
+)
+from myapp.services.media_service import (
+	_decode_base64_file_content,
+	_ensure_folder_path,
+	_normalize_image_filename,
+	_validate_image_content_type,
+)
 from myapp.services.user_preferences_service import _build_workspace_preferences_payload
 
 
@@ -56,6 +69,23 @@ EDITABLE_PROFILE_FIELDS = {
 	"interest",
 }
 
+USER_AVATAR_FOLDER = "Home/Attachments/MyApp User Avatars"
+PERMISSION_SNAPSHOT_DOCTYPES = (
+	"User",
+	"Item",
+	"Customer",
+	"Supplier",
+	"Sales Order",
+	"Delivery Note",
+	"Sales Invoice",
+	"Purchase Order",
+	"Purchase Receipt",
+	"Purchase Invoice",
+	"Payment Entry",
+	"Warehouse",
+	"Stock Entry",
+)
+
 
 def _normalize_text(value):
 	return (value or "").strip() if isinstance(value, str) else value
@@ -73,6 +103,13 @@ def _ensure_system_manager():
 	if user != "Administrator" and "System Manager" not in frappe.get_roles(user):
 		raise frappe.PermissionError(_("仅系统管理员可以管理用户与权限。"))
 	return user
+
+
+def _ensure_can_manage_user(user):
+	actor = _ensure_authenticated_user()
+	if actor == user or actor == "Administrator" or "System Manager" in frappe.get_roles(actor):
+		return actor
+	raise frappe.PermissionError(_("只能查看或管理本人安全信息。"))
 
 
 def _coerce_list(value):
@@ -212,13 +249,163 @@ def update_current_user_profile(**values):
 
 
 def change_current_user_password(old_password, new_password, logout_all_sessions=1):
-	_ensure_authenticated_user()
+	user = _ensure_authenticated_user()
 	if not _normalize_text(old_password) or not _normalize_text(new_password):
 		frappe.throw(_("旧密码和新密码均不能为空。"))
 	from frappe.core.doctype.user.user import update_password
 
 	update_password(new_password=new_password, old_password=old_password, logout_all_sessions=cint(logout_all_sessions))
-	return {"status": "success", "code": "CURRENT_USER_PASSWORD_CHANGED", "message": _("密码已更新，请重新登录。"), "data": {"reauthentication_required": True}}
+	generation = revoke_all_user_tokens(user)
+	return {"status": "success", "code": "CURRENT_USER_PASSWORD_CHANGED", "message": _("密码已更新，请重新登录。"), "data": {"reauthentication_required": True, "auth_generation": generation}}
+
+
+def upload_current_user_avatar(filename, file_content_base64, content_type=None):
+	user = _ensure_authenticated_user()
+	resolved_filename = _normalize_image_filename(filename, content_type)
+	_validate_image_content_type(resolved_filename, content_type)
+	file_bytes = _decode_base64_file_content(file_content_base64)
+	folder = _ensure_folder_path(USER_AVATAR_FOLDER)
+	doc = frappe.get_doc("User", user)
+	previous_url = _normalize_text(doc.user_image) or None
+	file_doc = save_file(
+		fname=resolved_filename,
+		content=file_bytes,
+		dt="User",
+		dn=user,
+		folder=folder,
+		df="user_image",
+		is_private=0,
+	)
+	doc.user_image = file_doc.file_url
+	doc.save(ignore_permissions=True)
+	if previous_url and previous_url != file_doc.file_url:
+		previous_file = frappe.db.get_value(
+			"File",
+			{"file_url": previous_url, "attached_to_doctype": "User", "attached_to_name": user},
+			"name",
+		)
+		if previous_file:
+			frappe.delete_doc("File", previous_file, ignore_permissions=True, force=True)
+	return {
+		"status": "success",
+		"code": "CURRENT_USER_AVATAR_UPDATED",
+		"message": _("头像已更新。"),
+		"data": {"file_url": file_doc.file_url, "file_id": file_doc.name, "file_name": file_doc.file_name},
+	}
+
+
+def _get_frappe_sessions(user):
+	sessions = frappe.qb.DocType("Sessions")
+	rows = (
+		frappe.qb.from_(sessions)
+		.select(sessions.sid, sessions.sessiondata, sessions.lastupdate)
+		.where(sessions.user == user)
+		.orderby(sessions.lastupdate, order=Order.desc)
+	).run(as_dict=True)
+	result = []
+	for row in rows:
+		try:
+			data = frappe.parse_json(row.sessiondata or "{}")
+		except Exception:
+			data = frappe._dict()
+		result.append(
+			{
+				"id": sha256_hash(row.sid),
+				"ip_address": data.get("session_ip"),
+				"user_agent": data.get("user_agent"),
+				"session_created": data.get("creation"),
+				"last_updated": data.get("last_updated") or row.lastupdate,
+				"is_current": user == frappe.session.user and row.sid == getattr(frappe.session, "sid", None),
+			}
+		)
+	return result
+
+
+def get_user_security(user=None):
+	resolved_user = _normalize_text(user) or _ensure_authenticated_user()
+	_ensure_can_manage_user(resolved_user)
+	if not frappe.db.exists("User", resolved_user):
+		raise frappe.DoesNotExistError(_("用户不存在。"))
+	from frappe.twofactor import two_factor_is_enabled
+
+	user_row = frappe.db.get_value(
+		"User",
+		resolved_user,
+		["restrict_ip", "simultaneous_sessions", "last_login", "last_active", "last_ip", "last_password_reset_date"],
+		as_dict=True,
+	) or {}
+	sessions = _get_frappe_sessions(resolved_user)
+	return {
+		"status": "success",
+		"code": "USER_SECURITY_FETCHED",
+		"message": _("已获取账号安全信息。"),
+		"data": {
+			"user": resolved_user,
+			"two_factor_enabled": bool(two_factor_is_enabled(resolved_user)),
+			"two_factor_method": frappe.get_system_settings("two_factor_method"),
+			"restrict_ip": user_row.get("restrict_ip"),
+			"simultaneous_sessions": cint(user_row.get("simultaneous_sessions") or 1),
+			"last_login": user_row.get("last_login"),
+			"last_active": user_row.get("last_active"),
+			"last_ip": user_row.get("last_ip"),
+			"last_password_reset_date": user_row.get("last_password_reset_date"),
+			"frappe_sessions": sessions,
+			"frappe_session_count": len(sessions),
+			"jwt_refresh_session_count": count_user_refresh_tokens(resolved_user),
+			"auth_generation": get_user_auth_generation(resolved_user),
+		},
+	}
+
+
+def revoke_user_sessions(user=None):
+	resolved_user = _normalize_text(user) or _ensure_authenticated_user()
+	actor = _ensure_can_manage_user(resolved_user)
+	from frappe.sessions import clear_sessions
+
+	clear_sessions(user=resolved_user, keep_current=False, force=True)
+	generation = revoke_all_user_tokens(resolved_user)
+	return {
+		"status": "success",
+		"code": "USER_SESSIONS_REVOKED",
+		"message": _("该账号的所有会话已注销。"),
+		"data": {
+			"user": resolved_user,
+			"revoked_by": actor,
+			"auth_generation": generation,
+			"reauthentication_required": actor == resolved_user,
+		},
+	}
+
+
+def get_user_permission_snapshot(user):
+	_ensure_system_manager()
+	if not frappe.db.exists("User", user):
+		raise frappe.DoesNotExistError(_("用户不存在。"))
+	permissions = []
+	for doctype in PERMISSION_SNAPSHOT_DOCTYPES:
+		if not frappe.db.exists("DocType", doctype):
+			continue
+		role_permissions = frappe.permissions.get_role_permissions(doctype, user=user)
+		permissions.append(
+			{
+				"doctype": doctype,
+				"read": bool(role_permissions.get("read")),
+				"write": bool(role_permissions.get("write")),
+				"create": bool(role_permissions.get("create")),
+				"delete": bool(role_permissions.get("delete")),
+				"submit": bool(role_permissions.get("submit")),
+				"cancel": bool(role_permissions.get("cancel")),
+				"report": bool(role_permissions.get("report")),
+				"export": bool(role_permissions.get("export")),
+				"if_owner": bool(role_permissions.get("has_if_owner_enabled")),
+			}
+		)
+	return {
+		"status": "success",
+		"code": "USER_PERMISSION_SNAPSHOT_FETCHED",
+		"message": _("已生成用户权限快照。"),
+		"data": {"user": user, "roles": frappe.get_roles(user), "permissions": permissions},
+	}
 
 
 def list_users(search=None, enabled=None, role=None, user_type=None, page=1, page_size=20):
@@ -253,6 +440,90 @@ def list_users(search=None, enabled=None, role=None, user_type=None, page=1, pag
 		doc.roles = [frappe._dict(role=row_role) for row_role in roles_by_user.get(row.name, [])]
 		users.append(_serialize_user(doc))
 	return {"status": "success", "code": "USERS_FETCHED", "message": _("已获取用户列表。"), "data": {"users": users, "pagination": {"page": page, "page_size": page_size, "total_count": total}}}
+
+
+def get_user_management_overview():
+	_ensure_system_manager()
+	total_users = frappe.db.count("User")
+	enabled_users = frappe.db.count("User", {"enabled": 1})
+	system_users = frappe.db.count("User", {"user_type": "System User"})
+	website_users = frappe.db.count("User", {"user_type": "Website User"})
+	role_parents = {
+		row.parent
+		for row in frappe.get_all("Has Role", fields=["parent", "role"])
+		if row.role not in AUTOMATIC_ROLES
+	}
+	enabled_system_users = set(
+		frappe.get_all(
+			"User",
+			filters={"enabled": 1, "user_type": "System User"},
+			pluck="name",
+		)
+	)
+	manager_users = set(
+		frappe.get_all("Has Role", filters={"role": "System Manager"}, pluck="parent")
+	)
+	never_logged_in = frappe.db.count("User", {"enabled": 1, "last_login": ["is", "not set"]})
+	return {
+		"status": "success",
+		"code": "USER_MANAGEMENT_OVERVIEW_FETCHED",
+		"message": _("已获取用户治理概览。"),
+		"data": {
+			"total_users": total_users,
+			"enabled_users": enabled_users,
+			"disabled_users": max(total_users - enabled_users, 0),
+			"system_users": system_users,
+			"website_users": website_users,
+			"system_managers": len(enabled_system_users & manager_users),
+			"users_without_roles": len(enabled_system_users - role_parents),
+			"never_logged_in": never_logged_in,
+		},
+	}
+
+
+def batch_set_users_enabled(users, enabled):
+	actor = _ensure_system_manager()
+	resolved_users = _coerce_list(users)
+	if not resolved_users:
+		frappe.throw(_("请至少选择一个用户。"))
+	if len(resolved_users) > 100:
+		frappe.throw(_("单次最多处理 100 个用户。"))
+	missing = [user for user in resolved_users if not frappe.db.exists("User", user)]
+	if missing:
+		raise frappe.DoesNotExistError(_("以下用户不存在：{0}").format("、".join(missing)))
+	if not cint(enabled):
+		protected = set(resolved_users) & {"Administrator", "Guest", actor}
+		if protected:
+			frappe.throw(_("不能停用系统保留账号或当前登录账号：{0}").format("、".join(sorted(protected))))
+		manager_users = set(
+			frappe.get_all("Has Role", filters={"role": "System Manager"}, pluck="parent")
+		)
+		enabled_managers = set(
+			frappe.get_all(
+				"User",
+				filters={"name": ["in", list(manager_users)], "enabled": 1},
+				pluck="name",
+			)
+		) if manager_users else set()
+		if enabled_managers and enabled_managers <= set(resolved_users):
+			frappe.throw(_("批量停用会移除最后一个启用的系统管理员。"))
+
+	updated = []
+	for user in resolved_users:
+		doc = frappe.get_doc("User", user)
+		if bool(cint(doc.enabled)) == bool(cint(enabled)):
+			continue
+		doc.enabled = cint(enabled)
+		doc.save(ignore_permissions=True)
+		if not cint(enabled):
+			revoke_all_user_tokens(user)
+		updated.append(user)
+	return {
+		"status": "success",
+		"code": "USER_STATUS_BATCH_UPDATED",
+		"message": _("已批量更新用户状态。"),
+		"data": {"users": updated, "enabled": bool(cint(enabled)), "updated_count": len(updated)},
+	}
 
 
 def get_user_detail(user):
@@ -308,6 +579,8 @@ def set_user_enabled(user, enabled):
 	doc = frappe.get_doc("User", user)
 	doc.enabled = cint(enabled)
 	doc.save(ignore_permissions=True)
+	if not cint(enabled):
+		revoke_all_user_tokens(user)
 	return {"status": "success", "code": "USER_STATUS_UPDATED", "message": _("用户状态已更新。"), "data": _serialize_user(doc)}
 
 
@@ -332,7 +605,35 @@ def list_roles(search=None):
 		filters["name"] = ["like", f"%{_normalize_text(search)}%"]
 	rows = frappe.get_all("Role", filters=filters, fields=["name", "desk_access", "restrict_to_domain", "disabled"], order_by="name asc")
 	counts = Counter(frappe.get_all("Has Role", pluck="role"))
-	roles = [{**dict(row), "user_count": counts.get(row.name, 0), "automatic": row.name in AUTOMATIC_ROLES} for row in rows]
+	permission_rows = []
+	for permission_doctype in ("DocPerm", "Custom DocPerm"):
+		permission_rows.extend(
+			frappe.get_all(
+				permission_doctype,
+				fields=["role", "parent", "read", "write", "create", "delete", "submit", "cancel"],
+			)
+		)
+	permission_counts = Counter()
+	doctypes_by_role = defaultdict(set)
+	write_doctypes_by_role = defaultdict(set)
+	for permission in permission_rows:
+		if not permission.role:
+			continue
+		permission_counts[permission.role] += 1
+		doctypes_by_role[permission.role].add(permission.parent)
+		if any(cint(permission.get(field)) for field in ("write", "create", "delete", "submit", "cancel")):
+			write_doctypes_by_role[permission.role].add(permission.parent)
+	roles = [
+		{
+			**dict(row),
+			"user_count": counts.get(row.name, 0),
+			"automatic": row.name in AUTOMATIC_ROLES,
+			"permission_count": permission_counts.get(row.name, 0),
+			"doctype_count": len(doctypes_by_role[row.name]),
+			"write_doctype_count": len(write_doctypes_by_role[row.name]),
+		}
+		for row in rows
+	]
 	return {"status": "success", "code": "ROLES_FETCHED", "message": _("已获取角色目录。"), "data": {"roles": roles}}
 
 

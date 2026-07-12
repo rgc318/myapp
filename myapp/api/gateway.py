@@ -130,17 +130,23 @@ from .user_preferences_api import (
 	update_current_user_workspace_preferences_v1 as update_current_user_workspace_preferences_v1_service,
 )
 from .user_management_api import add_user_permission_v1 as add_user_permission_v1_service
+from .user_management_api import batch_set_users_enabled_v1 as batch_set_users_enabled_v1_service
 from .user_management_api import change_current_user_password_v1 as change_current_user_password_v1_service
 from .user_management_api import create_user_v1 as create_user_v1_service
 from .user_management_api import delete_user_permission_v1 as delete_user_permission_v1_service
 from .user_management_api import get_current_user_profile_v1 as get_current_user_profile_v1_service
+from .user_management_api import get_user_management_overview_v1 as get_user_management_overview_v1_service
+from .user_management_api import get_user_permission_snapshot_v1 as get_user_permission_snapshot_v1_service
+from .user_management_api import get_user_security_v1 as get_user_security_v1_service
 from .user_management_api import get_user_detail_v1 as get_user_detail_v1_service
 from .user_management_api import list_roles_v1 as list_roles_v1_service
 from .user_management_api import list_users_v1 as list_users_v1_service
 from .user_management_api import set_user_enabled_v1 as set_user_enabled_v1_service
+from .user_management_api import revoke_user_sessions_v1 as revoke_user_sessions_v1_service
 from .user_management_api import update_current_user_profile_v1 as update_current_user_profile_v1_service
 from .user_management_api import update_user_roles_v1 as update_user_roles_v1_service
 from .user_management_api import update_user_v1 as update_user_v1_service
+from .user_management_api import upload_current_user_avatar_v1 as upload_current_user_avatar_v1_service
 from myapp.services.mobile_release_service import get_mobile_release_info as get_mobile_release_info_service
 from myapp.utils.api_response import (
 	error_response,
@@ -515,6 +521,14 @@ def update_current_user_profile_v1(**kwargs):
 
 
 @frappe.whitelist()
+def upload_current_user_avatar_v1(filename: str, file_content_base64: str, content_type=None):
+	return _handle_gateway_call(
+		lambda: upload_current_user_avatar_v1_service(filename=filename, file_content_base64=file_content_base64, content_type=content_type),
+		success_code="CURRENT_USER_AVATAR_UPDATED",
+	)
+
+
+@frappe.whitelist()
 def change_current_user_password_v1(old_password: str, new_password: str, logout_all_sessions=1):
 	return _handle_gateway_call(
 		lambda: change_current_user_password_v1_service(old_password=old_password, new_password=new_password, logout_all_sessions=logout_all_sessions),
@@ -531,8 +545,42 @@ def list_users_v1(search=None, enabled=None, role=None, user_type=None, page=1, 
 
 
 @frappe.whitelist()
+def get_user_management_overview_v1():
+	return _handle_gateway_call(
+		lambda: get_user_management_overview_v1_service(),
+		success_code="USER_MANAGEMENT_OVERVIEW_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def batch_set_users_enabled_v1(users=None, enabled=1):
+	return _handle_gateway_call(
+		lambda: batch_set_users_enabled_v1_service(users=users, enabled=enabled),
+		success_code="USER_STATUS_BATCH_UPDATED",
+	)
+
+
+@frappe.whitelist()
 def get_user_detail_v1(user: str):
 	return _handle_gateway_call(lambda: get_user_detail_v1_service(user=user), success_code="USER_DETAIL_FETCHED")
+
+
+@frappe.whitelist()
+def get_user_security_v1(user: str | None = None):
+	return _handle_gateway_call(lambda: get_user_security_v1_service(user=user), success_code="USER_SECURITY_FETCHED")
+
+
+@frappe.whitelist()
+def revoke_user_sessions_v1(user: str | None = None):
+	return _handle_gateway_call(lambda: revoke_user_sessions_v1_service(user=user), success_code="USER_SESSIONS_REVOKED")
+
+
+@frappe.whitelist()
+def get_user_permission_snapshot_v1(user: str):
+	return _handle_gateway_call(
+		lambda: get_user_permission_snapshot_v1_service(user=user),
+		success_code="USER_PERMISSION_SNAPSHOT_FETCHED",
+	)
 
 
 @frappe.whitelist()

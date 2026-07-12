@@ -8,6 +8,7 @@
 
 - 个人中心：身份信息、联系方式、语言时区、头像地址、简介、岗位与工作偏好。
 - 个人安全：修改密码、查看最近登录和活跃信息。
+- 安全中心：真实头像上传、Frappe/JWT 会话摘要、全设备注销、标准 Frappe 2FA 状态和 JWT OTP 挑战。
 - 用户管理：分页查询、创建、编辑、启停、角色分配、用户详情和变更记录。
 - 角色治理：角色目录、启停状态、用户数量和权限规则摘要。
 - 数据范围：维护标准 Frappe `User Permission`，支持公司、仓库等任意合法 DocType 的数据授权。
@@ -41,10 +42,15 @@ User（身份与个人主档）
 - `get_current_user_profile_v1`
 - `update_current_user_profile_v1`
 - `change_current_user_password_v1`
+- `upload_current_user_avatar_v1`
+- `get_user_security_v1`
+- `revoke_user_sessions_v1`
 
 管理员接口：
 
 - `list_users_v1`
+- `get_user_management_overview_v1`
+- `batch_set_users_enabled_v1`
 - `get_user_detail_v1`
 - `create_user_v1`
 - `update_user_v1`
@@ -53,6 +59,7 @@ User（身份与个人主档）
 - `list_roles_v1`
 - `add_user_permission_v1`
 - `delete_user_permission_v1`
+- `get_user_permission_snapshot_v1`
 
 所有管理员接口在服务层再次检查 `System Manager`，不能只依赖路由或按钮隐藏。创建与修改操作使用 Frappe Document API，从而保留标准校验、联系人同步、密码策略与版本记录。
 
@@ -63,6 +70,7 @@ User（身份与个人主档）
 - 停用：禁止停用 `Administrator`、当前操作者和最后一个启用的 `System Manager`。
 - 角色调整：禁止从最后一个启用的系统管理员移除 `System Manager`。
 - 删除：首期不开放硬删除。账号属于审计主体，应通过停用退出生命周期。
+- 批量启停：最多 100 个账号，先完成整批保护校验再写入，避免部分停用后才发现最后管理员被包含。
 - 密码：本人修改必须提供旧密码并通过 Frappe 密码强度策略；成功后要求客户端重新登录。
 
 ## 5. Web 信息架构
@@ -81,6 +89,14 @@ User（身份与个人主档）
 
 列表使用 `ProTable` 服务端分页；详情使用 `PageContainer + ProCard + Tabs + Descriptions`；角色与数据权限通过明确的保存动作提交，不在页面本地推断最终权限。
 
+页面视觉遵循 Ant Design Pro 官方模式：
+
+- 个人中心使用左侧身份卡、右侧指标和业务卡片，不把所有信息堆在一个描述列表中。
+- 设置页使用独立导航和内容工作区，移动端自动切换为单列布局。
+- 用户列表使用治理指标、服务端表格和批量操作栏。
+- 用户详情使用状态头、指标卡和分域 Tabs。
+- 角色目录展示角色使用量、权限规则和 DocType 覆盖摘要，但不在 Web 复制 DocPerm 编辑器。
+
 ## 6. 后续增强
 
 - 统一会话中心：展示并吊销 JWT refresh token 与 Frappe Session。
@@ -89,4 +105,3 @@ User（身份与个人主档）
 - 组织架构、岗位、员工档案与代理授权。
 - 权限模拟器：以指定用户预览菜单、DocPerm 和 User Permission 的合并结果。
 - 高风险操作二次确认、双人复核和安全事件报表。
-

@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 import frappe
 
 from myapp.auth import jwt_auth
+from myapp.auth.jwt_service import validate_auth_generation
 from myapp.auth.token_store import FrappeCacheTokenStore
 
 
@@ -29,10 +30,12 @@ class TestJwtAuthHook(TestCase):
 	@patch.object(frappe, "get_request_header")
 	@patch.object(frappe, "set_user")
 	@patch("myapp.auth.jwt_auth._is_enabled_user", return_value=True)
+	@patch("myapp.auth.jwt_auth.validate_auth_generation")
 	@patch("myapp.auth.jwt_auth.decode_access_token")
 	def test_validate_sets_user_for_valid_bearer_token(
 		self,
 		mock_decode_access_token,
+		mock_validate_generation,
 		mock_is_enabled_user,
 		mock_set_user,
 		mock_get_request_header,
@@ -46,6 +49,7 @@ class TestJwtAuthHook(TestCase):
 
 		mock_decode_access_token.assert_called_once_with("access-token")
 		mock_is_enabled_user.assert_called_once_with("user@example.com")
+		mock_validate_generation.assert_called_once_with(mock_decode_access_token.return_value)
 		mock_set_user.assert_called_once_with("user@example.com")
 		self.assertIs(frappe.local.form_dict, original_form_dict)
 
@@ -98,3 +102,23 @@ class TestFrappeCacheTokenStore(TestCase):
 		cache.set_value.assert_any_call("refresh:user@example.com:refresh-jti", "refresh-token", expires_in_sec=60)
 		cache.set_value.assert_any_call("revoked:access-jti", "1", expires_in_sec=30)
 		cache.delete_value.assert_called_once_with("refresh:user@example.com:refresh-jti")
+		cache.sadd.assert_called_once_with("refresh:index:user@example.com", "refresh-jti")
+		cache.srem.assert_called_once_with("refresh:index:user@example.com", "refresh-jti")
+
+	def test_store_revokes_all_user_tokens_by_bumping_generation(self):
+		cache = Mock()
+		cache.get_value.return_value = 2
+		with patch.object(frappe, "cache", return_value=cache):
+			store = FrappeCacheTokenStore(refresh_prefix="refresh", revoked_prefix="revoked")
+			generation = store.revoke_all_user_tokens("user@example.com")
+
+		self.assertEqual(generation, 3)
+		cache.set_value.assert_called_once_with("refresh:generation:user@example.com", 3)
+		cache.delete_keys.assert_called_once_with("refresh:user@example.com:")
+		cache.delete_value.assert_called_once_with("refresh:index:user@example.com")
+
+	@patch("myapp.auth.jwt_service.get_user_auth_generation", return_value=2)
+	def test_auth_generation_rejects_old_token(self, _mock_generation):
+		payload = Mock(subject="user@example.com", claims={"auth_generation": 1})
+		with self.assertRaises(Exception):
+			validate_auth_generation(payload)

@@ -271,3 +271,22 @@ python3 -m unittest apps.myapp.myapp.tests.http.test_jwt_token_http
 `me_v1` 当前返回账号、邮箱、姓名、角色、头像、电话、所在地、语言和时区，供 Web 初始化用户态与头像菜单。完整个人资料、工作偏好、能力摘要和数据权限应通过网关 `get_current_user_profile_v1` 获取。
 
 用户停用后，`myapp.auth.jwt_auth.validate` 会在每次请求检查 `User.enabled` 并立即拒绝现有 JWT。本人修改密码由 `change_current_user_password_v1` 调用 Frappe 原生密码策略，Web 成功后清理本地令牌并要求重新登录。
+
+### JWT 双因素认证
+
+`login_v1` 现在复用 Frappe 标准 2FA 配置：
+
+- 用户不需要 2FA 时直接签发 token pair。
+- 用户需要 2FA 且未提交 `otp` 时返回 `JWT_TWO_FACTOR_REQUIRED`，包含验证方式和提示。
+- Web 再次提交账号、密码和 6 位 `otp`，验证成功后才签发 JWT。
+- OTP Secret、OTP App 初次注册、Email / SMS 验证方式仍由 `frappe.twofactor` 管理，myapp 不保存第二份 Secret。
+
+### 全设备注销
+
+JWT claims 新增 `auth_generation`。服务端为每个用户维护当前授权代次：
+
+- 登录时把当前代次写入 access token 和 refresh token。
+- 每次 Bearer 鉴权和 refresh 轮换都比较 token 代次与服务端代次。
+- `revoke_user_sessions_v1` 提升代次并删除该用户全部 refresh token，因此旧 access token 即使尚未过期也会被拒绝。
+- 同一动作同时清理 Frappe `Sessions`，形成 Web JWT 与 Desk Session 的统一注销语义。
+- 修改密码、停用单个用户或批量停用用户也会提升授权代次，避免账号重新启用后旧 refresh token 恢复有效。

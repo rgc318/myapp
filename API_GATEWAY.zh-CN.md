@@ -4489,15 +4489,21 @@ curl -X GET \
 
 - `get_current_user_profile_v1`：读取本人主档、角色、能力摘要、工作偏好和数据权限。
 - `update_current_user_profile_v1`：维护本人姓名、联系方式、语言、时区、头像地址和简介。
+- `upload_current_user_avatar_v1`：上传并绑定本人头像，复用 Frappe `File`，支持常见图片格式和 5MB 限制。
 - `change_current_user_password_v1`：校验旧密码并应用 Frappe 密码强度策略；成功后客户端应重新登录。
+- `get_user_security_v1`：本人或系统管理员读取 2FA、IP 限制、Frappe Session、JWT refresh 会话和授权代次。
+- `revoke_user_sessions_v1`：注销 Frappe Session、删除 refresh token 并提升 JWT 授权代次，使既有 access token 立即失效。
 
 系统管理员接口：
 
 - `list_users_v1`：按关键词、启停状态、用户类型和角色服务端分页查询。
+- `get_user_management_overview_v1`：返回用户总数、启停分布、用户类型、启用系统管理员、未分配角色和从未登录账号指标。
+- `batch_set_users_enabled_v1`：单次最多批量启停 100 个用户，执行前整体校验系统保留账号、当前操作者和最后一个启用系统管理员。
 - `get_user_detail_v1`：读取用户主档、角色、数据范围和 `Version` 变更记录。
 - `create_user_v1`、`update_user_v1`、`set_user_enabled_v1`：管理用户生命周期，不开放硬删除。
 - `update_user_roles_v1`：整体替换可分配角色，并保护最后一个启用的 `System Manager`。
-- `list_roles_v1`：读取启用角色、Desk 访问属性和已分配用户数。
+- `list_roles_v1`：读取启用角色、Desk 访问属性、已分配用户数、DocPerm 规则数、DocType 覆盖数和可写 DocType 数。
 - `add_user_permission_v1`、`delete_user_permission_v1`：维护标准 Frappe 记录级数据权限。
+- `get_user_permission_snapshot_v1`：按指定用户计算核心业务 DocType 的有效角色权限快照。
 
 所有管理接口都在服务层再次检查 `System Manager`；Web 路由和按钮隐藏不构成安全边界。`Administrator`、`Guest`、当前操作者和最后一个启用系统管理员受到额外保护。

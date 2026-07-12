@@ -5,6 +5,7 @@ import frappe
 
 from myapp.api.gateway import (
 	add_product_barcode_v2,
+	batch_set_users_enabled_v1,
 	cancel_delivery_note,
 	cancel_payment_entry,
 	cancel_print_batch_v1,
@@ -26,6 +27,9 @@ from myapp.api.gateway import (
 	download_print_batch_merged_pdf_v1,
 	download_print_file_v1,
 	get_current_user_workspace_preferences_v1,
+	get_user_management_overview_v1,
+	get_user_permission_snapshot_v1,
+	get_user_security_v1,
 	get_print_batch_v1,
 	get_print_file_v1,
 	get_print_preview_v1,
@@ -117,6 +121,8 @@ from myapp.api.gateway import (
 	confirm_pending_document,
 	record_print_job_v1,
 	retry_print_batch_failed_v1,
+	revoke_user_sessions_v1,
+	upload_current_user_avatar_v1,
 )
 
 
@@ -140,6 +146,12 @@ class TestGatewayWrappers(TestCase):
 			download_print_batch_merged_pdf_v1,
 			download_print_file_v1,
 			get_current_user_workspace_preferences_v1,
+			get_user_management_overview_v1,
+			get_user_permission_snapshot_v1,
+			get_user_security_v1,
+			batch_set_users_enabled_v1,
+			revoke_user_sessions_v1,
+			upload_current_user_avatar_v1,
 			get_print_file_v1,
 			list_print_batches_v1,
 			list_print_jobs_v2,

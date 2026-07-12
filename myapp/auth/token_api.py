@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import frappe
+from frappe import _
 from frappe.utils import cint
+import pyotp
 from rgc_backend_kit.security import InvalidTokenError
 
-from myapp.auth.jwt_service import delete_refresh_token, issue_token_pair, rotate_refresh_token, revoke_access_token
+from myapp.auth.jwt_service import (
+	delete_refresh_token,
+	get_user_auth_generation,
+	issue_token_pair,
+	rotate_refresh_token,
+	revoke_access_token,
+)
 from myapp.utils.api_response import success_response
 
 
@@ -23,6 +31,36 @@ def _find_user_by_credentials(username: str, password: str) -> str:
 	if not (user.name == "Administrator" or user.enabled):
 		raise frappe.AuthenticationError("用户已被禁用。")
 	return user.name
+
+
+def _validate_two_factor(user: str, otp: str | None):
+	from frappe.twofactor import (
+		get_default,
+		get_otpsecret_for_,
+		get_verification_method,
+		get_verification_obj,
+		set_default,
+		two_factor_is_enabled,
+	)
+
+	if not two_factor_is_enabled(user):
+		return None
+	secret = get_otpsecret_for_(user)
+	method = get_verification_method()
+	if not (otp or "").strip():
+		token = int(pyotp.TOTP(secret).now())
+		verification = get_verification_obj(user, token, secret) or {}
+		return {
+			"requires_two_factor": True,
+			"method": method,
+			"prompt": verification.get("prompt") or _("请输入双因素认证验证码。"),
+			"setup": bool(verification.get("setup")),
+		}
+	if not pyotp.TOTP(secret).verify((otp or "").strip(), valid_window=1):
+		raise frappe.AuthenticationError(_("双因素认证验证码不正确。"))
+	if not get_default(user + "_otplogin"):
+		set_default(user + "_otplogin", 1)
+	return None
 
 
 def _token_pair_payload(pair):
@@ -68,16 +106,24 @@ def _current_user_payload(user: str) -> dict:
 
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
-def login_v1(username: str | None = None, password: str | None = None, usr: str | None = None, pwd: str | None = None, remember_me=0):
+def login_v1(username: str | None = None, password: str | None = None, usr: str | None = None, pwd: str | None = None, remember_me=0, otp: str | None = None):
 	resolved_username = (username or usr or "").strip()
 	resolved_password = password if password is not None else pwd
 	if not resolved_username or not resolved_password:
 		raise frappe.AuthenticationError("请提供用户名和密码。")
 
 	user = _find_user_by_credentials(resolved_username, resolved_password)
+	two_factor = _validate_two_factor(user, otp)
+	if two_factor:
+		return success_response(
+			message=two_factor.get("prompt") or "需要双因素认证。",
+			code="JWT_TWO_FACTOR_REQUIRED",
+			data={"user": user, **two_factor},
+		)
 	pair = issue_token_pair(
 		user,
 		{
+			"auth_generation": get_user_auth_generation(user),
 			"roles": frappe.get_roles(user),
 		},
 		remember_me=_to_bool(remember_me),
