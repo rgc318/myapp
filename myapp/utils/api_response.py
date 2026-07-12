@@ -1,3 +1,7 @@
+class UpstreamServiceUnavailableError(Exception):
+	pass
+
+
 def success_response(
 	*,
 	message: str = "",
@@ -68,6 +72,8 @@ def map_exception_to_error(exc: Exception):
 
 	code = "INTERNAL_ERROR"
 	http_status = 500
+	if isinstance(exc, UpstreamServiceUnavailableError):
+		return "UPSTREAM_SERVICE_UNAVAILABLE", 503
 
 	try:
 		from myapp.utils.idempotency import IdempotencyConflictError

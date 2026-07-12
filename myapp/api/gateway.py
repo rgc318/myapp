@@ -1,5 +1,13 @@
 import frappe
 
+from .ai_api import archive_ai_conversation_v1 as archive_ai_conversation_v1_service
+from .ai_api import chat_ai_v1 as chat_ai_v1_service
+from .ai_api import create_ai_conversation_v1 as create_ai_conversation_v1_service
+from .ai_api import get_ai_conversation_v1 as get_ai_conversation_v1_service
+from .ai_api import list_ai_conversations_v1 as list_ai_conversations_v1_service
+from .ai_api import stream_ai_message_v1 as stream_ai_message_v1_service
+from .ai_api import submit_ai_feedback_v1 as submit_ai_feedback_v1_service
+
 from .media_api import delete_item_image as delete_item_image_service
 from .media_api import upload_item_image as upload_item_image_service
 from .media_api import replace_item_image as replace_item_image_service
@@ -178,13 +186,97 @@ def test_remote_debug():
 	a = 10
 	b = 24
 	result = a + b
-
 	print(f"=== 拦截成功！计算结果是: {result} ===")
 
 	return success_response(
 		message=welcome_message,
 		data={"magic_number": result},
 		code="REMOTE_DEBUG_OK",
+	)
+
+
+@frappe.whitelist()
+def create_ai_conversation_v1(title: str | None = None, company: str | None = None):
+	return _handle_gateway_call(
+		lambda: create_ai_conversation_v1_service(title=title, company=company),
+		success_code="AI_CONVERSATION_CREATED",
+	)
+
+
+@frappe.whitelist()
+def list_ai_conversations_v1(status: str = "active", start: int = 0, limit: int = 20):
+	return _handle_gateway_call(
+		lambda: list_ai_conversations_v1_service(status=status, start=start, limit=limit),
+		success_code="AI_CONVERSATIONS_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_ai_conversation_v1(conversation_id: str):
+	return _handle_gateway_call(
+		lambda: get_ai_conversation_v1_service(conversation_id=conversation_id),
+		success_code="AI_CONVERSATION_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def archive_ai_conversation_v1(conversation_id: str):
+	return _handle_gateway_call(
+		lambda: archive_ai_conversation_v1_service(conversation_id=conversation_id),
+		success_code="AI_CONVERSATION_ARCHIVED",
+	)
+
+
+@frappe.whitelist()
+def chat_ai_v1(
+	messages=None,
+	scenario: str | None = None,
+	company: str | None = None,
+	conversation_id: str | None = None,
+	content: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: chat_ai_v1_service(
+			messages=messages,
+			scenario=scenario,
+			company=company,
+			conversation_id=conversation_id,
+			content=content,
+		),
+		success_code="AI_CHAT_COMPLETED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def stream_ai_message_v1(
+	content: str,
+	scenario: str | None = None,
+	company: str | None = None,
+	conversation_id: str | None = None,
+):
+	return stream_ai_message_v1_service(
+		content=content,
+		scenario=scenario,
+		company=company,
+		conversation_id=conversation_id,
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def submit_ai_feedback_v1(
+	run_id: str,
+	rating: str,
+	category: str | None = None,
+	comment: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: submit_ai_feedback_v1_service(
+			run_id=run_id,
+			rating=rating,
+			category=category,
+			comment=comment,
+		),
+		success_code="AI_FEEDBACK_RECORDED",
 	)
 
 

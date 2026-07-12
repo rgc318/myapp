@@ -148,6 +148,7 @@ scheduler_events = {
 		"myapp.tasks.cleanup_temporary_item_images",
 		"myapp.tasks.cleanup_idempotency_records",
 		"myapp.tasks.cleanup_print_batches",
+		"myapp.tasks.cleanup_ai_conversations",
 	],
 }
 

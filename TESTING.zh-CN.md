@@ -2004,3 +2004,18 @@ HTTP 执行结果：
 - 商品多条码管理后端链路已完成真实 HTTP 验收。
 - `barcode` 兼容字段以 `Item Barcode.idx asc` 第一条作为主条码口径。
 - `barcodes[]` 返回 ERPNext `Item Barcode` 子表摘要，前端可据此展示条码列表、主条码状态和删除 / 设主操作结果。
+
+## 24. AI Copilot 真实链路回归（2026-07-12）
+
+AI Copilot 的真实 HTTP 用例默认关闭，避免日常测试产生模型费用。显式执行：
+
+```bash
+MYAPP_HTTP_ENABLE_AI_TESTS=1 python3 -m unittest \
+  apps.myapp.myapp.tests.http.test_ai_gateway_http
+```
+
+该用例验证 Web/Frappe 网关、AI Orchestrator、LiteLLM 和实际模型的完整链路，并断言当前只读警告和最低推理等级的 `reasoning_tokens = 0`。测试凭据继续从 `apps/myapp/.env.http-test` 读取；LiteLLM 密钥只存在父仓库忽略的 `.env.ai.local`，不得写入测试文件或提交到 Git。
+
+第一条真实回归历史结果：1 项通过；实际模型为 `gpt-5.5`，`reasoning_tokens = 0`。
+
+Phase A 当前真实用例默认使用 `.env.ai.local` 配置的低价模型，当前为 `opencode-deepseek-v4-flash`；只有显式 OpenAI 专项测试才允许切换 `gpt-5.5`。用例覆盖同步聊天审计、描述式商品查询、真正 SSE、自然语言采购订单 DSL 和 Run 反馈。可通过 `MYAPP_HTTP_AI_MODEL` 指定期望模型名称，但不得在普通回归中默认使用高价模型。

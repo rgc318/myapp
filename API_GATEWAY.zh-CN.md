@@ -58,6 +58,15 @@
 - `myapp.api.gateway.confirm_pending_document`
 - `myapp.api.gateway.get_mobile_release_info_v1`
 
+- AI Copilot（只读试运行）：
+- `myapp.api.gateway.create_ai_conversation_v1`
+- `myapp.api.gateway.list_ai_conversations_v1`
+- `myapp.api.gateway.get_ai_conversation_v1`
+- `myapp.api.gateway.archive_ai_conversation_v1`
+- `myapp.api.gateway.chat_ai_v1`
+- `myapp.api.gateway.stream_ai_message_v1`
+- `myapp.api.gateway.submit_ai_feedback_v1`
+
 本文档主结构按业务模块划分，而不是按“自定义接口 / 官方接口”二分。
 
 原因：
@@ -78,6 +87,26 @@
 - 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`、`list_stock_ledger_entries_v1`
 - 库存：`list_inventory_stock_summary_v1`、`list_stock_ledger_entries_v1`、`transfer_inventory_stock_v1`、`reconcile_inventory_stock_v1`、`submit_inventory_stock_count_v1`
 - 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
+- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`submit_ai_feedback_v1`
+
+### AI Copilot 只读聊天
+
+会话接口只返回当前登录用户自己的会话；归档后的会话不能继续追加消息。`chat_ai_v1` 是 Web/Mobile 访问 AI Orchestrator 的受控入口。客户端不得直接访问 LiteLLM，也不能传入 `system` / `tool` 消息。
+
+请求：
+
+```json
+{
+  "content": "帮我找数码相机",
+  "conversation_id": "AI-CONV-...",
+  "scenario": "product_search",
+  "company": "rgc (Demo)"
+}
+```
+
+当前场景支持 `general`、`product_search`、`order_query`、`report_summary`。商品工具复用 `search_product_v2`，订单工具复用销售/采购订单工作台服务；两者都强制 DocType、公司和记录级读取权限。报表场景尚未启用真实工具。
+
+同步接口返回 `conversation`、`run_id`、带 `citations` 的 `message`、模型、trace、Token、安全警告和 `events[]`。`stream_ai_message_v1` 返回真正 `text/event-stream`，事件包含 `run_started`、`tool_started`、`tool_completed`、`citation`、`message_delta`、`warning`、`completed` 和 `error`。`submit_ai_feedback_v1` 对本人已完成 Run 记录 `positive` / `negative` 反馈。正式单据创建、提交、取消、收付款和库存变更不属于这些接口能力。
 
 ### 统一成功响应格式
 

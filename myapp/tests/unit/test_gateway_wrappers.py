@@ -5,7 +5,9 @@ import frappe
 
 from myapp.api.gateway import (
 	add_product_barcode_v2,
+	archive_ai_conversation_v1,
 	batch_set_users_enabled_v1,
+	chat_ai_v1,
 	cancel_delivery_note,
 	cancel_payment_entry,
 	cancel_print_batch_v1,
@@ -16,6 +18,7 @@ from myapp.api.gateway import (
 	cancel_sales_invoice,
 	cancel_supplier_payment,
 	create_customer_v2,
+	create_ai_conversation_v1,
 	create_customer_refund,
 	create_print_batch_v1,
 	create_supplier_refund,
@@ -27,6 +30,7 @@ from myapp.api.gateway import (
 	download_print_batch_merged_pdf_v1,
 	download_print_file_v1,
 	get_current_user_workspace_preferences_v1,
+	get_ai_conversation_v1,
 	get_user_management_overview_v1,
 	get_user_permission_snapshot_v1,
 	get_user_security_v1,
@@ -48,6 +52,7 @@ from myapp.api.gateway import (
 	get_sales_report_v1,
 	search_link_options_v1,
 	list_inventory_stock_summary_v1,
+	list_ai_conversations_v1,
 	list_stock_ledger_entries_v1,
 	reconcile_inventory_stock_v1,
 	submit_inventory_stock_count_v1,
@@ -104,6 +109,8 @@ from myapp.api.gateway import (
 	search_product_v2,
 	set_print_default_template_v1,
 	set_primary_product_barcode_v2,
+	stream_ai_message_v1,
+	submit_ai_feedback_v1,
 	test_remote_debug,
 	update_payment_status,
 	update_purchase_order_items_v2,
@@ -138,6 +145,13 @@ class TestGatewayWrappers(TestCase):
 
 	def test_gateway_methods_are_not_exposed_to_guest(self):
 		for method in (
+			archive_ai_conversation_v1,
+			chat_ai_v1,
+			create_ai_conversation_v1,
+			get_ai_conversation_v1,
+			list_ai_conversations_v1,
+			stream_ai_message_v1,
+			submit_ai_feedback_v1,
 			test_remote_debug,
 			create_order,
 			create_purchase_order,
@@ -240,6 +254,25 @@ class TestGatewayWrappers(TestCase):
 			process_purchase_return,
 		):
 			self.assertNotIn(method, frappe.guest_methods)
+
+	@patch("myapp.api.gateway.chat_ai_v1_service")
+	def test_chat_ai_v1_passes_conversation_contract(self, mock_chat_service):
+		mock_chat_service.return_value = {"status": "success", "data": {"conversation": "AI-CONV-1"}}
+
+		chat_ai_v1(
+			content="查找蓝色包装商品",
+			conversation_id="AI-CONV-1",
+			scenario="product_search",
+			company="rgc (Demo)",
+		)
+
+		mock_chat_service.assert_called_once_with(
+			messages=None,
+			content="查找蓝色包装商品",
+			conversation_id="AI-CONV-1",
+			scenario="product_search",
+			company="rgc (Demo)",
+		)
 
 	@patch("myapp.api.gateway.get_current_user_workspace_preferences_v1_service")
 	def test_get_current_user_workspace_preferences_passes_through_service(
