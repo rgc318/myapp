@@ -14,7 +14,7 @@
 - 数据范围：维护标准 Frappe `User Permission`，支持公司、仓库等任意合法 DocType 的数据授权。
 - 权限边界：普通用户只维护本人资料；只有 `System Manager` 可以管理其他用户、角色和数据权限。
 
-不在首期重复实现 Frappe 已有能力：自定义 DocPerm 编辑器、OAuth/LDAP 配置、双因素认证配置和 HR 员工档案。后续应通过独立安全中心接入，而不是在用户列表中堆叠底层配置。
+不重复实现 Frappe 已有的 DocPerm、OTP Secret 和 Session 数据模型。当前已经接入标准 Frappe 2FA 状态、JWT OTP 挑战、安全摘要、权限快照和全设备注销；OAuth/LDAP 配置、HR 员工档案及授权审批仍属于后续独立治理能力。
 
 ## 2. 领域模型
 
@@ -99,9 +99,9 @@ User（身份与个人主档）
 
 ## 6. 后续增强
 
-- 统一会话中心：展示并吊销 JWT refresh token 与 Frappe Session。
-- MFA、可信设备、IP 白名单和异常登录告警。
+- 当前会话中心已支持 Frappe Session / JWT refresh 会话摘要和全设备注销；后续可补单个 JWT refresh 会话的设备级吊销。
+- 2FA 挑战已接入；可信设备、异常登录告警和安全事件报表尚未实现。
 - 角色申请、审批、定期复核和临时授权到期。
 - 组织架构、岗位、员工档案与代理授权。
-- 权限模拟器：以指定用户预览菜单、DocPerm 和 User Permission 的合并结果。
+- 当前权限快照覆盖核心 DocType 的角色权限；完整模拟器仍需合并菜单、DocPerm、User Permission 和指定记录判断。
 - 高风险操作二次确认、双人复核和安全事件报表。

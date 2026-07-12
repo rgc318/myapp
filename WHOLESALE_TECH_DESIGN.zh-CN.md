@@ -1567,7 +1567,7 @@ ERPNext 原生已经具备多价格体系基础：
 | 客户信用控制 | 未实现 | 后续增强项 |
 | 幂等控制 | 已实现 | `create_order`、`submit_delivery`、`create_sales_invoice`、`update_payment_status`、`process_sales_return` 已支持 `request_id` |
 | 批次与保质期 | 未实现 | 后续增强项 |
-| 自动打印 | 未实现 | 后续增强项 |
+| 打印平台 | 已实现 | 7 类核心单据支持单张/批量、审计、ZIP、合并 PDF 和模板治理；剩余真实设备与样张验收 |
 
 ## 18. 结论
 
