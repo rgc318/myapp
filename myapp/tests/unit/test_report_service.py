@@ -215,6 +215,10 @@ class TestReportService(TestCase):
 			date_from="2026-03-04",
 			date_to="2026-04-02",
 			search_key=None,
+			payment_type=None,
+			mode_of_payment=None,
+			party=None,
+			party_type=None,
 		)
 		mock_make_cashflow_entry_rows.assert_called_once_with(
 			company="Test Company",
@@ -223,6 +227,10 @@ class TestReportService(TestCase):
 			limit=2,
 			offset=2,
 			search_key=None,
+			payment_type=None,
+			mode_of_payment=None,
+			party=None,
+			party_type=None,
 		)
 
 	@patch("myapp.services.report_service.nowdate", return_value="2026-04-02")
@@ -248,6 +256,10 @@ class TestReportService(TestCase):
 			limit=100,
 			offset=0,
 			search_key=None,
+			payment_type=None,
+			mode_of_payment=None,
+			party=None,
+			party_type=None,
 		)
 
 	@patch("myapp.services.report_service.nowdate", return_value="2026-04-02")
@@ -270,6 +282,10 @@ class TestReportService(TestCase):
 			date_from="2026-03-04",
 			date_to="2026-04-02",
 			search_key="PE-0001",
+			payment_type=None,
+			mode_of_payment=None,
+			party=None,
+			party_type=None,
 		)
 		mock_make_cashflow_entry_rows.assert_called_once_with(
 			company=None,
@@ -278,6 +294,39 @@ class TestReportService(TestCase):
 			limit=20,
 			offset=0,
 			search_key="PE-0001",
+			payment_type=None,
+			mode_of_payment=None,
+			party=None,
+			party_type=None,
+		)
+
+	@patch("myapp.services.report_service.nowdate", return_value="2026-04-02")
+	@patch("myapp.services.report_service._count_cashflow_entries")
+	@patch("myapp.services.report_service._make_cashflow_entry_rows")
+	def test_list_cashflow_entries_v1_passes_structured_filters(
+		self, mock_make_cashflow_entry_rows, mock_count_cashflow_entries, mock_nowdate
+	):
+		mock_count_cashflow_entries.return_value = 0
+		mock_make_cashflow_entry_rows.return_value = []
+
+		result = list_cashflow_entries_v1(
+			payment_type="Pay",
+			mode_of_payment="Bank",
+			party="Supplier A",
+			party_type="Supplier",
+		)
+
+		self.assertEqual(result["data"]["meta"]["payment_type"], "Pay")
+		self.assertEqual(result["data"]["meta"]["mode_of_payment"], "Bank")
+		mock_count_cashflow_entries.assert_called_once_with(
+			company=None,
+			date_from="2026-03-04",
+			date_to="2026-04-02",
+			search_key=None,
+			payment_type="Pay",
+			mode_of_payment="Bank",
+			party="Supplier A",
+			party_type="Supplier",
 		)
 
 	@patch("myapp.services.report_service.nowdate", return_value="2026-04-02")

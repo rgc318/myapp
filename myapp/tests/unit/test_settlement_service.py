@@ -204,6 +204,44 @@ class TestSettlementService(TestCase):
 		self.assertEqual(result["settlement_mode"], "writeoff")
 		self.assertEqual(result["writeoff_amount"], 100)
 
+	def test_update_payment_status_supports_purchase_writeoff_settlement(self):
+		pe = MagicMock()
+		pe.name = "ACC-PAY-0003"
+		pe.mode_of_payment = None
+		pe.payment_type = "Pay"
+		pe.company = "rgc (Demo)"
+		pe.difference_amount = -100
+
+		fake_payment_entry_module = ModuleType("payment_entry")
+		fake_payment_entry_module.get_payment_entry = MagicMock(return_value=pe)
+
+		with patch.dict(
+			sys.modules,
+			{"erpnext.accounts.doctype.payment_entry.payment_entry": fake_payment_entry_module},
+		), patch.object(
+			frappe,
+			"db",
+			MagicMock(get_value=MagicMock(return_value=1000)),
+		), patch.object(
+			frappe,
+			"get_cached_value",
+			return_value={"write_off_account": "Write Off - RD", "cost_center": "Main - RD"},
+		):
+			result = update_payment_status(
+				"Purchase Invoice",
+				"PINV-0002",
+				900,
+				settlement_mode="writeoff",
+				reference_date="2026-03-19",
+			)
+
+		fake_payment_entry_module.get_payment_entry.assert_called_once_with(
+			"Purchase Invoice", "PINV-0002", party_amount=1000
+		)
+		self.assertEqual(pe.paid_amount, 900)
+		self.assertEqual(pe.received_amount, 1000)
+		self.assertEqual(result["writeoff_amount"], 100)
+
 	def test_update_payment_status_supports_unallocated_overpayment(self):
 		pe = MagicMock()
 		pe.name = "ACC-PAY-0003"

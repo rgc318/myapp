@@ -152,17 +152,24 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 			pe.reference_no = kwargs.get("reference_no") or _("移动端收款")
 			pe.reference_date = kwargs.get("reference_date") or nowdate()
 
+			payment_type = (getattr(pe, "payment_type", None) or "").strip()
 			writeoff_amount = 0
 			unallocated_amount = 0
 			if settlement_mode == "writeoff":
-				pe.paid_amount = paid_amount
-				pe.received_amount = paid_amount
+				# 对销售发票，少收部分作为核销；对采购发票，少付部分作为核销。
+				# Payment Entry 的差额方向相反，必须保留完整的发票分配金额。
+				if payment_type == "Pay":
+					pe.paid_amount = paid_amount
+					pe.received_amount = seed_amount
+				else:
+					pe.paid_amount = seed_amount
+					pe.received_amount = paid_amount
 				pe.set_amounts()
 
-				if pe.difference_amount <= 0:
+				if not pe.difference_amount:
 					frappe.throw(_("当前无需执行差额核销。"))
 
-				writeoff_amount = flt(pe.difference_amount)
+				writeoff_amount = abs(flt(pe.difference_amount))
 				account_details = _get_payment_entry_writeoff_defaults(pe.company)
 				account_details["description"] = kwargs.get("writeoff_reason") or _("移动端优惠/抹零结清")
 				pe.set_gain_or_loss(account_details=account_details)
@@ -181,7 +188,11 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 				"settlement_mode": settlement_mode,
 				"writeoff_amount": writeoff_amount,
 				"unallocated_amount": unallocated_amount,
-				"message": _("成功为单据 {0} 录入收款 {1}。").format(reference_name, paid_amount),
+				"message": _("成功为单据 {0} 录入{1} {2}。").format(
+					reference_name,
+					_("付款") if payment_type == "Pay" else _("收款"),
+					paid_amount,
+				),
 			}
 
 		return run_idempotent("update_payment_status", request_id, _update_payment_status)

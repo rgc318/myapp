@@ -365,20 +365,30 @@ class TestPurchaseService(TestCase):
 				invoice_items=[{"item_code": "ITEM-001", "qty": 1, "price": 16}],
 			)
 
-	@patch("myapp.services.purchase_service.nowdate", return_value="2026-03-26")
-	@patch("erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry")
-	def test_record_supplier_payment_creates_payment_entry(self, mock_get_payment_entry, mock_nowdate):
-		pe = MagicMock()
-		pe.name = "ACC-PAY-0001"
-		pe.mode_of_payment = None
-		mock_get_payment_entry.return_value = pe
+	@patch("myapp.services.purchase_service.update_payment_status")
+	def test_record_supplier_payment_uses_shared_settlement(self, mock_update_payment_status):
+		mock_update_payment_status.return_value = {"status": "success", "payment_entry": "ACC-PAY-0001"}
 
-		result = record_supplier_payment("PINV-0001", 100)
+		result = record_supplier_payment(
+			"PINV-0001",
+			100,
+			mode_of_payment="Bank",
+			settlement_mode="writeoff",
+			writeoff_reason="采购差额核销",
+		)
 
-		mock_get_payment_entry.assert_called_once_with("Purchase Invoice", "PINV-0001", party_amount=100.0)
-		pe.insert.assert_called_once()
-		pe.submit.assert_called_once()
 		self.assertEqual(result["payment_entry"], "ACC-PAY-0001")
+		mock_update_payment_status.assert_called_once_with(
+			"Purchase Invoice",
+			"PINV-0001",
+			100,
+			mode_of_payment="Bank",
+			reference_no="采购付款",
+			reference_date=None,
+			request_id=None,
+			settlement_mode="writeoff",
+			writeoff_reason="采购差额核销",
+		)
 
 	@patch("myapp.services.purchase_service.frappe.get_traceback", return_value="traceback")
 	@patch("erpnext.controllers.sales_and_purchase_return.make_return_doc")
@@ -473,14 +483,15 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["purchase_invoice"], "PINV-0020")
 		mock_run_idempotent.assert_called_once()
 
-	@patch("myapp.services.purchase_service.run_idempotent")
-	def test_record_supplier_payment_uses_idempotent_runner(self, mock_run_idempotent):
-		mock_run_idempotent.return_value = {"status": "success", "payment_entry": "ACC-PAY-0099"}
+	@patch("myapp.services.purchase_service.update_payment_status")
+	def test_record_supplier_payment_passes_idempotency_key_to_shared_settlement(self, mock_update_payment_status):
+		mock_update_payment_status.return_value = {"status": "success", "payment_entry": "ACC-PAY-0099"}
 
-		result = record_supplier_payment("PINV-0001", 100, request_id="pay-001")
+		with patch.object(frappe, "db", MagicMock(get_value=MagicMock(return_value=100))):
+			result = record_supplier_payment("PINV-0001", 100, request_id="pay-001")
 
 		self.assertEqual(result["payment_entry"], "ACC-PAY-0099")
-		mock_run_idempotent.assert_called_once()
+		self.assertEqual(mock_update_payment_status.call_args.kwargs["request_id"], "pay-001")
 
 	@patch("myapp.services.purchase_service.run_idempotent")
 	def test_process_purchase_return_uses_idempotent_runner(self, mock_run_idempotent):

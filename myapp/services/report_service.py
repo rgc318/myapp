@@ -186,17 +186,32 @@ def _make_scalar_aggregate(
 	return flt(getattr(rows[0], "total_amount", 0) or 0)
 
 
-def _cashflow_search_sql(search_key: str | None):
+def _cashflow_filter_sql(
+	search_key: str | None,
+	*,
+	payment_type: str | None = None,
+	mode_of_payment: str | None = None,
+	party: str | None = None,
+	party_type: str | None = None,
+):
+	clauses = []
+	params = []
 	resolved = (search_key or "").strip()
-	if not resolved:
-		return None, []
-	keyword = f"%{resolved}%"
-	return "(name LIKE %s OR party LIKE %s OR mode_of_payment LIKE %s OR reference_no LIKE %s)", [
-		keyword,
-		keyword,
-		keyword,
-		keyword,
-	]
+	if resolved:
+		keyword = f"%{resolved}%"
+		clauses.append("(name LIKE %s OR party LIKE %s OR mode_of_payment LIKE %s OR reference_no LIKE %s)")
+		params.extend([keyword, keyword, keyword, keyword])
+	for field, value in (
+		("payment_type", payment_type),
+		("mode_of_payment", mode_of_payment),
+		("party", party),
+		("party_type", party_type),
+	):
+		resolved_value = (value or "").strip()
+		if resolved_value:
+			clauses.append(f"`{field}` = %s")
+			params.append(resolved_value)
+	return " AND ".join(clauses) or None, params
 
 
 def _make_recent_cashflow_rows(*, company: str | None, date_from: str, date_to: str, limit: int):
@@ -217,14 +232,24 @@ def _make_cashflow_entry_rows(
 	limit: int,
 	offset: int,
 	search_key: str | None = None,
+	payment_type: str | None = None,
+	mode_of_payment: str | None = None,
+	party: str | None = None,
+	party_type: str | None = None,
 ):
-	search_sql, search_params = _cashflow_search_sql(search_key)
+	filter_sql, filter_params = _cashflow_filter_sql(
+		search_key,
+		payment_type=payment_type,
+		mode_of_payment=mode_of_payment,
+		party=party,
+		party_type=party_type,
+	)
 	where_sql, params = _build_where_clause(
 		date_field="posting_date",
 		company=company,
 		date_from=date_from,
 		date_to=date_to,
-		extra_sql=search_sql,
+		extra_sql=filter_sql,
 	)
 	return frappe.db.sql(
 		f"""
@@ -243,19 +268,35 @@ def _make_cashflow_entry_rows(
 		ORDER BY posting_date DESC, modified DESC
 		LIMIT %s OFFSET %s
 		""",
-		(*params, *search_params, limit, offset),
+		(*params, *filter_params, limit, offset),
 		as_dict=True,
 	)
 
 
-def _count_cashflow_entries(*, company: str | None, date_from: str, date_to: str, search_key: str | None = None):
-	search_sql, search_params = _cashflow_search_sql(search_key)
+def _count_cashflow_entries(
+	*,
+	company: str | None,
+	date_from: str,
+	date_to: str,
+	search_key: str | None = None,
+	payment_type: str | None = None,
+	mode_of_payment: str | None = None,
+	party: str | None = None,
+	party_type: str | None = None,
+):
+	filter_sql, filter_params = _cashflow_filter_sql(
+		search_key,
+		payment_type=payment_type,
+		mode_of_payment=mode_of_payment,
+		party=party,
+		party_type=party_type,
+	)
 	where_sql, params = _build_where_clause(
 		date_field="posting_date",
 		company=company,
 		date_from=date_from,
 		date_to=date_to,
-		extra_sql=search_sql,
+		extra_sql=filter_sql,
 	)
 	rows = frappe.db.sql(
 		f"""
@@ -263,7 +304,7 @@ def _count_cashflow_entries(*, company: str | None, date_from: str, date_to: str
 		FROM {_get_report_table_sql("tabPayment Entry")}
 		WHERE {where_sql}
 		""",
-		(*params, *search_params),
+		(*params, *filter_params),
 		as_dict=True,
 	)
 	if not rows:
@@ -1062,12 +1103,24 @@ def list_cashflow_entries_v1(
 	date_from: str | None = None,
 	date_to: str | None = None,
 	search_key: str | None = None,
+	payment_type: str | None = None,
+	mode_of_payment: str | None = None,
+	party: str | None = None,
+	party_type: str | None = None,
 	page: int | str | None = 1,
 	page_size: int | str | None = DEFAULT_CASHFLOW_ENTRY_PAGE_SIZE,
 ):
 	resolved_company = _normalize_company(company)
 	resolved_date_from, resolved_date_to = _resolve_report_date_range(date_from, date_to)
 	resolved_search_key = (search_key or "").strip() or None
+	resolved_payment_type = (payment_type or "").strip() or None
+	if resolved_payment_type not in {None, "Receive", "Pay", "Internal Transfer"}:
+		frappe.throw(_("payment_type 只支持 Receive、Pay 或 Internal Transfer。"))
+	resolved_mode_of_payment = (mode_of_payment or "").strip() or None
+	resolved_party = (party or "").strip() or None
+	resolved_party_type = (party_type or "").strip() or None
+	if resolved_party_type not in {None, "Customer", "Supplier", "Employee", "Shareholder"}:
+		frappe.throw(_("party_type 不受支持。"))
 	resolved_page = _resolve_positive_int(page, default=1, minimum=1)
 	resolved_page_size = _resolve_positive_int(
 		page_size,
@@ -1081,6 +1134,10 @@ def list_cashflow_entries_v1(
 		date_from=resolved_date_from,
 		date_to=resolved_date_to,
 		search_key=resolved_search_key,
+		payment_type=resolved_payment_type,
+		mode_of_payment=resolved_mode_of_payment,
+		party=resolved_party,
+		party_type=resolved_party_type,
 	)
 	rows = _serialize_cashflow_rows(
 		_make_cashflow_entry_rows(
@@ -1090,6 +1147,10 @@ def list_cashflow_entries_v1(
 			limit=resolved_page_size,
 			offset=offset,
 			search_key=resolved_search_key,
+			payment_type=resolved_payment_type,
+			mode_of_payment=resolved_mode_of_payment,
+			party=resolved_party,
+			party_type=resolved_party_type,
 		)
 	)
 
@@ -1109,6 +1170,10 @@ def list_cashflow_entries_v1(
 				"date_from": resolved_date_from,
 				"date_to": resolved_date_to,
 				"search_key": resolved_search_key,
+				"payment_type": resolved_payment_type,
+				"mode_of_payment": resolved_mode_of_payment,
+				"party": resolved_party,
+				"party_type": resolved_party_type,
 			},
 		},
 	}

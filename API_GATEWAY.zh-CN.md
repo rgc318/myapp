@@ -238,7 +238,8 @@ Web 标准分页需要接口返回总数。列表接口应尽量返回：
   - 适合移动端资金趋势图或资金模块首页
 - `list_cashflow_entries_v1`
   - 只返回资金流水明细
-  - 支持 `search_key` 按收付款单号、往来方、付款方式或参考号过滤
+  - 支持 `search_key` 按收付款单号、往来方、付款方式或参考号模糊过滤
+  - 支持精确筛选：`payment_type`（`Receive` / `Pay` / `Internal Transfer`）、`mode_of_payment`、`party_type`、`party`
   - 支持分页参数：
     - `search_key`
     - `page`

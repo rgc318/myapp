@@ -15,7 +15,7 @@ from myapp.services.order_service import (
 )
 from myapp.services.wholesale_service import _get_item_specification_field
 from myapp.services.return_service import build_return_submission_payload
-from myapp.services.settlement_service import cancel_payment_entry
+from myapp.services.settlement_service import cancel_payment_entry, update_payment_status
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom import resolve_item_quantity_to_stock
@@ -3004,38 +3004,26 @@ def create_purchase_invoice_from_receipt(
 
 
 def record_supplier_payment(reference_name: str, paid_amount: float, **kwargs):
-	from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
-
 	if not reference_name:
 		frappe.throw(_("reference_name 不能为空。"))
-
 	paid_amount = flt(paid_amount)
 	if paid_amount <= 0:
 		frappe.throw(_("paid_amount 必须大于 0。"))
-
-	request_id = kwargs.get("request_id")
-
-	try:
-		def _record_supplier_payment():
-			pe = get_payment_entry("Purchase Invoice", reference_name, party_amount=paid_amount)
-			pe.mode_of_payment = kwargs.get("mode_of_payment") or pe.mode_of_payment or "Cash"
-			pe.reference_no = kwargs.get("reference_no") or _("采购付款")
-			pe.reference_date = kwargs.get("reference_date") or nowdate()
-			pe.insert()
-			pe.submit()
-
-			return {
-				"status": "success",
-				"payment_entry": pe.name,
-				"message": _("成功为采购发票 {0} 录入付款 {1}。").format(reference_name, paid_amount),
-			}
-
-		return run_idempotent("record_supplier_payment", request_id, _record_supplier_payment)
-	except frappe.ValidationError:
-		raise
-	except Exception:
-		frappe.log_error(frappe.get_traceback(), _("采购付款录入失败"))
-		raise
+	if (kwargs.get("settlement_mode") or "partial").strip().lower() != "writeoff":
+		outstanding_amount = flt(frappe.db.get_value("Purchase Invoice", reference_name, "outstanding_amount"))
+		if paid_amount > outstanding_amount:
+			frappe.throw(_("付款金额不能大于当前未付金额。"))
+	return update_payment_status(
+		"Purchase Invoice",
+		reference_name,
+		paid_amount,
+		mode_of_payment=kwargs.get("mode_of_payment"),
+		reference_no=kwargs.get("reference_no") or _("采购付款"),
+		reference_date=kwargs.get("reference_date"),
+		request_id=kwargs.get("request_id"),
+		settlement_mode=kwargs.get("settlement_mode"),
+		writeoff_reason=kwargs.get("writeoff_reason"),
+	)
 
 
 def _collect_submitted_supplier_payment_entry_summaries(invoice_names: list[str]):

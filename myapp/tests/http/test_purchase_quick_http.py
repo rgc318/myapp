@@ -1388,7 +1388,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			self._cancel_purchase_receipt(data["purchase_receipt"])
 			self._cancel_purchase_order(order_name)
 
-	def test_update_purchase_payment_status_writeoff_currently_rejected_for_purchase_invoice(self):
+	def test_update_purchase_payment_status_writeoff_settles_purchase_invoice(self):
 		data = self._quick_create_purchase_order(immediate_payment=False)
 		order_name = data["purchase_order"]
 		invoice_name = data["purchase_invoice"]
@@ -1400,7 +1400,10 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 				settlement_mode="writeoff",
 				writeoff_reason="采购测试抹零结清",
 			)
-			self._assert_validation_error(status_code, payload, contains="当前无需执行差额核销")
+			self._assert_success(status_code, payload, code="PAYMENT_RECORDED")
+			payment_result = payload["message"]["data"]
+			self.assertEqual(payment_result["settlement_mode"], "writeoff")
+			self.assertEqual(payment_result["writeoff_amount"], 100.0)
 
 			detail_status, detail_payload = self._post_method(
 				"myapp.api.gateway.get_purchase_order_detail_v2",
@@ -1408,12 +1411,14 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 			)
 			self._assert_success(detail_status, detail_payload, code="PURCHASE_ORDER_DETAIL_FETCHED")
 			payment_data = detail_payload["message"]["data"]["payment"]
-			self.assertEqual(payment_data["status"], "unpaid")
-			self.assertEqual(payment_data["paid_amount"], 0)
-			self.assertEqual(payment_data["outstanding_amount"], 4600.0)
-			self.assertEqual(payment_data["latest_writeoff_amount"], 0)
-			self.assertEqual(payment_data["total_writeoff_amount"], 0)
-			self.assertIsNone(payment_data["latest_payment_entry"])
+			self.assertEqual(payment_data["status"], "paid")
+			# paid_amount 是发票已结算金额（包含核销）；实际现金付款单独以 actual_paid_amount 返回。
+			self.assertEqual(payment_data["paid_amount"], 4600.0)
+			self.assertEqual(payment_data["actual_paid_amount"], 4500.0)
+			self.assertEqual(payment_data["outstanding_amount"], 0)
+			self.assertEqual(payment_data["latest_writeoff_amount"], 100.0)
+			self.assertEqual(payment_data["total_writeoff_amount"], 100.0)
+			self.assertEqual(payment_data["latest_payment_entry"], payment_result["payment_entry"])
 		finally:
 			self._cancel_purchase_invoice(invoice_name)
 			self._cancel_purchase_receipt(data["purchase_receipt"])

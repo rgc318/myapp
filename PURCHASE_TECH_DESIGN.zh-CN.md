@@ -337,20 +337,12 @@ Client
 
 #### 6.3.4 当前采购结算限制补充
 
-当前系统存在一个已确认限制：
-
-- 通用结算网关 `myapp.api.gateway.update_payment_status` 在销售发票上支持 `settlement_mode="writeoff"` 成功结清
-- 但在采购发票上，当前真实 HTTP 行为是：
-  - 返回 `当前无需执行差额核销。`
-  - 不会生成付款单
-  - 不会污染采购订单详情中的 `paid_amount / outstanding_amount / total_writeoff_amount`
-
-因此当前采购侧结算口径应理解为：
+采购侧结算口径：
 
 - 标准付款：支持
 - 部分付款：支持
+- 差额核销结清：支持。对采购发票，付款金额小于未付金额时，系统保留完整发票核销分配，并将差额写入公司配置的 `Write Off Account`；`Payment Entry` 的付款方向与销售收款相反。
 - 多笔付款后快捷回退：不支持，应走分步回退
-- 采购 `writeoff` 成功结清：当前尚未打通，不应在前端以“可正常使用”能力对外承诺
 
 ### 6.4 模块 P4：采购退货
 
