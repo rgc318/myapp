@@ -1,6 +1,6 @@
 # AI Copilot 模块技术设计
 
-> 状态：Phase A 只读纵向链路已覆盖会话/消息/Run 持久化、30 天默认保留期、POST + JWT SSE、Web 增量渲染、Run 反馈、`search_products`、受限自然语言订单查询 DSL 和经营报表解释。真实业务工具由 Frappe 在当前用户与公司范围内执行并裁剪后交给 AI Orchestrator，模型不能回调任意接口。语义向量检索、Langfuse 和单据草稿仍按本文分期继续实施。
+> 状态：Phase A 只读纵向链路已覆盖会话/消息/Run 持久化、POST + JWT SSE、反馈、商品/订单/报表工具和可选 Langfuse。Phase B 已完成首个销售订单草稿纵向链路：严格结构化候选、真实主数据复核、草稿/草稿行审计和现有销售订单编辑器安全预填。采购订单、库存调整草稿、草稿人工修改/版本对比、语义向量检索和真实 Langfuse 实例仍待继续。
 
 ## 1. 目标与非目标
 
@@ -245,6 +245,10 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 
 `prepare_ai_draft_handoff_v1` 只返回可被现有订单/库存编辑器预填的安全载荷与当前校验结果；它不创建正式单据。
 
+当前销售订单草稿已实现 `generate_ai_sales_order_draft_v1`、`get_ai_draft_v1` 和 `prepare_ai_draft_handoff_v1`。模型只提取客户/商品称呼、数量、单位、日期和备注候选；Frappe 再按当前用户权限解析真实 Customer、Item、Warehouse，使用商品接口返回的 UOM、换算系数和当前参考价，并把歧义保存为候选与校验错误。模型建议价格不会直接采用。只有 `ready_for_handoff=true` 的草稿可交接，Web 使用一次性 sessionStorage 载荷预填现有销售订单页面；用户仍需主动点击创建，既有 v2 接口会再次校验。
+
+结构化模型优先使用 OpenAI 兼容 `json_schema`；供应商明确拒绝该能力时，Orchestrator 可降级为 JSON-only 输出，但结果仍必须通过同一 Pydantic Schema，任何自由文本、缺字段、越界数量或类型错误都会失败，不会持久化为草稿。
+
 ## 10. 可观测性、治理与防护
 
 - 使用 Langfuse 或等价自托管平台记录 trace、Prompt 版本、模型别名、Token、成本、延迟、失败和用户反馈。
@@ -252,6 +256,8 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 - 管理台需维护场景到 capability 的映射、模型启停、预算、超时、降级候选、数据留存和灰度范围。
 - 外部文档、商品描述、备注和用户输入都视为不可信数据，不能改变工具权限、模型策略或系统指令，防止 Prompt Injection。
 - 模型、Prompt 或工具策略变更必须经过固定评测集、回归测试和灰度发布；不得直接全员切换。
+
+当前 Orchestrator 已实现 Langfuse ingestion 接入：trace 关联 Frappe conversation / run，generation 记录模型、Token、成功或错误状态，点赞/点踩同步为 score。集成为可选且失败开放，未配置或 Langfuse 不可用时不阻断模型调用和 ERP 反馈保存。默认 `MYAPP_AI_LANGFUSE_CAPTURE_CONTENT=0`，只发送输入输出的 SHA-256、字符数和字节数；只有完成数据分级、访问控制和保留期评审后才能上传原文。当前本地环境尚未配置真实 Langfuse 实例，因此部署、成本看板和固定评测集仍待完成。
 
 ## 11. 分期计划与验收
 

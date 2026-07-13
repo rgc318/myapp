@@ -11,9 +11,11 @@ import urllib.request
 
 import frappe
 from frappe import _
+from frappe.utils import getdate, nowdate
 from werkzeug.wrappers import Response
 
 from myapp.services import ai_repository
+from myapp.services.customer_service import list_customers_v2
 from myapp.services.order_service import search_sales_orders_v2
 from myapp.services.purchase_service import search_purchase_orders_v2
 from myapp.services.report_service import (
@@ -25,6 +27,7 @@ from myapp.services.report_service import (
 )
 from myapp.services.wholesale_service import search_product_v2
 from myapp.utils.api_response import UpstreamServiceUnavailableError
+from myapp.utils.uom_display import resolve_uom_display_name
 
 
 MAX_AI_MESSAGES = 20
@@ -111,6 +114,52 @@ def _call_ai_orchestrator(payload: dict) -> dict:
 	if not isinstance(message, dict) or not str(message.get("content") or "").strip():
 		raise UpstreamServiceUnavailableError(_("AI 服务返回了无效响应。"))
 	return result
+
+
+def _sync_ai_feedback_to_orchestrator(payload: dict) -> bool:
+	if not payload.get("trace_id"):
+		return False
+
+
+def _call_ai_orchestrator_sales_draft(payload: dict) -> dict:
+	base_url, service_token = _get_ai_orchestrator_settings()
+	request = urllib.request.Request(
+		f"{base_url}/internal/v1/drafts/sales-order",
+		data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+		headers={
+			"Authorization": f"Bearer {service_token}",
+			"Content-Type": "application/json",
+			"Accept": "application/json",
+		},
+		method="POST",
+	)
+	try:
+		with urllib.request.urlopen(request, timeout=90) as response:
+			result = json.loads(response.read().decode("utf-8") or "{}")
+	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+		frappe.log_error(frappe.get_traceback(), _("AI 销售订单草稿调用失败"))
+		raise UpstreamServiceUnavailableError(_("AI 草稿服务暂时不可用，请稍后重试。"))
+	if not isinstance(result.get("draft"), dict):
+		raise UpstreamServiceUnavailableError(_("AI 草稿服务返回了无效响应。"))
+	return result
+	base_url, service_token = _get_ai_orchestrator_settings()
+	request = urllib.request.Request(
+		f"{base_url}/internal/v1/feedback",
+		data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+		headers={
+			"Authorization": f"Bearer {service_token}",
+			"Content-Type": "application/json",
+			"Accept": "application/json",
+		},
+		method="POST",
+	)
+	try:
+		with urllib.request.urlopen(request, timeout=8) as response:
+			result = json.loads(response.read().decode("utf-8") or "{}")
+			return bool(result.get("observability_synced"))
+	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+		frappe.log_error(frappe.get_traceback(), _("AI 反馈可观测性同步失败"))
+		return False
 
 
 def _stream_ai_orchestrator(payload: dict):
@@ -643,16 +692,279 @@ def submit_ai_feedback_v1(
 	resolved_comment = (comment or "").strip() or None
 	if resolved_comment and len(resolved_comment) > 1000:
 		frappe.throw(_("AI 反馈说明不能超过 1000 个字符。"))
+	feedback = ai_repository.submit_feedback(
+		run_id=(run_id or "").strip(),
+		user=user,
+		rating=resolved_rating,
+		category=resolved_category,
+		comment=resolved_comment,
+	)
+	feedback["observability_synced"] = _sync_ai_feedback_to_orchestrator(
+		{
+			"trace_id": feedback.get("trace_id"),
+			"run_id": feedback["run_id"],
+			"rating": feedback["rating"],
+			"category": feedback.get("category"),
+			"comment": feedback.get("comment"),
+		}
+	)
 	return {
 		"status": "success",
 		"message": _("AI 反馈已记录。"),
-		"data": ai_repository.submit_feedback(
-			run_id=(run_id or "").strip(),
-			user=user,
-			rating=resolved_rating,
-			category=resolved_category,
-			comment=resolved_comment,
+		"data": feedback,
+	}
+
+
+def _resolve_sales_draft_customer(query: str | None) -> tuple[dict | None, list[dict]]:
+	query = str(query or "").strip()
+	if not query:
+		return None, []
+	result = list_customers_v2(search_key=query, disabled=0, limit=5, start=0)
+	rows = (result or {}).get("data") or []
+	allowed = set(
+		frappe.get_list(
+			"Customer",
+			filters={"name": ["in", [row.get("name") for row in rows if row.get("name")]]},
+			pluck="name",
+			limit_page_length=max(1, len(rows)),
+		)
+		if rows
+		else []
+	)
+	candidates = [
+		{"name": row.get("name"), "display_name": row.get("display_name") or row.get("customer_name")}
+		for row in rows
+		if row.get("name") in allowed
+	]
+	exact = next(
+		(
+			row for row in candidates
+			if query.lower() in {str(row.get("name") or "").lower(), str(row.get("display_name") or "").lower()}
 		),
+		None,
+	)
+	return exact or (candidates[0] if len(candidates) == 1 else None), candidates
+
+
+def _resolve_sales_draft_warehouse(query: str | None, company: str) -> str | None:
+	resolved = str(query or "").strip()
+	if not resolved:
+		resolved = str(frappe.defaults.get_user_default("warehouse") or "").strip()
+	if not resolved:
+		return None
+	rows = frappe.get_list(
+		"Warehouse",
+		filters={"name": resolved, "company": company, "disabled": 0, "is_group": 0},
+		pluck="name",
+		limit_page_length=1,
+	)
+	return rows[0] if rows else None
+
+
+def _resolve_sales_draft_item(candidate: dict, *, company: str, default_warehouse: str | None) -> dict:
+	query = str(candidate.get("item_query") or "").strip()
+	qty = float(candidate.get("qty") or 0)
+	rows = (
+		(search_product_v2(search_key=query, company=company, limit=5, disabled=0, item_context="sales") or {}).get("data")
+		or []
+	)
+	allowed = set(
+		frappe.get_list(
+			"Item",
+			filters={"name": ["in", [row.get("item_code") for row in rows if row.get("item_code")]]},
+			pluck="name",
+			limit_page_length=max(1, len(rows)),
+		)
+		if rows
+		else []
+	)
+	rows = [row for row in rows if row.get("item_code") in allowed]
+	exact = next(
+		(
+			row for row in rows
+			if query.lower() in {
+				str(row.get("item_code") or "").lower(),
+				str(row.get("item_name") or "").lower(),
+				str(row.get("nickname") or "").lower(),
+			}
+		),
+		None,
+	)
+	selected = exact or (rows[0] if len(rows) == 1 else None)
+	warnings = []
+	if qty <= 0:
+		warnings.append(_("数量必须大于 0。"))
+	warehouse = _resolve_sales_draft_warehouse(candidate.get("warehouse_query"), company) or default_warehouse
+	if not warehouse:
+		warnings.append(_("缺少当前公司可用的明细仓库。"))
+	if not selected:
+		warnings.append(_("商品“{0}”无法唯一匹配，请人工选择。" ).format(query))
+		return {
+			"item_query": query, "item_code": None, "item_name": None, "qty": qty,
+			"uom": candidate.get("uom"), "uom_display": None, "price": None,
+			"stock_uom": None, "stock_uom_display": None,
+			"warehouse": warehouse, "conversion_factor": None,
+			"candidates": [{"item_code": row.get("item_code"), "item_name": row.get("item_name")} for row in rows],
+			"warnings": warnings,
+		}
+	all_uoms = selected.get("all_uoms") or []
+	requested_uom = str(candidate.get("uom") or "").strip()
+	uom_row = next((row for row in all_uoms if str(row.get("uom") or "") == requested_uom), None)
+	if requested_uom and not uom_row:
+		warnings.append(_("商品 {0} 未配置单位 {1}，已改用默认单位。" ).format(selected.get("item_code"), requested_uom))
+	resolved_uom = (uom_row or {}).get("uom") or selected.get("wholesale_default_uom") or selected.get("uom")
+	resolved_price = float(selected.get("price") or 0)
+	if candidate.get("price") is not None and float(candidate.get("price")) != resolved_price:
+		warnings.append(_("模型建议价格未采用，草稿使用当前后端参考价。"))
+	return {
+		"item_query": query,
+		"item_code": selected.get("item_code"),
+		"item_name": selected.get("item_name"),
+		"qty": qty,
+		"uom": resolved_uom,
+		"uom_display": (uom_row or {}).get("uom_display") or resolve_uom_display_name(resolved_uom),
+		"stock_uom": selected.get("uom"),
+		"stock_uom_display": selected.get("uom_display"),
+		"price": resolved_price,
+		"warehouse": warehouse,
+		"conversion_factor": float((uom_row or {}).get("conversion_factor") or 1),
+		"candidates": [{"item_code": row.get("item_code"), "item_name": row.get("item_name")} for row in rows],
+		"warnings": warnings,
+	}
+
+
+def generate_ai_sales_order_draft_v1(
+	content: str,
+	company: str | None = None,
+	conversation_id: str | None = None,
+):
+	user = _current_user()
+	content = _normalize_content(content)
+	company = _resolve_company_scope(company, required=True)
+	if not frappe.has_permission("Sales Order", ptype="create"):
+		raise frappe.PermissionError(_("无权创建销售订单草稿。"))
+	if not conversation_id:
+		conversation = ai_repository.create_conversation(user=user, title=content, company=company)
+		conversation_id = conversation["name"]
+	else:
+		conversation = ai_repository.get_conversation(conversation_id=conversation_id, user=user)["conversation"]
+		if conversation.get("company") and conversation.get("company") != company:
+			frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
+	ai_repository.append_message(
+		conversation_id=conversation_id, user=user, role="user", content=content,
+		scenario="sales_order_draft", prompt_version=PROMPT_VERSION,
+	)
+	run_id = ai_repository.create_run(conversation_id=conversation_id, user=user, scenario="sales_order_draft")
+	frappe.db.commit()
+	started = time.perf_counter()
+	try:
+		model_messages = ai_repository.load_model_messages(conversation_id=conversation_id, user=user, limit=MAX_AI_MESSAGES)
+		result = _call_ai_orchestrator_sales_draft(
+			{
+				"messages": model_messages, "scenario": "sales_order_draft", "user": user,
+				"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
+				"prompt_version": PROMPT_VERSION, "conversation_id": conversation_id, "run_id": run_id,
+			}
+		)
+		candidate = result["draft"]
+		customer, customer_candidates = _resolve_sales_draft_customer(candidate.get("customer_query"))
+		default_warehouse = _resolve_sales_draft_warehouse(candidate.get("warehouse_query"), company)
+		items = [
+			_resolve_sales_draft_item(row, company=company, default_warehouse=default_warehouse)
+			for row in candidate.get("items") or []
+		]
+		errors = []
+		if not customer:
+			errors.append(_("客户无法唯一匹配，请人工选择。"))
+		if not items:
+			errors.append(_("草稿没有有效商品明细。"))
+		for index, row in enumerate(items, 1):
+			if not row.get("item_code") or row.get("qty", 0) <= 0 or not row.get("warehouse"):
+				errors.append(_("第 {0} 行需要人工补充商品、数量或仓库。" ).format(index))
+		transaction_date = str(candidate.get("transaction_date") or nowdate())
+		delivery_date = str(candidate.get("delivery_date") or transaction_date)
+		try:
+			transaction_date = str(getdate(transaction_date))
+			delivery_date = str(getdate(delivery_date))
+		except Exception:
+			errors.append(_("订单日期或交货日期格式不正确。"))
+		payload = {
+			"company": company,
+			"customer_query": candidate.get("customer_query"),
+			"customer": customer.get("name") if customer else None,
+			"customer_display_name": customer.get("display_name") if customer else None,
+			"customer_candidates": customer_candidates,
+			"transaction_date": transaction_date,
+			"delivery_date": delivery_date,
+			"default_sales_mode": candidate.get("default_sales_mode") or "wholesale",
+			"warehouse": default_warehouse,
+			"remarks": candidate.get("remarks"),
+			"items": items,
+		}
+		validation = {
+			"ready_for_handoff": not errors,
+			"errors": errors,
+			"warnings": [warning for row in items for warning in row.get("warnings") or []],
+		}
+		draft = ai_repository.create_draft(
+			user=user, conversation_id=conversation_id, source_run=run_id,
+			draft_type="sales_order", company=company, title=content,
+			payload=payload, validation=validation,
+		)
+		assistant_content = _("已生成销售订单草稿；{0}" ).format(
+			_("可以进入销售订单编辑器继续复核。") if validation["ready_for_handoff"] else _("仍有字段需要人工确认。")
+		)
+		citation = {"type": "ai_draft", "id": draft["name"], "label": draft["title"], "href": None, "data": draft}
+		ai_repository.append_message(
+			conversation_id=conversation_id, user=user, role="assistant", content=assistant_content,
+			scenario="sales_order_draft", run_id=run_id, citations=[citation], prompt_version=PROMPT_VERSION,
+		)
+		ai_repository.complete_run(
+			run_id=run_id, user=user, result=result,
+			latency_ms=int((time.perf_counter() - started) * 1000),
+			tool_calls=[{"tool": "build_sales_order_draft", "risk_level": "L2_DRAFT_ONLY", "draft_id": draft["name"]}],
+		)
+		frappe.db.commit()
+		return {
+			"status": "success", "message": assistant_content,
+			"data": {"conversation": conversation_id, "run_id": run_id, "draft": draft,
+				"message": {"role": "assistant", "content": assistant_content, "citations": [citation]},
+				"model": result.get("model"), "model_alias": result.get("model_alias"),
+				"trace_id": result.get("trace_id"), "usage": result.get("usage") or {}, "warnings": result.get("warnings") or []},
+		}
+	except Exception as error:
+		frappe.db.rollback()
+		ai_repository.fail_run(run_id=run_id, user=user, error=error, latency_ms=int((time.perf_counter() - started) * 1000))
+		frappe.db.commit()
+		raise
+
+
+def get_ai_draft_v1(draft_id: str):
+	return {"status": "success", "message": _("AI 草稿获取成功。"), "data": ai_repository.get_draft(draft_id=draft_id, user=_current_user())}
+
+
+def prepare_ai_draft_handoff_v1(draft_id: str):
+	user = _current_user()
+	draft = ai_repository.get_draft(draft_id=draft_id, user=user)
+	if draft["draft_type"] != "sales_order":
+		frappe.throw(_("当前只支持销售订单草稿交接。"))
+	if not draft["validation"].get("ready_for_handoff"):
+		frappe.throw(_("草稿仍有未解决的校验问题，不能交接。"))
+	payload = draft["payload"]
+	ai_repository.mark_draft_handed_off(draft_id=draft_id, user=user)
+	frappe.db.commit()
+	return {
+		"status": "success", "message": _("AI 草稿已准备交接。"),
+		"data": {
+			"draft_id": draft_id, "draft_type": "sales_order",
+			"payload": {
+				"company": payload.get("company"), "customer": payload.get("customer"),
+				"transaction_date": payload.get("transaction_date"), "delivery_date": payload.get("delivery_date"),
+				"default_sales_mode": payload.get("default_sales_mode"), "warehouse": payload.get("warehouse"),
+				"remarks": payload.get("remarks"),
+				"items": [{key: row.get(key) for key in ("item_code", "item_name", "qty", "uom", "uom_display", "stock_uom", "stock_uom_display", "price", "warehouse", "conversion_factor")} for row in payload.get("items") or []],
+			},
+		},
 	}
 
 
@@ -768,6 +1080,8 @@ def _prepare_chat_run(
 			"locale": getattr(frappe.local, "lang", None) or "zh-CN",
 			"context": tool_context,
 			"prompt_version": PROMPT_VERSION,
+			"conversation_id": conversation_id,
+			"run_id": run_id,
 		},
 	}
 

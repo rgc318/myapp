@@ -8,6 +8,7 @@ from myapp.services.ai_service import (
 	_build_order_query_dsl,
 	_build_report_query_dsl,
 	chat_ai_v1,
+	generate_ai_sales_order_draft_v1,
 	stream_ai_message_v1,
 	submit_ai_feedback_v1,
 )
@@ -15,6 +16,50 @@ from myapp.utils.api_response import UpstreamServiceUnavailableError, map_except
 
 
 class TestAiService(TestCase):
+	@patch("myapp.services.ai_service.ai_repository.create_draft")
+	@patch("myapp.services.ai_service.nowdate", return_value="2026-07-13")
+	@patch("myapp.services.ai_service.ai_repository.fail_run")
+	@patch("myapp.services.ai_service.ai_repository.complete_run")
+	@patch("myapp.services.ai_service.ai_repository.load_model_messages")
+	@patch("myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-DRAFT")
+	@patch("myapp.services.ai_service.ai_repository.append_message")
+	@patch("myapp.services.ai_service.ai_repository.create_conversation")
+	@patch("myapp.services.ai_service._resolve_sales_draft_item")
+	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - TC")
+	@patch("myapp.services.ai_service._resolve_sales_draft_customer")
+	@patch("myapp.services.ai_service._call_ai_orchestrator_sales_draft")
+	@patch("myapp.services.ai_service._resolve_company_scope", return_value="Test Company")
+	def test_generate_sales_order_draft_persists_validated_draft(
+		self, _company, mock_call, mock_customer, _warehouse, mock_item,
+		mock_conversation, _append, _run, mock_messages, _complete, _fail, _nowdate, mock_create_draft,
+	):
+		mock_conversation.return_value = {"name": "AI-CONV-DRAFT", "company": "Test Company"}
+		mock_messages.return_value = [{"role": "user", "content": "给客户A开2箱相机"}]
+		mock_call.return_value = {
+			"draft": {"customer_query": "客户A", "items": [{"item_query": "相机", "qty": 2}]},
+			"model": "structured-model", "model_alias": "erp-structured", "trace_id": "trace-draft", "usage": {},
+		}
+		mock_customer.return_value = ({"name": "CUST-1", "display_name": "客户A"}, [{"name": "CUST-1"}])
+		mock_item.return_value = {
+			"item_query": "相机", "item_code": "ITEM-1", "item_name": "相机", "qty": 2,
+			"uom": "Box", "uom_display": "箱", "price": 100, "warehouse": "Stores - TC",
+			"conversion_factor": 1, "candidates": [], "warnings": [],
+		}
+		mock_create_draft.return_value = {
+			"name": "AI-DRAFT-1", "title": "给客户A开2箱相机", "validation": {"ready_for_handoff": True},
+		}
+
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.session.user = "user@example.com"
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.has_permission.return_value = True
+			result = generate_ai_sales_order_draft_v1("给客户A开2箱相机", company="Test Company")
+
+		self.assertEqual(result["data"]["draft"]["name"], "AI-DRAFT-1")
+		self.assertEqual(mock_create_draft.call_args.kwargs["payload"]["customer"], "CUST-1")
+		self.assertTrue(mock_create_draft.call_args.kwargs["validation"]["ready_for_handoff"])
+		self.assertEqual(_complete.call_args.kwargs["tool_calls"][0]["risk_level"], "L2_DRAFT_ONLY")
+
 	def test_build_order_query_dsl_parses_purchase_filters(self):
 		dsl = _build_order_query_dsl(
 			"查询上个月未完成的大额采购订单，前5条",
@@ -79,9 +124,11 @@ class TestAiService(TestCase):
 		)
 
 	@patch("myapp.services.ai_service.ai_repository.submit_feedback")
-	def test_submit_ai_feedback_v1_normalizes_and_records_feedback(self, mock_submit_feedback):
+	@patch("myapp.services.ai_service._sync_ai_feedback_to_orchestrator", return_value=True)
+	def test_submit_ai_feedback_v1_normalizes_and_records_feedback(self, mock_sync_feedback, mock_submit_feedback):
 		mock_submit_feedback.return_value = {
 			"run_id": "AI-RUN-1",
+			"trace_id": "trace-1",
 			"rating": "negative",
 			"category": "incorrect",
 			"comment": "价格不正确",
@@ -96,12 +143,22 @@ class TestAiService(TestCase):
 			)
 
 		self.assertEqual(result["data"]["rating"], "negative")
+		self.assertTrue(result["data"]["observability_synced"])
 		mock_submit_feedback.assert_called_once_with(
 			run_id="AI-RUN-1",
 			user="user@example.com",
 			rating="negative",
 			category="incorrect",
 			comment="价格不正确",
+		)
+		mock_sync_feedback.assert_called_once_with(
+			{
+				"trace_id": "trace-1",
+				"run_id": "AI-RUN-1",
+				"rating": "negative",
+				"category": "incorrect",
+				"comment": "价格不正确",
+			}
 		)
 
 	@patch("myapp.services.ai_service._complete_chat_run")
@@ -189,6 +246,8 @@ class TestAiService(TestCase):
 		payload = mock_call.call_args.args[0]
 		self.assertEqual(payload["messages"], [{"role": "user", "content": "你好"}])
 		self.assertIsNone(payload["context"])
+		self.assertEqual(payload["conversation_id"], "AI-CONV-1")
+		self.assertEqual(payload["run_id"], "AI-RUN-1")
 
 	@patch("myapp.services.ai_service.ai_repository.complete_run")
 	@patch("myapp.services.ai_service.ai_repository.load_model_messages")

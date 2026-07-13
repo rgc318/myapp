@@ -2,10 +2,13 @@ from myapp.services.ai_service import (
 	archive_ai_conversation_v1 as archive_ai_conversation_v1_service,
 	chat_ai_v1 as chat_ai_v1_service,
 	create_ai_conversation_v1 as create_ai_conversation_v1_service,
+	generate_ai_sales_order_draft_v1 as generate_ai_sales_order_draft_v1_service,
+	get_ai_draft_v1 as get_ai_draft_v1_service,
 	get_ai_conversation_v1 as get_ai_conversation_v1_service,
 	list_ai_conversations_v1 as list_ai_conversations_v1_service,
 	stream_ai_message_v1 as stream_ai_message_v1_service,
 	submit_ai_feedback_v1 as submit_ai_feedback_v1_service,
+	prepare_ai_draft_handoff_v1 as prepare_ai_draft_handoff_v1_service,
 )
 
 
@@ -67,3 +70,21 @@ def submit_ai_feedback_v1(
 		category=category,
 		comment=comment,
 	)
+
+
+def generate_ai_sales_order_draft_v1(
+	content: str,
+	company: str | None = None,
+	conversation_id: str | None = None,
+):
+	return generate_ai_sales_order_draft_v1_service(
+		content=content, company=company, conversation_id=conversation_id,
+	)
+
+
+def get_ai_draft_v1(draft_id: str):
+	return get_ai_draft_v1_service(draft_id=draft_id)
+
+
+def prepare_ai_draft_handoff_v1(draft_id: str):
+	return prepare_ai_draft_handoff_v1_service(draft_id=draft_id)
