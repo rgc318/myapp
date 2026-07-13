@@ -66,6 +66,15 @@
 - `myapp.api.gateway.chat_ai_v1`
 - `myapp.api.gateway.stream_ai_message_v1`
 - `myapp.api.gateway.submit_ai_feedback_v1`
+- `myapp.api.gateway.generate_ai_sales_order_draft_v1`
+- `myapp.api.gateway.generate_ai_purchase_order_draft_v1`
+- `myapp.api.gateway.generate_ai_inventory_adjustment_draft_v1`
+- `myapp.api.gateway.get_ai_draft_v1`
+- `myapp.api.gateway.update_ai_draft_v1`
+- `myapp.api.gateway.discard_ai_draft_v1`
+- `myapp.api.gateway.list_ai_draft_versions_v1`
+- `myapp.api.gateway.restore_ai_draft_version_v1`
+- `myapp.api.gateway.prepare_ai_draft_handoff_v1`
 
 本文档主结构按业务模块划分，而不是按“自定义接口 / 官方接口”二分。
 
@@ -87,7 +96,7 @@
 - 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`、`list_stock_ledger_entries_v1`
 - 库存：`list_inventory_stock_summary_v1`、`list_stock_ledger_entries_v1`、`transfer_inventory_stock_v1`、`reconcile_inventory_stock_v1`、`submit_inventory_stock_count_v1`
 - 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
-- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`submit_ai_feedback_v1`
+- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`get_ai_draft_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`
 
 ### AI Copilot 只读聊天
 
@@ -104,9 +113,17 @@
 }
 ```
 
-当前场景支持 `general`、`product_search`、`order_query`、`report_summary`。商品工具复用 `search_product_v2`，订单工具复用销售/采购订单工作台服务；两者都强制 DocType、公司和记录级读取权限。报表场景尚未启用真实工具。
+当前聊天场景支持 `general`、`product_search`、`order_query`、`report_summary`。商品工具复用 `search_product_v2`，订单工具复用销售/采购订单工作台服务，报表工具复用既有经营报表服务；所有工具都强制 DocType、公司和记录级读取权限。
 
 同步接口返回 `conversation`、`run_id`、带 `citations` 的 `message`、模型、trace、Token、安全警告和 `events[]`。`stream_ai_message_v1` 返回真正 `text/event-stream`，事件包含 `run_started`、`tool_started`、`tool_completed`、`citation`、`message_delta`、`warning`、`completed` 和 `error`。`submit_ai_feedback_v1` 对本人已完成 Run 记录 `positive` / `negative` 反馈。正式单据创建、提交、取消、收付款和库存变更不属于这些接口能力。
+
+### AI Copilot 结构化草稿
+
+销售订单、采购订单和库存调整分别通过 `generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1` 生成严格结构化候选。模型只负责提取用户原文；Frappe 重新按当前用户权限解析真实 Customer / Supplier / Item / Warehouse、UOM、价格或实时库存，并持久化为 `MyApp AI Draft`。
+
+草稿支持查询、人工更新后重新校验、放弃、不可变版本列表和历史恢复。`restore_ai_draft_version_v1` 会用当前主数据重新校验历史 payload，并创建新版本，不直接覆盖当前快照。
+
+`prepare_ai_draft_handoff_v1` 只允许 `draft` 且 `ready_for_handoff=true` 的草稿，返回现有销售、采购或库存编辑器可消费的安全预填载荷并把草稿标记为 `handed_off`。该接口不会调用 `create_order`、`create_purchase_order`、`reconcile_inventory_stock_v1` 或任何正式写入；尤其库存调整草稿不会创建或提交 `Stock Entry` / `Stock Reconciliation`。
 
 ### 统一成功响应格式
 

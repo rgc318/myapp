@@ -2019,3 +2019,12 @@ MYAPP_HTTP_ENABLE_AI_TESTS=1 python3 -m unittest \
 第一条真实回归历史结果：1 项通过；实际模型为 `gpt-5.5`，`reasoning_tokens = 0`。
 
 Phase A 当前真实用例默认使用 `.env.ai.local` 配置的低价模型，当前为 `opencode-deepseek-v4-flash`；只有显式 OpenAI 专项测试才允许切换 `gpt-5.5`。用例覆盖同步聊天审计、描述式商品查询、真正 SSE、自然语言采购订单 DSL 和 Run 反馈。可通过 `MYAPP_HTTP_AI_MODEL` 指定期望模型名称，但不得在普通回归中默认使用高价模型。
+
+Phase B 库存调整草稿可单独执行：
+
+```bash
+MYAPP_HTTP_ENABLE_AI_TESTS=1 python3 -m unittest \
+  myapp.tests.http.test_ai_gateway_http.AiGatewayHttpTestCase.test_ai_inventory_adjustment_draft_handoff_is_draft_only -v
+```
+
+该用例覆盖真实模型结构化提取、当前用户下的库存商品/仓库解析、实时库存和库存 UOM 校验、草稿版本、一次性交接载荷与会话归档。测试只生成和交接 `MyApp AI Draft`，不调用库存调整写接口；执行前后应额外核对 `Stock Entry` / `Stock Reconciliation` 数量未变化。

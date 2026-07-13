@@ -5,9 +5,11 @@ import frappe
 
 from myapp.services.ai_service import (
 	_extract_product_search_terms,
+	_build_inventory_adjustment_draft,
 	_build_order_query_dsl,
 	_build_report_query_dsl,
 	_build_draft_version_diff,
+	_resolve_inventory_draft_item,
 	chat_ai_v1,
 	generate_ai_sales_order_draft_v1,
 	stream_ai_message_v1,
@@ -17,6 +19,53 @@ from myapp.utils.api_response import UpstreamServiceUnavailableError, map_except
 
 
 class TestAiService(TestCase):
+	@patch("myapp.services.ai_service.resolve_item_quantity_to_stock")
+	@patch("myapp.services.ai_service.search_product_v2")
+	@patch("myapp.services.ai_service.frappe.get_list", return_value=["ITEM-1"])
+	def test_resolve_inventory_draft_item_uses_stock_uom_and_real_stock(
+		self, _allowed, mock_search_product, mock_resolve_quantity,
+	):
+		mock_search_product.return_value = {"data": [{
+			"item_code": "ITEM-1", "item_name": "测试商品", "nickname": "测试",
+			"uom": "Nos", "uom_display": "个", "qty": 5,
+			"all_uoms": [{"uom": "Box", "uom_display": "箱", "conversion_factor": 6}],
+			"price_summary": {"valuation_rate": 12.5},
+		}]}
+		mock_resolve_quantity.return_value = {
+			"qty": 2, "uom": "Box", "stock_uom": "Nos", "stock_qty": 12, "conversion_factor": 6,
+		}
+
+		result = _resolve_inventory_draft_item(
+			{"item_query": "ITEM-1", "adjustment_type": "increase", "quantity": 2, "uom": "Box"},
+			company="Test Company", warehouse="Stores - TC",
+		)
+
+		self.assertEqual(result["current_stock_qty"], 5)
+		self.assertEqual(result["target_stock_qty"], 17)
+		self.assertEqual(result["qty_delta"], 12)
+		self.assertEqual(result["valuation_rate"], 12.5)
+
+	@patch("myapp.services.ai_service._resolve_inventory_draft_item")
+	@patch("myapp.services.ai_service._resolve_inventory_draft_warehouse")
+	@patch("myapp.services.ai_service.nowdate", return_value="2026-07-13")
+	def test_build_inventory_adjustment_draft_requires_reason(
+		self, _today, mock_warehouse, mock_item,
+	):
+		mock_warehouse.return_value = ("Stores - TC", [{"name": "Stores - TC"}])
+		mock_item.return_value = {
+			"item_code": "ITEM-1", "qty": 8, "uom": "Nos", "warehouse": "Stores - TC",
+			"target_stock_qty": 8, "current_stock_qty": 5, "warnings": [],
+		}
+
+		payload, validation = _build_inventory_adjustment_draft(
+			{"item_query": "ITEM-1", "warehouse_query": "Stores - TC", "quantity": 8},
+			company="Test Company",
+		)
+
+		self.assertEqual(payload["adjustment_type"], "set_target")
+		self.assertFalse(validation["ready_for_handoff"])
+		self.assertIn("库存调整必须填写盘点差异或业务原因。", validation["errors"])
+
 	def test_build_draft_version_diff_tracks_fields_and_lines(self):
 		diff = _build_draft_version_diff(
 			{"payload": {"customer": "CUST-1", "items": [{"item_code": "ITEM-1", "qty": 1, "uom": "Box"}]}},

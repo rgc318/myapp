@@ -8,6 +8,7 @@ from myapp.api.gateway import (
 	archive_ai_conversation_v1,
 	batch_set_users_enabled_v1,
 	chat_ai_v1,
+	generate_ai_inventory_adjustment_draft_v1,
 	cancel_delivery_note,
 	cancel_payment_entry,
 	cancel_print_batch_v1,
@@ -272,6 +273,22 @@ class TestGatewayWrappers(TestCase):
 			conversation_id="AI-CONV-1",
 			scenario="product_search",
 			company="rgc (Demo)",
+		)
+
+	@patch("myapp.api.gateway.generate_ai_inventory_adjustment_draft_v1_service")
+	def test_generate_ai_inventory_adjustment_draft_passes_company_scope(self, mock_draft_service):
+		mock_draft_service.return_value = {"status": "success", "data": {"draft": {"name": "AI-DRAFT-1"}}}
+
+		generate_ai_inventory_adjustment_draft_v1(
+			content="把相机库存调整到 8 个",
+			company="rgc (Demo)",
+			conversation_id="AI-CONV-1",
+		)
+
+		mock_draft_service.assert_called_once_with(
+			content="把相机库存调整到 8 个",
+			company="rgc (Demo)",
+			conversation_id="AI-CONV-1",
 		)
 
 	@patch("myapp.api.gateway.get_current_user_workspace_preferences_v1_service")

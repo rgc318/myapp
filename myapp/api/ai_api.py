@@ -3,6 +3,7 @@ from myapp.services.ai_service import (
 	chat_ai_v1 as chat_ai_v1_service,
 	create_ai_conversation_v1 as create_ai_conversation_v1_service,
 	discard_ai_draft_v1 as discard_ai_draft_v1_service,
+	generate_ai_inventory_adjustment_draft_v1 as generate_ai_inventory_adjustment_draft_v1_service,
 	generate_ai_sales_order_draft_v1 as generate_ai_sales_order_draft_v1_service,
 	generate_ai_purchase_order_draft_v1 as generate_ai_purchase_order_draft_v1_service,
 	get_ai_draft_v1 as get_ai_draft_v1_service,
@@ -93,6 +94,16 @@ def generate_ai_purchase_order_draft_v1(
 	conversation_id: str | None = None,
 ):
 	return generate_ai_purchase_order_draft_v1_service(
+		content=content, company=company, conversation_id=conversation_id,
+	)
+
+
+def generate_ai_inventory_adjustment_draft_v1(
+	content: str,
+	company: str | None = None,
+	conversation_id: str | None = None,
+):
+	return generate_ai_inventory_adjustment_draft_v1_service(
 		content=content, company=company, conversation_id=conversation_id,
 	)
 

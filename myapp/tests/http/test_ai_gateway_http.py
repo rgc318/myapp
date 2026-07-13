@@ -128,6 +128,41 @@ class AiGatewayHttpTestCase(unittest.TestCase):
 		self.assertIn("tool_completed", [event["type"] for event in message["data"]["events"]])
 		self._archive_conversation(message["data"]["conversation"])
 
+	def test_ai_inventory_adjustment_draft_handoff_is_draft_only(self):
+		message = self._post_gateway(
+			"generate_ai_inventory_adjustment_draft_v1",
+			{
+				"content": "把 Stores - RD 的 SKU010 库存调整到 8 个，原因是 AI 真实链路盘点验证。",
+				"company": "rgc (Demo)",
+			},
+		)
+		self.assertTrue(message["ok"])
+		self.assertEqual(message["code"], "AI_INVENTORY_ADJUSTMENT_DRAFT_CREATED")
+		draft = message["data"]["draft"]
+		try:
+			self.assertEqual(draft["draft_type"], "inventory_adjustment")
+			self.assertEqual(draft["payload"]["warehouse"], "Stores - RD")
+			self.assertEqual(draft["payload"]["items"][0]["item_code"], "SKU010")
+			self.assertTrue(draft["validation"]["ready_for_handoff"])
+
+			versions = self._post_gateway(
+				"list_ai_draft_versions_v1",
+				{"draft_id": draft["name"]},
+			)
+			self.assertTrue(versions["ok"])
+			self.assertEqual(versions["data"]["items"][0]["change_source"], "generated")
+
+			handoff = self._post_gateway(
+				"prepare_ai_draft_handoff_v1",
+				{"draft_id": draft["name"]},
+			)
+			self.assertTrue(handoff["ok"])
+			self.assertEqual(handoff["data"]["draft_type"], "inventory_adjustment")
+			self.assertEqual(handoff["data"]["payload"]["item_code"], "SKU010")
+			self.assertEqual(handoff["data"]["payload"]["uom"], draft["payload"]["items"][0]["stock_uom"])
+		finally:
+			self._archive_conversation(message["data"]["conversation"])
+
 	def test_ai_stream_order_query_and_feedback(self):
 		events = self._stream_gateway(
 			{

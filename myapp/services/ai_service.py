@@ -11,7 +11,7 @@ import urllib.request
 
 import frappe
 from frappe import _
-from frappe.utils import cint, getdate, nowdate
+from frappe.utils import cint, flt, getdate, nowdate
 from werkzeug.wrappers import Response
 
 from myapp.services import ai_repository
@@ -27,6 +27,7 @@ from myapp.services.report_service import (
 )
 from myapp.services.wholesale_service import search_product_v2
 from myapp.utils.api_response import UpstreamServiceUnavailableError
+from myapp.utils.uom import resolve_item_quantity_to_stock
 from myapp.utils.uom_display import resolve_uom_display_name
 
 
@@ -119,6 +120,24 @@ def _call_ai_orchestrator(payload: dict) -> dict:
 def _sync_ai_feedback_to_orchestrator(payload: dict) -> bool:
 	if not payload.get("trace_id"):
 		return False
+	base_url, service_token = _get_ai_orchestrator_settings()
+	request = urllib.request.Request(
+		f"{base_url}/internal/v1/feedback",
+		data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+		headers={
+			"Authorization": f"Bearer {service_token}",
+			"Content-Type": "application/json",
+			"Accept": "application/json",
+		},
+		method="POST",
+	)
+	try:
+		with urllib.request.urlopen(request, timeout=8) as response:
+			result = json.loads(response.read().decode("utf-8") or "{}")
+			return bool(result.get("observability_synced"))
+	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+		frappe.log_error(frappe.get_traceback(), _("AI 反馈可观测性同步失败"))
+		return False
 
 
 def _call_ai_orchestrator_sales_draft(payload: dict) -> dict:
@@ -161,24 +180,25 @@ def _call_ai_orchestrator_purchase_draft(payload: dict) -> dict:
 	if not isinstance(result.get("draft"), dict):
 		raise UpstreamServiceUnavailableError(_("AI 草稿服务返回了无效响应。"))
 	return result
+
+
+def _call_ai_orchestrator_inventory_adjustment_draft(payload: dict) -> dict:
 	base_url, service_token = _get_ai_orchestrator_settings()
 	request = urllib.request.Request(
-		f"{base_url}/internal/v1/feedback",
+		f"{base_url}/internal/v1/drafts/inventory-adjustment",
 		data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-		headers={
-			"Authorization": f"Bearer {service_token}",
-			"Content-Type": "application/json",
-			"Accept": "application/json",
-		},
+		headers={"Authorization": f"Bearer {service_token}", "Content-Type": "application/json", "Accept": "application/json"},
 		method="POST",
 	)
 	try:
-		with urllib.request.urlopen(request, timeout=8) as response:
+		with urllib.request.urlopen(request, timeout=90) as response:
 			result = json.loads(response.read().decode("utf-8") or "{}")
-			return bool(result.get("observability_synced"))
 	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-		frappe.log_error(frappe.get_traceback(), _("AI 反馈可观测性同步失败"))
-		return False
+		frappe.log_error(frappe.get_traceback(), _("AI 库存调整草稿调用失败"))
+		raise UpstreamServiceUnavailableError(_("AI 草稿服务暂时不可用，请稍后重试。"))
+	if not isinstance(result.get("draft"), dict):
+		raise UpstreamServiceUnavailableError(_("AI 草稿服务返回了无效响应。"))
+	return result
 
 
 def _stream_ai_orchestrator(payload: dict):
@@ -849,6 +869,216 @@ def _resolve_purchase_draft_item(candidate: dict, *, company: str, default_wareh
 	}
 
 
+def _resolve_inventory_draft_warehouse(query: str | None, company: str) -> tuple[str | None, list[dict]]:
+	query = str(query or "").strip() or str(frappe.defaults.get_user_default("warehouse") or "").strip()
+	if not query:
+		return None, []
+	rows = frappe.get_list(
+		"Warehouse",
+		filters={"company": company, "disabled": 0, "is_group": 0},
+		or_filters={"name": ["like", f"%{query}%"], "warehouse_name": ["like", f"%{query}%"]},
+		fields=["name", "warehouse_name", "company"],
+		limit_page_length=5,
+	)
+	candidates = [
+		{"name": row.get("name"), "display_name": row.get("warehouse_name") or row.get("name")}
+		for row in rows
+	]
+	exact = next(
+		(
+			row for row in candidates
+			if query.lower() in {
+				str(row.get("name") or "").lower(),
+				str(row.get("display_name") or "").lower(),
+			}
+		),
+		None,
+	)
+	selected = exact or (candidates[0] if len(candidates) == 1 else None)
+	return (selected.get("name") if selected else None), candidates
+
+
+def _resolve_inventory_draft_item(
+	candidate: dict,
+	*,
+	company: str,
+	warehouse: str | None,
+) -> dict:
+	query = str(candidate.get("item_query") or "").strip()
+	adjustment_type = str(candidate.get("adjustment_type") or "set_target").strip()
+	quantity_value = candidate.get("quantity")
+	input_qty = None if quantity_value in (None, "") else flt(quantity_value)
+	warnings = []
+	rows = []
+	if query:
+		rows = (
+			search_product_v2(
+				search_key=query,
+				company=company,
+				warehouse=warehouse,
+				limit=5,
+				disabled=0,
+				item_context="inventory",
+			)
+			or {}
+		).get("data") or []
+	allowed = set(
+		frappe.get_list(
+			"Item",
+			filters={"name": ["in", [row.get("item_code") for row in rows if row.get("item_code")]]},
+			pluck="name",
+			limit_page_length=max(1, len(rows)),
+		)
+		if rows
+		else []
+	)
+	rows = [row for row in rows if row.get("item_code") in allowed]
+	exact = next(
+		(
+			row for row in rows
+			if query.lower() in {
+				str(row.get("item_code") or "").lower(),
+				str(row.get("item_name") or "").lower(),
+				str(row.get("nickname") or "").lower(),
+			}
+		),
+		None,
+	)
+	selected = exact or (rows[0] if len(rows) == 1 else None)
+	if not selected:
+		warnings.append(_("商品“{0}”无法唯一匹配，请人工选择。").format(query or _("未填写")))
+		return {
+			"item_query": query,
+			"item_code": None,
+			"item_name": None,
+			"qty": input_qty,
+			"uom": candidate.get("uom"),
+			"uom_display": None,
+			"stock_uom": None,
+			"stock_uom_display": None,
+			"warehouse": warehouse,
+			"conversion_factor": None,
+			"current_stock_qty": None,
+			"target_stock_qty": None,
+			"qty_delta": None,
+			"valuation_rate": None,
+			"candidates": [
+				{"item_code": row.get("item_code"), "item_name": row.get("item_name")}
+				for row in rows
+			],
+			"warnings": warnings,
+		}
+
+	stock_uom = selected.get("uom")
+	all_uoms = selected.get("all_uoms") or []
+	requested_uom = str(candidate.get("uom") or "").strip()
+	uom_row = next((row for row in all_uoms if str(row.get("uom") or "") == requested_uom), None)
+	if requested_uom == stock_uom:
+		uom_row = uom_row or {"uom": stock_uom, "conversion_factor": 1, "uom_display": selected.get("uom_display")}
+	if requested_uom and not uom_row:
+		warnings.append(_("商品 {0} 未配置单位 {1}，已改用库存单位。").format(selected.get("item_code"), requested_uom))
+	resolved_uom = (uom_row or {}).get("uom") or stock_uom
+	quantity_context = None
+	if input_qty is not None:
+		quantity_context = resolve_item_quantity_to_stock(
+			item_code=selected.get("item_code"),
+			qty=input_qty,
+			uom=resolved_uom,
+		)
+	current_stock_qty = flt(selected.get("qty") or 0)
+	resolved_stock_qty = flt((quantity_context or {}).get("stock_qty")) if quantity_context else None
+	target_stock_qty = None
+	if resolved_stock_qty is not None:
+		if adjustment_type == "increase":
+			target_stock_qty = flt(current_stock_qty + resolved_stock_qty)
+		elif adjustment_type == "decrease":
+			target_stock_qty = flt(current_stock_qty - resolved_stock_qty)
+		else:
+			target_stock_qty = resolved_stock_qty
+	price_summary = selected.get("price_summary") or {}
+	return {
+		"item_query": query,
+		"item_code": selected.get("item_code"),
+		"item_name": selected.get("item_name"),
+		"qty": input_qty,
+		"uom": resolved_uom,
+		"uom_display": (uom_row or {}).get("uom_display") or resolve_uom_display_name(resolved_uom),
+		"stock_uom": stock_uom,
+		"stock_uom_display": selected.get("uom_display") or resolve_uom_display_name(stock_uom),
+		"warehouse": warehouse,
+		"conversion_factor": flt((quantity_context or {}).get("conversion_factor") or 1),
+		"current_stock_qty": current_stock_qty,
+		"target_stock_qty": target_stock_qty,
+		"qty_delta": flt(target_stock_qty - current_stock_qty) if target_stock_qty is not None else None,
+		"valuation_rate": flt(price_summary.get("valuation_rate") or 0),
+		"candidates": [
+			{"item_code": row.get("item_code"), "item_name": row.get("item_name")}
+			for row in rows
+		],
+		"warnings": warnings,
+	}
+
+
+def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple[dict, dict]:
+	items = candidate.get("items") if isinstance(candidate.get("items"), list) else []
+	source_item = items[0] if items and isinstance(items[0], dict) else candidate
+	adjustment_type = str(candidate.get("adjustment_type") or source_item.get("adjustment_type") or "set_target").strip()
+	if adjustment_type not in {"set_target", "increase", "decrease"}:
+		adjustment_type = "set_target"
+	warehouse_query = candidate.get("warehouse") or candidate.get("warehouse_query") or source_item.get("warehouse")
+	warehouse, warehouse_candidates = _resolve_inventory_draft_warehouse(warehouse_query, company)
+	quantity = candidate.get("quantity")
+	if quantity in (None, ""):
+		quantity = source_item.get("qty")
+	item = _resolve_inventory_draft_item(
+		{
+			"item_query": candidate.get("item_code") or candidate.get("item_query")
+				or source_item.get("item_code") or source_item.get("item_query"),
+			"adjustment_type": adjustment_type,
+			"quantity": quantity,
+			"uom": candidate.get("uom") or source_item.get("uom"),
+		},
+		company=company,
+		warehouse=warehouse,
+	)
+	reason = str(candidate.get("reason") or candidate.get("remarks") or "").strip()[:1000] or None
+	errors = []
+	if not warehouse:
+		errors.append(_("仓库无法唯一匹配，请人工选择。"))
+	if not item.get("item_code"):
+		errors.append(_("商品无法唯一匹配，请人工选择。"))
+	if item.get("qty") is None:
+		errors.append(_("请填写库存调整数量。"))
+	elif adjustment_type in {"increase", "decrease"} and flt(item.get("qty")) <= 0:
+		errors.append(_("增减库存数量必须大于 0。"))
+	if item.get("target_stock_qty") is not None and flt(item.get("target_stock_qty")) < 0:
+		errors.append(_("调整后的目标库存不能为负数。"))
+	if not reason:
+		errors.append(_("库存调整必须填写盘点差异或业务原因。"))
+	try:
+		posting_date = str(getdate(candidate.get("posting_date") or nowdate()))
+	except Exception:
+		posting_date = str(nowdate())
+		errors.append(_("过账日期格式不正确。"))
+	payload = {
+		"company": company,
+		"posting_date": posting_date,
+		"adjustment_type": adjustment_type,
+		"warehouse_query": warehouse_query,
+		"warehouse": warehouse,
+		"warehouse_candidates": warehouse_candidates,
+		"reason": reason,
+		"remarks": reason,
+		"items": [item],
+	}
+	validation = {
+		"ready_for_handoff": not errors,
+		"errors": errors,
+		"warnings": item.get("warnings") or [],
+	}
+	return payload, validation
+
+
 def _resolve_sales_draft_warehouse(query: str | None, company: str) -> str | None:
 	resolved = str(query or "").strip()
 	if not resolved:
@@ -1144,6 +1374,130 @@ def generate_ai_purchase_order_draft_v1(
 		raise
 
 
+def generate_ai_inventory_adjustment_draft_v1(
+	content: str,
+	company: str | None = None,
+	conversation_id: str | None = None,
+):
+	user = _current_user()
+	content = _normalize_content(content)
+	company = _resolve_company_scope(company, required=True)
+	if not frappe.has_permission("Stock Entry", ptype="create"):
+		raise frappe.PermissionError(_("无权创建库存调整草稿。"))
+	if not conversation_id:
+		conversation = ai_repository.create_conversation(user=user, title=content, company=company)
+		conversation_id = conversation["name"]
+	else:
+		conversation = ai_repository.get_conversation(conversation_id=conversation_id, user=user)["conversation"]
+		if conversation.get("company") and conversation.get("company") != company:
+			frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
+	ai_repository.append_message(
+		conversation_id=conversation_id,
+		user=user,
+		role="user",
+		content=content,
+		scenario="inventory_adjustment_draft",
+		prompt_version=PROMPT_VERSION,
+	)
+	run_id = ai_repository.create_run(
+		conversation_id=conversation_id,
+		user=user,
+		scenario="inventory_adjustment_draft",
+	)
+	frappe.db.commit()
+	started = time.perf_counter()
+	try:
+		model_messages = ai_repository.load_model_messages(
+			conversation_id=conversation_id,
+			user=user,
+			limit=MAX_AI_MESSAGES,
+		)
+		result = _call_ai_orchestrator_inventory_adjustment_draft(
+			{
+				"messages": model_messages,
+				"scenario": "inventory_adjustment_draft",
+				"user": user,
+				"company": company,
+				"locale": getattr(frappe.local, "lang", None) or "zh-CN",
+				"prompt_version": PROMPT_VERSION,
+				"conversation_id": conversation_id,
+				"run_id": run_id,
+			}
+		)
+		payload, validation = _build_inventory_adjustment_draft(result["draft"], company=company)
+		draft = ai_repository.create_draft(
+			user=user,
+			conversation_id=conversation_id,
+			source_run=run_id,
+			draft_type="inventory_adjustment",
+			company=company,
+			title=content,
+			payload=payload,
+			validation=validation,
+		)
+		assistant_content = _("已生成库存调整草稿；{0}").format(
+			_("可以进入库存调整编辑器继续复核。")
+			if validation["ready_for_handoff"]
+			else _("仍有字段需要人工确认。")
+		)
+		citation = {
+			"type": "ai_draft",
+			"id": draft["name"],
+			"label": draft["title"],
+			"href": None,
+			"data": draft,
+		}
+		ai_repository.append_message(
+			conversation_id=conversation_id,
+			user=user,
+			role="assistant",
+			content=assistant_content,
+			scenario="inventory_adjustment_draft",
+			run_id=run_id,
+			citations=[citation],
+			prompt_version=PROMPT_VERSION,
+		)
+		ai_repository.complete_run(
+			run_id=run_id,
+			user=user,
+			result=result,
+			latency_ms=int((time.perf_counter() - started) * 1000),
+			tool_calls=[
+				{
+					"tool": "build_inventory_adjustment_draft",
+					"risk_level": "L2_DRAFT_ONLY",
+					"draft_id": draft["name"],
+				}
+			],
+		)
+		frappe.db.commit()
+		return {
+			"status": "success",
+			"message": assistant_content,
+			"data": {
+				"conversation": conversation_id,
+				"run_id": run_id,
+				"draft": draft,
+				"message": {"role": "assistant", "content": assistant_content, "citations": [citation]},
+				"model": result.get("model"),
+				"model_alias": result.get("model_alias"),
+				"trace_id": result.get("trace_id"),
+				"usage": result.get("usage") or {},
+				"warnings": result.get("warnings") or [],
+			},
+		}
+	except Exception as error:
+		frappe.db.rollback()
+		ai_repository.fail_run(
+			run_id=run_id,
+			user=user,
+			error=error,
+			latency_ms=int((time.perf_counter() - started) * 1000),
+		)
+		frappe.db.commit()
+		raise
+
+
 def get_ai_draft_v1(draft_id: str):
 	return {"status": "success", "message": _("AI 草稿获取成功。"), "data": ai_repository.get_draft(draft_id=draft_id, user=_current_user())}
 
@@ -1155,6 +1509,21 @@ def update_ai_draft_v1(draft_id: str, payload, _change_source: str = "user_edit"
 		payload = frappe.parse_json(payload)
 	if not isinstance(payload, dict):
 		frappe.throw(_("草稿 payload 格式不正确。"))
+	if draft["draft_type"] == "inventory_adjustment":
+		next_payload, validation = _build_inventory_adjustment_draft(payload, company=draft["company"])
+		updated = ai_repository.update_draft(
+			draft_id=draft_id,
+			user=user,
+			payload=next_payload,
+			validation=validation,
+			change_source=_change_source,
+		)
+		frappe.db.commit()
+		return {
+			"status": "success",
+			"message": _("AI 库存调整草稿已更新并按实时库存重新校验。"),
+			"data": updated,
+		}
 	if draft["draft_type"] == "purchase_order":
 		company = draft["company"]
 		supplier_query = payload.get("supplier") or payload.get("supplier_query")
@@ -1263,7 +1632,20 @@ def _build_draft_version_diff(previous: dict | None, current: dict) -> dict:
 	previous_payload = previous.get("payload") or {}
 	current_payload = current.get("payload") or {}
 	fields = []
-	for field in ("customer", "transaction_date", "delivery_date", "default_sales_mode", "warehouse", "remarks"):
+	for field in (
+		"customer",
+		"supplier",
+		"transaction_date",
+		"delivery_date",
+		"schedule_date",
+		"posting_date",
+		"default_sales_mode",
+		"default_purchase_mode",
+		"adjustment_type",
+		"warehouse",
+		"reason",
+		"remarks",
+	):
 		before = previous_payload.get(field)
 		after = current_payload.get(field)
 		if before != after:
@@ -1287,7 +1669,16 @@ def _build_draft_version_diff(previous: dict | None, current: dict) -> dict:
 			item_changes.append({"key": key, "change": "removed", "before": before, "after": None})
 		else:
 			changed_fields = [
-				field for field in ("qty", "uom", "price", "warehouse")
+				field for field in (
+					"qty",
+					"uom",
+					"price",
+					"warehouse",
+					"current_stock_qty",
+					"target_stock_qty",
+					"qty_delta",
+					"valuation_rate",
+				)
 				if before.get(field) != after.get(field)
 			]
 			if changed_fields:
@@ -1324,7 +1715,7 @@ def restore_ai_draft_version_v1(draft_id: str, version: int):
 def prepare_ai_draft_handoff_v1(draft_id: str):
 	user = _current_user()
 	draft = ai_repository.get_draft(draft_id=draft_id, user=user)
-	if draft["draft_type"] not in {"sales_order", "purchase_order"}:
+	if draft["draft_type"] not in {"sales_order", "purchase_order", "inventory_adjustment"}:
 		frappe.throw(_("当前草稿类型不支持交接。"))
 	if draft["status"] != "draft":
 		frappe.throw(_("只有 draft 状态的草稿可以交接。"))
@@ -1333,7 +1724,25 @@ def prepare_ai_draft_handoff_v1(draft_id: str):
 	payload = draft["payload"]
 	ai_repository.mark_draft_handed_off(draft_id=draft_id, user=user)
 	frappe.db.commit()
-	if draft["draft_type"] == "purchase_order":
+	if draft["draft_type"] == "inventory_adjustment":
+		row = (payload.get("items") or [{}])[0]
+		handoff_payload = {
+			"company": payload.get("company"),
+			"posting_date": payload.get("posting_date"),
+			"adjustment_type": payload.get("adjustment_type"),
+			"warehouse": payload.get("warehouse"),
+			"reason": payload.get("reason"),
+			"remarks": payload.get("remarks"),
+			"item_code": row.get("item_code"),
+			"item_name": row.get("item_name"),
+			"target_qty": row.get("target_stock_qty"),
+			"uom": row.get("stock_uom"),
+			"uom_display": row.get("stock_uom_display"),
+			"current_stock_qty": row.get("current_stock_qty"),
+			"qty_delta": row.get("qty_delta"),
+			"valuation_rate": row.get("valuation_rate"),
+		}
+	elif draft["draft_type"] == "purchase_order":
 		handoff_payload = {
 			"company": payload.get("company"), "supplier": payload.get("supplier"),
 			"transaction_date": payload.get("transaction_date"), "schedule_date": payload.get("schedule_date"),

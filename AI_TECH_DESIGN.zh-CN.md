@@ -1,6 +1,6 @@
 # AI Copilot 模块技术设计
 
-> 状态：Phase A 只读纵向链路已覆盖会话/消息/Run、SSE、反馈、商品/订单/报表工具和可选 Langfuse。Phase B 已完成销售与采购订单草稿纵向链路，以及人工修改、不可变版本、差异、安全恢复、放弃和现有编辑器预填。库存调整草稿、语义向量检索、真实 Langfuse 实例和数据治理任务仍待继续。
+> 状态：Phase A 只读纵向链路已覆盖会话/消息/Run、SSE、反馈、商品/订单/报表工具和可选 Langfuse。Phase B 已完成销售、采购订单和库存调整草稿纵向链路，以及人工修改、不可变版本、差异、安全恢复、放弃和现有编辑器预填。语义向量检索、真实 Langfuse 实例和数据治理任务仍待继续。
 
 ## 1. 目标与非目标
 
@@ -254,6 +254,8 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 结构化模型优先使用 OpenAI 兼容 `json_schema`；供应商明确拒绝该能力时，Orchestrator 可降级为 JSON-only 输出，但结果仍必须通过同一 Pydantic Schema，任何自由文本、缺字段、越界数量或类型错误都会失败，不会持久化为草稿。
 
 采购订单草稿使用独立 `purchase_order_draft` Schema 和 `/internal/v1/drafts/purchase-order`。Frappe 解析真实 Supplier，并以 `item_context=purchase` 查询采购商品；价格只取后端 `standard_buying_rate` / buying prices，不复用销售价或模型建议价。采购默认 UOM、换算系数、收货仓库、公司币种、供应商参考号、订单日期和预计到货日期独立校验。校验通过后仅预填现有采购订单编辑器，正式采购单仍由用户主动创建。
+
+库存调整草稿使用独立 `inventory_adjustment_draft` Schema 和 `/internal/v1/drafts/inventory-adjustment`，只允许单个库存商品的 `set_target`、`increase`、`decrease` 三种候选语义。Frappe 按当前用户和公司权限解析真实 Item / Warehouse，使用 `item_context=inventory` 和共享 UOM 换算重新计算实时库存、目标库存、差异数量与估值参考；调整原因必填，减少后目标库存不得为负。交接只把库存单位下的安全目标数量预填到现有 `/inventory/adjustments` 页面，AI 不调用 `reconcile_inventory_stock_v1`，也不创建或提交 `Stock Entry` / `Stock Reconciliation`。
 
 ## 10. 可观测性、治理与防护
 

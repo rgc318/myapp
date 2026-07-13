@@ -4,8 +4,9 @@ from .ai_api import archive_ai_conversation_v1 as archive_ai_conversation_v1_ser
 from .ai_api import chat_ai_v1 as chat_ai_v1_service
 from .ai_api import create_ai_conversation_v1 as create_ai_conversation_v1_service
 from .ai_api import discard_ai_draft_v1 as discard_ai_draft_v1_service
-from .ai_api import generate_ai_sales_order_draft_v1 as generate_ai_sales_order_draft_v1_service
+from .ai_api import generate_ai_inventory_adjustment_draft_v1 as generate_ai_inventory_adjustment_draft_v1_service
 from .ai_api import generate_ai_purchase_order_draft_v1 as generate_ai_purchase_order_draft_v1_service
+from .ai_api import generate_ai_sales_order_draft_v1 as generate_ai_sales_order_draft_v1_service
 from .ai_api import get_ai_draft_v1 as get_ai_draft_v1_service
 from .ai_api import get_ai_conversation_v1 as get_ai_conversation_v1_service
 from .ai_api import list_ai_conversations_v1 as list_ai_conversations_v1_service
@@ -313,6 +314,20 @@ def generate_ai_purchase_order_draft_v1(
 			content=content, company=company, conversation_id=conversation_id,
 		),
 		success_code="AI_PURCHASE_ORDER_DRAFT_CREATED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def generate_ai_inventory_adjustment_draft_v1(
+	content: str,
+	company: str | None = None,
+	conversation_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: generate_ai_inventory_adjustment_draft_v1_service(
+			content=content, company=company, conversation_id=conversation_id,
+		),
+		success_code="AI_INVENTORY_ADJUSTMENT_DRAFT_CREATED",
 	)
 
 
