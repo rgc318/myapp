@@ -16,6 +16,13 @@ from werkzeug.wrappers import Response
 from myapp.services import ai_repository
 from myapp.services.order_service import search_sales_orders_v2
 from myapp.services.purchase_service import search_purchase_orders_v2
+from myapp.services.report_service import (
+	get_business_report_overview_v1,
+	get_cashflow_report_v1,
+	get_purchase_report_v1,
+	get_receivable_payable_report_v1,
+	get_sales_report_v1,
+)
 from myapp.services.wholesale_service import search_product_v2
 from myapp.utils.api_response import UpstreamServiceUnavailableError
 
@@ -25,7 +32,7 @@ MAX_AI_MESSAGE_CHARS = 8000
 MAX_AI_PRODUCT_RESULTS = 8
 ALLOWED_AI_ROLES = {"user", "assistant"}
 ALLOWED_AI_SCENARIOS = {"general", "product_search", "order_query", "report_summary"}
-PROMPT_VERSION = "erp-readonly-v2"
+PROMPT_VERSION = "erp-readonly-v3"
 PRODUCT_SEARCH_PREFIX_PATTERN = re.compile(
 	r"^(?:请|麻烦|可以|能否|帮我|给我|我想|我要)*(?:查找|搜索|找一下|找一找|找找|找)?"
 )
@@ -266,14 +273,8 @@ def _parse_amount_value(value: str, unit: str | None) -> float:
 	return amount
 
 
-def _build_order_query_dsl(query: str, *, company: str) -> dict:
+def _resolve_natural_date_range(query: str) -> dict:
 	text = " ".join((query or "").strip().split())
-	mentions_sales = any(word in text for word in ("销售", "客户", "收款", "发货"))
-	mentions_purchase = any(word in text for word in ("采购", "供应商", "付款", "收货"))
-	if mentions_sales and mentions_purchase:
-		frappe.throw(_("订单查询同时包含销售和采购语义，请拆成两个问题。"))
-	entity = "purchase_order" if mentions_purchase else "sales_order"
-
 	today = date.today()
 	date_to = today
 	date_from = today - timedelta(days=29)
@@ -296,6 +297,22 @@ def _build_order_query_dsl(query: str, *, company: str) -> dict:
 		days = max(1, min(366, int(match.group(1))))
 		date_from = today - timedelta(days=days - 1)
 		date_range = f"last_{days}_days"
+	return {
+		"date_range": date_range,
+		"date_from": str(date_from),
+		"date_to": str(date_to),
+	}
+
+
+def _build_order_query_dsl(query: str, *, company: str) -> dict:
+	text = " ".join((query or "").strip().split())
+	mentions_sales = any(word in text for word in ("销售", "客户", "收款", "发货"))
+	mentions_purchase = any(word in text for word in ("采购", "供应商", "付款", "收货"))
+	if mentions_sales and mentions_purchase:
+		frappe.throw(_("订单查询同时包含销售和采购语义，请拆成两个问题。"))
+	entity = "purchase_order" if mentions_purchase else "sales_order"
+
+	date_filter = _resolve_natural_date_range(text)
 
 	status_filter = "all"
 	if "未完成" in text or "进行中" in text:
@@ -329,9 +346,7 @@ def _build_order_query_dsl(query: str, *, company: str) -> dict:
 	return {
 		"entity": entity,
 		"company": company,
-		"date_range": date_range,
-		"date_from": str(date_from),
-		"date_to": str(date_to),
+		**date_filter,
 		"status_filter": status_filter,
 		"exclude_cancelled": status_filter != "cancelled",
 		"sort_by": sort_by,
@@ -436,6 +451,120 @@ def _build_order_query_context(*, query: str, company: str | None) -> tuple[dict
 		"summary": data.get("summary") or {},
 		"orders": items,
 		"instructions": "订单数据来自受控只读查询。回答必须说明公司、日期、状态和金额筛选口径，并引用订单号；不得编造未返回的订单。",
+	}
+	return context, citations, tool_calls
+
+
+def _build_report_query_dsl(query: str, *, company: str) -> dict:
+	text = " ".join((query or "").strip().split())
+	mentions_sales = any(word in text for word in ("销售", "营收", "客户"))
+	mentions_purchase = any(word in text for word in ("采购", "供应商"))
+	mentions_cashflow = any(word in text for word in ("现金流", "资金", "收款", "付款", "净流入", "净流出"))
+	mentions_receivable = "应收" in text
+	mentions_payable = "应付" in text
+	mentions_receivable_payable = (
+		(mentions_receivable and mentions_payable)
+		or any(word in text for word in ("欠款", "往来账"))
+		or (mentions_receivable and not mentions_sales)
+		or (mentions_payable and not mentions_purchase)
+	)
+
+	if mentions_receivable_payable:
+		report_type = "receivable_payable"
+	elif mentions_cashflow and not (mentions_sales or mentions_purchase):
+		report_type = "cashflow"
+	elif mentions_sales and mentions_purchase:
+		report_type = "overview"
+	elif mentions_purchase:
+		report_type = "purchase"
+	elif mentions_sales:
+		report_type = "sales"
+	else:
+		report_type = "overview"
+
+	return {
+		"report_type": report_type,
+		"company": company,
+		**_resolve_natural_date_range(text),
+		"limit": 10,
+	}
+
+
+def _require_report_permissions(report_type: str):
+	required_doctypes = {
+		"overview": ("Sales Order", "Purchase Order", "Payment Entry", "Sales Invoice", "Purchase Invoice"),
+		"sales": ("Sales Order", "Payment Entry", "Sales Invoice"),
+		"purchase": ("Purchase Order", "Payment Entry", "Purchase Invoice"),
+		"cashflow": ("Payment Entry",),
+		"receivable_payable": ("Sales Invoice", "Purchase Invoice"),
+	}[report_type]
+	for doctype in required_doctypes:
+		if not frappe.has_permission(doctype, ptype="read"):
+			raise frappe.PermissionError(_("无权读取报表所需的 {0} 数据。").format(doctype))
+
+
+def _build_report_query_context(*, query: str, company: str | None) -> tuple[dict, list[dict], list[dict]]:
+	resolved_company = _resolve_company_scope(company, required=True)
+	dsl = _build_report_query_dsl(query, company=resolved_company)
+	report_type = dsl["report_type"]
+	_require_report_permissions(report_type)
+	params = {
+		"company": resolved_company,
+		"date_from": dsl["date_from"],
+		"date_to": dsl["date_to"],
+	}
+	if report_type == "sales":
+		result = get_sales_report_v1(**params, limit=dsl["limit"])
+	elif report_type == "purchase":
+		result = get_purchase_report_v1(**params, limit=dsl["limit"])
+	elif report_type == "cashflow":
+		result = get_cashflow_report_v1(**params)
+	elif report_type == "receivable_payable":
+		result = get_receivable_payable_report_v1(**params, limit=dsl["limit"])
+	else:
+		result = get_business_report_overview_v1(**params)
+
+	report_data = (result or {}).get("data") or {}
+	report_labels = {
+		"overview": "经营总览",
+		"sales": "销售分析",
+		"purchase": "采购分析",
+		"cashflow": "资金分析",
+		"receivable_payable": "应收应付分析",
+	}
+	citation_data = {
+		"report_type": report_type,
+		"overview": report_data.get("overview") or {},
+		"meta": report_data.get("meta") or params,
+	}
+	citations = [
+		{
+			"type": "business_report",
+			"id": f"{report_type}:{dsl['date_from']}:{dsl['date_to']}",
+			"label": f"{report_labels[report_type]} · {dsl['date_from']} 至 {dsl['date_to']}",
+			"href": "/reports",
+			"data": citation_data,
+		}
+	]
+	tool_calls = [
+		{
+			"tool": "get_business_report",
+			"risk_level": "L1_READ_ONLY",
+			"dsl_hash": hashlib.sha256(json.dumps(dsl, sort_keys=True).encode("utf-8")).hexdigest(),
+			"company": resolved_company,
+			"report_type": report_type,
+			"result_count": len(report_data.get("tables") or report_data.get("trend") or []) or 1,
+		}
+	]
+	context = {
+		"tool": "get_business_report",
+		"query": query,
+		"dsl": dsl,
+		"report": report_data,
+		"instructions": (
+			"报表数据来自受控只读报表服务。回答必须说明公司、日期范围、报表类型和指标口径；"
+			"区分订单金额、实际收付款和发票未结金额，不得虚构趋势、原因或未返回的明细。"
+		),
 	}
 	return context, citations, tool_calls
 
@@ -548,7 +677,7 @@ def _prepare_chat_run(
 
 	resolved_company = _resolve_company_scope(
 		company,
-		required=resolved_scenario in {"product_search", "order_query"},
+		required=resolved_scenario in {"product_search", "order_query", "report_summary"},
 	)
 	is_new_conversation = not conversation_id
 	if conversation_id:
@@ -603,6 +732,11 @@ def _prepare_chat_run(
 			)
 		elif resolved_scenario == "order_query":
 			tool_context, citations, tool_calls = _build_order_query_context(
+				query=current_content,
+				company=resolved_company,
+			)
+		elif resolved_scenario == "report_summary":
+			tool_context, citations, tool_calls = _build_report_query_context(
 				query=current_content,
 				company=resolved_company,
 			)

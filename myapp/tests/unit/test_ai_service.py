@@ -6,6 +6,7 @@ import frappe
 from myapp.services.ai_service import (
 	_extract_product_search_terms,
 	_build_order_query_dsl,
+	_build_report_query_dsl,
 	chat_ai_v1,
 	stream_ai_message_v1,
 	submit_ai_feedback_v1,
@@ -36,6 +37,33 @@ class TestAiService(TestCase):
 		self.assertEqual(dsl["date_range"], "last_7_days")
 		self.assertEqual(dsl["min_amount"], 20000)
 		self.assertEqual(dsl["limit"], 3)
+
+	def test_build_report_query_dsl_selects_report_and_date_range(self):
+		dsl = _build_report_query_dsl(
+			"解释本月销售表现和主要客户",
+			company="rgc (Demo)",
+		)
+
+		self.assertEqual(dsl["report_type"], "sales")
+		self.assertEqual(dsl["date_range"], "this_month")
+		self.assertEqual(dsl["company"], "rgc (Demo)")
+
+	def test_build_report_query_dsl_prioritizes_receivable_payable(self):
+		dsl = _build_report_query_dsl(
+			"分析近90天客户应收和供应商应付",
+			company="rgc (Demo)",
+		)
+
+		self.assertEqual(dsl["report_type"], "receivable_payable")
+		self.assertEqual(dsl["date_range"], "last_90_days")
+
+	def test_build_report_query_dsl_keeps_sales_with_receivable_metric(self):
+		dsl = _build_report_query_dsl(
+			"解释本月销售表现，区分销售额、实收和应收未结",
+			company="rgc (Demo)",
+		)
+
+		self.assertEqual(dsl["report_type"], "sales")
 
 	def test_extract_product_search_terms_removes_request_language(self):
 		self.assertEqual(
@@ -222,6 +250,65 @@ class TestAiService(TestCase):
 		payload = mock_call.call_args.args[0]
 		self.assertEqual(payload["context"]["tool"], "search_products")
 		self.assertEqual(payload["context"]["products"][0]["item_code"], "ITEM-001")
+		self.assertEqual(mock_complete_run.call_args.kwargs["tool_calls"][0]["risk_level"], "L1_READ_ONLY")
+
+	@patch("myapp.services.ai_service.ai_repository.complete_run")
+	@patch("myapp.services.ai_service.ai_repository.load_model_messages")
+	@patch("myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-3")
+	@patch("myapp.services.ai_service.ai_repository.append_message")
+	@patch("myapp.services.ai_service.ai_repository.create_conversation")
+	@patch("myapp.services.ai_service._call_ai_orchestrator")
+	@patch("myapp.services.ai_service.get_sales_report_v1")
+	@patch("myapp.services.ai_service._resolve_company_scope", return_value="rgc (Demo)")
+	def test_report_summary_uses_read_only_report_service_and_returns_citation(
+		self,
+		mock_company,
+		mock_report,
+		mock_call,
+		mock_create_conversation,
+		mock_append_message,
+		mock_create_run,
+		mock_load_messages,
+		mock_complete_run,
+	):
+		mock_create_conversation.return_value = {"name": "AI-CONV-3", "company": "rgc (Demo)"}
+		mock_load_messages.return_value = [{"role": "user", "content": "解释本月销售表现"}]
+		mock_report.return_value = {
+			"data": {
+				"overview": {
+					"sales_amount_total": 120000,
+					"received_amount_total": 80000,
+					"receivable_outstanding_total": 40000,
+				},
+				"tables": {"sales_summary": [{"name": "客户A", "amount": 60000}]},
+				"meta": {"company": "rgc (Demo)", "date_from": "2026-07-01", "date_to": "2026-07-12"},
+			}
+		}
+		mock_call.return_value = {
+			"message": {"role": "assistant", "content": "本月销售额 12 万元。"},
+			"model": "opencode-deepseek-v4-flash",
+			"model_alias": "erp-fast-chat",
+			"trace_id": "trace-3",
+			"usage": {"reasoning_tokens": 0},
+			"warnings": ["只读模式"],
+		}
+
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.session.user = "user@example.com"
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.has_permission.return_value = True
+			result = chat_ai_v1(
+				content="解释本月销售表现",
+				scenario="report_summary",
+				company="rgc (Demo)",
+			)
+
+		citation = result["data"]["message"]["citations"][0]
+		self.assertEqual(citation["type"], "business_report")
+		self.assertEqual(citation["data"]["overview"]["sales_amount_total"], 120000)
+		payload = mock_call.call_args.args[0]
+		self.assertEqual(payload["context"]["tool"], "get_business_report")
+		self.assertEqual(payload["context"]["dsl"]["report_type"], "sales")
 		self.assertEqual(mock_complete_run.call_args.kwargs["tool_calls"][0]["risk_level"], "L1_READ_ONLY")
 
 	@patch("myapp.services.ai_service._", side_effect=lambda value: value)

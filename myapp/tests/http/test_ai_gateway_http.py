@@ -29,7 +29,7 @@ class AiGatewayHttpTestCase(unittest.TestCase):
 	def setUpClass(cls):
 		super().setUpClass()
 		if os.environ.get("MYAPP_HTTP_ENABLE_AI_TESTS", "0") not in {"1", "true", "True"}:
-			raise cls.skipTest("Set MYAPP_HTTP_ENABLE_AI_TESTS=1 to run billable AI HTTP tests.")
+			raise unittest.SkipTest("Set MYAPP_HTTP_ENABLE_AI_TESTS=1 to run billable AI HTTP tests.")
 
 		cls.base_url = os.environ.get("MYAPP_HTTP_BASE_URL", "http://localhost:8080").rstrip("/")
 		cls.expected_model = os.environ.get("MYAPP_HTTP_AI_MODEL", "opencode-deepseek-v4-flash").strip()
@@ -154,6 +154,31 @@ class AiGatewayHttpTestCase(unittest.TestCase):
 		self.assertTrue(feedback["ok"])
 		self.assertEqual(feedback["data"]["rating"], "positive")
 		self._archive_conversation(completed["conversation"])
+
+	def test_ai_stream_report_summary_uses_controlled_report_tool(self):
+		events = self._stream_gateway(
+			{
+				"content": "解释本月销售表现和主要客户，区分销售额、实收和应收未结。",
+				"scenario": "report_summary",
+				"company": "rgc (Demo)",
+			}
+		)
+		completed = events[-1]
+		try:
+			event_types = [event.get("type") for event in events]
+			self.assertEqual(event_types[0], "run_started")
+			self.assertIn("tool_started", event_types)
+			self.assertIn("message_delta", event_types)
+			self.assertEqual(event_types[-1], "completed")
+			citations = [event["citation"] for event in events if event.get("type") == "citation"]
+			self.assertEqual(len(citations), 1)
+			self.assertEqual(citations[0]["type"], "business_report")
+			self.assertEqual(citations[0]["data"]["report_type"], "sales")
+			self.assertIn("sales_amount_total", citations[0]["data"]["overview"])
+			self.assertEqual(completed["model"], self.expected_model)
+		finally:
+			if completed.get("conversation"):
+				self._archive_conversation(completed["conversation"])
 
 
 if __name__ == "__main__":
