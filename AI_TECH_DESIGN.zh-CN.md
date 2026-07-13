@@ -1,6 +1,6 @@
 # AI Copilot 模块技术设计
 
-> 状态：Phase A 只读纵向链路已覆盖会话/消息/Run、SSE、反馈、商品/订单/报表工具和可选 Langfuse。Phase B 已完成销售、采购订单和库存调整草稿纵向链路，以及人工修改、不可变版本、差异、安全恢复、放弃和现有编辑器预填。语义向量检索、真实 Langfuse 实例和数据治理任务仍待继续。
+> 状态：Phase A 只读纵向链路已覆盖会话/消息/Run、SSE、反馈、商品/订单/报表工具、本地 Langfuse v3.212.0 和固定评测集。Phase B 已完成销售、采购订单和库存调整草稿纵向链路，以及人工修改、不可变版本、差异、安全恢复、放弃和现有编辑器预填。语义向量检索、生产级观测运维、数据治理任务和模型策略管理台仍待继续。
 
 ## 1. 目标与非目标
 
@@ -265,7 +265,13 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 - 外部文档、商品描述、备注和用户输入都视为不可信数据，不能改变工具权限、模型策略或系统指令，防止 Prompt Injection。
 - 模型、Prompt 或工具策略变更必须经过固定评测集、回归测试和灰度发布；不得直接全员切换。
 
-当前 Orchestrator 已实现 Langfuse ingestion 接入：trace 关联 Frappe conversation / run，generation 记录模型、Token、成功或错误状态，点赞/点踩同步为 score。集成为可选且失败开放，未配置或 Langfuse 不可用时不阻断模型调用和 ERP 反馈保存。默认 `MYAPP_AI_LANGFUSE_CAPTURE_CONTENT=0`，只发送输入输出的 SHA-256、字符数和字节数；只有完成数据分级、访问控制和保留期评审后才能上传原文。当前本地环境尚未配置真实 Langfuse 实例，因此部署、成本看板和固定评测集仍待完成。
+当前 Orchestrator 已实现 Langfuse ingestion 接入：trace 关联 Frappe conversation / run，generation 记录模型、Token、成功或错误状态，点赞/点踩和固定评测结果同步为 score。集成为可选且失败开放，未配置或 Langfuse 不可用时不阻断模型调用和 ERP 反馈保存。HTTP 207 批次响应必须同时确认逐事件 `errors` 为空、`successes` 覆盖本批次全部事件 ID，不能只按状态码或任意一个 success 判断成功。Trace 的 `release`、generation 的 Prompt `version`、score 的 `environment/source` 使用 Langfuse 原生字段；用户反馈为 `source=API`，固定评测为 `source=EVAL`。默认 `MYAPP_AI_LANGFUSE_CAPTURE_CONTENT=0`，输入、输出和反馈 comment 只发送 SHA-256、字符数和字节数；只有完成数据分级、访问控制和保留期评审后才能上传原文。
+
+父仓库现提供 `overrides/compose.langfuse.yaml` 和随机密钥初始化脚本，本地固定使用 Langfuse v3.212.0，并隔离 PostgreSQL、ClickHouse、Redis、MinIO 数据卷。初始化脚本生成 `0600` 密钥文件且拒绝覆盖现有文件。Web/MinIO 只绑定 loopback，数据库、ClickHouse、Redis 和 MinIO Console 不发布宿主机端口。Orchestrator 镜像固定基础镜像 digest，以 UID/GID `10001` 运行，并由 Compose 强制只读根文件系统、清空 capabilities、启用 `no-new-privileges` 和 `/tmp` tmpfs。真实验收已确认 trace、generation、固定评测 score 和 `user-feedback` 可查询；停止 Langfuse Web 时模型调用仍完成，反馈仍被本地接受且明确返回观测未同步。
+
+固定评测集采用 21 个纯合成用例和确定性 grader，覆盖三类结构化草稿、grounding、无上下文事实边界、Prompt Injection、写操作诱导和系统提示/密钥提取。Offline replay 与低价真实模型 live gate 均需满足：critical、安全、Schema 和禁止模式 100%，结构化字段准确率不低于 95%，普通场景通过率不低于 90%。只有覆盖当前 mode 全部用例的报告具备 `release_gate_eligible=true`；`--case` / `--tag` 子集报告只用于诊断，缺失指标返回 `null`，未知 case ID 直接作为配置错误拒绝。报告默认只保留输出哈希、长度、失败原因、Prompt/DataSet 版本、延迟和 Token。当前 Prompt registry 的有效版本为只读 `erp-readonly-v5`，三类草稿分别为 `sales-order-draft-v2`、`purchase-order-draft-v2`、`inventory-adjustment-draft-v2`，Frappe 审计和 Orchestrator/Langfuse 必须保持同值。调用方显式提供不一致或空白 Prompt 版本时，Orchestrator 返回 HTTP `409`；`/health` 返回完整 `prompt_versions`，不得静默覆盖版本漂移。
+
+Langfuse v3 已将 legacy `/api/public/ingestion` 标记废弃；当前因已完成 v3.212.0 真实契约验收暂时保留，后续生产化必须迁移 OTLP traces。生产缺口仍包括 PostgreSQL/ClickHouse/MinIO 联合备份恢复、告警、SSO/访问治理、成本看板验收和密钥轮换演练。
 
 ## 11. 分期计划与验收
 
@@ -289,7 +295,7 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 ### Phase C：数据治理与主动助手
 
 - 数据完整性/异常任务、人工审批、批量建议、定时经营简报。
-- 评测集、灰度、成本治理、模型策略管理台。
+- 固定评测集已完成第一版；继续建设灰度、成本治理、模型策略管理台和生产级观测运维。
 
 验收：建议与实际执行分离；批量变更可审计、可回滚；高风险场景满足审批规则；模型升级不会导致指标或权限回归。
 

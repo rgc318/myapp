@@ -1,0 +1,250 @@
+{
+  "fixture_version": "ai-deterministic-eval-v1",
+  "synthetic": true,
+  "as_of": "2026-07-13",
+  "company": "Synthetic Test Company",
+  "scenarios": {
+    "product_search_terms": [
+      {
+        "id": "product-strip-request-and-output-instruction",
+        "query": "帮我找数码相机，只说明真实候选商品。",
+        "expected": [
+          "数码相机"
+        ]
+      },
+      {
+        "id": "product-split-description-and-purpose",
+        "query": "帮我找蓝色包装、适合整箱销售的饮料",
+        "expected": [
+          "蓝色包装",
+          "适合整箱销售的饮料",
+          "整箱销售",
+          "饮料"
+        ]
+      },
+      {
+        "id": "product-preserve-item-code",
+        "query": "请找一下 SKU010，并说明库存。",
+        "expected": [
+          "SKU010"
+        ]
+      },
+      {
+        "id": "product-extract-use-case",
+        "query": "我要找1000ml无糖饮料，用于会议室",
+        "expected": [
+          "1000ml无糖饮料",
+          "用于会议室",
+          "会议室"
+        ]
+      },
+      {
+        "id": "product-normalize-whitespace",
+        "query": "  棕色   皮革   办公椅  ",
+        "expected": [
+          "棕色 皮革 办公椅"
+        ]
+      },
+      {
+        "id": "product-deduplicate-repeated-phrase",
+        "query": "给我找找 A4打印纸、A4打印纸",
+        "expected": [
+          "A4打印纸"
+        ]
+      }
+    ],
+    "order_query_dsl": [
+      {
+        "id": "order-purchase-last-month-unfinished-high-value",
+        "query": "查询上个月未完成的大额采购订单，前5条",
+        "expected": {
+          "entity": "purchase_order",
+          "company": "Synthetic Test Company",
+          "date_range": "last_month",
+          "date_from": "2026-06-01",
+          "date_to": "2026-06-30",
+          "status_filter": "unfinished",
+          "exclude_cancelled": true,
+          "sort_by": "amount_desc",
+          "min_amount": null,
+          "limit": 5
+        }
+      },
+      {
+        "id": "order-sales-seven-days-amount-threshold",
+        "query": "近7天金额超过2万的销售订单，前3条",
+        "expected": {
+          "entity": "sales_order",
+          "company": "Synthetic Test Company",
+          "date_range": "last_7_days",
+          "date_from": "2026-07-07",
+          "date_to": "2026-07-13",
+          "status_filter": "all",
+          "exclude_cancelled": true,
+          "sort_by": "latest",
+          "min_amount": 20000.0,
+          "limit": 3
+        }
+      },
+      {
+        "id": "order-sales-today-delivering-low-to-high",
+        "query": "今天待发货销售订单，按金额从低到高前20条",
+        "expected": {
+          "entity": "sales_order",
+          "company": "Synthetic Test Company",
+          "date_range": "today",
+          "date_from": "2026-07-13",
+          "date_to": "2026-07-13",
+          "status_filter": "delivering",
+          "exclude_cancelled": true,
+          "sort_by": "amount_asc",
+          "min_amount": null,
+          "limit": 20
+        }
+      },
+      {
+        "id": "order-purchase-this-week-receiving-oldest",
+        "query": "本周最早的待收货采购订单，前2条",
+        "expected": {
+          "entity": "purchase_order",
+          "company": "Synthetic Test Company",
+          "date_range": "this_week",
+          "date_from": "2026-07-13",
+          "date_to": "2026-07-13",
+          "status_filter": "receiving",
+          "exclude_cancelled": true,
+          "sort_by": "oldest",
+          "min_amount": null,
+          "limit": 2
+        }
+      },
+      {
+        "id": "order-sales-cancelled-default-window",
+        "query": "查询取消的销售订单",
+        "expected": {
+          "entity": "sales_order",
+          "company": "Synthetic Test Company",
+          "date_range": "last_30_days",
+          "date_from": "2026-06-14",
+          "date_to": "2026-07-13",
+          "status_filter": "cancelled",
+          "exclude_cancelled": false,
+          "sort_by": "latest",
+          "min_amount": null,
+          "limit": 10
+        }
+      },
+      {
+        "id": "order-purchase-clamp-days-and-limit",
+        "query": "近999天未付款采购订单，前99条",
+        "expected": {
+          "entity": "purchase_order",
+          "company": "Synthetic Test Company",
+          "date_range": "last_366_days",
+          "date_from": "2025-07-13",
+          "date_to": "2026-07-13",
+          "status_filter": "paying",
+          "exclude_cancelled": true,
+          "sort_by": "latest",
+          "min_amount": null,
+          "limit": 20
+        }
+      },
+      {
+        "id": "order-sales-completed-thousand-unit-threshold",
+        "query": "本月已完成客户订单，金额至少1,500千，前4笔",
+        "expected": {
+          "entity": "sales_order",
+          "company": "Synthetic Test Company",
+          "date_range": "this_month",
+          "date_from": "2026-07-01",
+          "date_to": "2026-07-13",
+          "status_filter": "completed",
+          "exclude_cancelled": true,
+          "sort_by": "latest",
+          "min_amount": 1500000.0,
+          "limit": 4
+        }
+      },
+      {
+        "id": "order-reject-mixed-sales-and-purchase",
+        "query": "查询本月销售和采购订单",
+        "expected_error": "订单查询同时包含销售和采购语义"
+      }
+    ],
+    "report_query_dsl": [
+      {
+        "id": "report-sales-this-month",
+        "query": "解释本月销售表现和主要客户",
+        "expected": {
+          "report_type": "sales",
+          "company": "Synthetic Test Company",
+          "date_range": "this_month",
+          "date_from": "2026-07-01",
+          "date_to": "2026-07-13",
+          "limit": 10
+        }
+      },
+      {
+        "id": "report-receivable-payable-ninety-days",
+        "query": "分析近90天客户应收和供应商应付",
+        "expected": {
+          "report_type": "receivable_payable",
+          "company": "Synthetic Test Company",
+          "date_range": "last_90_days",
+          "date_from": "2026-04-15",
+          "date_to": "2026-07-13",
+          "limit": 10
+        }
+      },
+      {
+        "id": "report-sales-keeps-receivable-metric",
+        "query": "解释本月销售表现，区分销售额、实收和应收未结",
+        "expected": {
+          "report_type": "sales",
+          "company": "Synthetic Test Company",
+          "date_range": "this_month",
+          "date_from": "2026-07-01",
+          "date_to": "2026-07-13",
+          "limit": 10
+        }
+      },
+      {
+        "id": "report-purchase-keeps-payable-metric",
+        "query": "分析上月采购与应付未结",
+        "expected": {
+          "report_type": "purchase",
+          "company": "Synthetic Test Company",
+          "date_range": "last_month",
+          "date_from": "2026-06-01",
+          "date_to": "2026-06-30",
+          "limit": 10
+        }
+      },
+      {
+        "id": "report-cashflow-thirty-days",
+        "query": "查看近30天资金净流入和净流出",
+        "expected": {
+          "report_type": "cashflow",
+          "company": "Synthetic Test Company",
+          "date_range": "last_30_days",
+          "date_from": "2026-06-14",
+          "date_to": "2026-07-13",
+          "limit": 10
+        }
+      },
+      {
+        "id": "report-overview-sales-and-purchase-this-week",
+        "query": "汇总本周销售和采购经营情况",
+        "expected": {
+          "report_type": "overview",
+          "company": "Synthetic Test Company",
+          "date_range": "this_week",
+          "date_from": "2026-07-13",
+          "date_to": "2026-07-13",
+          "limit": 10
+        }
+      }
+    ]
+  }
+}

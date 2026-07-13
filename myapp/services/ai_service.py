@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
 import hashlib
 import json
 import os
@@ -8,6 +7,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from datetime import date, timedelta
 
 import frappe
 from frappe import _
@@ -30,13 +30,20 @@ from myapp.utils.api_response import UpstreamServiceUnavailableError
 from myapp.utils.uom import resolve_item_quantity_to_stock
 from myapp.utils.uom_display import resolve_uom_display_name
 
-
 MAX_AI_MESSAGES = 20
 MAX_AI_MESSAGE_CHARS = 8000
 MAX_AI_PRODUCT_RESULTS = 8
 ALLOWED_AI_ROLES = {"user", "assistant"}
 ALLOWED_AI_SCENARIOS = {"general", "product_search", "order_query", "report_summary"}
-PROMPT_VERSION = "erp-readonly-v3"
+PROMPT_VERSION_BY_SCENARIO = {
+	"general": "erp-readonly-v5",
+	"product_search": "erp-readonly-v5",
+	"order_query": "erp-readonly-v5",
+	"report_summary": "erp-readonly-v5",
+	"sales_order_draft": "sales-order-draft-v2",
+	"purchase_order_draft": "purchase-order-draft-v2",
+	"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
+}
 PRODUCT_SEARCH_PREFIX_PATTERN = re.compile(
 	r"^(?:请|麻烦|可以|能否|帮我|给我|我想|我要)*(?:查找|搜索|找一下|找一找|找找|找)?"
 )
@@ -82,6 +89,13 @@ def _resolve_scenario(scenario: str | None) -> str:
 	if resolved not in ALLOWED_AI_SCENARIOS:
 		frappe.throw(_("不支持的 AI 场景。"))
 	return resolved
+
+
+def _resolve_prompt_version(scenario: str) -> str:
+	try:
+		return PROMPT_VERSION_BY_SCENARIO[scenario]
+	except KeyError as error:
+		raise ValueError(f"Prompt version is not configured for AI scenario: {scenario}") from error
 
 
 def _get_ai_orchestrator_settings():
@@ -361,9 +375,9 @@ def _parse_amount_value(value: str, unit: str | None) -> float:
 	return amount
 
 
-def _resolve_natural_date_range(query: str) -> dict:
+def _resolve_natural_date_range(query: str, *, as_of: date | None = None) -> dict:
 	text = " ".join((query or "").strip().split())
-	today = date.today()
+	today = as_of or date.today()
 	date_to = today
 	date_from = today - timedelta(days=29)
 	date_range = "last_30_days"
@@ -392,7 +406,7 @@ def _resolve_natural_date_range(query: str) -> dict:
 	}
 
 
-def _build_order_query_dsl(query: str, *, company: str) -> dict:
+def _build_order_query_dsl(query: str, *, company: str, as_of: date | None = None) -> dict:
 	text = " ".join((query or "").strip().split())
 	mentions_sales = any(word in text for word in ("销售", "客户", "收款", "发货"))
 	mentions_purchase = any(word in text for word in ("采购", "供应商", "付款", "收货"))
@@ -400,7 +414,7 @@ def _build_order_query_dsl(query: str, *, company: str) -> dict:
 		frappe.throw(_("订单查询同时包含销售和采购语义，请拆成两个问题。"))
 	entity = "purchase_order" if mentions_purchase else "sales_order"
 
-	date_filter = _resolve_natural_date_range(text)
+	date_filter = _resolve_natural_date_range(text, as_of=as_of)
 
 	status_filter = "all"
 	if "未完成" in text or "进行中" in text:
@@ -543,7 +557,7 @@ def _build_order_query_context(*, query: str, company: str | None) -> tuple[dict
 	return context, citations, tool_calls
 
 
-def _build_report_query_dsl(query: str, *, company: str) -> dict:
+def _build_report_query_dsl(query: str, *, company: str, as_of: date | None = None) -> dict:
 	text = " ".join((query or "").strip().split())
 	mentions_sales = any(word in text for word in ("销售", "营收", "客户"))
 	mentions_purchase = any(word in text for word in ("采购", "供应商"))
@@ -573,7 +587,7 @@ def _build_report_query_dsl(query: str, *, company: str) -> dict:
 	return {
 		"report_type": report_type,
 		"company": company,
-		**_resolve_natural_date_range(text),
+		**_resolve_natural_date_range(text, as_of=as_of),
 		"limit": 10,
 	}
 
@@ -1171,6 +1185,8 @@ def generate_ai_sales_order_draft_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 ):
+	scenario = "sales_order_draft"
+	prompt_version = _resolve_prompt_version(scenario)
 	user = _current_user()
 	content = _normalize_content(content)
 	company = _resolve_company_scope(company, required=True)
@@ -1185,18 +1201,18 @@ def generate_ai_sales_order_draft_v1(
 			frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
 	ai_repository.append_message(
 		conversation_id=conversation_id, user=user, role="user", content=content,
-		scenario="sales_order_draft", prompt_version=PROMPT_VERSION,
+		scenario=scenario, prompt_version=prompt_version,
 	)
-	run_id = ai_repository.create_run(conversation_id=conversation_id, user=user, scenario="sales_order_draft")
+	run_id = ai_repository.create_run(conversation_id=conversation_id, user=user, scenario=scenario)
 	frappe.db.commit()
 	started = time.perf_counter()
 	try:
 		model_messages = ai_repository.load_model_messages(conversation_id=conversation_id, user=user, limit=MAX_AI_MESSAGES)
 		result = _call_ai_orchestrator_sales_draft(
 			{
-				"messages": model_messages, "scenario": "sales_order_draft", "user": user,
+				"messages": model_messages, "scenario": scenario, "user": user,
 				"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
-				"prompt_version": PROMPT_VERSION, "conversation_id": conversation_id, "run_id": run_id,
+				"prompt_version": prompt_version, "conversation_id": conversation_id, "run_id": run_id,
 			}
 		)
 		candidate = result["draft"]
@@ -1250,7 +1266,7 @@ def generate_ai_sales_order_draft_v1(
 		citation = {"type": "ai_draft", "id": draft["name"], "label": draft["title"], "href": None, "data": draft}
 		ai_repository.append_message(
 			conversation_id=conversation_id, user=user, role="assistant", content=assistant_content,
-			scenario="sales_order_draft", run_id=run_id, citations=[citation], prompt_version=PROMPT_VERSION,
+			scenario=scenario, run_id=run_id, citations=[citation], prompt_version=prompt_version,
 		)
 		ai_repository.complete_run(
 			run_id=run_id, user=user, result=result,
@@ -1277,6 +1293,8 @@ def generate_ai_purchase_order_draft_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 ):
+	scenario = "purchase_order_draft"
+	prompt_version = _resolve_prompt_version(scenario)
 	user = _current_user()
 	content = _normalize_content(content)
 	company = _resolve_company_scope(company, required=True)
@@ -1291,17 +1309,17 @@ def generate_ai_purchase_order_draft_v1(
 			frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
 	ai_repository.append_message(
 		conversation_id=conversation_id, user=user, role="user", content=content,
-		scenario="purchase_order_draft", prompt_version=PROMPT_VERSION,
+		scenario=scenario, prompt_version=prompt_version,
 	)
-	run_id = ai_repository.create_run(conversation_id=conversation_id, user=user, scenario="purchase_order_draft")
+	run_id = ai_repository.create_run(conversation_id=conversation_id, user=user, scenario=scenario)
 	frappe.db.commit()
 	started = time.perf_counter()
 	try:
 		model_messages = ai_repository.load_model_messages(conversation_id=conversation_id, user=user, limit=MAX_AI_MESSAGES)
 		result = _call_ai_orchestrator_purchase_draft({
-			"messages": model_messages, "scenario": "purchase_order_draft", "user": user,
+			"messages": model_messages, "scenario": scenario, "user": user,
 			"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
-			"prompt_version": PROMPT_VERSION, "conversation_id": conversation_id, "run_id": run_id,
+			"prompt_version": prompt_version, "conversation_id": conversation_id, "run_id": run_id,
 		})
 		candidate = result["draft"]
 		supplier, supplier_candidates = _resolve_purchase_draft_supplier(candidate.get("supplier_query"))
@@ -1352,7 +1370,7 @@ def generate_ai_purchase_order_draft_v1(
 		citation = {"type": "ai_draft", "id": draft["name"], "label": draft["title"], "href": None, "data": draft}
 		ai_repository.append_message(
 			conversation_id=conversation_id, user=user, role="assistant", content=assistant_content,
-			scenario="purchase_order_draft", run_id=run_id, citations=[citation], prompt_version=PROMPT_VERSION,
+			scenario=scenario, run_id=run_id, citations=[citation], prompt_version=prompt_version,
 		)
 		ai_repository.complete_run(
 			run_id=run_id, user=user, result=result,
@@ -1379,6 +1397,8 @@ def generate_ai_inventory_adjustment_draft_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 ):
+	scenario = "inventory_adjustment_draft"
+	prompt_version = _resolve_prompt_version(scenario)
 	user = _current_user()
 	content = _normalize_content(content)
 	company = _resolve_company_scope(company, required=True)
@@ -1396,13 +1416,13 @@ def generate_ai_inventory_adjustment_draft_v1(
 		user=user,
 		role="user",
 		content=content,
-		scenario="inventory_adjustment_draft",
-		prompt_version=PROMPT_VERSION,
+		scenario=scenario,
+		prompt_version=prompt_version,
 	)
 	run_id = ai_repository.create_run(
 		conversation_id=conversation_id,
 		user=user,
-		scenario="inventory_adjustment_draft",
+		scenario=scenario,
 	)
 	frappe.db.commit()
 	started = time.perf_counter()
@@ -1415,11 +1435,11 @@ def generate_ai_inventory_adjustment_draft_v1(
 		result = _call_ai_orchestrator_inventory_adjustment_draft(
 			{
 				"messages": model_messages,
-				"scenario": "inventory_adjustment_draft",
+				"scenario": scenario,
 				"user": user,
 				"company": company,
 				"locale": getattr(frappe.local, "lang", None) or "zh-CN",
-				"prompt_version": PROMPT_VERSION,
+				"prompt_version": prompt_version,
 				"conversation_id": conversation_id,
 				"run_id": run_id,
 			}
@@ -1452,10 +1472,10 @@ def generate_ai_inventory_adjustment_draft_v1(
 			user=user,
 			role="assistant",
 			content=assistant_content,
-			scenario="inventory_adjustment_draft",
+			scenario=scenario,
 			run_id=run_id,
 			citations=[citation],
-			prompt_version=PROMPT_VERSION,
+			prompt_version=prompt_version,
 		)
 		ai_repository.complete_run(
 			run_id=run_id,
@@ -1776,6 +1796,7 @@ def _prepare_chat_run(
 ):
 	user = _current_user()
 	resolved_scenario = _resolve_scenario(scenario)
+	prompt_version = _resolve_prompt_version(resolved_scenario)
 	legacy_messages = _normalize_messages(messages) if messages not in (None, "", []) else []
 	current_content = _normalize_content(content) if content not in (None, "") else None
 	if not current_content:
@@ -1812,7 +1833,7 @@ def _prepare_chat_run(
 				role=row["role"],
 				content=row["content"],
 				scenario=resolved_scenario,
-				prompt_version=PROMPT_VERSION,
+				prompt_version=prompt_version,
 			)
 	else:
 		ai_repository.append_message(
@@ -1821,7 +1842,7 @@ def _prepare_chat_run(
 			role="user",
 			content=current_content,
 			scenario=resolved_scenario,
-			prompt_version=PROMPT_VERSION,
+			prompt_version=prompt_version,
 		)
 	run_id = ai_repository.create_run(
 		conversation_id=conversation_id,
@@ -1869,6 +1890,7 @@ def _prepare_chat_run(
 		"conversation_id": conversation_id,
 		"run_id": run_id,
 		"started": started,
+		"prompt_version": prompt_version,
 		"citations": citations,
 		"tool_calls": tool_calls,
 		"payload": {
@@ -1878,7 +1900,7 @@ def _prepare_chat_run(
 			"company": resolved_company,
 			"locale": getattr(frappe.local, "lang", None) or "zh-CN",
 			"context": tool_context,
-			"prompt_version": PROMPT_VERSION,
+			"prompt_version": prompt_version,
 			"conversation_id": conversation_id,
 			"run_id": run_id,
 		},
@@ -1895,7 +1917,7 @@ def _complete_chat_run(prepared: dict, result: dict, assistant_content: str):
 		scenario=prepared["scenario"],
 		run_id=prepared["run_id"],
 		citations=prepared["citations"],
-		prompt_version=PROMPT_VERSION,
+		prompt_version=prepared["prompt_version"],
 	)
 	ai_repository.complete_run(
 		run_id=prepared["run_id"],

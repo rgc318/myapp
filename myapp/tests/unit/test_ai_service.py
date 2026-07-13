@@ -4,13 +4,16 @@ from unittest.mock import MagicMock, patch
 import frappe
 
 from myapp.services.ai_service import (
-	_extract_product_search_terms,
+	_build_draft_version_diff,
 	_build_inventory_adjustment_draft,
 	_build_order_query_dsl,
 	_build_report_query_dsl,
-	_build_draft_version_diff,
+	_extract_product_search_terms,
 	_resolve_inventory_draft_item,
+	_resolve_prompt_version,
 	chat_ai_v1,
+	generate_ai_inventory_adjustment_draft_v1,
+	generate_ai_purchase_order_draft_v1,
 	generate_ai_sales_order_draft_v1,
 	stream_ai_message_v1,
 	submit_ai_feedback_v1,
@@ -123,6 +126,135 @@ class TestAiService(TestCase):
 		self.assertEqual(mock_create_draft.call_args.kwargs["payload"]["customer"], "CUST-1")
 		self.assertTrue(mock_create_draft.call_args.kwargs["validation"]["ready_for_handoff"])
 		self.assertEqual(_complete.call_args.kwargs["tool_calls"][0]["risk_level"], "L2_DRAFT_ONLY")
+		expected_prompt_version = _resolve_prompt_version("sales_order_draft")
+		self.assertEqual(mock_call.call_args.args[0]["prompt_version"], expected_prompt_version)
+		self.assertEqual(
+			{call.kwargs["prompt_version"] for call in _append.call_args_list},
+			{expected_prompt_version},
+		)
+
+	def test_prompt_versions_are_mapped_by_scenario(self):
+		self.assertEqual(_resolve_prompt_version("general"), "erp-readonly-v5")
+		draft_versions = {
+			"sales_order_draft": "sales-order-draft-v2",
+			"purchase_order_draft": "purchase-order-draft-v2",
+			"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
+		}
+		for scenario, expected in draft_versions.items():
+			with self.subTest(scenario=scenario):
+				self.assertEqual(_resolve_prompt_version(scenario), expected)
+				self.assertNotEqual(expected, "erp-readonly-v5")
+
+	@patch("myapp.services.ai_service.ai_repository.create_draft")
+	@patch("myapp.services.ai_service.ai_repository.fail_run")
+	@patch("myapp.services.ai_service.ai_repository.complete_run")
+	@patch("myapp.services.ai_service.ai_repository.load_model_messages")
+	@patch("myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-PURCHASE-DRAFT")
+	@patch("myapp.services.ai_service.ai_repository.append_message")
+	@patch("myapp.services.ai_service.ai_repository.create_conversation")
+	@patch("myapp.services.ai_service._resolve_purchase_draft_item")
+	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - TC")
+	@patch("myapp.services.ai_service._resolve_purchase_draft_supplier")
+	@patch("myapp.services.ai_service._call_ai_orchestrator_purchase_draft")
+	@patch("myapp.services.ai_service._resolve_company_scope", return_value="Test Company")
+	def test_purchase_draft_uses_purchase_prompt_version_for_request_and_audit(
+		self, _company, mock_call, mock_supplier, _warehouse, mock_item,
+		mock_conversation, mock_append, mock_run, mock_messages, _complete, _fail, mock_create_draft,
+	):
+		mock_conversation.return_value = {"name": "AI-CONV-PURCHASE", "company": "Test Company"}
+		mock_messages.return_value = [{"role": "user", "content": "向供应商A采购2箱相机"}]
+		mock_call.return_value = {
+			"draft": {
+				"supplier_query": "供应商A",
+				"warehouse_query": "Stores - TC",
+				"transaction_date": "2026-07-13",
+				"schedule_date": "2026-07-14",
+				"currency": "CNY",
+				"items": [{"item_query": "相机", "qty": 2}],
+			},
+			"model": "structured-model", "model_alias": "erp-structured",
+			"trace_id": "trace-purchase", "usage": {},
+		}
+		mock_supplier.return_value = (
+			{"name": "SUP-1", "display_name": "供应商A"},
+			[{"name": "SUP-1"}],
+		)
+		mock_item.return_value = {
+			"item_query": "相机", "item_code": "ITEM-1", "item_name": "相机", "qty": 2,
+			"uom": "Box", "uom_display": "箱", "price": 80, "warehouse": "Stores - TC",
+			"conversion_factor": 1, "candidates": [], "warnings": [],
+		}
+		mock_create_draft.return_value = {
+			"name": "AI-DRAFT-PURCHASE", "title": "向供应商A采购2箱相机",
+			"validation": {"ready_for_handoff": True},
+		}
+
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.session.user = "user@example.com"
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.has_permission.return_value = True
+			generate_ai_purchase_order_draft_v1(
+				"向供应商A采购2箱相机",
+				company="Test Company",
+			)
+
+		expected_prompt_version = _resolve_prompt_version("purchase_order_draft")
+		self.assertEqual(mock_call.call_args.args[0]["prompt_version"], expected_prompt_version)
+		self.assertEqual(
+			{call.kwargs["prompt_version"] for call in mock_append.call_args_list},
+			{expected_prompt_version},
+		)
+		self.assertEqual(mock_run.call_args.kwargs["scenario"], "purchase_order_draft")
+
+	@patch("myapp.services.ai_service.ai_repository.create_draft")
+	@patch("myapp.services.ai_service.ai_repository.fail_run")
+	@patch("myapp.services.ai_service.ai_repository.complete_run")
+	@patch("myapp.services.ai_service.ai_repository.load_model_messages")
+	@patch("myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-INVENTORY-DRAFT")
+	@patch("myapp.services.ai_service.ai_repository.append_message")
+	@patch("myapp.services.ai_service.ai_repository.create_conversation")
+	@patch("myapp.services.ai_service._build_inventory_adjustment_draft")
+	@patch("myapp.services.ai_service._call_ai_orchestrator_inventory_adjustment_draft")
+	@patch("myapp.services.ai_service._resolve_company_scope", return_value="Test Company")
+	def test_inventory_draft_uses_inventory_prompt_version_for_request_and_audit(
+		self, _company, mock_call, mock_build_draft, mock_conversation, mock_append,
+		mock_run, mock_messages, _complete, _fail, mock_create_draft,
+	):
+		mock_conversation.return_value = {"name": "AI-CONV-INVENTORY", "company": "Test Company"}
+		mock_messages.return_value = [{"role": "user", "content": "把相机库存调整到8个"}]
+		mock_call.return_value = {
+			"draft": {"item_query": "相机", "quantity": 8, "adjustment_type": "set_target"},
+			"model": "structured-model", "model_alias": "erp-structured",
+			"trace_id": "trace-inventory", "usage": {},
+		}
+		mock_build_draft.return_value = (
+			{
+				"company": "Test Company", "adjustment_type": "set_target",
+				"items": [{"item_code": "ITEM-1", "target_stock_qty": 8}],
+			},
+			{"ready_for_handoff": True, "errors": [], "warnings": []},
+		)
+		mock_create_draft.return_value = {
+			"name": "AI-DRAFT-INVENTORY", "title": "把相机库存调整到8个",
+			"validation": {"ready_for_handoff": True},
+		}
+
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.session.user = "user@example.com"
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.has_permission.return_value = True
+			generate_ai_inventory_adjustment_draft_v1(
+				"把相机库存调整到8个",
+				company="Test Company",
+			)
+
+		expected_prompt_version = _resolve_prompt_version("inventory_adjustment_draft")
+		self.assertEqual(mock_call.call_args.args[0]["prompt_version"], expected_prompt_version)
+		self.assertEqual(
+			{call.kwargs["prompt_version"] for call in mock_append.call_args_list},
+			{expected_prompt_version},
+		)
+		self.assertEqual(mock_run.call_args.kwargs["scenario"], "inventory_adjustment_draft")
 
 	def test_build_order_query_dsl_parses_purchase_filters(self):
 		dsl = _build_order_query_dsl(

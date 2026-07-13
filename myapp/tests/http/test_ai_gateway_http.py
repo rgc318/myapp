@@ -6,7 +6,6 @@ import urllib.parse
 import urllib.request
 from http.cookiejar import CookieJar
 
-
 DEFAULT_ENV_FILE = pathlib.Path(__file__).resolve().parents[3] / ".env.http-test"
 
 
@@ -36,7 +35,7 @@ class AiGatewayHttpTestCase(unittest.TestCase):
 		username = os.environ.get("MYAPP_HTTP_USERNAME", "").strip()
 		password = os.environ.get("MYAPP_HTTP_PASSWORD", "").strip()
 		if not username or not password:
-			raise cls.skipTest("AI HTTP tests require MYAPP_HTTP_USERNAME/MYAPP_HTTP_PASSWORD.")
+			raise unittest.SkipTest("AI HTTP tests require MYAPP_HTTP_USERNAME/MYAPP_HTTP_PASSWORD.")
 
 		cls.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
 		request = urllib.request.Request(

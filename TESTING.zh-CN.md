@@ -2028,3 +2028,55 @@ MYAPP_HTTP_ENABLE_AI_TESTS=1 python3 -m unittest \
 ```
 
 该用例覆盖真实模型结构化提取、当前用户下的库存商品/仓库解析、实时库存和库存 UOM 校验、草稿版本、一次性交接载荷与会话归档。测试只生成和交接 `MyApp AI Draft`，不调用库存调整写接口；执行前后应额外核对 `Stock Entry` / `Stock Reconciliation` 数量未变化。
+
+### 24.1 AI 固定评测集与 Prompt 版本回归（2026-07-13）
+
+Frappe 确定性评测使用纯合成 fixture，固定 `as_of`，覆盖商品搜索短语、订单 DSL、报表 DSL 和三类草稿 Prompt 版本，不产生模型费用：
+
+```bash
+docker exec frappe_docker-backend-1 bash -lc '
+  cd /home/frappe/frappe-bench &&
+  env/bin/python -m unittest \
+    apps.myapp.myapp.tests.unit.test_ai_service \
+    apps.myapp.myapp.tests.unit.test_ai_deterministic_eval \
+    apps.myapp.myapp.tests.unit.test_gateway_wrappers
+'
+```
+
+Orchestrator 的 21 例固定评测集位于父仓库 `services/myapp-ai/myapp_ai/evals/datasets/`。Offline 模式使用固定 provider replay，不访问网络、不产生模型费用：
+
+```bash
+DOCKER_CONFIG=/tmp/myapp-docker-config docker build --target test -t myapp-ai:test services/myapp-ai
+docker run --rm myapp-ai:test
+```
+
+```bash
+docker exec frappe_docker-ai-orchestrator-1 \
+  python -m myapp_ai.evals.runner \
+  --mode offline \
+  --output /tmp/myapp-ai-eval-offline.json
+```
+
+Live 模式必须显式打开计费开关，并默认使用 `.env.ai.local` 配置的低价模型：
+
+```bash
+docker exec \
+  -e MYAPP_AI_ENABLE_LIVE_EVALS=1 \
+  frappe_docker-ai-orchestrator-1 \
+  python -m myapp_ai.evals.runner \
+  --mode live \
+  --output /tmp/myapp-ai-eval-live.json
+```
+
+固定门槛：critical、安全、Schema 和禁止模式 100%，结构化字段准确率至少 95%，普通场景通过率至少 90%。退出码 `0` 表示所选集合达标，`1` 表示门槛失败，`2` 表示配置或运行错误。发布流水线还必须断言 `gate_scope=full` 和 `release_gate_eligible=true`；`--case` / `--tag` 子集会返回 `PARTIAL_PASS`、缺失指标 `null`，即使退出 `0` 也不能作为发布 gate。未知 case ID 必须拒绝并退出 `2`。报告默认不保存模型原文，只记录输出哈希、长度、失败原因、Prompt/DataSet 版本、延迟和 Token；只有纯合成诊断数据才能显式使用 `--include-content`。
+
+Prompt 版本必须在 Frappe 消息审计、Orchestrator registry 和 Langfuse metadata 中保持一致。当前有效版本：
+
+- 只读场景：`erp-readonly-v5`
+- 销售草稿：`sales-order-draft-v2`
+- 采购草稿：`purchase-order-draft-v2`
+- 库存调整草稿：`inventory-adjustment-draft-v2`
+
+聊天、流式和三类草稿接口显式收到其他版本或空字符串时应返回 HTTP `409`；`GET /health` 必须返回上述全部 `prompt_versions`。Langfuse 207 批次验收需同时断言 `errors` 为空且 `successes` 覆盖全部事件 ID；反馈默认只保存 comment 哈希/长度，eval 与 feedback score 的 `source` 分别为 `EVAL` / `API`，且携带正确 `environment`。
+
+2026-07-13 最终回归：Orchestrator test target 37 项通过，offline full gate 21/21；后端 AI 服务、确定性 fixture 与 gateway wrappers 132 项通过。
