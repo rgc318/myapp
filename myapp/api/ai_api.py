@@ -4,12 +4,15 @@ from myapp.services.ai_service import (
 	create_ai_conversation_v1 as create_ai_conversation_v1_service,
 	discard_ai_draft_v1 as discard_ai_draft_v1_service,
 	generate_ai_sales_order_draft_v1 as generate_ai_sales_order_draft_v1_service,
+	generate_ai_purchase_order_draft_v1 as generate_ai_purchase_order_draft_v1_service,
 	get_ai_draft_v1 as get_ai_draft_v1_service,
 	get_ai_conversation_v1 as get_ai_conversation_v1_service,
 	list_ai_conversations_v1 as list_ai_conversations_v1_service,
+	list_ai_draft_versions_v1 as list_ai_draft_versions_v1_service,
 	stream_ai_message_v1 as stream_ai_message_v1_service,
 	submit_ai_feedback_v1 as submit_ai_feedback_v1_service,
 	prepare_ai_draft_handoff_v1 as prepare_ai_draft_handoff_v1_service,
+	restore_ai_draft_version_v1 as restore_ai_draft_version_v1_service,
 	update_ai_draft_v1 as update_ai_draft_v1_service,
 )
 
@@ -84,6 +87,16 @@ def generate_ai_sales_order_draft_v1(
 	)
 
 
+def generate_ai_purchase_order_draft_v1(
+	content: str,
+	company: str | None = None,
+	conversation_id: str | None = None,
+):
+	return generate_ai_purchase_order_draft_v1_service(
+		content=content, company=company, conversation_id=conversation_id,
+	)
+
+
 def get_ai_draft_v1(draft_id: str):
 	return get_ai_draft_v1_service(draft_id=draft_id)
 
@@ -98,3 +111,11 @@ def update_ai_draft_v1(draft_id: str, payload):
 
 def discard_ai_draft_v1(draft_id: str):
 	return discard_ai_draft_v1_service(draft_id=draft_id)
+
+
+def list_ai_draft_versions_v1(draft_id: str):
+	return list_ai_draft_versions_v1_service(draft_id=draft_id)
+
+
+def restore_ai_draft_version_v1(draft_id: str, version: int):
+	return restore_ai_draft_version_v1_service(draft_id=draft_id, version=version)

@@ -1,6 +1,6 @@
 # AI Copilot 模块技术设计
 
-> 状态：Phase A 只读纵向链路已覆盖会话/消息/Run 持久化、POST + JWT SSE、反馈、商品/订单/报表工具和可选 Langfuse。Phase B 已完成首个销售订单草稿纵向链路：严格结构化候选、真实主数据复核、草稿/草稿行审计和现有销售订单编辑器安全预填。采购订单、库存调整草稿、草稿人工修改/版本对比、语义向量检索和真实 Langfuse 实例仍待继续。
+> 状态：Phase A 只读纵向链路已覆盖会话/消息/Run、SSE、反馈、商品/订单/报表工具和可选 Langfuse。Phase B 已完成销售与采购订单草稿纵向链路，以及人工修改、不可变版本、差异、安全恢复、放弃和现有编辑器预填。库存调整草稿、语义向量检索、真实 Langfuse 实例和数据治理任务仍待继续。
 
 ## 1. 目标与非目标
 
@@ -247,7 +247,13 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 
 当前销售订单草稿已实现 `generate_ai_sales_order_draft_v1`、`get_ai_draft_v1` 和 `prepare_ai_draft_handoff_v1`。模型只提取客户/商品称呼、数量、单位、日期和备注候选；Frappe 再按当前用户权限解析真实 Customer、Item、Warehouse，使用商品接口返回的 UOM、换算系数和当前参考价，并把歧义保存为候选与校验错误。模型建议价格不会直接采用。只有 `ready_for_handoff=true` 的草稿可交接，Web 使用一次性 sessionStorage 载荷预填现有销售订单页面；用户仍需主动点击创建，既有 v2 接口会再次校验。
 
+草稿生命周期已补充 `update_ai_draft_v1` 和 `discard_ai_draft_v1`。人工修改保存后，Frappe 不信任浏览器提交的商品事实或价格，会重新解析真实主数据、重建 Draft Line、递增版本并刷新 validation；行审计记录 `updated_by_user`。只有 `draft` 状态允许修改、放弃或交接，`handed_off` 状态不可再次修改或放弃。Web 草稿卡片提供结构化编辑表单、校验错误、版本和状态展示。
+
+版本治理使用不可变 `MyApp AI Draft Version` 快照。每次生成、人工修改或历史恢复都会保存 payload、validation、变更来源、操作者和版本号；`list_ai_draft_versions_v1` 返回字段与商品行差异。`restore_ai_draft_version_v1` 不直接覆盖当前 JSON，而是把历史 payload 重新送入当前主数据解析和校验流程，并创建一个新的版本，避免恢复旧价格、失效仓库或过期 UOM。
+
 结构化模型优先使用 OpenAI 兼容 `json_schema`；供应商明确拒绝该能力时，Orchestrator 可降级为 JSON-only 输出，但结果仍必须通过同一 Pydantic Schema，任何自由文本、缺字段、越界数量或类型错误都会失败，不会持久化为草稿。
+
+采购订单草稿使用独立 `purchase_order_draft` Schema 和 `/internal/v1/drafts/purchase-order`。Frappe 解析真实 Supplier，并以 `item_context=purchase` 查询采购商品；价格只取后端 `standard_buying_rate` / buying prices，不复用销售价或模型建议价。采购默认 UOM、换算系数、收货仓库、公司币种、供应商参考号、订单日期和预计到货日期独立校验。校验通过后仅预填现有采购订单编辑器，正式采购单仍由用户主动创建。
 
 ## 10. 可观测性、治理与防护
 

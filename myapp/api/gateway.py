@@ -5,12 +5,15 @@ from .ai_api import chat_ai_v1 as chat_ai_v1_service
 from .ai_api import create_ai_conversation_v1 as create_ai_conversation_v1_service
 from .ai_api import discard_ai_draft_v1 as discard_ai_draft_v1_service
 from .ai_api import generate_ai_sales_order_draft_v1 as generate_ai_sales_order_draft_v1_service
+from .ai_api import generate_ai_purchase_order_draft_v1 as generate_ai_purchase_order_draft_v1_service
 from .ai_api import get_ai_draft_v1 as get_ai_draft_v1_service
 from .ai_api import get_ai_conversation_v1 as get_ai_conversation_v1_service
 from .ai_api import list_ai_conversations_v1 as list_ai_conversations_v1_service
+from .ai_api import list_ai_draft_versions_v1 as list_ai_draft_versions_v1_service
 from .ai_api import stream_ai_message_v1 as stream_ai_message_v1_service
 from .ai_api import submit_ai_feedback_v1 as submit_ai_feedback_v1_service
 from .ai_api import prepare_ai_draft_handoff_v1 as prepare_ai_draft_handoff_v1_service
+from .ai_api import restore_ai_draft_version_v1 as restore_ai_draft_version_v1_service
 from .ai_api import update_ai_draft_v1 as update_ai_draft_v1_service
 
 from .media_api import delete_item_image as delete_item_image_service
@@ -299,6 +302,20 @@ def generate_ai_sales_order_draft_v1(
 	)
 
 
+@frappe.whitelist(methods=["POST"])
+def generate_ai_purchase_order_draft_v1(
+	content: str,
+	company: str | None = None,
+	conversation_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: generate_ai_purchase_order_draft_v1_service(
+			content=content, company=company, conversation_id=conversation_id,
+		),
+		success_code="AI_PURCHASE_ORDER_DRAFT_CREATED",
+	)
+
+
 @frappe.whitelist()
 def get_ai_draft_v1(draft_id: str):
 	return _handle_gateway_call(
@@ -328,6 +345,22 @@ def discard_ai_draft_v1(draft_id: str):
 	return _handle_gateway_call(
 		lambda: discard_ai_draft_v1_service(draft_id=draft_id),
 		success_code="AI_DRAFT_DISCARDED",
+	)
+
+
+@frappe.whitelist()
+def list_ai_draft_versions_v1(draft_id: str):
+	return _handle_gateway_call(
+		lambda: list_ai_draft_versions_v1_service(draft_id=draft_id),
+		success_code="AI_DRAFT_VERSIONS_FETCHED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def restore_ai_draft_version_v1(draft_id: str, version: int):
+	return _handle_gateway_call(
+		lambda: restore_ai_draft_version_v1_service(draft_id=draft_id, version=version),
+		success_code="AI_DRAFT_VERSION_RESTORED",
 	)
 
 

@@ -7,6 +7,7 @@ from myapp.services.ai_service import (
 	_extract_product_search_terms,
 	_build_order_query_dsl,
 	_build_report_query_dsl,
+	_build_draft_version_diff,
 	chat_ai_v1,
 	generate_ai_sales_order_draft_v1,
 	stream_ai_message_v1,
@@ -16,6 +17,20 @@ from myapp.utils.api_response import UpstreamServiceUnavailableError, map_except
 
 
 class TestAiService(TestCase):
+	def test_build_draft_version_diff_tracks_fields_and_lines(self):
+		diff = _build_draft_version_diff(
+			{"payload": {"customer": "CUST-1", "items": [{"item_code": "ITEM-1", "qty": 1, "uom": "Box"}]}},
+			{"payload": {"customer": "CUST-2", "items": [
+				{"item_code": "ITEM-1", "qty": 2, "uom": "Box"},
+				{"item_code": "ITEM-2", "qty": 1, "uom": "Nos"},
+			]}},
+		)
+
+		self.assertEqual(diff["fields"][0]["field"], "customer")
+		self.assertEqual(diff["items"][0]["change"], "modified")
+		self.assertEqual(diff["items"][0]["fields"], ["qty"])
+		self.assertEqual(diff["items"][1]["change"], "added")
+
 	@patch("myapp.services.ai_service.ai_repository.create_draft")
 	@patch("myapp.services.ai_service.nowdate", return_value="2026-07-13")
 	@patch("myapp.services.ai_service.ai_repository.fail_run")

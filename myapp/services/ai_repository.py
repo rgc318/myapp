@@ -16,6 +16,7 @@ RUN_TABLE = "tabMyApp AI Run"
 FEEDBACK_TABLE = "tabMyApp AI Feedback"
 DRAFT_TABLE = "tabMyApp AI Draft"
 DRAFT_LINE_TABLE = "tabMyApp AI Draft Line"
+DRAFT_VERSION_TABLE = "tabMyApp AI Draft Version"
 DEFAULT_RETENTION_DAYS = 30
 MAX_CONVERSATION_PAGE_SIZE = 50
 
@@ -449,6 +450,10 @@ def create_draft(
 				frappe.as_json(line.get("warnings") or []), frappe.as_json({}),
 			),
 		)
+	_insert_draft_version(
+		draft_id=draft_id, user=user, version_no=1, change_source="generated",
+		payload=payload, validation=validation, now=now,
+	)
 	return get_draft(draft_id=draft_id, user=user)
 
 
@@ -477,11 +482,33 @@ def mark_draft_handed_off(*, draft_id: str, user: str) -> dict:
 	return get_draft(draft_id=draft_id, user=user)
 
 
-def update_draft(*, draft_id: str, user: str, payload: dict, validation: dict) -> dict:
+def _insert_draft_version(
+	*, draft_id: str, user: str, version_no: int, change_source: str,
+	payload: dict, validation: dict, now=None,
+):
+	now = now or now_datetime()
+	frappe.db.sql(
+		f"""
+		INSERT INTO `{DRAFT_VERSION_TABLE}`
+			(name, creation, modified, modified_by, owner, docstatus, idx,
+			 draft, version_no, change_source, payload_json, validation_json)
+		VALUES (%s, %s, %s, %s, %s, 0, %s, %s, %s, %s, %s, %s)
+		""",
+		(
+			_name("AI-DRAFT-VERSION"), now, now, user, user, version_no, draft_id,
+			version_no, change_source[:40], frappe.as_json(payload), frappe.as_json(validation),
+		),
+	)
+
+
+def update_draft(
+	*, draft_id: str, user: str, payload: dict, validation: dict, change_source: str = "user_edit",
+) -> dict:
 	draft = get_draft(draft_id=draft_id, user=user)
 	if draft["status"] != "draft":
 		frappe.throw(_("只有 draft 状态的 AI 草稿可以修改。"))
 	now = now_datetime()
+	next_version = cint(draft["version"]) + 1
 	frappe.db.sql(
 		f"""
 		UPDATE `{DRAFT_TABLE}` SET modified = %s, modified_by = %s,
@@ -509,7 +536,41 @@ def update_draft(*, draft_id: str, user: str, payload: dict, validation: dict) -
 				frappe.as_json(line.get("warnings") or []), frappe.as_json({"updated_by_user": True}),
 			),
 		)
+	_insert_draft_version(
+		draft_id=draft_id, user=user, version_no=next_version, change_source=change_source,
+		payload=payload, validation=validation, now=now,
+	)
 	return get_draft(draft_id=draft_id, user=user)
+
+
+def list_draft_versions(*, draft_id: str, user: str) -> list[dict]:
+	get_draft(draft_id=draft_id, user=user)
+	rows = frappe.db.sql(
+		f"""
+		SELECT version_no, change_source, payload_json, validation_json, creation, modified_by
+		FROM `{DRAFT_VERSION_TABLE}` WHERE draft = %s
+		ORDER BY version_no ASC
+		""",
+		(draft_id,),
+		as_dict=True,
+	)
+	return [
+		{
+			"version": cint(row.version_no), "change_source": row.change_source,
+			"payload": _safe_json_loads(row.payload_json, {}),
+			"validation": _safe_json_loads(row.validation_json, {}),
+			"creation": str(row.creation or "") or None, "modified_by": row.modified_by,
+		}
+		for row in rows
+	]
+
+
+def get_draft_version(*, draft_id: str, user: str, version_no: int) -> dict:
+	versions = list_draft_versions(draft_id=draft_id, user=user)
+	version = next((row for row in versions if row["version"] == cint(version_no)), None)
+	if not version:
+		frappe.throw(_("AI 草稿版本不存在。"))
+	return version
 
 
 def discard_draft(*, draft_id: str, user: str) -> dict:
@@ -550,6 +611,7 @@ def cleanup_expired_ai_conversations(batch_size: int = 200) -> dict:
 	if draft_names:
 		draft_placeholders = ", ".join(["%s"] * len(draft_names))
 		frappe.db.sql(f"DELETE FROM `{DRAFT_LINE_TABLE}` WHERE draft IN ({draft_placeholders})", tuple(draft_names))
+		frappe.db.sql(f"DELETE FROM `{DRAFT_VERSION_TABLE}` WHERE draft IN ({draft_placeholders})", tuple(draft_names))
 		frappe.db.sql(f"DELETE FROM `{DRAFT_TABLE}` WHERE name IN ({draft_placeholders})", tuple(draft_names))
 	frappe.db.sql(f"DELETE FROM `{MESSAGE_TABLE}` WHERE conversation IN ({placeholders})", tuple(names))
 	frappe.db.sql(f"DELETE FROM `{FEEDBACK_TABLE}` WHERE conversation IN ({placeholders})", tuple(names))
