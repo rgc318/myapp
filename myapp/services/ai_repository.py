@@ -477,6 +477,53 @@ def mark_draft_handed_off(*, draft_id: str, user: str) -> dict:
 	return get_draft(draft_id=draft_id, user=user)
 
 
+def update_draft(*, draft_id: str, user: str, payload: dict, validation: dict) -> dict:
+	draft = get_draft(draft_id=draft_id, user=user)
+	if draft["status"] != "draft":
+		frappe.throw(_("只有 draft 状态的 AI 草稿可以修改。"))
+	now = now_datetime()
+	frappe.db.sql(
+		f"""
+		UPDATE `{DRAFT_TABLE}` SET modified = %s, modified_by = %s,
+			version_no = version_no + 1, payload_json = %s, validation_json = %s,
+			retention_until = %s WHERE name = %s AND owner = %s
+		""",
+		(now, user, frappe.as_json(payload), frappe.as_json(validation), add_days(now, _retention_days()), draft_id, user),
+	)
+	frappe.db.sql(f"DELETE FROM `{DRAFT_LINE_TABLE}` WHERE draft = %s", (draft_id,))
+	for index, line in enumerate(payload.get("items") or [], 1):
+		frappe.db.sql(
+			f"""
+			INSERT INTO `{DRAFT_LINE_TABLE}`
+				(name, creation, modified, modified_by, owner, docstatus, idx,
+				 draft, line_no, item_query, item_code, item_name, uom, uom_display,
+				 qty, rate, warehouse, conversion_factor, candidates_json, warnings_json, user_overrides_json)
+			VALUES (%s, %s, %s, %s, %s, 0, %s, %s, %s, %s, %s, %s, %s, %s,
+				%s, %s, %s, %s, %s, %s, %s)
+			""",
+			(
+				_name("AI-DRAFT-LINE"), now, now, user, user, index, draft_id, index,
+				line.get("item_query"), line.get("item_code"), line.get("item_name"), line.get("uom"),
+				line.get("uom_display"), line.get("qty") or 0, line.get("price"), line.get("warehouse"),
+				line.get("conversion_factor"), frappe.as_json(line.get("candidates") or []),
+				frappe.as_json(line.get("warnings") or []), frappe.as_json({"updated_by_user": True}),
+			),
+		)
+	return get_draft(draft_id=draft_id, user=user)
+
+
+def discard_draft(*, draft_id: str, user: str) -> dict:
+	draft = get_draft(draft_id=draft_id, user=user)
+	if draft["status"] == "handed_off":
+		frappe.throw(_("已交接的 AI 草稿不能放弃。"))
+	if draft["status"] != "discarded":
+		frappe.db.sql(
+			f"UPDATE `{DRAFT_TABLE}` SET status = 'discarded', modified = %s, modified_by = %s WHERE name = %s",
+			(now_datetime(), user, draft_id),
+		)
+	return get_draft(draft_id=draft_id, user=user)
+
+
 def cleanup_expired_ai_conversations(batch_size: int = 200) -> dict:
 	_ensure_tables()
 	batch_size = max(1, min(1000, cint(batch_size) or 200))

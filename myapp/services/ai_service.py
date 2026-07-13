@@ -943,11 +943,75 @@ def get_ai_draft_v1(draft_id: str):
 	return {"status": "success", "message": _("AI 草稿获取成功。"), "data": ai_repository.get_draft(draft_id=draft_id, user=_current_user())}
 
 
+def update_ai_draft_v1(draft_id: str, payload):
+	user = _current_user()
+	draft = ai_repository.get_draft(draft_id=draft_id, user=user)
+	if draft["draft_type"] != "sales_order":
+		frappe.throw(_("当前只支持销售订单草稿修改。"))
+	if isinstance(payload, str):
+		payload = frappe.parse_json(payload)
+	if not isinstance(payload, dict):
+		frappe.throw(_("草稿 payload 格式不正确。"))
+	company = draft["company"]
+	customer_query = payload.get("customer") or payload.get("customer_query")
+	customer, customer_candidates = _resolve_sales_draft_customer(customer_query)
+	default_warehouse = _resolve_sales_draft_warehouse(payload.get("warehouse"), company)
+	items = [
+		_resolve_sales_draft_item(
+			{
+				"item_query": row.get("item_code") or row.get("item_query"),
+				"qty": row.get("qty"), "uom": row.get("uom"), "price": row.get("price"),
+				"warehouse_query": row.get("warehouse") or default_warehouse,
+			},
+			company=company, default_warehouse=default_warehouse,
+		)
+		for row in (payload.get("items") or []) if isinstance(row, dict)
+	]
+	errors = []
+	if not customer:
+		errors.append(_("客户无法唯一匹配，请人工选择。"))
+	if not items:
+		errors.append(_("草稿没有有效商品明细。"))
+	for index, row in enumerate(items, 1):
+		if not row.get("item_code") or row.get("qty", 0) <= 0 or not row.get("warehouse"):
+			errors.append(_("第 {0} 行需要人工补充商品、数量或仓库。" ).format(index))
+	transaction_date = str(getdate(payload.get("transaction_date") or nowdate()))
+	delivery_date = str(getdate(payload.get("delivery_date") or transaction_date))
+	next_payload = {
+		"company": company, "customer_query": customer_query,
+		"customer": customer.get("name") if customer else None,
+		"customer_display_name": customer.get("display_name") if customer else None,
+		"customer_candidates": customer_candidates, "transaction_date": transaction_date,
+		"delivery_date": delivery_date,
+		"default_sales_mode": "retail" if payload.get("default_sales_mode") == "retail" else "wholesale",
+		"warehouse": default_warehouse, "remarks": str(payload.get("remarks") or "")[:1000] or None,
+		"items": items,
+	}
+	validation = {
+		"ready_for_handoff": not errors, "errors": errors,
+		"warnings": [warning for row in items for warning in row.get("warnings") or []],
+	}
+	updated = ai_repository.update_draft(
+		draft_id=draft_id, user=user, payload=next_payload, validation=validation,
+	)
+	frappe.db.commit()
+	return {"status": "success", "message": _("AI 草稿已更新并重新校验。"), "data": updated}
+
+
+def discard_ai_draft_v1(draft_id: str):
+	user = _current_user()
+	draft = ai_repository.discard_draft(draft_id=draft_id, user=user)
+	frappe.db.commit()
+	return {"status": "success", "message": _("AI 草稿已放弃。"), "data": draft}
+
+
 def prepare_ai_draft_handoff_v1(draft_id: str):
 	user = _current_user()
 	draft = ai_repository.get_draft(draft_id=draft_id, user=user)
 	if draft["draft_type"] != "sales_order":
 		frappe.throw(_("当前只支持销售订单草稿交接。"))
+	if draft["status"] != "draft":
+		frappe.throw(_("只有 draft 状态的草稿可以交接。"))
 	if not draft["validation"].get("ready_for_handoff"):
 		frappe.throw(_("草稿仍有未解决的校验问题，不能交接。"))
 	payload = draft["payload"]
