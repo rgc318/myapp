@@ -16,6 +16,10 @@ from myapp.services.ai_service import (
 	restore_ai_draft_version_v1 as restore_ai_draft_version_v1_service,
 	update_ai_draft_v1 as update_ai_draft_v1_service,
 )
+from myapp.services.ai_vector_service import (
+	get_product_vector_index_status_v1 as get_product_vector_index_status_v1_service,
+	rebuild_product_vector_index_v1 as rebuild_product_vector_index_v1_service,
+)
 
 
 def create_ai_conversation_v1(title: str | None = None, company: str | None = None):
@@ -130,3 +134,19 @@ def list_ai_draft_versions_v1(draft_id: str):
 
 def restore_ai_draft_version_v1(draft_id: str, version: int):
 	return restore_ai_draft_version_v1_service(draft_id=draft_id, version=version)
+
+
+def get_ai_product_vector_status_v1(failure_limit: int = 20):
+	return get_product_vector_index_status_v1_service(failure_limit=failure_limit)
+
+
+def rebuild_ai_product_vector_index_v1(
+	item_codes=None,
+	failed_only: bool | int = False,
+	limit: int = 100,
+):
+	return rebuild_product_vector_index_v1_service(
+		item_codes=item_codes,
+		failed_only=failed_only,
+		limit=limit,
+	)

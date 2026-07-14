@@ -8,6 +8,7 @@ from myapp.services.ai_service import (
 	_build_inventory_adjustment_draft,
 	_build_order_query_dsl,
 	_build_report_query_dsl,
+	_hybrid_rerank_product_rows,
 	_extract_product_search_terms,
 	_resolve_inventory_draft_item,
 	_resolve_prompt_version,
@@ -313,6 +314,21 @@ class TestAiService(TestCase):
 		)
 		self.assertIn("饮料", _extract_product_search_terms("帮我找蓝色包装、适合整箱销售的饮料"))
 
+	def test_hybrid_product_rerank_merges_lexical_and_semantic_candidates(self):
+		rows = _hybrid_rerank_product_rows(
+			query="适合聚会整箱卖的蓝色饮料",
+			lexical_rows=[{"item_code": "ITEM-001", "item_name": "蓝色饮料"}],
+			semantic_rows=[
+				{"item_code": "ITEM-002", "item_name": "派对分享装汽水", "semantic_score": 0.94},
+				{"item_code": "ITEM-001", "item_name": "蓝色饮料", "semantic_score": 0.82},
+			],
+			limit=8,
+		)
+
+		self.assertEqual(rows[0]["item_code"], "ITEM-001")
+		self.assertEqual(rows[0]["match_source"], "lexical+semantic")
+		self.assertEqual(rows[1]["match_reason"], "语义相似匹配")
+
 	def test_upstream_service_errors_map_to_retryable_http_status(self):
 		self.assertEqual(
 			map_exception_to_error(UpstreamServiceUnavailableError("temporarily unavailable")),
@@ -451,12 +467,17 @@ class TestAiService(TestCase):
 	@patch("myapp.services.ai_service.ai_repository.append_message")
 	@patch("myapp.services.ai_service.ai_repository.create_conversation")
 	@patch("myapp.services.ai_service._call_ai_orchestrator")
+	@patch(
+		"myapp.services.ai_service.search_products_semantic",
+		return_value={"available": False, "rows": [], "reason": "disabled"},
+	)
 	@patch("myapp.services.ai_service.search_product_v2")
 	@patch("myapp.services.ai_service._resolve_company_scope", return_value="rgc (Demo)")
 	def test_product_search_uses_read_only_backend_tool_and_returns_citations(
 		self,
 		mock_company,
 		mock_search,
+		mock_semantic_search,
 		mock_call,
 		mock_create_conversation,
 		mock_append_message,
@@ -505,6 +526,8 @@ class TestAiService(TestCase):
 		payload = mock_call.call_args.args[0]
 		self.assertEqual(payload["context"]["tool"], "search_products")
 		self.assertEqual(payload["context"]["products"][0]["item_code"], "ITEM-001")
+		self.assertEqual(payload["context"]["retrieval"]["mode"], "lexical_fallback")
+		mock_semantic_search.assert_called_once()
 		self.assertEqual(mock_complete_run.call_args.kwargs["tool_calls"][0]["risk_level"], "L1_READ_ONLY")
 
 	@patch("myapp.services.ai_service.ai_repository.complete_run")

@@ -24,3 +24,5 @@ myapp.patches.create_ai_copilot_tables
 myapp.patches.create_ai_feedback_table
 myapp.patches.create_ai_draft_tables
 myapp.patches.create_ai_draft_version_table
+myapp.patches.create_ai_product_vector_state_table
+myapp.patches.add_ai_product_vector_collection_field

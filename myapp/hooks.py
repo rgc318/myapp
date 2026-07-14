@@ -140,6 +140,13 @@ app_license = "mit"
 # 	}
 # }
 
+doc_events = {
+	"Item": {
+		"on_update": "myapp.services.ai_vector_service.enqueue_product_vector_sync",
+		"on_trash": "myapp.services.ai_vector_service.enqueue_product_vector_delete",
+	}
+}
+
 # Scheduled Tasks
 # ---------------
 
@@ -149,6 +156,7 @@ scheduler_events = {
 		"myapp.tasks.cleanup_idempotency_records",
 		"myapp.tasks.cleanup_print_batches",
 		"myapp.tasks.cleanup_ai_conversations",
+		"myapp.tasks.reconcile_ai_product_vectors",
 	],
 }
 

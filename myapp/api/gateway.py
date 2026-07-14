@@ -8,6 +8,7 @@ from .ai_api import generate_ai_inventory_adjustment_draft_v1 as generate_ai_inv
 from .ai_api import generate_ai_purchase_order_draft_v1 as generate_ai_purchase_order_draft_v1_service
 from .ai_api import generate_ai_sales_order_draft_v1 as generate_ai_sales_order_draft_v1_service
 from .ai_api import get_ai_draft_v1 as get_ai_draft_v1_service
+from .ai_api import get_ai_product_vector_status_v1 as get_ai_product_vector_status_v1_service
 from .ai_api import get_ai_conversation_v1 as get_ai_conversation_v1_service
 from .ai_api import list_ai_conversations_v1 as list_ai_conversations_v1_service
 from .ai_api import list_ai_draft_versions_v1 as list_ai_draft_versions_v1_service
@@ -15,6 +16,7 @@ from .ai_api import stream_ai_message_v1 as stream_ai_message_v1_service
 from .ai_api import submit_ai_feedback_v1 as submit_ai_feedback_v1_service
 from .ai_api import prepare_ai_draft_handoff_v1 as prepare_ai_draft_handoff_v1_service
 from .ai_api import restore_ai_draft_version_v1 as restore_ai_draft_version_v1_service
+from .ai_api import rebuild_ai_product_vector_index_v1 as rebuild_ai_product_vector_index_v1_service
 from .ai_api import update_ai_draft_v1 as update_ai_draft_v1_service
 
 from .media_api import delete_item_image as delete_item_image_service
@@ -376,6 +378,30 @@ def restore_ai_draft_version_v1(draft_id: str, version: int):
 	return _handle_gateway_call(
 		lambda: restore_ai_draft_version_v1_service(draft_id=draft_id, version=version),
 		success_code="AI_DRAFT_VERSION_RESTORED",
+	)
+
+
+@frappe.whitelist()
+def get_ai_product_vector_status_v1(failure_limit: int = 20):
+	return _handle_gateway_call(
+		lambda: get_ai_product_vector_status_v1_service(failure_limit=failure_limit),
+		success_code="AI_PRODUCT_VECTOR_STATUS_FETCHED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def rebuild_ai_product_vector_index_v1(
+	item_codes=None,
+	failed_only: bool | int = False,
+	limit: int = 100,
+):
+	return _handle_gateway_call(
+		lambda: rebuild_ai_product_vector_index_v1_service(
+			item_codes=item_codes,
+			failed_only=failed_only,
+			limit=limit,
+		),
+		success_code="AI_PRODUCT_VECTOR_REBUILD_QUEUED",
 	)
 
 

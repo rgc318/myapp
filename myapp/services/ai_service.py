@@ -15,6 +15,7 @@ from frappe.utils import cint, flt, getdate, nowdate
 from werkzeug.wrappers import Response
 
 from myapp.services import ai_repository
+from myapp.services.ai_vector_service import search_products_semantic
 from myapp.services.customer_service import list_customers_v2
 from myapp.services.order_service import search_sales_orders_v2
 from myapp.services.purchase_service import list_suppliers_v2, search_purchase_orders_v2
@@ -280,18 +281,62 @@ def _extract_product_search_terms(query: str) -> list[str]:
 	return terms[:5] or [text[:40]]
 
 
+def _hybrid_rerank_product_rows(
+	*, query: str, lexical_rows: list[dict], semantic_rows: list[dict], limit: int,
+) -> list[dict]:
+	candidates: dict[str, dict] = {}
+	for source, rows in (("lexical", lexical_rows), ("semantic", semantic_rows)):
+		for rank, row in enumerate(rows, start=1):
+			item_code = str(row.get("item_code") or "").strip()
+			if not item_code:
+				continue
+			entry = candidates.setdefault(item_code, {"row": dict(row), "sources": set(), "score": 0.0})
+			entry["sources"].add(source)
+			entry["score"] += 1 / (60 + rank)
+			if source == "semantic":
+				entry["row"].update(row)
+				entry["score"] += max(0.0, min(float(row.get("semantic_score") or 0), 1.0)) * 0.01
+	query_key = re.sub(r"\s+", "", query).lower()
+	for entry in candidates.values():
+		row = entry["row"]
+		document_key = re.sub(
+			r"\s+",
+			"",
+			" ".join(
+				str(row.get(field) or "")
+				for field in ("item_code", "item_name", "nickname", "specification", "brand", "item_group", "description")
+			),
+		).lower()
+		if query_key and query_key in document_key:
+			entry["score"] += 0.05
+		row["match_source"] = "+".join(sorted(entry["sources"]))
+		row["match_reason"] = (
+			"关键词与语义混合匹配" if len(entry["sources"]) > 1
+			else "语义相似匹配" if "semantic" in entry["sources"]
+			else "编码、名称或主数据字段匹配"
+		)
+		row["retrieval_score"] = round(entry["score"], 6)
+	return [
+		entry["row"]
+		for entry in sorted(
+			candidates.values(),
+			key=lambda entry: (-entry["score"], str(entry["row"].get("item_code") or "")),
+		)[:limit]
+	]
+
+
 def _build_product_search_context(*, query: str, company: str | None) -> tuple[dict, list[dict], list[dict]]:
 	if not frappe.has_permission("Item", ptype="read"):
 		raise frappe.PermissionError(_("无权读取商品资料。"))
 	resolved_company = _resolve_company_scope(company, required=True)
 	search_terms = _extract_product_search_terms(query)
-	result_rows = []
+	lexical_rows = []
 	seen_codes = set()
 	for search_term in search_terms:
 		search_result = search_product_v2(
 			search_key=search_term,
 			company=resolved_company,
-			limit=MAX_AI_PRODUCT_RESULTS,
+			limit=MAX_AI_PRODUCT_RESULTS * 2,
 			disabled=0,
 			search_fields=["barcode", "item_code", "item_name", "nickname", "specification"],
 			item_context="sales",
@@ -300,11 +345,23 @@ def _build_product_search_context(*, query: str, company: str | None) -> tuple[d
 			item_code = row.get("item_code")
 			if item_code and item_code not in seen_codes:
 				seen_codes.add(item_code)
-				result_rows.append(row)
-				if len(result_rows) >= MAX_AI_PRODUCT_RESULTS:
+				lexical_rows.append(row)
+				if len(lexical_rows) >= MAX_AI_PRODUCT_RESULTS * 2:
 					break
-		if len(result_rows) >= MAX_AI_PRODUCT_RESULTS:
+		if len(lexical_rows) >= MAX_AI_PRODUCT_RESULTS * 2:
 			break
+	semantic_result = search_products_semantic(
+		query,
+		company=resolved_company,
+		limit=MAX_AI_PRODUCT_RESULTS * 2,
+		item_context="sales",
+	)
+	result_rows = _hybrid_rerank_product_rows(
+		query=query,
+		lexical_rows=lexical_rows,
+		semantic_rows=semantic_result.get("rows") or [],
+		limit=MAX_AI_PRODUCT_RESULTS,
+	)
 	candidate_codes = [row.get("item_code") for row in result_rows if row.get("item_code")]
 	allowed_codes = set(
 		frappe.get_list(
@@ -333,6 +390,10 @@ def _build_product_search_context(*, query: str, company: str | None) -> tuple[d
 				"price": row.get("price"),
 				"qty": row.get("qty"),
 				"image": row.get("image"),
+				"match_source": row.get("match_source"),
+				"match_reason": row.get("match_reason"),
+				"retrieval_score": row.get("retrieval_score"),
+				"semantic_score": row.get("semantic_score"),
 			}
 		)
 	citations = [
@@ -353,6 +414,10 @@ def _build_product_search_context(*, query: str, company: str | None) -> tuple[d
 			"search_term_hashes": [hashlib.sha256(term.encode("utf-8")).hexdigest() for term in search_terms],
 			"company": resolved_company,
 			"result_count": len(products),
+			"retrieval_mode": "hybrid" if semantic_result.get("available") else "lexical_fallback",
+			"semantic_result_count": len(semantic_result.get("rows") or []),
+			"embedding_model": semantic_result.get("embedding_model"),
+			"vector_collection": semantic_result.get("collection"),
 		}
 	]
 	context = {
@@ -361,6 +426,10 @@ def _build_product_search_context(*, query: str, company: str | None) -> tuple[d
 		"search_terms": search_terms,
 		"company": resolved_company,
 		"products": products,
+		"retrieval": {
+			"mode": "hybrid" if semantic_result.get("available") else "lexical_fallback",
+			"semantic_available": bool(semantic_result.get("available")),
+		},
 		"instructions": "商品数据是只读工具结果。只能基于这些候选解释匹配原因；不得编造商品、价格或库存。",
 	}
 	return context, citations, tool_calls

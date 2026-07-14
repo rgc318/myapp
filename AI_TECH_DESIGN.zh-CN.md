@@ -1,6 +1,6 @@
 # AI Copilot 模块技术设计
 
-> 状态：Phase A 只读纵向链路已覆盖会话/消息/Run、SSE、反馈、商品/订单/报表工具、本地 Langfuse v3.212.0 和固定评测集。Phase B 已完成销售、采购订单和库存调整草稿纵向链路，以及人工修改、不可变版本、差异、安全恢复、放弃和现有编辑器预填。语义向量检索、生产级观测运维、数据治理任务和模型策略管理台仍待继续。
+> 状态：Phase A 只读纵向链路已覆盖会话/消息/Run、SSE、反馈、商品/订单/报表工具、本地 Langfuse v3.212.0 和固定评测集。Phase B 已完成销售、采购订单和库存调整草稿纵向链路，以及人工修改、不可变版本、差异、安全恢复、放弃和现有编辑器预填。商品语义检索已完成真实 `erp-embedding`、Qdrant、582 个商品索引、权限后二次校验、混合 RRF 重排、失败降级和 10/10 中文语义质量验收。生产级观测运维、数据治理任务、模型策略管理台和高并发生产化仍待继续。
 
 ## 1. 目标与非目标
 
@@ -82,6 +82,8 @@ ERP 场景采用混合编排：用户身份、公司范围、商品/订单/库�
 
 降级只能在同一能力组且已通过兼容性验证的模型之间进行。例如视觉不能降级到纯文本模型，严格 JSON 草稿不能降级到未通过 Schema 回归的模型。
 
+模型注册、场景策略、预算、灰度、审批、发布、回滚和 Embedding collection 切换的详细设计见 `AI_MODEL_GOVERNANCE_TECH_DESIGN.zh-CN.md`。
+
 ## 5. Web 信息架构
 
 新增一级路由 `/ai`：
@@ -135,9 +137,13 @@ Web 显示草稿、来源、库存/价格/UOM/权限问题
 3. Rerank，并按公司、启停状态、可见范围、仓库库存等业务过滤。
 4. 返回商品候选、匹配原因、单位、价格、库存和详情跳转。
 
-商品主数据变更后异步更新向量索引。推荐使用独立 Qdrant；规模较小的首期可采用 PostgreSQL + pgvector。索引条目必须携带公司范围、启停状态和索引版本。
+商品主数据变更后通过 Item Hook 异步更新独立 Qdrant 索引，并由小时任务补偿漏同步和失败记录。`MyApp AI Product Vector State` 记录内容哈希、索引版本、源修改时间、Embedding 模型、collection、状态与失败原因；模型或 collection 变化会强制补建，避免混用不同向量空间。Item 删除会进入幂等向量删除。索引只保存商品主数据文本和治理元数据，不保存价格、库存或交易数据。
 
-当前第一阶段先复用 `search_product_v2` 完成编码、名称、昵称、条码和规格的精确/模糊检索，最多向模型提供 8 条裁剪候选，并以商品卡片作为来源引用。向量检索和 rerank 尚未启用，因此当前能力不应宣传为完整语义检索。
+检索使用关键词候选与向量候选的 Reciprocal Rank Fusion，再叠加确定性字段命中和向量相似度进行第二阶段重排。Qdrant 候选必须回到 Frappe，重新执行当前用户记录权限、公司范围、启停状态、销售/采购属性，并通过 `search_product_v2` 读取实时价格、库存与 UOM；向量服务失败时降级到关键词检索。
+
+Qdrant 运行单元和内部 upsert/delete/search 契约已完成。LiteLLM `erp-embedding` 已通过真实 `/v1/embeddings` 验证并返回 1024 维向量，`MYAPP_AI_VECTOR_SEARCH_ENABLED` 已显式打开；现有 582 个 Item 已全部索引到 `myapp-products-v1`，最终 due/failed 均为 0。10 条中文固定语义查询 Top-1/Top-3 均为 10/10，向量不可达时关键词降级、权限拒绝、重复删除和恢复路径均已真实验收。模型或 collection 变化仍必须触发全量补建，不得在同一 collection 混用向量空间。
+
+系统管理员可通过 `get_ai_product_vector_status_v1` 查看启用状态、索引版本、Embedding 模型、collection、商品总数、待建数量、状态分布、最近失败以及 Qdrant 点数/维度；`rebuild_ai_product_vector_index_v1` 支持指定商品、仅失败项和最多 500 条的受控分批重建。普通业务用户不能访问这两项治理接口。
 
 商品请求会先用确定性规则移除“帮我找、只说明”等操作语言，并从复合描述中提取最多 5 个搜索短语，再合并去重候选；该步骤不额外调用模型，控制测试和运行成本。
 
@@ -264,6 +270,8 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 - 管理台需维护场景到 capability 的映射、模型启停、预算、超时、降级候选、数据留存和灰度范围。
 - 外部文档、商品描述、备注和用户输入都视为不可信数据，不能改变工具权限、模型策略或系统指令，防止 Prompt Injection。
 - 模型、Prompt 或工具策略变更必须经过固定评测集、回归测试和灰度发布；不得直接全员切换。
+
+异步连接池、多副本、限流背压、SSE 长连接、独立向量队列、Qdrant 高可用和压测验收的详细设计见 `AI_HIGH_CONCURRENCY_TECH_DESIGN.zh-CN.md`。当前本地 `bench serve + 单 Uvicorn + 单 Qdrant` 仅用于开发与功能验收，不代表生产高并发能力。
 
 当前 Orchestrator 已实现 Langfuse ingestion 接入：trace 关联 Frappe conversation / run，generation 记录模型、Token、成功或错误状态，点赞/点踩和固定评测结果同步为 score。集成为可选且失败开放，未配置或 Langfuse 不可用时不阻断模型调用和 ERP 反馈保存。HTTP 207 批次响应必须同时确认逐事件 `errors` 为空、`successes` 覆盖本批次全部事件 ID，不能只按状态码或任意一个 success 判断成功。Trace 的 `release`、generation 的 Prompt `version`、score 的 `environment/source` 使用 Langfuse 原生字段；用户反馈为 `source=API`，固定评测为 `source=EVAL`。默认 `MYAPP_AI_LANGFUSE_CAPTURE_CONTENT=0`，输入、输出和反馈 comment 只发送 SHA-256、字符数和字节数；只有完成数据分级、访问控制和保留期评审后才能上传原文。
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import frappe
 
 from myapp.services.ai_repository import cleanup_expired_ai_conversations
+from myapp.services.ai_vector_service import reconcile_product_vector_index
 from myapp.services.media_service import cleanup_expired_temporary_item_images
 from myapp.services.printing_service import cleanup_expired_print_batches
 from myapp.utils.idempotency import cleanup_expired_idempotency_records
@@ -31,3 +32,7 @@ def cleanup_print_batches():
 
 def cleanup_ai_conversations():
 	return cleanup_expired_ai_conversations()
+
+
+def reconcile_ai_product_vectors():
+	return reconcile_product_vector_index()

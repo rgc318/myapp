@@ -32,6 +32,7 @@ from myapp.api.gateway import (
 	download_print_file_v1,
 	get_current_user_workspace_preferences_v1,
 	get_ai_conversation_v1,
+	get_ai_product_vector_status_v1,
 	get_user_management_overview_v1,
 	get_user_permission_snapshot_v1,
 	get_user_security_v1,
@@ -128,6 +129,7 @@ from myapp.api.gateway import (
 	submit_delivery,
 	confirm_pending_document,
 	record_print_job_v1,
+	rebuild_ai_product_vector_index_v1,
 	retry_print_batch_failed_v1,
 	revoke_user_sessions_v1,
 	upload_current_user_avatar_v1,
@@ -143,6 +145,9 @@ class TestGatewayWrappers(TestCase):
 		self.assertIs(aggregated_download, download_print_file_v1)
 		self.assertIs(aggregated_batches, list_print_batches_v1)
 		self.assertIs(aggregated_jobs, list_print_jobs_v2)
+		from myapp.api.api import get_ai_product_vector_status_v1 as aggregated_vector_status
+
+		self.assertIs(aggregated_vector_status, get_ai_product_vector_status_v1)
 
 	def test_gateway_methods_are_not_exposed_to_guest(self):
 		for method in (
@@ -150,6 +155,7 @@ class TestGatewayWrappers(TestCase):
 			chat_ai_v1,
 			create_ai_conversation_v1,
 			get_ai_conversation_v1,
+			get_ai_product_vector_status_v1,
 			list_ai_conversations_v1,
 			stream_ai_message_v1,
 			submit_ai_feedback_v1,
@@ -249,6 +255,7 @@ class TestGatewayWrappers(TestCase):
 				update_supplier_v2,
 			record_supplier_payment,
 			record_print_job_v1,
+			rebuild_ai_product_vector_index_v1,
 			retry_print_batch_failed_v1,
 			update_current_user_workspace_preferences_v1,
 			process_sales_return,
@@ -289,6 +296,30 @@ class TestGatewayWrappers(TestCase):
 			content="把相机库存调整到 8 个",
 			company="rgc (Demo)",
 			conversation_id="AI-CONV-1",
+		)
+
+	@patch("myapp.api.gateway.get_ai_product_vector_status_v1_service")
+	def test_get_ai_product_vector_status_passes_failure_limit(self, mock_status_service):
+		mock_status_service.return_value = {"status": "success", "data": {"enabled": False}}
+
+		from myapp.api.gateway import get_ai_product_vector_status_v1
+
+		get_ai_product_vector_status_v1(failure_limit=10)
+
+		mock_status_service.assert_called_once_with(failure_limit=10)
+
+	@patch("myapp.api.gateway.rebuild_ai_product_vector_index_v1_service")
+	def test_rebuild_ai_product_vector_index_passes_governed_scope(self, mock_rebuild_service):
+		mock_rebuild_service.return_value = {"status": "success", "data": {"queued_count": 1}}
+
+		from myapp.api.gateway import rebuild_ai_product_vector_index_v1
+
+		rebuild_ai_product_vector_index_v1(
+			item_codes=["ITEM-001"], failed_only=True, limit=25,
+		)
+
+		mock_rebuild_service.assert_called_once_with(
+			item_codes=["ITEM-001"], failed_only=True, limit=25,
 		)
 
 	@patch("myapp.api.gateway.get_current_user_workspace_preferences_v1_service")
