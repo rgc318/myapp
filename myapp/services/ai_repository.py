@@ -258,27 +258,38 @@ def create_run(*, conversation_id: str, user: str, scenario: str, tool_calls: li
 		f"""
 		INSERT INTO `{RUN_TABLE}`
 			(name, creation, modified, modified_by, owner, docstatus, idx,
-			 conversation, requested_by, scenario, status, tool_calls_json, started_at)
-		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, 'running', %s, %s)
+			 conversation, requested_by, scenario, environment, status, tool_calls_json, started_at)
+		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, 'running', %s, %s)
 		""",
-		(run_id, now, now, user, user, conversation_id, user, scenario, frappe.as_json(tool_calls or []), now),
+		(
+			run_id, now, now, user, user, conversation_id, user, scenario,
+			os.environ.get("MYAPP_AI_ENVIRONMENT", "development").strip() or "development",
+			frappe.as_json(tool_calls or []), now,
+		),
 	)
 	return run_id
 
 
-def complete_run(*, run_id: str, user: str, result: dict, latency_ms: int, tool_calls: list[dict] | None = None):
+def complete_run(
+	*, run_id: str, user: str, result: dict, latency_ms: int,
+	first_token_ms: int | None = None, tool_calls: list[dict] | None = None,
+):
 	usage = result.get("usage") or {}
+	now = now_datetime()
+	resolved_first_token_ms = max(0, cint(first_token_ms)) if first_token_ms is not None else None
 	frappe.db.sql(
 		f"""
 		UPDATE `{RUN_TABLE}`
 		SET modified = %s, modified_by = %s, status = 'completed', model_alias = %s,
 			model = %s, trace_id = %s, prompt_tokens = %s, completion_tokens = %s,
-			total_tokens = %s, reasoning_tokens = %s, latency_ms = %s,
-			tool_calls_json = %s, completed_at = %s, error_code = NULL, error = NULL
+			total_tokens = %s, reasoning_tokens = %s, latency_ms = %s, first_token_ms = %s,
+			tool_calls_json = %s, policy_code = %s, policy_version = %s,
+			fallback_reason = %s, estimated_cost = %s, cost_currency = %s,
+			completed_at = %s, error_code = NULL, error = NULL
 		WHERE name = %s AND requested_by = %s
 		""",
 		(
-			now_datetime(),
+			now,
 			user,
 			result.get("model_alias"),
 			result.get("model"),
@@ -288,15 +299,64 @@ def complete_run(*, run_id: str, user: str, result: dict, latency_ms: int, tool_
 			cint(usage.get("total_tokens")),
 			cint(usage.get("reasoning_tokens")),
 			max(0, cint(latency_ms)),
+			resolved_first_token_ms,
 			frappe.as_json(tool_calls or []),
-			now_datetime(),
+			result.get("policy_code"),
+			cint(result.get("policy_version")) or None,
+			str(result.get("fallback_reason") or "")[:255] or None,
+			result.get("estimated_cost") or 0,
+			str(result.get("cost_currency") or "")[:10] or None,
+			now,
 			run_id,
 			user,
 		),
 	)
+	if frappe.db.table_exists("MyApp AI Model Usage Daily"):
+		environment = os.environ.get("MYAPP_AI_ENVIRONMENT", "development").strip() or "development"
+		fallback_count = 1 if result.get("fallback_reason") else 0
+		frappe.db.sql(
+			"""
+			INSERT INTO `tabMyApp AI Model Usage Daily`
+				(name, creation, modified, modified_by, owner, docstatus, idx, usage_date,
+				 environment, company, scenario, policy_code, policy_version, model_alias,
+				 request_count, success_count, error_count, prompt_tokens, completion_tokens,
+				 total_tokens, estimated_cost, cost_currency, latency_total_ms,
+				 latency_sample_count, first_token_total_ms, first_token_sample_count,
+				 fallback_count)
+			SELECT %s, %s, %s, %s, %s, 0, 0, DATE(%s), %s,
+				COALESCE(c.company_scope, ''), r.scenario, COALESCE(%s, ''), %s, COALESCE(%s, ''),
+				1, 1, 0, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s
+			FROM `tabMyApp AI Run` r
+			JOIN `tabMyApp AI Conversation` c ON c.name = r.conversation
+			WHERE r.name = %s AND r.requested_by = %s
+			ON DUPLICATE KEY UPDATE
+				modified = VALUES(modified), modified_by = VALUES(modified_by),
+				request_count = `tabMyApp AI Model Usage Daily`.request_count + 1,
+				success_count = `tabMyApp AI Model Usage Daily`.success_count + 1,
+				prompt_tokens = `tabMyApp AI Model Usage Daily`.prompt_tokens + VALUES(prompt_tokens),
+				completion_tokens = `tabMyApp AI Model Usage Daily`.completion_tokens + VALUES(completion_tokens),
+				total_tokens = `tabMyApp AI Model Usage Daily`.total_tokens + VALUES(total_tokens),
+				estimated_cost = `tabMyApp AI Model Usage Daily`.estimated_cost + VALUES(estimated_cost),
+				latency_total_ms = `tabMyApp AI Model Usage Daily`.latency_total_ms + VALUES(latency_total_ms),
+				latency_sample_count = `tabMyApp AI Model Usage Daily`.latency_sample_count + 1,
+				first_token_total_ms = `tabMyApp AI Model Usage Daily`.first_token_total_ms + VALUES(first_token_total_ms),
+				first_token_sample_count = `tabMyApp AI Model Usage Daily`.first_token_sample_count + VALUES(first_token_sample_count),
+				fallback_count = `tabMyApp AI Model Usage Daily`.fallback_count + VALUES(fallback_count)
+			""",
+			(
+				_name("AI-USAGE"), now, now, user, user, now, environment,
+				result.get("policy_code"), cint(result.get("policy_version")), result.get("model_alias"),
+				cint(usage.get("prompt_tokens")), cint(usage.get("completion_tokens")),
+				cint(usage.get("total_tokens")), result.get("estimated_cost") or 0,
+				str(result.get("cost_currency") or "")[:10] or None, max(0, cint(latency_ms)),
+				resolved_first_token_ms or 0, 1 if resolved_first_token_ms is not None else 0,
+				fallback_count, run_id, user,
+			),
+		)
 
 
 def fail_run(*, run_id: str, user: str, error: Exception, latency_ms: int):
+	now = now_datetime()
 	frappe.db.sql(
 		f"""
 		UPDATE `{RUN_TABLE}`
@@ -305,16 +365,43 @@ def fail_run(*, run_id: str, user: str, error: Exception, latency_ms: int):
 		WHERE name = %s AND requested_by = %s
 		""",
 		(
-			now_datetime(),
+			now,
 			user,
 			max(0, cint(latency_ms)),
 			type(error).__name__,
 			str(error)[:2000],
-			now_datetime(),
+			now,
 			run_id,
 			user,
 		),
 	)
+	if frappe.db.table_exists("MyApp AI Model Usage Daily"):
+		environment = os.environ.get("MYAPP_AI_ENVIRONMENT", "development").strip() or "development"
+		frappe.db.sql(
+			"""
+			INSERT INTO `tabMyApp AI Model Usage Daily`
+				(name, creation, modified, modified_by, owner, docstatus, idx, usage_date,
+				 environment, company, scenario, policy_code, policy_version, model_alias,
+				 request_count, success_count, error_count, latency_total_ms, latency_sample_count)
+			SELECT %s, %s, %s, %s, %s, 0, 0, DATE(%s), %s,
+				COALESCE(c.company_scope, ''), r.scenario, COALESCE(r.policy_code, ''),
+				COALESCE(r.policy_version, 0), COALESCE(r.model_alias, 'unknown'),
+				1, 0, 1, %s, 1
+			FROM `tabMyApp AI Run` r
+			JOIN `tabMyApp AI Conversation` c ON c.name = r.conversation
+			WHERE r.name = %s AND r.requested_by = %s
+			ON DUPLICATE KEY UPDATE
+				modified = VALUES(modified), modified_by = VALUES(modified_by),
+				request_count = `tabMyApp AI Model Usage Daily`.request_count + 1,
+				error_count = `tabMyApp AI Model Usage Daily`.error_count + 1,
+				latency_total_ms = `tabMyApp AI Model Usage Daily`.latency_total_ms + VALUES(latency_total_ms),
+				latency_sample_count = `tabMyApp AI Model Usage Daily`.latency_sample_count + 1
+			""",
+			(
+				_name("AI-USAGE"), now, now, user, user, now, environment,
+				max(0, cint(latency_ms)), run_id, user,
+			),
+		)
 
 
 def submit_feedback(
@@ -326,14 +413,22 @@ def submit_feedback(
 	comment: str | None = None,
 ) -> dict:
 	_ensure_tables()
+	environment = os.environ.get("MYAPP_AI_ENVIRONMENT", "development").strip() or "development"
 	rows = frappe.db.sql(
 		f"""
-		SELECT name, conversation, status, trace_id
-		FROM `{RUN_TABLE}`
-		WHERE name = %s AND requested_by = %s
+		SELECT r.name, r.conversation, r.status, r.trace_id, r.scenario,
+			COALESCE(r.environment, %s) AS environment, COALESCE(c.company_scope, '') AS company,
+			COALESCE(r.policy_code, '') AS policy_code, COALESCE(r.policy_version, 0) AS policy_version,
+			COALESCE(r.model_alias, 'unknown') AS model_alias, DATE(r.completed_at) AS usage_date,
+			f.rating AS previous_rating
+		FROM `{RUN_TABLE}` r
+		JOIN `{CONVERSATION_TABLE}` c ON c.name = r.conversation
+		LEFT JOIN `{FEEDBACK_TABLE}` f ON f.run_id = r.name AND f.owner = %s
+		WHERE r.name = %s AND r.requested_by = %s
 		LIMIT 1
+		FOR UPDATE
 		""",
-		(run_id, user),
+		(environment, user, run_id, user),
 		as_dict=True,
 	)
 	if not rows:
@@ -365,6 +460,30 @@ def submit_feedback(
 			comment,
 		),
 	)
+	if frappe.db.table_exists("MyApp AI Model Usage Daily"):
+		previous_rating = str(rows[0].previous_rating or "")
+		positive_delta = int(rating == "positive") - int(previous_rating == "positive")
+		negative_delta = int(rating == "negative") - int(previous_rating == "negative")
+		frappe.db.sql(
+			"""
+			INSERT INTO `tabMyApp AI Model Usage Daily`
+				(name, creation, modified, modified_by, owner, docstatus, idx, usage_date,
+				 environment, company, scenario, policy_code, policy_version, model_alias,
+				 positive_feedback_count, negative_feedback_count)
+			VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+			ON DUPLICATE KEY UPDATE
+				modified = VALUES(modified), modified_by = VALUES(modified_by),
+				positive_feedback_count = GREATEST(0, positive_feedback_count + %s),
+				negative_feedback_count = GREATEST(0, negative_feedback_count + %s)
+			""",
+			(
+				_name("AI-USAGE"), now, now, user, user, rows[0].usage_date,
+				rows[0].environment, rows[0].company, rows[0].scenario, rows[0].policy_code,
+				cint(rows[0].policy_version), rows[0].model_alias,
+				1 if rating == "positive" else 0, 1 if rating == "negative" else 0,
+				positive_delta, negative_delta,
+			),
+		)
 	return {
 		"run_id": run_id,
 		"conversation": rows[0].conversation,
@@ -373,6 +492,70 @@ def submit_feedback(
 		"category": category,
 		"comment": comment,
 	}
+
+
+def _nearest_rank_percentile(values: list[int], percentile: float) -> int | None:
+	if not values:
+		return None
+	ordered = sorted(max(0, cint(value)) for value in values)
+	index = max(0, min(len(ordered) - 1, int((len(ordered) * percentile) + 0.999999999) - 1))
+	return ordered[index]
+
+
+def refresh_ai_usage_daily_metrics(*, days: int = 3) -> dict:
+	if not frappe.db.table_exists("MyApp AI Model Usage Daily"):
+		return {"status": "success", "data": {"updated_count": 0}}
+	resolved_days = max(1, min(31, cint(days) or 3))
+	date_from = add_days(now_datetime().date(), -(resolved_days - 1))
+	rows = frappe.db.sql(
+		f"""
+		SELECT DATE(r.completed_at) AS usage_date,
+			COALESCE(r.environment, 'development') AS environment,
+			COALESCE(c.company_scope, '') AS company, r.scenario,
+			COALESCE(r.policy_code, '') AS policy_code,
+			COALESCE(r.policy_version, 0) AS policy_version,
+			COALESCE(r.model_alias, 'unknown') AS model_alias,
+			r.latency_ms, r.first_token_ms, f.rating
+		FROM `{RUN_TABLE}` r
+		JOIN `{CONVERSATION_TABLE}` c ON c.name = r.conversation
+		LEFT JOIN `{FEEDBACK_TABLE}` f ON f.run_id = r.name AND f.owner = r.requested_by
+		WHERE r.completed_at IS NOT NULL AND DATE(r.completed_at) >= %s
+		""",
+		(date_from,), as_dict=True,
+	)
+	groups = {}
+	for row in rows:
+		key = (
+			row.usage_date, row.environment, row.company, row.scenario,
+			row.policy_code, cint(row.policy_version), row.model_alias,
+		)
+		group = groups.setdefault(key, {"latencies": [], "first_tokens": [], "positive": 0, "negative": 0})
+		group["latencies"].append(cint(row.latency_ms))
+		if row.first_token_ms is not None:
+			group["first_tokens"].append(cint(row.first_token_ms))
+		group["positive"] += int(row.rating == "positive")
+		group["negative"] += int(row.rating == "negative")
+	for key, group in groups.items():
+		frappe.db.sql(
+			"""
+			UPDATE `tabMyApp AI Model Usage Daily`
+			SET latency_p50_ms = %s, latency_p95_ms = %s,
+				first_token_p50_ms = %s, first_token_p95_ms = %s,
+				positive_feedback_count = %s, negative_feedback_count = %s,
+				modified = %s, modified_by = 'Administrator'
+			WHERE usage_date = %s AND environment = %s AND company = %s AND scenario = %s
+				AND policy_code = %s AND policy_version = %s AND model_alias = %s
+			""",
+			(
+				_nearest_rank_percentile(group["latencies"], 0.50),
+				_nearest_rank_percentile(group["latencies"], 0.95),
+				_nearest_rank_percentile(group["first_tokens"], 0.50),
+				_nearest_rank_percentile(group["first_tokens"], 0.95),
+				group["positive"], group["negative"], now_datetime(), *key,
+			),
+		)
+	frappe.db.commit()
+	return {"status": "success", "data": {"updated_count": len(groups), "date_from": str(date_from)}}
 
 
 def _serialize_draft(row, lines=None) -> dict:

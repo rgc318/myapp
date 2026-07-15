@@ -1,3 +1,6 @@
+import hmac
+import os
+
 import frappe
 
 from .ai_api import archive_ai_conversation_v1 as archive_ai_conversation_v1_service
@@ -18,6 +21,34 @@ from .ai_api import prepare_ai_draft_handoff_v1 as prepare_ai_draft_handoff_v1_s
 from .ai_api import restore_ai_draft_version_v1 as restore_ai_draft_version_v1_service
 from .ai_api import rebuild_ai_product_vector_index_v1 as rebuild_ai_product_vector_index_v1_service
 from .ai_api import update_ai_draft_v1 as update_ai_draft_v1_service
+from .ai_api import approve_ai_model_policy_v1 as approve_ai_model_policy_v1_service
+from .ai_api import get_ai_model_governance_overview_v1 as get_ai_model_governance_overview_v1_service
+from .ai_api import get_ai_model_policy_v1 as get_ai_model_policy_v1_service
+from .ai_api import get_ai_model_usage_summary_v1 as get_ai_model_usage_summary_v1_service
+from .ai_api import list_ai_models_v1 as list_ai_models_v1_service
+from .ai_api import list_ai_model_policies_v1 as list_ai_model_policies_v1_service
+from .ai_api import publish_ai_model_policy_v1 as publish_ai_model_policy_v1_service
+from .ai_api import rollback_ai_model_policy_v1 as rollback_ai_model_policy_v1_service
+from .ai_api import save_ai_model_policy_draft_v1 as save_ai_model_policy_draft_v1_service
+from .ai_api import sync_ai_model_registry_v1 as sync_ai_model_registry_v1_service
+from .ai_api import update_ai_model_registry_v1 as update_ai_model_registry_v1_service
+from .ai_api import validate_ai_model_policy_v1 as validate_ai_model_policy_v1_service
+from .ai_api import approve_ai_vector_release_v1 as approve_ai_vector_release_v1_service
+from .ai_api import create_ai_vector_release_v1 as create_ai_vector_release_v1_service
+from .ai_api import get_ai_vector_release_v1 as get_ai_vector_release_v1_service
+from .ai_api import list_ai_vector_releases_v1 as list_ai_vector_releases_v1_service
+from .ai_api import publish_ai_vector_release_v1 as publish_ai_vector_release_v1_service
+from .ai_api import retry_ai_vector_release_v1 as retry_ai_vector_release_v1_service
+from .ai_api import rollback_ai_vector_release_v1 as rollback_ai_vector_release_v1_service
+from .ai_api import validate_ai_vector_release_v1 as validate_ai_vector_release_v1_service
+from .ai_api import analyze_ai_product_data_v1 as analyze_ai_product_data_v1_service
+from .ai_api import create_ai_data_task_v1 as create_ai_data_task_v1_service
+from .ai_api import execute_ai_data_task_v1 as execute_ai_data_task_v1_service
+from .ai_api import get_ai_data_task_v1 as get_ai_data_task_v1_service
+from .ai_api import list_ai_data_tasks_v1 as list_ai_data_tasks_v1_service
+from .ai_api import review_ai_data_task_v1 as review_ai_data_task_v1_service
+from .ai_api import rollback_ai_data_task_v1 as rollback_ai_data_task_v1_service
+from myapp.services.ai_model_governance_service import get_published_ai_model_policies_for_runtime
 
 from .media_api import delete_item_image as delete_item_image_service
 from .media_api import upload_item_image as upload_item_image_service
@@ -403,6 +434,313 @@ def rebuild_ai_product_vector_index_v1(
 		),
 		success_code="AI_PRODUCT_VECTOR_REBUILD_QUEUED",
 	)
+
+
+@frappe.whitelist(methods=["POST"])
+def analyze_ai_product_data_v1(item_codes=None, limit: int = 50, request_id: str | None = None):
+	return _handle_gateway_call(
+		lambda: analyze_ai_product_data_v1_service(item_codes=item_codes, limit=limit, request_id=request_id),
+		success_code="AI_DATA_ANALYSIS_COMPLETED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def create_ai_data_task_v1(payload, reason: str, request_id: str | None = None):
+	return _handle_gateway_call(
+		lambda: create_ai_data_task_v1_service(payload=payload, reason=reason, request_id=request_id),
+		success_code="AI_DATA_TASK_CREATED",
+	)
+
+
+@frappe.whitelist()
+def list_ai_data_tasks_v1(
+	status: str | None = None, risk_level: str | None = None,
+	task_type: str | None = None, start: int = 0, limit: int = 20,
+):
+	return _handle_gateway_call(
+		lambda: list_ai_data_tasks_v1_service(
+			status=status, risk_level=risk_level, task_type=task_type, start=start, limit=limit,
+		),
+		success_code="AI_DATA_TASKS_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_ai_data_task_v1(task_name: str):
+	return _handle_gateway_call(
+		lambda: get_ai_data_task_v1_service(task_name=task_name),
+		success_code="AI_DATA_TASK_FETCHED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def review_ai_data_task_v1(
+	task_name: str, action: str, reason: str, request_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: review_ai_data_task_v1_service(
+			task_name=task_name, action=action, reason=reason, request_id=request_id,
+		),
+		success_code="AI_DATA_TASK_REVIEWED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def execute_ai_data_task_v1(task_name: str, request_id: str | None = None):
+	return _handle_gateway_call(
+		lambda: execute_ai_data_task_v1_service(task_name=task_name, request_id=request_id),
+		success_code="AI_DATA_TASK_EXECUTED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def rollback_ai_data_task_v1(task_name: str, reason: str, request_id: str | None = None):
+	return _handle_gateway_call(
+		lambda: rollback_ai_data_task_v1_service(
+			task_name=task_name, reason=reason, request_id=request_id,
+		),
+		success_code="AI_DATA_TASK_ROLLED_BACK",
+	)
+
+
+@frappe.whitelist()
+def list_ai_vector_releases_v1(start: int = 0, limit: int = 20):
+	return _handle_gateway_call(
+		lambda: list_ai_vector_releases_v1_service(start=start, limit=limit),
+		success_code="AI_VECTOR_RELEASES_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_ai_vector_release_v1(release_code: str, failure_limit: int = 50):
+	return _handle_gateway_call(
+		lambda: get_ai_vector_release_v1_service(release_code=release_code, failure_limit=failure_limit),
+		success_code="AI_VECTOR_RELEASE_FETCHED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def create_ai_vector_release_v1(payload, reason: str, request_id: str | None = None):
+	return _handle_gateway_call(
+		lambda: create_ai_vector_release_v1_service(payload=payload, reason=reason, request_id=request_id),
+		success_code="AI_VECTOR_RELEASE_CREATED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def retry_ai_vector_release_v1(release_code: str, request_id: str | None = None):
+	return _handle_gateway_call(
+		lambda: retry_ai_vector_release_v1_service(release_code=release_code, request_id=request_id),
+		success_code="AI_VECTOR_RELEASE_RETRY_QUEUED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def validate_ai_vector_release_v1(release_code: str, request_id: str | None = None):
+	return _handle_gateway_call(
+		lambda: validate_ai_vector_release_v1_service(release_code=release_code, request_id=request_id),
+		success_code="AI_VECTOR_RELEASE_VALIDATED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def approve_ai_vector_release_v1(release_code: str, reason: str, request_id: str | None = None):
+	return _handle_gateway_call(
+		lambda: approve_ai_vector_release_v1_service(release_code=release_code, reason=reason, request_id=request_id),
+		success_code="AI_VECTOR_RELEASE_APPROVED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def publish_ai_vector_release_v1(release_code: str, reason: str, request_id: str | None = None):
+	return _handle_gateway_call(
+		lambda: publish_ai_vector_release_v1_service(release_code=release_code, reason=reason, request_id=request_id),
+		success_code="AI_VECTOR_RELEASE_PUBLISHED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def rollback_ai_vector_release_v1(
+	target_release_code: str, reason: str, request_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: rollback_ai_vector_release_v1_service(
+			target_release_code=target_release_code, reason=reason, request_id=request_id,
+		),
+		success_code="AI_VECTOR_RELEASE_ROLLED_BACK",
+	)
+
+
+@frappe.whitelist()
+def get_ai_model_governance_overview_v1():
+	return _handle_gateway_call(
+		get_ai_model_governance_overview_v1_service,
+		success_code="AI_MODEL_GOVERNANCE_OVERVIEW_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def get_ai_model_policy_v1(policy_code: str):
+	return _handle_gateway_call(
+		lambda: get_ai_model_policy_v1_service(policy_code=policy_code),
+		success_code="AI_MODEL_POLICY_FETCHED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def sync_ai_model_registry_v1(request_id: str | None = None):
+	return _handle_gateway_call(
+		lambda: sync_ai_model_registry_v1_service(request_id=request_id),
+		success_code="AI_MODEL_REGISTRY_SYNCED",
+	)
+
+
+@frappe.whitelist()
+def list_ai_models_v1(
+	search: str | None = None,
+	capability: str | None = None,
+	status: str | None = None,
+	start: int = 0,
+	limit: int = 20,
+):
+	return _handle_gateway_call(
+		lambda: list_ai_models_v1_service(
+			search=search, capability=capability, status=status, start=start, limit=limit,
+		),
+		success_code="AI_MODELS_FETCHED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def update_ai_model_registry_v1(
+	model_alias: str, payload, reason: str, request_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: update_ai_model_registry_v1_service(
+			model_alias=model_alias, payload=payload, reason=reason, request_id=request_id,
+		),
+		success_code="AI_MODEL_REGISTRY_UPDATED",
+	)
+
+
+@frappe.whitelist()
+def list_ai_model_policies_v1(
+	search: str | None = None,
+	status: str | None = None,
+	start: int = 0,
+	limit: int = 20,
+):
+	return _handle_gateway_call(
+		lambda: list_ai_model_policies_v1_service(
+			search=search,
+			status=status,
+			start=start,
+			limit=limit,
+		),
+		success_code="AI_MODEL_POLICIES_FETCHED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def save_ai_model_policy_draft_v1(payload, reason: str, request_id: str | None = None):
+	return _handle_gateway_call(
+		lambda: save_ai_model_policy_draft_v1_service(
+			payload=payload,
+			reason=reason,
+			request_id=request_id,
+		),
+		success_code="AI_MODEL_POLICY_DRAFT_SAVED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def validate_ai_model_policy_v1(policy_code: str, request_id: str | None = None):
+	return _handle_gateway_call(
+		lambda: validate_ai_model_policy_v1_service(
+			policy_code=policy_code,
+			request_id=request_id,
+		),
+		success_code="AI_MODEL_POLICY_VALIDATED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def approve_ai_model_policy_v1(
+	policy_code: str,
+	reason: str,
+	request_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: approve_ai_model_policy_v1_service(
+			policy_code=policy_code,
+			reason=reason,
+			request_id=request_id,
+		),
+		success_code="AI_MODEL_POLICY_APPROVED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def publish_ai_model_policy_v1(
+	policy_code: str,
+	reason: str,
+	request_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: publish_ai_model_policy_v1_service(
+			policy_code=policy_code,
+			reason=reason,
+			request_id=request_id,
+		),
+		success_code="AI_MODEL_POLICY_PUBLISHED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def rollback_ai_model_policy_v1(
+	policy_code: str,
+	target_version: int,
+	reason: str,
+	request_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: rollback_ai_model_policy_v1_service(
+			policy_code=policy_code,
+			target_version=target_version,
+			reason=reason,
+			request_id=request_id,
+		),
+		success_code="AI_MODEL_POLICY_ROLLED_BACK",
+	)
+
+
+@frappe.whitelist()
+def get_ai_model_usage_summary_v1(
+	date_from: str | None = None,
+	date_to: str | None = None,
+	environment: str | None = None,
+	company: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: get_ai_model_usage_summary_v1_service(
+			date_from=date_from,
+			date_to=date_to,
+			environment=environment,
+			company=company,
+		),
+		success_code="AI_MODEL_USAGE_FETCHED",
+	)
+
+
+@frappe.whitelist(allow_guest=True, methods=["GET"])
+def get_ai_runtime_policy_snapshot_v1():
+	"""Narrow internal endpoint for Orchestrator policy refresh; returns no ERP business data."""
+	expected_token = os.environ.get("MYAPP_AI_SERVICE_TOKEN", "").strip()
+	provided_token = str(frappe.get_request_header("X-MyApp-AI-Service-Token") or "")
+	if not expected_token or not hmac.compare_digest(provided_token, expected_token):
+		frappe.local.response["http_status_code"] = 401
+		return error_response(message=frappe._("AI 服务认证失败。"), code="AI_SERVICE_UNAUTHORIZED")
+	return get_published_ai_model_policies_for_runtime()
 
 
 @frappe.whitelist()

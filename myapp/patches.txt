@@ -26,3 +26,7 @@ myapp.patches.create_ai_draft_tables
 myapp.patches.create_ai_draft_version_table
 myapp.patches.create_ai_product_vector_state_table
 myapp.patches.add_ai_product_vector_collection_field
+myapp.patches.create_ai_model_governance_tables
+myapp.patches.extend_ai_model_usage_metrics
+myapp.patches.create_ai_vector_governance_tables
+myapp.patches.create_ai_data_task_table

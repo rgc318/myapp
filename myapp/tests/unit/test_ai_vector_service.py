@@ -10,11 +10,35 @@ from myapp.services.ai_vector_service import (
 	get_product_vector_index_status_v1,
 	rebuild_product_vector_index_v1,
 	search_products_semantic,
+	sync_product_vector_batch,
 	sync_product_vector_index,
 )
 
 
 class TestAiVectorService(TestCase):
+	@patch.dict(os.environ, {"MYAPP_AI_VECTOR_SEARCH_ENABLED": "1", "MYAPP_AI_EMBEDDING_MODEL": "erp-embedding"})
+	@patch("myapp.services.ai_vector_service._record_state")
+	@patch("myapp.services.ai_vector_service._call_vector_orchestrator")
+	def test_batch_sync_uses_one_embedding_request_for_multiple_items(self, mock_call, mock_record_state):
+		mock_call.return_value = {
+			"accepted": True, "indexed_count": 2,
+			"embedding_model": "erp-embedding", "collection": "myapp-products-v1",
+		}
+		items = [
+			SimpleNamespace(name="ITEM-001", item_name="测试商品一", barcodes=[], disabled=0, is_sales_item=1, is_purchase_item=1, is_stock_item=1, modified="2026-07-14 10:00:00"),
+			SimpleNamespace(name="ITEM-002", item_name="测试商品二", barcodes=[], disabled=0, is_sales_item=1, is_purchase_item=1, is_stock_item=1, modified="2026-07-14 10:00:00"),
+		]
+		with patch("myapp.services.ai_vector_service.frappe") as mock_frappe:
+			mock_frappe.db.exists.return_value = True
+			mock_frappe.db.table_exists.return_value = False
+			mock_frappe.get_doc.side_effect = items
+			result = sync_product_vector_batch(["ITEM-001", "ITEM-002"])
+
+		self.assertEqual(result["indexed_count"], 2)
+		self.assertEqual(mock_call.call_count, 1)
+		self.assertEqual(len(mock_call.call_args.args[1]["documents"]), 2)
+		self.assertEqual(mock_record_state.call_count, 4)
+
 	def test_build_product_vector_document_contains_governed_master_data_only(self):
 		item = SimpleNamespace(
 			name="ITEM-001",
@@ -107,6 +131,7 @@ class TestAiVectorService(TestCase):
 		"MYAPP_AI_VECTOR_SEARCH_ENABLED": "1",
 		"MYAPP_AI_EMBEDDING_MODEL": "erp-embedding",
 		"MYAPP_AI_QDRANT_COLLECTION": "myapp-products-v1",
+		"MYAPP_AI_QDRANT_ALIAS": "",
 	})
 	@patch("myapp.services.ai_vector_service._record_state")
 	@patch("myapp.services.ai_vector_service._call_vector_orchestrator")

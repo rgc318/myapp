@@ -1,6 +1,16 @@
 # AI 模型治理与策略管理技术设计
 
-> 状态：详细设计基线，尚未实现管理 DocType、API 和 Web 页面。当前运行配置仍来自 `.env.ai.local` 与 LiteLLM；本文定义后续企业级管理模块的边界和验收标准。
+> 状态：模型注册/策略/预算/审批发布回滚、Redis 限流与熔断、用量 p50/p95/首 Token/反馈聚合、Web 管理台和 Embedding 双 collection 发布控制面均已实现。2026-07-15 已真实初始化 `myapp-products-live → myapp-products-v1`，582 points 保持完整；新 collection 的真实全量补建仍受外部 `erp-embedding` Provider 配置错误限制，未宣称 v2 发布完成。
+
+当前实现进度（2026-07-14）：
+
+- `bench --site localhost migrate` 已真实创建五张治理表、`AI Model Manager / Approver / Auditor` 角色，并为 AI Run 增加策略版本、降级原因和成本字段。
+- Orchestrator 已提供受服务 Token 保护的模型发现和策略校验接口；真实 LiteLLM 同步得到 `opencode-deepseek-v4-flash` 与 `erp-embedding` 两个能力别名。
+- 策略保存采用不可变版本、统一幂等和哈希审计；生产审批强制起草人与审批人分离，发布/回滚仅 System Manager 可执行。
+- 发布门禁失败关闭：offline full gate 通过但缺少受控 live/Embedding 完整报告时，策略只能保持草稿，不能进入审批发布。
+- Orchestrator 已通过专用内部请求头读取 Frappe 已发布策略快照，按场景、公司、角色和稳定哈希灰度解析模型；刷新失败只使用最后一个已验证快照。无匹配策略时明确记录 `no_matching_published_policy` 并使用系统安全默认模型。
+- Run 已记录策略编码/版本/降级原因，成功和失败请求写入每日用量聚合。真实登录 → Gateway → Orchestrator → LiteLLM 回归已确认 608 tokens 和回退原因进入聚合表。
+- 尚未宣称完成：外部 Embedding 修复后的新 collection 全量补建与 full gate、生产多副本/压测、OTLP 和备份恢复演练仍待完成。
 
 ## 1. 目标与边界
 
@@ -57,6 +67,8 @@ Frappe 只保存 LiteLLM 别名和治理元数据。LiteLLM 管理 Key 不得进
 - `embedding_dimensions`、`embedding_space_version`：仅向量模型使用。
 - `data_region`、`retention_policy`、`sensitive_data_allowed`。
 - `input_cost`、`output_cost`、`currency`：来自受控同步或人工复核。
+
+LiteLLM 同步只负责供应商发现、能力和健康信息。已经人工复核的状态、成本、数据区域、留存策略和敏感数据许可不得被后续同步静默覆盖。人工维护通过 `update_ai_model_registry_v1` 完成，必须填写原因、递增 `registry_version`、记录关键审计，并返回受影响的已发布策略。
 - `last_health_at`、`last_health_status`、`last_error_code`。
 - `registry_version`、`source_hash`。
 
@@ -128,6 +140,7 @@ draft
 - 降级候选必须属于同一 capability，并单独通过固定评测。
 - `structured` 不得降级到未通过 JSON Schema 的模型。
 - 预算动作支持 `warn / use_lower_cost_fallback / reject_noncritical`，不得静默扩大预算。
+- `use_lower_cost_fallback` 发布校验要求候选的输入、输出单价均不高于主模型且至少一项更低；运行时还必须按当前请求的预测 Token 再次比较，只尝试严格更低的候选。缺少成本或币种时预算治理失败关闭。
 - 连续超时、429 或 5xx 达到阈值后对模型别名短时熔断；半开探测成功后恢复。
 - 草稿生成、只读查询和评测使用独立并发池，避免评测挤占生产业务。
 - 所有 429、降级、预算拒绝和熔断都写入 Run 与指标聚合。
@@ -146,19 +159,24 @@ Embedding 别名不得原地映射到新的向量空间。正确流程：
 
 维度相同也不能跳过重建，因为不同模型的向量空间仍不兼容。
 
-## 9. 计划 API
+## 9. Gateway API
 
-以下接口属于设计目标，尚未进入当前 API Gateway：
+当前已进入 Gateway 的治理接口：
 
 - `get_ai_model_governance_overview_v1`
 - `sync_ai_model_registry_v1`
+- `list_ai_models_v1`
+- `update_ai_model_registry_v1`
 - `list_ai_model_policies_v1`
+- `get_ai_model_policy_v1`
 - `save_ai_model_policy_draft_v1`
 - `validate_ai_model_policy_v1`
 - `approve_ai_model_policy_v1`
 - `publish_ai_model_policy_v1`
 - `rollback_ai_model_policy_v1`
 - `get_ai_model_usage_summary_v1`
+
+`get_ai_model_usage_summary_v1` 按日期、环境、公司、场景、策略版本和模型返回请求、成功/失败、Token、成本、fallback、总延迟与首 Token 的平均值/p50/p95，以及正负反馈和正向率。Run 保留原始延迟样本，小时任务重算最近三天的日级分位数和反馈计数，以修正并发写入或反馈改票造成的聚合漂移。
 
 所有写接口必须使用 POST、权限检查、幂等 key 和审计原因。发布、预算提升、供应商区域变化和 Embedding 切换属于高风险操作。
 
@@ -196,4 +214,3 @@ Embedding 别名不得原地映射到新的向量空间。正确流程：
 4. Orchestrator 策略缓存、限流、预算和降级执行。
 5. Web 管理台与用量看板。
 6. Embedding 双 collection 发布和回滚自动化。
-

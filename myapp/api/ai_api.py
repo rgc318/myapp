@@ -20,6 +20,39 @@ from myapp.services.ai_vector_service import (
 	get_product_vector_index_status_v1 as get_product_vector_index_status_v1_service,
 	rebuild_product_vector_index_v1 as rebuild_product_vector_index_v1_service,
 )
+from myapp.services.ai_vector_governance_service import (
+	approve_ai_vector_release_v1 as approve_ai_vector_release_v1_service,
+	create_ai_vector_release_v1 as create_ai_vector_release_v1_service,
+	get_ai_vector_release_v1 as get_ai_vector_release_v1_service,
+	list_ai_vector_releases_v1 as list_ai_vector_releases_v1_service,
+	publish_ai_vector_release_v1 as publish_ai_vector_release_v1_service,
+	retry_ai_vector_release_v1 as retry_ai_vector_release_v1_service,
+	rollback_ai_vector_release_v1 as rollback_ai_vector_release_v1_service,
+	validate_ai_vector_release_v1 as validate_ai_vector_release_v1_service,
+)
+from myapp.services.ai_model_governance_service import (
+	approve_ai_model_policy_v1 as approve_ai_model_policy_v1_service,
+	get_ai_model_governance_overview_v1 as get_ai_model_governance_overview_v1_service,
+	get_ai_model_policy_v1 as get_ai_model_policy_v1_service,
+	get_ai_model_usage_summary_v1 as get_ai_model_usage_summary_v1_service,
+	list_ai_models_v1 as list_ai_models_v1_service,
+	list_ai_model_policies_v1 as list_ai_model_policies_v1_service,
+	publish_ai_model_policy_v1 as publish_ai_model_policy_v1_service,
+	rollback_ai_model_policy_v1 as rollback_ai_model_policy_v1_service,
+	save_ai_model_policy_draft_v1 as save_ai_model_policy_draft_v1_service,
+	sync_ai_model_registry_v1 as sync_ai_model_registry_v1_service,
+	update_ai_model_registry_v1 as update_ai_model_registry_v1_service,
+	validate_ai_model_policy_v1 as validate_ai_model_policy_v1_service,
+)
+from myapp.services.ai_data_task_service import (
+	analyze_ai_product_data_v1 as analyze_ai_product_data_v1_service,
+	create_ai_data_task_v1 as create_ai_data_task_v1_service,
+	execute_ai_data_task_v1 as execute_ai_data_task_v1_service,
+	get_ai_data_task_v1 as get_ai_data_task_v1_service,
+	list_ai_data_tasks_v1 as list_ai_data_tasks_v1_service,
+	review_ai_data_task_v1 as review_ai_data_task_v1_service,
+	rollback_ai_data_task_v1 as rollback_ai_data_task_v1_service,
+)
 
 
 def create_ai_conversation_v1(title: str | None = None, company: str | None = None):
@@ -149,4 +182,180 @@ def rebuild_ai_product_vector_index_v1(
 		item_codes=item_codes,
 		failed_only=failed_only,
 		limit=limit,
+	)
+
+
+def analyze_ai_product_data_v1(item_codes=None, limit: int = 50, request_id: str | None = None):
+	return analyze_ai_product_data_v1_service(item_codes=item_codes, limit=limit, request_id=request_id)
+
+
+def create_ai_data_task_v1(payload, reason: str, request_id: str | None = None):
+	return create_ai_data_task_v1_service(payload=payload, reason=reason, request_id=request_id)
+
+
+def list_ai_data_tasks_v1(
+	status: str | None = None, risk_level: str | None = None,
+	task_type: str | None = None, start: int = 0, limit: int = 20,
+):
+	return list_ai_data_tasks_v1_service(
+		status=status, risk_level=risk_level, task_type=task_type, start=start, limit=limit,
+	)
+
+
+def get_ai_data_task_v1(task_name: str):
+	return get_ai_data_task_v1_service(task_name=task_name)
+
+
+def review_ai_data_task_v1(
+	task_name: str, action: str, reason: str, request_id: str | None = None,
+):
+	return review_ai_data_task_v1_service(
+		task_name=task_name, action=action, reason=reason, request_id=request_id,
+	)
+
+
+def execute_ai_data_task_v1(task_name: str, request_id: str | None = None):
+	return execute_ai_data_task_v1_service(task_name=task_name, request_id=request_id)
+
+
+def rollback_ai_data_task_v1(task_name: str, reason: str, request_id: str | None = None):
+	return rollback_ai_data_task_v1_service(
+		task_name=task_name, reason=reason, request_id=request_id,
+	)
+
+
+def list_ai_vector_releases_v1(start: int = 0, limit: int = 20):
+	return list_ai_vector_releases_v1_service(start=start, limit=limit)
+
+
+def get_ai_vector_release_v1(release_code: str, failure_limit: int = 50):
+	return get_ai_vector_release_v1_service(release_code=release_code, failure_limit=failure_limit)
+
+
+def create_ai_vector_release_v1(payload, reason: str, request_id: str | None = None):
+	return create_ai_vector_release_v1_service(payload=payload, reason=reason, request_id=request_id)
+
+
+def retry_ai_vector_release_v1(release_code: str, request_id: str | None = None):
+	return retry_ai_vector_release_v1_service(release_code=release_code, request_id=request_id)
+
+
+def validate_ai_vector_release_v1(release_code: str, request_id: str | None = None):
+	return validate_ai_vector_release_v1_service(release_code=release_code, request_id=request_id)
+
+
+def approve_ai_vector_release_v1(release_code: str, reason: str, request_id: str | None = None):
+	return approve_ai_vector_release_v1_service(release_code=release_code, reason=reason, request_id=request_id)
+
+
+def publish_ai_vector_release_v1(release_code: str, reason: str, request_id: str | None = None):
+	return publish_ai_vector_release_v1_service(release_code=release_code, reason=reason, request_id=request_id)
+
+
+def rollback_ai_vector_release_v1(
+	target_release_code: str, reason: str, request_id: str | None = None,
+):
+	return rollback_ai_vector_release_v1_service(
+		target_release_code=target_release_code, reason=reason, request_id=request_id,
+	)
+
+
+def get_ai_model_governance_overview_v1():
+	return get_ai_model_governance_overview_v1_service()
+
+
+def get_ai_model_policy_v1(policy_code: str):
+	return get_ai_model_policy_v1_service(policy_code=policy_code)
+
+
+def sync_ai_model_registry_v1(request_id: str | None = None):
+	return sync_ai_model_registry_v1_service(request_id=request_id)
+
+
+def list_ai_models_v1(
+	search: str | None = None,
+	capability: str | None = None,
+	status: str | None = None,
+	start: int = 0,
+	limit: int = 20,
+):
+	return list_ai_models_v1_service(
+		search=search, capability=capability, status=status, start=start, limit=limit,
+	)
+
+
+def update_ai_model_registry_v1(
+	model_alias: str, payload, reason: str, request_id: str | None = None,
+):
+	return update_ai_model_registry_v1_service(
+		model_alias=model_alias, payload=payload, reason=reason, request_id=request_id,
+	)
+
+
+def list_ai_model_policies_v1(
+	search: str | None = None,
+	status: str | None = None,
+	start: int = 0,
+	limit: int = 20,
+):
+	return list_ai_model_policies_v1_service(search=search, status=status, start=start, limit=limit)
+
+
+def save_ai_model_policy_draft_v1(payload, reason: str, request_id: str | None = None):
+	return save_ai_model_policy_draft_v1_service(payload=payload, reason=reason, request_id=request_id)
+
+
+def validate_ai_model_policy_v1(policy_code: str, request_id: str | None = None):
+	return validate_ai_model_policy_v1_service(policy_code=policy_code, request_id=request_id)
+
+
+def approve_ai_model_policy_v1(
+	policy_code: str,
+	reason: str,
+	request_id: str | None = None,
+):
+	return approve_ai_model_policy_v1_service(
+		policy_code=policy_code,
+		reason=reason,
+		request_id=request_id,
+	)
+
+
+def publish_ai_model_policy_v1(
+	policy_code: str,
+	reason: str,
+	request_id: str | None = None,
+):
+	return publish_ai_model_policy_v1_service(
+		policy_code=policy_code,
+		reason=reason,
+		request_id=request_id,
+	)
+
+
+def rollback_ai_model_policy_v1(
+	policy_code: str,
+	target_version: int,
+	reason: str,
+	request_id: str | None = None,
+):
+	return rollback_ai_model_policy_v1_service(
+		policy_code=policy_code,
+		target_version=target_version,
+		reason=reason,
+		request_id=request_id,
+	)
+
+
+def get_ai_model_usage_summary_v1(
+	date_from: str | None = None,
+	date_to: str | None = None,
+	environment: str | None = None,
+	company: str | None = None,
+):
+	return get_ai_model_usage_summary_v1_service(
+		date_from=date_from,
+		date_to=date_to,
+		environment=environment,
+		company=company,
 	)

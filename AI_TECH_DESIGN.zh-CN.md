@@ -1,6 +1,6 @@
 # AI Copilot 模块技术设计
 
-> 状态：Phase A 只读纵向链路已覆盖会话/消息/Run、SSE、反馈、商品/订单/报表工具、本地 Langfuse v3.212.0 和固定评测集。Phase B 已完成销售、采购订单和库存调整草稿纵向链路，以及人工修改、不可变版本、差异、安全恢复、放弃和现有编辑器预填。商品语义检索已完成真实 `erp-embedding`、Qdrant、582 个商品索引、权限后二次校验、混合 RRF 重排、失败降级和 10/10 中文语义质量验收。生产级观测运维、数据治理任务、模型策略管理台和高并发生产化仍待继续。
+> 状态：Phase A 只读纵向链路、Phase B 三类结构化草稿、商品语义检索、模型治理控制面、高并发 P0、OTLP 可观测性、备份恢复演练和首期商品数据治理任务均已实现。在线 `myapp-products-live → myapp-products-v1` 保持 582 points / 1024 维健康；新的 v2 Embedding 候选构建仍受外部 LiteLLM/Provider `float + str` 错误阻塞，不能宣称 v2 已发布。生产 Secret Manager、SSO 和正式环境密钥轮换仍属于部署侧待办。
 
 ## 1. 目标与非目标
 
@@ -141,7 +141,7 @@ Web 显示草稿、来源、库存/价格/UOM/权限问题
 
 检索使用关键词候选与向量候选的 Reciprocal Rank Fusion，再叠加确定性字段命中和向量相似度进行第二阶段重排。Qdrant 候选必须回到 Frappe，重新执行当前用户记录权限、公司范围、启停状态、销售/采购属性，并通过 `search_product_v2` 读取实时价格、库存与 UOM；向量服务失败时降级到关键词检索。
 
-Qdrant 运行单元和内部 upsert/delete/search 契约已完成。LiteLLM `erp-embedding` 已通过真实 `/v1/embeddings` 验证并返回 1024 维向量，`MYAPP_AI_VECTOR_SEARCH_ENABLED` 已显式打开；现有 582 个 Item 已全部索引到 `myapp-products-v1`，最终 due/failed 均为 0。10 条中文固定语义查询 Top-1/Top-3 均为 10/10，向量不可达时关键词降级、权限拒绝、重复删除和恢复路径均已真实验收。模型或 collection 变化仍必须触发全量补建，不得在同一 collection 混用向量空间。
+Qdrant 运行单元和内部 upsert/delete/search 契约已完成。LiteLLM `erp-embedding` 曾通过真实 `/v1/embeddings` 验证并返回 1024 维向量，现有 582 个 Item 已全部索引到 `myapp-products-v1`，最终 due/failed 均为 0。10 条中文固定语义查询 Top-1/Top-3 均为 10/10，向量不可达时关键词降级、权限拒绝、重复删除和恢复路径均已真实验收。当前在线 alias 继续指向该健康 v1 collection；新的 v2 单条与批量 Embedding 请求被外部 Provider 的 `unsupported operand type(s) for +: 'float' and 'str'` 阻断，因此候选 collection 不得审批或发布。模型或 collection 变化仍必须触发全量补建，不得在同一 collection 混用向量空间。
 
 系统管理员可通过 `get_ai_product_vector_status_v1` 查看启用状态、索引版本、Embedding 模型、collection、商品总数、待建数量、状态分布、最近失败以及 Qdrant 点数/维度；`rebuild_ai_product_vector_index_v1` 支持指定商品、仅失败项和最多 500 条的受控分批重建。普通业务用户不能访问这两项治理接口。
 
@@ -172,16 +172,18 @@ Frappe 校验实体、字段、操作符、时间范围和用户数据权限后�
 
 ### 6.4 数据整理与异常建议
 
-首期只生成建议任务：
+首期 `MyApp AI Data Task` 已实现商品主数据的受控建议闭环：
 
-- 商品名称、昵称、条码、品牌、分类、单位缺失或疑似重复。
-- 订单数量、价格、未结、交期、库存异常。
-- 流水的往来方、付款方式、参考号归类建议。
-- 库存数量、单位或资料完整性检查。
+- `analyze_ai_product_data_v1` 使用确定性规则扫描启用且描述为空的 Item，按商品名称、品牌和商品组生成描述建议；该扫描不调用模型、不产生供应商费用。
+- `create_ai_data_task_v1` 支持数据管理员手工创建商品字段建议，首期只允许 `item_name`、`description`、`brand`、`item_group`。
+- 任务保存前值、建议值、证据、分析结果、模型/Prompt/策略版本、发起人、审批人、执行人、回滚人和结果摘要。
+- 角色按职责分离：`AI Data Steward` 可查看、创建和执行；`AI Data Approver` 可查看和审批；`AI Auditor` 只读；只有 `System Manager` 可回滚。
+- 发起人不能审批自己的任务，审批人不能执行同一任务。执行前重新读取 Item 并核对源数据；发生漂移时任务进入 `failed`，不会覆盖人工变更。
+- 执行只调用既有 `update_product_v2`，使用任务版本化幂等键；回滚只在当前值仍等于任务建议值时恢复原值，避免覆盖任务执行后的新修改。
 
-生命周期：`queued → analyzed → review_required → approved → executed / rejected / failed`。
+生命周期：`review_required → approved → executed → rolled_back`，并支持 `rejected`、源数据漂移后的 `failed`；`queued`、`analyzed` 保留为后续异步分析扩展状态。
 
-任何批量更新必须通过已有主数据/业务写接口，记录前后值、审批人、模型与证据。交易、库存、发票、收付款相关建议必须人工确认；高风险批量变更应支持双人审批。
+首期明确禁止价格、库存、订单、发票、收付款和其他正式交易字段。订单异常、流水归类、库存建议、重复项合并和高风险批量治理仍只属于后续扩展，必须另行设计权限、批次、双人审批和失败恢复，不能复用首期单字段任务绕过正式业务流程。
 
 ## 7. 工具白名单与权限
 
@@ -222,7 +224,7 @@ AI 不拥有 `submit`、`cancel`、`record_payment`、`adjust_stock` 等执行�
 | `MyApp AI Run` | 一次模型运行（已实现） | scenario、model_alias、latency、token_usage、trace_id、status、tool_calls |
 | `MyApp AI Draft` | 可编辑业务草稿 | draft_type、payload、validation_result、version、status、source_run |
 | `MyApp AI Draft Line` | 草稿行审计 | item、uom、qty、rate、source_candidates、user_overrides |
-| `MyApp AI Data Task` | 整理建议与审批 | task_type、before_value、proposed_value、evidence、reviewer、status |
+| `MyApp AI Data Task` | 整理建议、职责分离执行与回滚（已实现） | task_type、before_value、proposed_value、evidence、requested_by、reviewer、executed_by、rollback_by、status |
 | `MyApp AI Audit Event` | 不可抵赖审计 | actor、action、object、tool_name、parameter_hash、result_hash |
 
 敏感原文、Prompt 和工具返回不应默认永久明文保存。应按数据分级决定脱敏、加密、访问角色和保留期；审计至少保存必要的哈希、摘要、来源与操作链路。
@@ -241,8 +243,13 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 - `update_ai_draft_v1`
 - `validate_ai_draft_v1`
 - `prepare_ai_draft_handoff_v1`
-- `list_ai_data_tasks_v1`
-- `review_ai_data_task_v1`
+- `analyze_ai_product_data_v1`（已实现）
+- `create_ai_data_task_v1`（已实现）
+- `list_ai_data_tasks_v1`（已实现）
+- `get_ai_data_task_v1`（已实现）
+- `review_ai_data_task_v1`（已实现）
+- `execute_ai_data_task_v1`（已实现）
+- `rollback_ai_data_task_v1`（已实现）
 - `submit_ai_feedback_v1`（已实现）
 
 `stream_ai_message_v1` 使用 SSE，事件类型至少包括：`message_delta`、`tool_started`、`tool_completed`、`citation`、`draft_created`、`warning`、`completed`、`error`。服务端对模型响应实施 JSON Schema 校验、超时、内容过滤和重试策略。
@@ -279,7 +286,7 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 
 固定评测集采用 21 个纯合成用例和确定性 grader，覆盖三类结构化草稿、grounding、无上下文事实边界、Prompt Injection、写操作诱导和系统提示/密钥提取。Offline replay 与低价真实模型 live gate 均需满足：critical、安全、Schema 和禁止模式 100%，结构化字段准确率不低于 95%，普通场景通过率不低于 90%。只有覆盖当前 mode 全部用例的报告具备 `release_gate_eligible=true`；`--case` / `--tag` 子集报告只用于诊断，缺失指标返回 `null`，未知 case ID 直接作为配置错误拒绝。报告默认只保留输出哈希、长度、失败原因、Prompt/DataSet 版本、延迟和 Token。当前 Prompt registry 的有效版本为只读 `erp-readonly-v5`，三类草稿分别为 `sales-order-draft-v2`、`purchase-order-draft-v2`、`inventory-adjustment-draft-v2`，Frappe 审计和 Orchestrator/Langfuse 必须保持同值。调用方显式提供不一致或空白 Prompt 版本时，Orchestrator 返回 HTTP `409`；`/health` 返回完整 `prompt_versions`，不得静默覆盖版本漂移。
 
-Langfuse v3 已将 legacy `/api/public/ingestion` 标记废弃；当前因已完成 v3.212.0 真实契约验收暂时保留，后续生产化必须迁移 OTLP traces。生产缺口仍包括 PostgreSQL/ClickHouse/MinIO 联合备份恢复、告警、SSO/访问治理、成本看板验收和密钥轮换演练。
+generation/trace 已迁移到 Langfuse OTLP HTTP `/api/public/otel/v1/traces`；用户反馈和固定评测 score 继续使用 score ingestion，并保留 HTTP 207 全事件成功校验。父仓库已完成 Qdrant snapshot、Langfuse PostgreSQL/ClickHouse/Redis/MinIO clean-stop 联合备份、隔离恢复和 AI 内部服务 Token 轮换演练。生产剩余缺口是正式 Secret Manager 下的 Langfuse Project Key/恢复根密钥轮换、SSO/访问治理、成本看板和定时异地备份。
 
 ## 11. 分期计划与验收
 

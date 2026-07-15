@@ -415,6 +415,7 @@ class TestAiService(TestCase):
 		self.assertIn('"type":"completed"', body)
 		mock_complete.assert_called_once()
 		self.assertEqual(mock_complete.call_args.args[2], "你好")
+		self.assertGreaterEqual(mock_complete.call_args.kwargs["first_token_ms"], 0)
 
 	@patch("myapp.services.ai_service.ai_repository.complete_run")
 	@patch("myapp.services.ai_service.ai_repository.load_model_messages")

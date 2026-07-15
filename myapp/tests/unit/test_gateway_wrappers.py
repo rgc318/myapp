@@ -2,9 +2,13 @@ from unittest import TestCase
 from unittest.mock import patch
 
 import frappe
+from myapp.api import gateway as gateway_module
 
 from myapp.api.gateway import (
 	add_product_barcode_v2,
+	analyze_ai_product_data_v1,
+	approve_ai_model_policy_v1,
+	approve_ai_vector_release_v1,
 	archive_ai_conversation_v1,
 	batch_set_users_enabled_v1,
 	chat_ai_v1,
@@ -20,6 +24,8 @@ from myapp.api.gateway import (
 	cancel_supplier_payment,
 	create_customer_v2,
 	create_ai_conversation_v1,
+	create_ai_data_task_v1,
+	create_ai_vector_release_v1,
 	create_customer_refund,
 	create_print_batch_v1,
 	create_supplier_refund,
@@ -32,7 +38,12 @@ from myapp.api.gateway import (
 	download_print_file_v1,
 	get_current_user_workspace_preferences_v1,
 	get_ai_conversation_v1,
+	get_ai_data_task_v1,
+	get_ai_model_governance_overview_v1,
+	get_ai_model_policy_v1,
 	get_ai_product_vector_status_v1,
+	get_ai_vector_release_v1,
+	get_ai_runtime_policy_snapshot_v1,
 	get_user_management_overview_v1,
 	get_user_permission_snapshot_v1,
 	get_user_security_v1,
@@ -55,8 +66,13 @@ from myapp.api.gateway import (
 	search_link_options_v1,
 	list_inventory_stock_summary_v1,
 	list_ai_conversations_v1,
+	list_ai_data_tasks_v1,
+	list_ai_models_v1,
+	list_ai_vector_releases_v1,
+	list_ai_model_policies_v1,
 	list_stock_ledger_entries_v1,
 	reconcile_inventory_stock_v1,
+	execute_ai_data_task_v1,
 	submit_inventory_stock_count_v1,
 	transfer_inventory_stock_v1,
 	list_cashflow_entries_v1,
@@ -113,11 +129,13 @@ from myapp.api.gateway import (
 	set_primary_product_barcode_v2,
 	stream_ai_message_v1,
 	submit_ai_feedback_v1,
+	review_ai_data_task_v1,
 	test_remote_debug,
 	update_payment_status,
 	update_purchase_order_items_v2,
 	update_purchase_order_v2,
 	update_supplier_v2,
+	update_ai_model_registry_v1,
 	update_customer_v2,
 	update_current_user_workspace_preferences_v1,
 	update_product_v2,
@@ -130,6 +148,12 @@ from myapp.api.gateway import (
 	confirm_pending_document,
 	record_print_job_v1,
 	rebuild_ai_product_vector_index_v1,
+	retry_ai_vector_release_v1,
+	save_ai_model_policy_draft_v1,
+	validate_ai_vector_release_v1,
+	publish_ai_vector_release_v1,
+	rollback_ai_vector_release_v1,
+	rollback_ai_data_task_v1,
 	retry_print_batch_failed_v1,
 	revoke_user_sessions_v1,
 	upload_current_user_avatar_v1,
@@ -146,17 +170,51 @@ class TestGatewayWrappers(TestCase):
 		self.assertIs(aggregated_batches, list_print_batches_v1)
 		self.assertIs(aggregated_jobs, list_print_jobs_v2)
 		from myapp.api.api import get_ai_product_vector_status_v1 as aggregated_vector_status
+		from myapp.api.api import get_ai_model_governance_overview_v1 as aggregated_governance_overview
+		from myapp.api.api import get_ai_model_policy_v1 as aggregated_policy_detail
+		from myapp.api.api import list_ai_models_v1 as aggregated_model_list
+		from myapp.api.api import update_ai_model_registry_v1 as aggregated_model_update
+		from myapp.api.api import list_ai_vector_releases_v1 as aggregated_vector_releases
+		from myapp.api.api import list_ai_data_tasks_v1 as aggregated_data_tasks
 
 		self.assertIs(aggregated_vector_status, get_ai_product_vector_status_v1)
+		self.assertIs(aggregated_governance_overview, get_ai_model_governance_overview_v1)
+		self.assertIs(aggregated_policy_detail, get_ai_model_policy_v1)
+		self.assertIs(aggregated_model_list, list_ai_models_v1)
+		self.assertIs(aggregated_model_update, update_ai_model_registry_v1)
+		self.assertIs(aggregated_vector_releases, list_ai_vector_releases_v1)
+		self.assertIs(aggregated_data_tasks, list_ai_data_tasks_v1)
 
 	def test_gateway_methods_are_not_exposed_to_guest(self):
 		for method in (
 			archive_ai_conversation_v1,
+			analyze_ai_product_data_v1,
 			chat_ai_v1,
 			create_ai_conversation_v1,
+			create_ai_data_task_v1,
+			execute_ai_data_task_v1,
+			get_ai_data_task_v1,
 			get_ai_conversation_v1,
 			get_ai_product_vector_status_v1,
+			get_ai_model_governance_overview_v1,
+			get_ai_model_policy_v1,
+			list_ai_models_v1,
+			list_ai_model_policies_v1,
+			update_ai_model_registry_v1,
+			list_ai_vector_releases_v1,
+			get_ai_vector_release_v1,
+			create_ai_vector_release_v1,
+			retry_ai_vector_release_v1,
+			validate_ai_vector_release_v1,
+			approve_ai_vector_release_v1,
+			publish_ai_vector_release_v1,
+			rollback_ai_vector_release_v1,
+			approve_ai_model_policy_v1,
+			save_ai_model_policy_draft_v1,
 			list_ai_conversations_v1,
+			list_ai_data_tasks_v1,
+			review_ai_data_task_v1,
+			rollback_ai_data_task_v1,
 			stream_ai_message_v1,
 			submit_ai_feedback_v1,
 			test_remote_debug,
@@ -321,6 +379,45 @@ class TestGatewayWrappers(TestCase):
 		mock_rebuild_service.assert_called_once_with(
 			item_codes=["ITEM-001"], failed_only=True, limit=25,
 		)
+
+	@patch("myapp.api.gateway.save_ai_model_policy_draft_v1_service")
+	def test_save_ai_model_policy_draft_passes_governed_payload(self, mock_save_service):
+		mock_save_service.return_value = {"status": "success", "data": {"version": 1}}
+
+		save_ai_model_policy_draft_v1(
+			payload={"policy_code": "general-default"},
+			reason="建立默认策略",
+			request_id="policy-draft-1",
+		)
+
+		mock_save_service.assert_called_once_with(
+			payload={"policy_code": "general-default"},
+			reason="建立默认策略",
+			request_id="policy-draft-1",
+		)
+
+	@patch.dict("myapp.api.gateway.os.environ", {"MYAPP_AI_SERVICE_TOKEN": "service-token"})
+	def test_runtime_policy_snapshot_rejects_invalid_service_token(self):
+		with patch.object(gateway_module, "frappe") as mock_frappe:
+			mock_frappe.get_request_header.return_value = "wrong-token"
+			mock_frappe.local.response = {}
+			result = get_ai_runtime_policy_snapshot_v1()
+
+		self.assertEqual(result["code"], "AI_SERVICE_UNAUTHORIZED")
+		self.assertEqual(mock_frappe.local.response["http_status_code"], 401)
+
+	@patch.dict("myapp.api.gateway.os.environ", {"MYAPP_AI_SERVICE_TOKEN": "service-token"})
+	@patch("myapp.api.gateway.get_published_ai_model_policies_for_runtime")
+	def test_runtime_policy_snapshot_returns_only_published_governance_data(
+		self, mock_snapshot,
+	):
+		mock_snapshot.return_value = {"policies": [{"policy_code": "general-prod"}]}
+
+		with patch.object(gateway_module, "frappe") as mock_frappe:
+			mock_frappe.get_request_header.return_value = "service-token"
+			result = get_ai_runtime_policy_snapshot_v1()
+
+		self.assertEqual(result, {"policies": [{"policy_code": "general-prod"}]})
 
 	@patch("myapp.api.gateway.get_current_user_workspace_preferences_v1_service")
 	def test_get_current_user_workspace_preferences_passes_through_service(

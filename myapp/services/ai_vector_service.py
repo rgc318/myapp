@@ -16,6 +16,8 @@ from myapp.services.wholesale_service import search_product_v2
 
 PRODUCT_VECTOR_INDEX_VERSION = "product-semantic-v1"
 MAX_VECTOR_DOCUMENT_CHARS = 8000
+MAX_VECTOR_BATCH_SIZE = 128
+MAX_VECTOR_BATCH_CHARS = 120000
 MAX_SEMANTIC_CANDIDATES = 30
 
 
@@ -33,7 +35,11 @@ def _configured_embedding_model() -> str:
 
 
 def _vector_collection() -> str:
-	return os.environ.get("MYAPP_AI_QDRANT_COLLECTION", "myapp-products-v1").strip() or "myapp-products-v1"
+	return (
+		os.environ.get("MYAPP_AI_QDRANT_ALIAS", "").strip()
+		or os.environ.get("MYAPP_AI_QDRANT_COLLECTION", "myapp-products-v1").strip()
+		or "myapp-products-v1"
+	)
 
 
 def _service_token() -> str:
@@ -172,14 +178,12 @@ def _record_state(
 	)
 
 
-def sync_product_vector_index(item_code: str) -> dict:
-	if not _enabled():
-		return {"status": "disabled", "item_code": item_code}
+def _prepare_product_vector_document(item_code: str) -> tuple[str, dict | None]:
 	item_code = str(item_code or "").strip()
 	if not item_code:
 		raise ValueError("item_code is required")
 	if not frappe.db.exists("Item", item_code):
-		return delete_product_vector_index(item_code)
+		return "deleted", None
 	item = frappe.get_doc("Item", item_code)
 	document = build_product_vector_document(item)
 	existing_rows = (
@@ -212,8 +216,7 @@ def sync_product_vector_index(item_code: str) -> dict:
 			embedding_model=existing.get("embedding_model"),
 			vector_collection=existing.get("vector_collection"),
 		)
-		frappe.db.commit()
-		return {"status": "unchanged", "item_code": item_code, "content_hash": document["content_hash"]}
+		return "unchanged", document
 	_record_state(
 		item_code=item_code,
 		status="pending",
@@ -221,31 +224,107 @@ def sync_product_vector_index(item_code: str) -> dict:
 		embedding_model=_configured_embedding_model(),
 		vector_collection=_vector_collection(),
 	)
-	try:
-		result = _call_vector_orchestrator(
-			"/internal/v1/vector/products/upsert",
-			{"documents": [document]},
-		)
-	except Exception as error:
-		_record_state(
-			item_code=item_code,
-			status="failed",
-			document=document,
-			embedding_model=_configured_embedding_model(),
-			vector_collection=_vector_collection(),
-			error=str(error),
-		)
-		frappe.db.commit()
-		raise
-	_record_state(
-		item_code=item_code,
-		status="indexed",
-		document=document,
-		embedding_model=result.get("embedding_model"),
-		vector_collection=result.get("collection"),
-	)
+	return "pending", document
+
+
+def sync_product_vector_batch(item_codes) -> dict:
+	if not _enabled():
+		return {"status": "disabled", "indexed_count": 0, "unchanged_count": 0, "deleted_count": 0}
+	codes = _normalize_item_codes(item_codes)[:MAX_VECTOR_BATCH_SIZE]
+	if not codes:
+		raise ValueError("item_codes are required")
+	documents = []
+	unchanged = []
+	deleted = []
+	deferred = []
+	total_chars = 0
+	for item_code in codes:
+		state, document = _prepare_product_vector_document(item_code)
+		if state == "deleted":
+			deleted.append(item_code)
+			continue
+		if state == "unchanged":
+			unchanged.append(item_code)
+			continue
+		document_chars = len(document.get("text") or "")
+		if documents and total_chars + document_chars > MAX_VECTOR_BATCH_CHARS:
+			deferred.append(item_code)
+			continue
+		documents.append(document)
+		total_chars += document_chars
 	frappe.db.commit()
-	return {"status": "indexed", "item_code": item_code, "content_hash": document["content_hash"]}
+
+	if deleted:
+		try:
+			_call_vector_orchestrator(
+				"/internal/v1/vector/products/delete",
+				{"item_codes": deleted},
+			)
+		except Exception as error:
+			for item_code in deleted:
+				_record_state(item_code=item_code, status="failed", error=str(error))
+			frappe.db.commit()
+			raise
+		for item_code in deleted:
+			_record_state(item_code=item_code, status="deleted")
+
+	result = {}
+	if documents:
+		try:
+			result = _call_vector_orchestrator(
+				"/internal/v1/vector/products/upsert",
+				{"documents": documents},
+			)
+		except Exception as error:
+			for document in documents:
+				_record_state(
+					item_code=document["item_code"],
+					status="failed",
+					document=document,
+					embedding_model=_configured_embedding_model(),
+					vector_collection=_vector_collection(),
+					error=str(error),
+				)
+			frappe.db.commit()
+			raise
+		for document in documents:
+			_record_state(
+				item_code=document["item_code"],
+				status="indexed",
+				document=document,
+				embedding_model=result.get("embedding_model"),
+				vector_collection=result.get("collection"),
+			)
+
+	if deferred:
+		frappe.enqueue(
+			"myapp.services.ai_vector_service.sync_product_vector_batch",
+			queue="ai-vector",
+			item_codes=deferred,
+			job_name=f"AI product vector deferred batch {len(deferred)}",
+		)
+	frappe.db.commit()
+	return {
+		"status": "completed",
+		"indexed_count": len(documents),
+		"unchanged_count": len(unchanged),
+		"deleted_count": len(deleted),
+		"deferred_count": len(deferred),
+		"embedding_model": result.get("embedding_model") or _configured_embedding_model(),
+		"collection": result.get("collection") or _vector_collection(),
+	}
+
+
+def sync_product_vector_index(item_code: str) -> dict:
+	if not _enabled():
+		return {"status": "disabled", "item_code": item_code}
+	item_code = str(item_code or "").strip()
+	result = sync_product_vector_batch([item_code])
+	if result["unchanged_count"]:
+		return {"status": "unchanged", "item_code": item_code}
+	if result["deleted_count"]:
+		return {"status": "deleted", "item_code": item_code}
+	return {"status": "indexed", "item_code": item_code}
 
 
 def delete_product_vector_index(item_code: str) -> dict:
@@ -272,10 +351,10 @@ def enqueue_product_vector_sync(doc, method: str | None = None) -> None:
 	if not _enabled() or not getattr(doc, "name", None):
 		return
 	frappe.enqueue(
-		"myapp.services.ai_vector_service.sync_product_vector_index",
-		queue="short",
+		"myapp.services.ai_vector_service.sync_product_vector_batch",
+		queue="ai-vector",
 		enqueue_after_commit=True,
-		item_code=doc.name,
+		item_codes=[doc.name],
 		job_name=f"AI product vector sync {doc.name}",
 	)
 
@@ -285,7 +364,7 @@ def enqueue_product_vector_delete(doc, method: str | None = None) -> None:
 		return
 	frappe.enqueue(
 		"myapp.services.ai_vector_service.delete_product_vector_index",
-		queue="short",
+		queue="ai-vector",
 		enqueue_after_commit=True,
 		item_code=doc.name,
 		job_name=f"AI product vector delete {doc.name}",
@@ -314,12 +393,14 @@ def reconcile_product_vector_index(batch_size: int = 100) -> dict:
 		(PRODUCT_VECTOR_INDEX_VERSION, _configured_embedding_model(), _vector_collection(), batch_size),
 		as_dict=True,
 	)
-	for row in rows:
+	item_codes = [row.item_code for row in rows]
+	for offset in range(0, len(item_codes), 64):
+		batch = item_codes[offset:offset + 64]
 		frappe.enqueue(
-			"myapp.services.ai_vector_service.sync_product_vector_index",
-			queue="short",
-			item_code=row.item_code,
-			job_name=f"AI product vector reconcile {row.item_code}",
+			"myapp.services.ai_vector_service.sync_product_vector_batch",
+			queue="ai-vector",
+			item_codes=batch,
+			job_name=f"AI product vector reconcile batch {offset // 64 + 1}",
 		)
 	return {"status": "queued", "queued_count": len(rows)}
 
@@ -429,12 +510,13 @@ def rebuild_product_vector_index_v1(
 			order_by="modified asc",
 			limit_page_length=limit,
 		)
-	for item_code in resolved_codes:
+	for offset in range(0, len(resolved_codes), 64):
+		batch = resolved_codes[offset:offset + 64]
 		frappe.enqueue(
-			"myapp.services.ai_vector_service.sync_product_vector_index",
-			queue="short",
-			item_code=item_code,
-			job_name=f"AI product vector rebuild {item_code}",
+			"myapp.services.ai_vector_service.sync_product_vector_batch",
+			queue="ai-vector",
+			item_codes=batch,
+			job_name=f"AI product vector rebuild batch {offset // 64 + 1}",
 		)
 	return {
 		"status": "success",

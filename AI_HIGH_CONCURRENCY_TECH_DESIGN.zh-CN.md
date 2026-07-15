@@ -1,6 +1,8 @@
 # AI 高并发与性能技术设计
 
-> 状态：生产化详细设计基线，尚未完成异步连接池、多副本、分布式限流和专项压测。当前本地 `bench serve + 单 Uvicorn + 单 Qdrant` 只用于开发和功能验收。
+> 当前实现状态（2026-07-15）：高并发 P0 代码和单副本基线已完成。Orchestrator 已使用 FastAPI lifespan 共享 LiteLLM/Qdrant/Langfuse `httpx.AsyncClient`，Chat、structured、Embedding 使用独立 semaphore，池满稳定返回 429；Redis Lua 分布式 RPM/TPM/预算/并发租约、共享熔断和独立 `ai-vector` Worker 保持有效。合成 Provider 全矩阵、低并发真实 Provider 基线和 Qdrant `nofile=65536` 已验证，证据见父仓库 `docs/codex/AI_PERFORMANCE_SLO_BASELINE.zh-CN.md`。外部真实 Embedding、staging 完整付费矩阵、生产多副本和恢复演练仍未完成。
+
+> 状态：P0 单副本实现与合成容量基线完成；P1/P2 多副本、Stream Gateway、高可用向量平台和生产恢复仍是待交付项。当前本地 `bench serve + 单 Uvicorn + 单 Qdrant` 不代表生产高可用。
 
 ## 1. 目标与原则
 
@@ -12,18 +14,23 @@
 
 ## 2. 当前基线与瓶颈
 
-当前已有：超时、SSE、LiteLLM 路由、RQ 异步索引、Qdrant、内容哈希去重、关键词降级和 Langfuse Trace。
+当前已有：超时、SSE、LiteLLM 路由、共享异步 HTTP 连接池、RQ 异步索引、Qdrant、内容哈希去重、关键词降级、Langfuse Trace、Redis 分布式限流/预算/熔断和分类 semaphore。
 
-当前瓶颈：
+新增运行基线：
+
+- Redis 不可用且已发布策略配置并发、RPM/TPM 或预算时失败关闭，不回退到进程内计数。
+- 非流式请求在尚未输出响应时允许使用已验证降级模型；SSE 输出后不跨模型续写。
+- 成功/失败、回退原因、Token 和估算成本进入 Run/每日聚合；Redis 并发租约异常退出后自动过期。
+- 当前 LiteLLM `erp-embedding` 路由出现服务端 `float + str` 配置错误，单条和批量 Embedding 均被拒绝；Qdrant 既有 582 points 未丢失，索引 Worker/批量契约代码和 mock 测试通过，但新的真实批量 Embedding 尚不能验收。
+
+当前剩余瓶颈：
 
 - Frappe 使用开发态 `bench serve`，不是生产 Gunicorn。
 - Orchestrator 只有一个 Uvicorn 进程。
-- LiteLLM、Qdrant、Langfuse 调用使用同步客户端，并为每次请求创建连接。
 - SSE 长连接占用 Frappe WSGI Worker。
-- 商品索引主要按单商品调用 Embedding，缺少批量聚合。
-- AI 索引与普通 short/default 任务共享 Worker。
 - Qdrant 是单实例，无副本和分片故障切换。
-- 没有分布式并发信号量、队列上限、熔断和 AI 专项压测基线。
+- 外部 `erp-embedding` Provider 仍阻断真实批量 Embedding 容量验收。
+- 当前容量证据来自单 Uvicorn 和合成 Provider；真实供应商完整付费矩阵与多副本一致性尚未完成。
 
 ## 3. 目标架构
 
@@ -202,4 +209,3 @@ Qdrant 候选始终回到 Frappe执行权限和实时业务过滤，不能因缓
 - 多副本策略、限流和预算结果一致。
 - 故障降级不绕过权限、公司范围和工具白名单。
 - 容量、SLO、告警和恢复演练均有可复现报告。
-

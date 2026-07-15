@@ -99,6 +99,16 @@
 - 库存：`list_inventory_stock_summary_v1`、`list_stock_ledger_entries_v1`、`transfer_inventory_stock_v1`、`reconcile_inventory_stock_v1`、`submit_inventory_stock_count_v1`
 - 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
 - AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`get_ai_draft_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`
+- AI 模型治理：`get_ai_model_governance_overview_v1`、`sync_ai_model_registry_v1`、`list_ai_models_v1`、`update_ai_model_registry_v1`、`list_ai_model_policies_v1`、`get_ai_model_policy_v1`、`save_ai_model_policy_draft_v1`、`validate_ai_model_policy_v1`、`approve_ai_model_policy_v1`、`publish_ai_model_policy_v1`、`rollback_ai_model_policy_v1`、`get_ai_model_usage_summary_v1`
+  - `update_ai_model_registry_v1` 只维护治理字段：状态、数据区域、留存策略、敏感数据许可、输入/输出成本和币种；供应商能力字段由同步维护。请求必须包含 `reason` 和幂等键，响应返回递增后的 `registry_version` 与受影响的已发布策略。
+  - `get_ai_model_usage_summary_v1` 支持 `date_from`、`date_to`、`environment`、`company`，返回延迟/首 Token 平均值与 p50/p95、反馈计数和正向率。
+- AI Embedding 发布治理：`list_ai_vector_releases_v1`、`get_ai_vector_release_v1`、`create_ai_vector_release_v1`、`retry_ai_vector_release_v1`、`validate_ai_vector_release_v1`、`approve_ai_vector_release_v1`、`publish_ai_vector_release_v1`、`rollback_ai_vector_release_v1`
+  - 候选构建定向写入新的不可变物理 collection，不覆盖在线商品向量状态。
+  - 发布要求全量点数/维度和只读 full-gate 报告匹配；生产起草人与审批人分离，发布/回滚仅 System Manager 可执行。
+  - 在线检索和增量写入使用 `MYAPP_AI_QDRANT_ALIAS`；发布与回滚通过 Qdrant alias 原子切换。
+- AI 数据治理：`analyze_ai_product_data_v1`、`create_ai_data_task_v1`、`list_ai_data_tasks_v1`、`get_ai_data_task_v1`、`review_ai_data_task_v1`、`execute_ai_data_task_v1`、`rollback_ai_data_task_v1`
+  - 首期只允许治理 Item 的 `item_name`、`description`、`brand`、`item_group`，禁止价格、库存和正式交易字段。
+  - `AI Data Steward` 负责创建/执行，`AI Data Approver` 负责审批，`AI Auditor` 只读，回滚仅 `System Manager`；发起、审批、执行必须职责分离。
 
 ### AI Copilot 只读聊天
 
@@ -122,6 +132,38 @@
 ### AI Copilot 结构化草稿
 
 销售订单、采购订单和库存调整分别通过 `generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1` 生成严格结构化候选。模型只负责提取用户原文；Frappe 重新按当前用户权限解析真实 Customer / Supplier / Item / Warehouse、UOM、价格或实时库存，并持久化为 `MyApp AI Draft`。
+
+### AI 模型治理
+
+模型治理接口只面向 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 的职责范围。模型注册同步只从受服务 Token 保护的 Orchestrator 读取 LiteLLM capability 别名，不保存供应商 Key。策略草稿、验证、审批、发布和回滚使用不可变版本与审计事件；生产策略起草人与审批人必须分离，只有 System Manager 可以发布或紧急回滚。
+
+所有治理写接口均为 POST，并使用项目统一幂等机制。策略验证会同时检查注册模型能力/健康状态、当前 Prompt、确定性 offline full gate 和受控 live/Embedding 完整报告。缺少完整报告、报告为 partial、阈值失败、模型别名不一致或报告格式错误时，策略保持 `draft`，不能进入审批或发布。
+
+### AI 数据治理任务
+
+Data Task 是商品主数据整理建议，不是 AI 直接写业务数据。Web 通过 `/administration/ai/data-tasks` 使用以下契约；所有写接口都是 POST，并使用统一幂等机制。
+
+| 接口 | 权限 | 主要参数 | 返回 |
+|---|---|---|---|
+| `analyze_ai_product_data_v1` | `System Manager` / `AI Data Steward` | `item_codes?`、`limit=1..100` | `tasks[]`、`created_or_reused` |
+| `create_ai_data_task_v1` | `System Manager` / `AI Data Steward` | `payload.target_name`、`payload.proposed_value`、`reason` | `task` |
+| `list_ai_data_tasks_v1` | 数据治理查看角色 | `status?`、`risk_level?`、`task_type?`、`start`、`limit` | `tasks[]`、`total`、`start`、`limit` |
+| `get_ai_data_task_v1` | 数据治理查看角色 | `task_name` | `task` |
+| `review_ai_data_task_v1` | `System Manager` / `AI Data Approver` | `task_name`、`action=approve/reject`、`reason` | `task` |
+| `execute_ai_data_task_v1` | `System Manager` / `AI Data Steward` | `task_name` | `task`、可选 `idempotent_replay` |
+| `rollback_ai_data_task_v1` | `System Manager` | `task_name`、`reason` | `task`、可选 `idempotent_replay` |
+
+任务序列化字段包括 `name`、`task_type`、`target_doctype`、`target_name`、`status`、`risk_level`、`before_value`、`proposed_value`、`evidence`、`analysis`、模型/Prompt/策略来源、发起/审批/执行/回滚身份与时间、结果摘要、版本和创建/修改时间。
+
+安全与状态约束：
+
+- 确定性完整性扫描只处理启用且描述为空的 Item；相同开放建议按 proposal hash 复用，不重复创建。
+- 手工建议只接受非空对象，未知字段失败关闭；`item_name` 和 `item_group` 建议值不能为空。
+- 发起人不能审批自己的任务，审批人不能执行同一任务。
+- 只有 `review_required` 可批准/驳回，只有 `approved` 可执行，只有 `executed` 可回滚。
+- 执行前重新读取建议字段；当前值与 `before_value` 不一致时记录 `SOURCE_CHANGED` 并进入 `failed`，不调用写服务。
+- 执行与回滚均调用既有 `update_product_v2`；回滚还要求当前值仍等于 `proposed_value`，因此不会覆盖任务后的人工变更。
+- 每个关键动作写入 `MyApp AI Audit Event`，审计正文保存哈希和必要元数据，不保存供应商密钥。
 
 草稿支持查询、人工更新后重新校验、放弃、不可变版本列表和历史恢复。`restore_ai_draft_version_v1` 会用当前主数据重新校验历史 payload，并创建新版本，不直接覆盖当前快照。
 

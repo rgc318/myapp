@@ -1972,11 +1972,17 @@ def _prepare_chat_run(
 			"prompt_version": prompt_version,
 			"conversation_id": conversation_id,
 			"run_id": run_id,
+			"policy_context": {
+				"roles": sorted(set(frappe.get_roles(user) or [])),
+				"environment": os.environ.get("MYAPP_AI_ENVIRONMENT", "development").strip() or "development",
+			},
 		},
 	}
 
 
-def _complete_chat_run(prepared: dict, result: dict, assistant_content: str):
+def _complete_chat_run(
+	prepared: dict, result: dict, assistant_content: str, *, first_token_ms: int | None = None,
+):
 	latency_ms = int((time.perf_counter() - prepared["started"]) * 1000)
 	ai_repository.append_message(
 		conversation_id=prepared["conversation_id"],
@@ -1993,6 +1999,7 @@ def _complete_chat_run(prepared: dict, result: dict, assistant_content: str):
 		user=prepared["user"],
 		result=result,
 		latency_ms=latency_ms,
+		first_token_ms=first_token_ms,
 		tool_calls=prepared["tool_calls"],
 	)
 	frappe.db.commit()
@@ -2047,6 +2054,9 @@ def chat_ai_v1(
 			},
 			"model": result.get("model"),
 			"model_alias": result.get("model_alias"),
+			"policy_code": result.get("policy_code"),
+			"policy_version": result.get("policy_version"),
+			"fallback_reason": result.get("fallback_reason"),
 			"trace_id": result.get("trace_id"),
 			"usage": result.get("usage") or {},
 			"warnings": warnings,
@@ -2080,6 +2090,7 @@ def stream_ai_message_v1(
 	def event_stream():
 		content_parts = []
 		completed_result = None
+		first_token_ms = None
 		try:
 			yield _encode_sse(
 				{
@@ -2103,7 +2114,10 @@ def stream_ai_message_v1(
 			for event in _stream_ai_orchestrator(prepared["payload"]):
 				event_type = event.get("type")
 				if event_type == "message_delta":
-					content_parts.append(str(event.get("delta") or ""))
+					delta = str(event.get("delta") or "")
+					if delta and first_token_ms is None:
+						first_token_ms = max(0, int((time.perf_counter() - prepared["started"]) * 1000))
+					content_parts.append(delta)
 					yield _encode_sse(event)
 				elif event_type == "warning":
 					yield _encode_sse(event)
@@ -2117,7 +2131,9 @@ def stream_ai_message_v1(
 				assistant_content = str((completed_result.get("message") or {}).get("content") or "").strip()
 			if not assistant_content or not completed_result:
 				raise UpstreamServiceUnavailableError(_("AI 流式服务返回了无效响应。"))
-			_complete_chat_run(prepared, completed_result, assistant_content)
+			_complete_chat_run(
+				prepared, completed_result, assistant_content, first_token_ms=first_token_ms,
+			)
 			yield _encode_sse(
 				{
 					**completed_result,
