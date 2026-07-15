@@ -2080,3 +2080,48 @@ Prompt 版本必须在 Frappe 消息审计、Orchestrator registry 和 Langfuse 
 聊天、流式和三类草稿接口显式收到其他版本或空字符串时应返回 HTTP `409`；`GET /health` 必须返回上述全部 `prompt_versions`。Langfuse 207 批次验收需同时断言 `errors` 为空且 `successes` 覆盖全部事件 ID；反馈默认只保存 comment 哈希/长度，eval 与 feedback score 的 `source` 分别为 `EVAL` / `API`，且携带正确 `environment`。
 
 2026-07-13 最终回归：Orchestrator test target 37 项通过，offline full gate 21/21；后端 AI 服务、确定性 fixture 与 gateway wrappers 132 项通过。
+
+### 24.2 商品向量排除与中文检索质量门禁（2026-07-15）
+
+向量排除规则的单元回归覆盖：排除项不 upsert、Item 修改转为删除、补偿任务不重新加入、管理员重建过滤、语义候选二次过滤、dry-run 无外部写入、正式清理分批删除和 critical 审计：
+
+```bash
+docker exec frappe_docker-backend-1 bash -lc '
+  cd /home/frappe/frappe-bench &&
+  env/bin/python -m unittest \
+    apps.myapp.myapp.tests.unit.test_ai_vector_service \
+    apps.myapp.myapp.tests.unit.test_ai_vector_governance_service \
+    apps.myapp.myapp.tests.unit.test_gateway_wrappers
+'
+```
+
+真实清理必须先调用 `cleanup_excluded_ai_product_vectors_v1` 的 `dry_run=true`，核对 `excluded_count`、`excluded_indexed_count` 和 `item_codes`。只有范围确认后才能以 `dry_run=false`、非空 `reason` 和唯一 `request_id` 执行。清理前后必须验证：
+
+- ERP Item 总数不变。
+- Sales Order 等历史交易数量不变。
+- 在线 `MYAPP_AI_QDRANT_ALIAS` 目标不变。
+- Qdrant points 只减少被排除且实际已索引的商品数。
+- SKU001～SKU010 保持存在；Provider 健康时继续满足检索门禁。
+
+版本化中文质量集位于 `services/myapp-ai/myapp_ai/evals/datasets/product_retrieval_zh_cn.v1.json`，包含 SKU001～SKU010 各三条直接、用途和模糊表达，共 30 条。构建 test target 会同时校验数据集被打包，并运行 runner 单元测试：
+
+```bash
+DOCKER_CONFIG=/tmp/myapp-docker-config docker build --target test -t myapp-ai:test services/myapp-ai
+docker run --rm myapp-ai:test
+```
+
+真实质量门禁默认关闭，必须显式开启并把报告写入忽略目录：
+
+```bash
+docker exec \
+  -e MYAPP_AI_ENABLE_LIVE_EVALS=1 \
+  frappe_docker-ai-orchestrator-1 \
+  python -m myapp_ai.retrieval_quality \
+  --output /tmp/product-retrieval-v1.json
+
+docker cp \
+  frappe_docker-ai-orchestrator-1:/tmp/product-retrieval-v1.json \
+  ai-governance-reports/product-retrieval-v1.json
+```
+
+默认门槛为 Top-1 ≥ 90%、Top-3 = 100%、Provider 错误为 0、排除前缀候选泄漏为 0；任一条件失败退出 `1`，配置或未显式启用退出 `2`。Provider 500/502 时必须保留失败报告，不得以 mock 单测结果替代真实发布证据。

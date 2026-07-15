@@ -1,6 +1,6 @@
 # AI 模型治理与策略管理技术设计
 
-> 状态：模型注册/策略/预算/审批发布回滚、Redis 限流与熔断、用量 p50/p95/首 Token/反馈聚合、Web 管理台和 Embedding 双 collection 发布控制面均已实现。2026-07-15 已真实初始化 `myapp-products-live → myapp-products-v1`，582 points 保持完整；新 collection 的真实全量补建仍受外部 `erp-embedding` Provider 配置错误限制，未宣称 v2 发布完成。
+> 状态：模型注册/策略/预算/审批发布回滚、Redis 限流与熔断、用量 p50/p95/首 Token/反馈聚合、Web 管理台和 Embedding 双 collection 发布控制面均已实现。2026-07-15 已真实初始化 `myapp-products-live → myapp-products-v1`，随后按质量治理规则移除 439 个 `HTTP-` 测试 points，在线保留 143 个非排除 points / 1024 维且 alias 未变化；新 collection 的真实全量补建仍受外部 `erp-embedding` Provider 配置错误限制，未宣称 v2 发布完成。
 
 当前实现进度（2026-07-14）：
 

@@ -17,8 +17,11 @@ from myapp.services.wholesale_service import search_product_v2
 PRODUCT_VECTOR_INDEX_VERSION = "product-semantic-v1"
 MAX_VECTOR_DOCUMENT_CHARS = 8000
 MAX_VECTOR_BATCH_SIZE = 128
+MAX_VECTOR_DELETE_BATCH_SIZE = 100
 MAX_VECTOR_BATCH_CHARS = 120000
 MAX_SEMANTIC_CANDIDATES = 30
+MAX_EXCLUDED_PREFIXES = 32
+MAX_EXCLUDED_PREFIX_LENGTH = 140
 
 
 def _enabled() -> bool:
@@ -40,6 +43,60 @@ def _vector_collection() -> str:
 		or os.environ.get("MYAPP_AI_QDRANT_COLLECTION", "myapp-products-v1").strip()
 		or "myapp-products-v1"
 	)
+
+
+def _excluded_item_prefixes() -> tuple[str, ...]:
+	raw_value = os.environ.get("MYAPP_AI_VECTOR_EXCLUDED_ITEM_PREFIXES", "").strip()
+	if not raw_value:
+		return ()
+	values = None
+	if raw_value.startswith("["):
+		try:
+			parsed = json.loads(raw_value)
+			if isinstance(parsed, list):
+				values = parsed
+		except (TypeError, ValueError):
+			values = None
+	if values is None:
+		values = re.split(r"[,;\n]", raw_value)
+	prefixes = []
+	seen = set()
+	for value in values:
+		prefix = str(value or "").strip()[:MAX_EXCLUDED_PREFIX_LENGTH]
+		normalized = prefix.casefold()
+		if not prefix or normalized in seen:
+			continue
+		seen.add(normalized)
+		prefixes.append(prefix)
+		if len(prefixes) >= MAX_EXCLUDED_PREFIXES:
+			break
+	return tuple(prefixes)
+
+
+def _is_excluded_item_code(item_code: str) -> bool:
+	normalized = str(item_code or "").strip().casefold()
+	return bool(normalized) and any(
+		normalized.startswith(prefix.casefold()) for prefix in _excluded_item_prefixes()
+	)
+
+
+def _excluded_item_sql_condition(
+	column: str = "item.name", *, include_excluded: bool = False,
+) -> tuple[str, tuple]:
+	if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*", column):
+		raise ValueError("invalid SQL column reference")
+	prefixes = _excluded_item_prefixes()
+	if not prefixes:
+		return ("0 = 1" if include_excluded else "1 = 1"), ()
+	parts = []
+	parameters = []
+	for prefix in prefixes:
+		parts.append(f"LOWER(LEFT({column}, %s)) = %s")
+		parameters.extend((len(prefix), prefix.casefold()))
+	condition = f"({' OR '.join(parts)})"
+	if not include_excluded:
+		condition = f"NOT {condition}"
+	return condition, tuple(parameters)
 
 
 def _service_token() -> str:
@@ -182,6 +239,8 @@ def _prepare_product_vector_document(item_code: str) -> tuple[str, dict | None]:
 	item_code = str(item_code or "").strip()
 	if not item_code:
 		raise ValueError("item_code is required")
+	if _is_excluded_item_code(item_code):
+		return "excluded", None
 	if not frappe.db.exists("Item", item_code):
 		return "deleted", None
 	item = frappe.get_doc("Item", item_code)
@@ -229,17 +288,24 @@ def _prepare_product_vector_document(item_code: str) -> tuple[str, dict | None]:
 
 def sync_product_vector_batch(item_codes) -> dict:
 	if not _enabled():
-		return {"status": "disabled", "indexed_count": 0, "unchanged_count": 0, "deleted_count": 0}
+		return {
+			"status": "disabled", "indexed_count": 0, "unchanged_count": 0,
+			"deleted_count": 0, "excluded_count": 0,
+		}
 	codes = _normalize_item_codes(item_codes)[:MAX_VECTOR_BATCH_SIZE]
 	if not codes:
 		raise ValueError("item_codes are required")
 	documents = []
 	unchanged = []
 	deleted = []
+	excluded = []
 	deferred = []
 	total_chars = 0
 	for item_code in codes:
 		state, document = _prepare_product_vector_document(item_code)
+		if state == "excluded":
+			excluded.append(item_code)
+			continue
 		if state == "deleted":
 			deleted.append(item_code)
 			continue
@@ -254,18 +320,20 @@ def sync_product_vector_batch(item_codes) -> dict:
 		total_chars += document_chars
 	frappe.db.commit()
 
-	if deleted:
+	removed_codes = [*deleted, *excluded]
+	if removed_codes:
 		try:
-			_call_vector_orchestrator(
-				"/internal/v1/vector/products/delete",
-				{"item_codes": deleted},
-			)
+			for offset in range(0, len(removed_codes), MAX_VECTOR_DELETE_BATCH_SIZE):
+				_call_vector_orchestrator(
+					"/internal/v1/vector/products/delete",
+					{"item_codes": removed_codes[offset:offset + MAX_VECTOR_DELETE_BATCH_SIZE]},
+				)
 		except Exception as error:
-			for item_code in deleted:
+			for item_code in removed_codes:
 				_record_state(item_code=item_code, status="failed", error=str(error))
 			frappe.db.commit()
 			raise
-		for item_code in deleted:
+		for item_code in removed_codes:
 			_record_state(item_code=item_code, status="deleted")
 
 	result = {}
@@ -309,6 +377,7 @@ def sync_product_vector_batch(item_codes) -> dict:
 		"indexed_count": len(documents),
 		"unchanged_count": len(unchanged),
 		"deleted_count": len(deleted),
+		"excluded_count": len(excluded),
 		"deferred_count": len(deferred),
 		"embedding_model": result.get("embedding_model") or _configured_embedding_model(),
 		"collection": result.get("collection") or _vector_collection(),
@@ -324,6 +393,8 @@ def sync_product_vector_index(item_code: str) -> dict:
 		return {"status": "unchanged", "item_code": item_code}
 	if result["deleted_count"]:
 		return {"status": "deleted", "item_code": item_code}
+	if result["excluded_count"]:
+		return {"status": "excluded", "item_code": item_code}
 	return {"status": "indexed", "item_code": item_code}
 
 
@@ -350,6 +421,15 @@ def delete_product_vector_index(item_code: str) -> dict:
 def enqueue_product_vector_sync(doc, method: str | None = None) -> None:
 	if not _enabled() or not getattr(doc, "name", None):
 		return
+	if _is_excluded_item_code(doc.name):
+		frappe.enqueue(
+			"myapp.services.ai_vector_service.delete_product_vector_index",
+			queue="ai-vector",
+			enqueue_after_commit=True,
+			item_code=doc.name,
+			job_name=f"AI product vector exclude {doc.name}",
+		)
+		return
 	frappe.enqueue(
 		"myapp.services.ai_vector_service.sync_product_vector_batch",
 		queue="ai-vector",
@@ -373,27 +453,52 @@ def enqueue_product_vector_delete(doc, method: str | None = None) -> None:
 
 def reconcile_product_vector_index(batch_size: int = 100) -> dict:
 	if not _enabled() or not _state_table_exists():
-		return {"status": "disabled", "queued_count": 0}
+		return {
+			"status": "disabled", "queued_count": 0,
+			"excluded_cleanup_queued_count": 0, "index_sync_queued_count": 0,
+		}
 	batch_size = max(1, min(int(batch_size or 100), 500))
+	excluded_condition, excluded_parameters = _excluded_item_sql_condition(
+		"item.name", include_excluded=True,
+	)
+	excluded_rows = frappe.db.sql(
+		f"""
+		SELECT item.name AS item_code
+		FROM `tabItem` item
+		INNER JOIN `tabMyApp AI Product Vector State` state ON state.item_code = item.name
+		WHERE {excluded_condition} AND state.status = 'indexed'
+		ORDER BY item.modified ASC
+		LIMIT %s
+		""",
+		(*excluded_parameters, batch_size),
+		as_dict=True,
+	)
+	remaining_limit = max(0, batch_size - len(excluded_rows))
+	eligible_condition, eligible_parameters = _excluded_item_sql_condition("item.name")
 	rows = frappe.db.sql(
-		"""
+		f"""
 		SELECT item.name AS item_code
 		FROM `tabItem` item
 		LEFT JOIN `tabMyApp AI Product Vector State` state ON state.item_code = item.name
-		WHERE state.item_code IS NULL
+		WHERE {eligible_condition}
+		  AND (state.item_code IS NULL
 		   OR state.index_version != %s
 		   OR state.source_modified IS NULL
 		   OR item.modified > state.source_modified
 		   OR state.status = 'failed'
 		   OR COALESCE(state.embedding_model, '') != %s
-		   OR COALESCE(state.vector_collection, '') != %s
+		   OR COALESCE(state.vector_collection, '') != %s)
 		ORDER BY item.modified ASC
 		LIMIT %s
 		""",
-		(PRODUCT_VECTOR_INDEX_VERSION, _configured_embedding_model(), _vector_collection(), batch_size),
+		(
+			*eligible_parameters, PRODUCT_VECTOR_INDEX_VERSION,
+			_configured_embedding_model(), _vector_collection(), remaining_limit,
+		),
 		as_dict=True,
-	)
-	item_codes = [row.item_code for row in rows]
+	) if remaining_limit else []
+	excluded_codes = [row.item_code for row in excluded_rows]
+	item_codes = [*excluded_codes, *(row.item_code for row in rows)]
 	for offset in range(0, len(item_codes), 64):
 		batch = item_codes[offset:offset + 64]
 		frappe.enqueue(
@@ -402,7 +507,12 @@ def reconcile_product_vector_index(batch_size: int = 100) -> dict:
 			item_codes=batch,
 			job_name=f"AI product vector reconcile batch {offset // 64 + 1}",
 		)
-	return {"status": "queued", "queued_count": len(rows)}
+	return {
+		"status": "queued",
+		"queued_count": len(item_codes),
+		"excluded_cleanup_queued_count": len(excluded_codes),
+		"index_sync_queued_count": len(rows),
+	}
 
 
 def get_product_vector_index_status_v1(failure_limit: int = 20) -> dict:
@@ -412,6 +522,8 @@ def get_product_vector_index_status_v1(failure_limit: int = 20) -> dict:
 	failures = []
 	tracked_count = 0
 	due_count = 0
+	excluded_item_count = 0
+	excluded_indexed_count = 0
 	if _state_table_exists():
 		for row in frappe.db.sql(
 			"SELECT status, COUNT(*) AS count FROM `tabMyApp AI Product Vector State` GROUP BY status",
@@ -419,24 +531,46 @@ def get_product_vector_index_status_v1(failure_limit: int = 20) -> dict:
 		):
 			counts[str(row.status)] = int(row.count or 0)
 		tracked_count = sum(counts.values())
+		eligible_condition, eligible_parameters = _excluded_item_sql_condition("item.name")
 		due_count = int(
 			frappe.db.sql(
-				"""
+				f"""
 				SELECT COUNT(*)
 				FROM `tabItem` item
 				LEFT JOIN `tabMyApp AI Product Vector State` state ON state.item_code = item.name
-				WHERE state.item_code IS NULL
+				WHERE {eligible_condition}
+				  AND (state.item_code IS NULL
 				   OR state.index_version != %s
 				   OR state.source_modified IS NULL
 				   OR item.modified > state.source_modified
 				   OR state.status = 'failed'
 				   OR COALESCE(state.embedding_model, '') != %s
-				   OR COALESCE(state.vector_collection, '') != %s
+				   OR COALESCE(state.vector_collection, '') != %s)
 				""",
-				(PRODUCT_VECTOR_INDEX_VERSION, _configured_embedding_model(), _vector_collection()),
+				(
+					*eligible_parameters, PRODUCT_VECTOR_INDEX_VERSION,
+					_configured_embedding_model(), _vector_collection(),
+				),
 			)[0][0]
 			or 0
 		)
+		excluded_condition, excluded_parameters = _excluded_item_sql_condition(
+			"item.name", include_excluded=True,
+		)
+		if excluded_parameters:
+			excluded_metrics = frappe.db.sql(
+				f"""
+				SELECT COUNT(*) AS excluded_item_count,
+					SUM(CASE WHEN state.status = 'indexed' THEN 1 ELSE 0 END) AS excluded_indexed_count
+				FROM `tabItem` item
+				LEFT JOIN `tabMyApp AI Product Vector State` state ON state.item_code = item.name
+				WHERE {excluded_condition}
+				""",
+				excluded_parameters,
+				as_dict=True,
+			)[0]
+			excluded_item_count = int(excluded_metrics.excluded_item_count or 0)
+			excluded_indexed_count = int(excluded_metrics.excluded_indexed_count or 0)
 		failures = frappe.db.sql(
 			"""
 			SELECT item_code, last_error, last_attempt_at
@@ -460,6 +594,9 @@ def get_product_vector_index_status_v1(failure_limit: int = 20) -> dict:
 			"index_version": PRODUCT_VECTOR_INDEX_VERSION,
 			"embedding_model": _configured_embedding_model() or None,
 			"vector_collection": _vector_collection(),
+			"excluded_item_prefixes": list(_excluded_item_prefixes()),
+			"excluded_item_count": excluded_item_count,
+			"excluded_indexed_count": excluded_indexed_count,
 			"total_items": int(frappe.db.count("Item") or 0),
 			"tracked_count": tracked_count,
 			"due_count": due_count,
@@ -481,35 +618,42 @@ def rebuild_product_vector_index_v1(
 	limit = max(1, min(int(limit or 100), 500))
 	requested_codes = _normalize_item_codes(item_codes)
 	if requested_codes:
-		resolved_codes = frappe.get_all(
+		resolved_codes = [code for code in frappe.get_all(
 			"Item",
 			filters={"name": ["in", requested_codes]},
 			pluck="name",
 			limit_page_length=min(limit, len(requested_codes)),
-		)
+		) if not _is_excluded_item_code(code)]
 	elif cint(failed_only) and _state_table_exists():
+		eligible_condition, eligible_parameters = _excluded_item_sql_condition("item.name")
 		resolved_codes = [
 			row.item_code
 			for row in frappe.db.sql(
-				"""
+				f"""
 				SELECT item.name AS item_code
 				FROM `tabItem` item
 				INNER JOIN `tabMyApp AI Product Vector State` state ON state.item_code = item.name
-				WHERE state.status = 'failed'
+				WHERE {eligible_condition} AND state.status = 'failed'
 				ORDER BY state.last_attempt_at ASC
 				LIMIT %s
 				""",
-				(limit,),
+				(*eligible_parameters, limit),
 				as_dict=True,
 			)
 		]
 	else:
-		resolved_codes = frappe.get_all(
-			"Item",
-			pluck="name",
-			order_by="modified asc",
-			limit_page_length=limit,
-		)
+		eligible_condition, eligible_parameters = _excluded_item_sql_condition("item.name")
+		resolved_codes = [row.item_code for row in frappe.db.sql(
+			f"""
+			SELECT item.name AS item_code
+			FROM `tabItem` item
+			WHERE {eligible_condition}
+			ORDER BY item.modified ASC
+			LIMIT %s
+			""",
+			(*eligible_parameters, limit),
+			as_dict=True,
+		)]
 	for offset in range(0, len(resolved_codes), 64):
 		batch = resolved_codes[offset:offset + 64]
 		frappe.enqueue(
@@ -527,6 +671,102 @@ def rebuild_product_vector_index_v1(
 			"failed_only": bool(cint(failed_only)),
 		},
 	}
+
+
+def cleanup_excluded_product_vectors_v1(
+	*, dry_run: bool | int = True, limit: int = 5000,
+	reason: str | None = None, request_id: str | None = None,
+) -> dict:
+	_require_vector_admin()
+	prefixes = _excluded_item_prefixes()
+	limit = max(1, min(int(limit or 5000), 5000))
+	dry_run = bool(cint(dry_run))
+	resolved_reason = " ".join(str(reason or "").split())[:1000]
+	if not dry_run and not resolved_reason:
+		frappe.throw(_("执行向量排除清理必须填写原因。"))
+	condition, parameters = _excluded_item_sql_condition("item.name", include_excluded=True)
+	rows = frappe.db.sql(
+		f"""
+		SELECT item.name AS item_code, COALESCE(state.status, '') AS vector_status
+		FROM `tabItem` item
+		LEFT JOIN `tabMyApp AI Product Vector State` state ON state.item_code = item.name
+		WHERE {condition}
+		ORDER BY item.name ASC
+		LIMIT %s
+		""",
+		(*parameters, limit),
+		as_dict=True,
+	) if prefixes else []
+	metrics = frappe.db.sql(
+		f"""
+		SELECT COUNT(*) AS excluded_count,
+			SUM(CASE WHEN state.status = 'indexed' THEN 1 ELSE 0 END) AS excluded_indexed_count
+		FROM `tabItem` item
+		LEFT JOIN `tabMyApp AI Product Vector State` state ON state.item_code = item.name
+		WHERE {condition}
+		""",
+		parameters,
+		as_dict=True,
+	)[0] if prefixes else None
+	excluded_count = int(metrics.excluded_count or 0) if metrics else 0
+	excluded_indexed_count = int(metrics.excluded_indexed_count or 0) if metrics else 0
+	selected_indexed_count = sum(1 for row in rows if row.vector_status == "indexed")
+	base_data = {
+		"dry_run": dry_run,
+		"excluded_item_prefixes": list(prefixes),
+		"excluded_count": excluded_count,
+		"selected_count": len(rows),
+		"excluded_indexed_count": excluded_indexed_count,
+		"item_codes": [row.item_code for row in rows],
+		"erp_items_changed": 0,
+	}
+	if dry_run or not rows:
+		return {
+			"status": "success",
+			"message": _("AI 商品向量排除清理预检完成。"),
+			"data": {**base_data, "removed_count": 0, "remaining_indexed_count": excluded_indexed_count},
+		}
+	if not _enabled():
+		frappe.throw(_("请先配置 Embedding 模型并启用 AI 商品向量检索。"))
+
+	def _cleanup():
+		removed_count = 0
+		item_codes = [row.item_code for row in rows]
+		for offset in range(0, len(item_codes), MAX_VECTOR_DELETE_BATCH_SIZE):
+			batch = item_codes[offset:offset + MAX_VECTOR_DELETE_BATCH_SIZE]
+			result = _call_vector_orchestrator(
+				"/internal/v1/vector/products/delete", {"item_codes": batch}, timeout=60,
+			)
+			removed_count += int(result.get("deleted_count") or 0)
+			for item_code in batch:
+				_record_state(item_code=item_code, status="deleted")
+		from myapp.services.ai_model_governance_service import _record_audit
+		_record_audit(
+			actor=frappe.session.user,
+			action="cleanup_excluded_product_vectors",
+			object_type="product_vector_index",
+			object_name=_vector_collection(),
+			parameters={"prefixes": list(prefixes), "selected_count": len(item_codes)},
+			result={"removed_count": removed_count, "erp_items_changed": 0},
+			reason=resolved_reason,
+			priority="critical",
+		)
+		return {
+			"status": "success",
+			"message": _("已从 AI 向量索引移除排除商品；ERP 商品与历史交易未修改。"),
+			"data": {
+				**base_data, "removed_count": removed_count,
+				"remaining_indexed_count": max(0, excluded_indexed_count - selected_indexed_count),
+			},
+		}
+
+	from myapp.utils.idempotency import run_idempotent
+	return run_idempotent(
+		"cleanup_excluded_product_vectors_v1", request_id, _cleanup,
+		request_payload={
+			"dry_run": False, "limit": limit, "prefixes": list(prefixes), "reason": resolved_reason,
+		},
+	)
 
 
 def search_products_semantic(
@@ -549,7 +789,11 @@ def search_products_semantic(
 		frappe.log_error(frappe.get_traceback(), _("AI 商品向量检索失败，已降级为关键词检索"))
 		return {"available": False, "rows": [], "reason": "upstream_unavailable"}
 	matches = result.get("matches") or []
-	candidate_codes = [str(row.get("item_code") or "") for row in matches if row.get("item_code")]
+	matches = [
+		row for row in matches
+		if row.get("item_code") and not _is_excluded_item_code(row.get("item_code"))
+	]
+	candidate_codes = [str(row.get("item_code") or "") for row in matches]
 	allowed_codes = set(
 		frappe.get_list(
 			"Item",

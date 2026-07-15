@@ -6,8 +6,13 @@ from unittest.mock import patch
 
 from myapp.services.ai_vector_service import (
 	PRODUCT_VECTOR_INDEX_VERSION,
+	_excluded_item_prefixes,
+	_is_excluded_item_code,
 	build_product_vector_document,
+	cleanup_excluded_product_vectors_v1,
+	enqueue_product_vector_sync,
 	get_product_vector_index_status_v1,
+	reconcile_product_vector_index,
 	rebuild_product_vector_index_v1,
 	search_products_semantic,
 	sync_product_vector_batch,
@@ -16,6 +21,12 @@ from myapp.services.ai_vector_service import (
 
 
 class TestAiVectorService(TestCase):
+	@patch.dict(os.environ, {"MYAPP_AI_VECTOR_EXCLUDED_ITEM_PREFIXES": "HTTP-, http-,RANGE-PRODUCT-"})
+	def test_excluded_prefixes_are_deduplicated_and_case_insensitive(self):
+		self.assertEqual(_excluded_item_prefixes(), ("HTTP-", "RANGE-PRODUCT-"))
+		self.assertTrue(_is_excluded_item_code("http-test-item"))
+		self.assertFalse(_is_excluded_item_code("SKU010"))
+
 	@patch.dict(os.environ, {"MYAPP_AI_VECTOR_SEARCH_ENABLED": "1", "MYAPP_AI_EMBEDDING_MODEL": "erp-embedding"})
 	@patch("myapp.services.ai_vector_service._record_state")
 	@patch("myapp.services.ai_vector_service._call_vector_orchestrator")
@@ -38,6 +49,64 @@ class TestAiVectorService(TestCase):
 		self.assertEqual(mock_call.call_count, 1)
 		self.assertEqual(len(mock_call.call_args.args[1]["documents"]), 2)
 		self.assertEqual(mock_record_state.call_count, 4)
+
+	@patch.dict(os.environ, {
+		"MYAPP_AI_VECTOR_SEARCH_ENABLED": "1",
+		"MYAPP_AI_EMBEDDING_MODEL": "erp-embedding",
+		"MYAPP_AI_VECTOR_EXCLUDED_ITEM_PREFIXES": "HTTP-",
+	})
+	@patch("myapp.services.ai_vector_service._record_state")
+	@patch("myapp.services.ai_vector_service._call_vector_orchestrator")
+	def test_batch_sync_deletes_excluded_items_without_embedding(self, mock_call, mock_record_state):
+		mock_call.return_value = {"accepted": True, "deleted_count": 1, "collection": "myapp-products-v1"}
+		with patch("myapp.services.ai_vector_service.frappe") as mock_frappe:
+			result = sync_product_vector_batch(["HTTP-TEST-001"])
+
+		self.assertEqual(result["indexed_count"], 0)
+		self.assertEqual(result["excluded_count"], 1)
+		mock_call.assert_called_once_with(
+			"/internal/v1/vector/products/delete", {"item_codes": ["HTTP-TEST-001"]},
+		)
+		mock_frappe.get_doc.assert_not_called()
+		mock_record_state.assert_called_once_with(item_code="HTTP-TEST-001", status="deleted")
+
+	@patch.dict(os.environ, {
+		"MYAPP_AI_VECTOR_SEARCH_ENABLED": "1",
+		"MYAPP_AI_EMBEDDING_MODEL": "erp-embedding",
+		"MYAPP_AI_VECTOR_EXCLUDED_ITEM_PREFIXES": "HTTP-",
+	})
+	def test_item_change_enqueues_delete_for_excluded_product(self):
+		with patch("myapp.services.ai_vector_service.frappe") as mock_frappe:
+			enqueue_product_vector_sync(SimpleNamespace(name="HTTP-TEST-001"))
+
+		mock_frappe.enqueue.assert_called_once_with(
+			"myapp.services.ai_vector_service.delete_product_vector_index",
+			queue="ai-vector",
+			enqueue_after_commit=True,
+			item_code="HTTP-TEST-001",
+			job_name="AI product vector exclude HTTP-TEST-001",
+		)
+
+	@patch.dict(os.environ, {
+		"MYAPP_AI_VECTOR_SEARCH_ENABLED": "1",
+		"MYAPP_AI_EMBEDDING_MODEL": "erp-embedding",
+		"MYAPP_AI_VECTOR_EXCLUDED_ITEM_PREFIXES": "HTTP-",
+	})
+	@patch("myapp.services.ai_vector_service._state_table_exists", return_value=True)
+	def test_reconcile_queues_excluded_cleanup_without_readding_it(self, _mock_state_table):
+		with patch("myapp.services.ai_vector_service.frappe") as mock_frappe:
+			mock_frappe.db.sql.side_effect = [
+				[SimpleNamespace(item_code="HTTP-TEST-001")],
+				[SimpleNamespace(item_code="ITEM-001")],
+			]
+			result = reconcile_product_vector_index(batch_size=2)
+
+		self.assertEqual(result["excluded_cleanup_queued_count"], 1)
+		self.assertEqual(result["index_sync_queued_count"], 1)
+		self.assertEqual(
+			mock_frappe.enqueue.call_args.kwargs["item_codes"],
+			["HTTP-TEST-001", "ITEM-001"],
+		)
 
 	def test_build_product_vector_document_contains_governed_master_data_only(self):
 		item = SimpleNamespace(
@@ -69,7 +138,11 @@ class TestAiVectorService(TestCase):
 		self.assertNotIn("price", document)
 		self.assertNotIn("qty", document)
 
-	@patch.dict(os.environ, {"MYAPP_AI_VECTOR_SEARCH_ENABLED": "1", "MYAPP_AI_EMBEDDING_MODEL": "erp-embedding"})
+	@patch.dict(os.environ, {
+		"MYAPP_AI_VECTOR_SEARCH_ENABLED": "1",
+		"MYAPP_AI_EMBEDDING_MODEL": "erp-embedding",
+		"MYAPP_AI_VECTOR_EXCLUDED_ITEM_PREFIXES": "HTTP-",
+	})
 	@patch("myapp.services.ai_vector_service.search_product_v2")
 	@patch("myapp.services.ai_vector_service.frappe.get_list")
 	@patch("myapp.services.ai_vector_service._call_vector_orchestrator")
@@ -78,6 +151,7 @@ class TestAiVectorService(TestCase):
 	):
 		mock_call.return_value = {
 			"matches": [
+				{"item_code": "HTTP-NOISE", "score": 0.99, "index_version": PRODUCT_VECTOR_INDEX_VERSION},
 				{"item_code": "ITEM-ALLOWED", "score": 0.93, "index_version": PRODUCT_VECTOR_INDEX_VERSION},
 				{"item_code": "ITEM-HIDDEN", "score": 0.92, "index_version": PRODUCT_VECTOR_INDEX_VERSION},
 			],
@@ -161,6 +235,7 @@ class TestAiVectorService(TestCase):
 		mock_call.assert_not_called()
 		self.assertEqual(mock_record_state.call_args.kwargs["status"], "indexed")
 
+	@patch.dict(os.environ, {"MYAPP_AI_VECTOR_EXCLUDED_ITEM_PREFIXES": ""})
 	@patch("myapp.services.ai_vector_service._call_vector_orchestrator")
 	def test_admin_status_reports_provider_and_index_counts(self, mock_call):
 		mock_call.return_value = {
@@ -185,16 +260,69 @@ class TestAiVectorService(TestCase):
 	@patch.dict(os.environ, {
 		"MYAPP_AI_VECTOR_SEARCH_ENABLED": "1",
 		"MYAPP_AI_EMBEDDING_MODEL": "erp-embedding",
+		"MYAPP_AI_VECTOR_EXCLUDED_ITEM_PREFIXES": "HTTP-",
 	})
 	def test_admin_rebuild_queues_only_existing_requested_items(self):
 		with patch("myapp.services.ai_vector_service.frappe") as mock_frappe:
 			mock_frappe.get_roles.return_value = ["System Manager"]
-			mock_frappe.get_all.return_value = ["ITEM-001"]
-			result = rebuild_product_vector_index_v1(item_codes=["ITEM-001", "ITEM-MISSING"])
+			mock_frappe.get_all.return_value = ["HTTP-NOISE", "ITEM-001"]
+			result = rebuild_product_vector_index_v1(
+				item_codes=["HTTP-NOISE", "ITEM-001", "ITEM-MISSING"],
+			)
 
 		self.assertEqual(result["data"]["queued_count"], 1)
 		self.assertEqual(result["data"]["item_codes"], ["ITEM-001"])
 		mock_frappe.enqueue.assert_called_once()
+
+	@patch.dict(os.environ, {"MYAPP_AI_VECTOR_EXCLUDED_ITEM_PREFIXES": "HTTP-"})
+	@patch("myapp.services.ai_vector_service._call_vector_orchestrator")
+	def test_excluded_cleanup_dry_run_never_changes_erp_or_qdrant(self, mock_call):
+		with patch("myapp.services.ai_vector_service.frappe") as mock_frappe:
+			mock_frappe.get_roles.return_value = ["System Manager"]
+			mock_frappe.db.sql.side_effect = [
+				[SimpleNamespace(item_code="HTTP-001", vector_status="indexed")],
+				[SimpleNamespace(excluded_count=2, excluded_indexed_count=1)],
+			]
+			result = cleanup_excluded_product_vectors_v1(dry_run=True)
+
+		self.assertTrue(result["data"]["dry_run"])
+		self.assertEqual(result["data"]["excluded_count"], 2)
+		self.assertEqual(result["data"]["removed_count"], 0)
+		self.assertEqual(result["data"]["erp_items_changed"], 0)
+		mock_call.assert_not_called()
+
+	@patch.dict(os.environ, {
+		"MYAPP_AI_VECTOR_SEARCH_ENABLED": "1",
+		"MYAPP_AI_EMBEDDING_MODEL": "erp-embedding",
+		"MYAPP_AI_VECTOR_EXCLUDED_ITEM_PREFIXES": "HTTP-",
+	})
+	@patch("myapp.services.ai_model_governance_service._record_audit")
+	@patch("myapp.services.ai_vector_service._record_state")
+	@patch("myapp.services.ai_vector_service._call_vector_orchestrator")
+	@patch("myapp.utils.idempotency.run_idempotent")
+	def test_excluded_cleanup_deletes_vectors_and_records_deleted_state(
+		self, mock_idempotent, mock_call, mock_record_state, mock_audit,
+	):
+		mock_idempotent.side_effect = lambda _namespace, _request_id, callback, **_kwargs: callback()
+		mock_call.return_value = {"accepted": True, "deleted_count": 2, "collection": "myapp-products-live"}
+		with patch("myapp.services.ai_vector_service.frappe") as mock_frappe:
+			mock_frappe.get_roles.return_value = ["System Manager"]
+			mock_frappe.session.user = "Administrator"
+			mock_frappe.db.sql.side_effect = [
+				[
+					SimpleNamespace(item_code="HTTP-001", vector_status="indexed"),
+					SimpleNamespace(item_code="HTTP-002", vector_status="indexed"),
+				],
+				[SimpleNamespace(excluded_count=2, excluded_indexed_count=2)],
+			]
+			result = cleanup_excluded_product_vectors_v1(
+				dry_run=False, reason="排除明确 HTTP 测试商品", request_id="cleanup-http-vectors-1",
+			)
+
+		self.assertEqual(result["data"]["removed_count"], 2)
+		self.assertEqual(result["data"]["remaining_indexed_count"], 0)
+		self.assertEqual(mock_record_state.call_count, 2)
+		mock_audit.assert_called_once()
 
 	def test_vector_admin_endpoints_reject_non_system_managers(self):
 		with patch("myapp.services.ai_vector_service.frappe") as mock_frappe:

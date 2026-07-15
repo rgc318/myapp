@@ -17,6 +17,7 @@ from myapp.services.ai_service import (
 	update_ai_draft_v1 as update_ai_draft_v1_service,
 )
 from myapp.services.ai_vector_service import (
+	cleanup_excluded_product_vectors_v1 as cleanup_excluded_product_vectors_v1_service,
 	get_product_vector_index_status_v1 as get_product_vector_index_status_v1_service,
 	rebuild_product_vector_index_v1 as rebuild_product_vector_index_v1_service,
 )
@@ -182,6 +183,20 @@ def rebuild_ai_product_vector_index_v1(
 		item_codes=item_codes,
 		failed_only=failed_only,
 		limit=limit,
+	)
+
+
+def cleanup_excluded_ai_product_vectors_v1(
+	dry_run: bool | int = True,
+	limit: int = 5000,
+	reason: str | None = None,
+	request_id: str | None = None,
+):
+	return cleanup_excluded_product_vectors_v1_service(
+		dry_run=dry_run,
+		limit=limit,
+		reason=reason,
+		request_id=request_id,
 	)
 
 

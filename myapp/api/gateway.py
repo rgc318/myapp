@@ -5,6 +5,7 @@ import frappe
 
 from .ai_api import archive_ai_conversation_v1 as archive_ai_conversation_v1_service
 from .ai_api import chat_ai_v1 as chat_ai_v1_service
+from .ai_api import cleanup_excluded_ai_product_vectors_v1 as cleanup_excluded_ai_product_vectors_v1_service
 from .ai_api import create_ai_conversation_v1 as create_ai_conversation_v1_service
 from .ai_api import discard_ai_draft_v1 as discard_ai_draft_v1_service
 from .ai_api import generate_ai_inventory_adjustment_draft_v1 as generate_ai_inventory_adjustment_draft_v1_service
@@ -433,6 +434,24 @@ def rebuild_ai_product_vector_index_v1(
 			limit=limit,
 		),
 		success_code="AI_PRODUCT_VECTOR_REBUILD_QUEUED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def cleanup_excluded_ai_product_vectors_v1(
+	dry_run: bool | int = True,
+	limit: int = 5000,
+	reason: str | None = None,
+	request_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: cleanup_excluded_ai_product_vectors_v1_service(
+			dry_run=dry_run,
+			limit=limit,
+			reason=reason,
+			request_id=request_id,
+		),
+		success_code="AI_PRODUCT_VECTOR_EXCLUSIONS_CLEANED",
 	)
 
 

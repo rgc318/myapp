@@ -1,6 +1,6 @@
 # AI Copilot 模块技术设计
 
-> 状态：Phase A 只读纵向链路、Phase B 三类结构化草稿、商品语义检索、模型治理控制面、高并发 P0、OTLP 可观测性、备份恢复演练和首期商品数据治理任务均已实现。在线 `myapp-products-live → myapp-products-v1` 保持 582 points / 1024 维健康；新的 v2 Embedding 候选构建仍受外部 LiteLLM/Provider `float + str` 错误阻塞，不能宣称 v2 已发布。生产 Secret Manager、SSO 和正式环境密钥轮换仍属于部署侧待办。
+> 状态：Phase A 只读纵向链路、Phase B 三类结构化草稿、商品语义检索、模型治理控制面、高并发 P0、OTLP 可观测性、备份恢复演练和首期商品数据治理任务均已实现。2026-07-15 已从在线 `myapp-products-live → myapp-products-v1` 清理 439 个明确 `HTTP-` 测试 points，保留 143 个非排除商品向量 / 1024 维；582 个 ERP Item 和 854 个 Sales Order 未修改。新的 v2 Embedding 候选构建仍受外部 LiteLLM/Provider `float + str` 错误阻塞，不能宣称 v2 已发布。生产 Secret Manager、SSO 和正式环境密钥轮换仍属于部署侧待办。
 
 ## 1. 目标与非目标
 
@@ -139,11 +139,15 @@ Web 显示草稿、来源、库存/价格/UOM/权限问题
 
 商品主数据变更后通过 Item Hook 异步更新独立 Qdrant 索引，并由小时任务补偿漏同步和失败记录。`MyApp AI Product Vector State` 记录内容哈希、索引版本、源修改时间、Embedding 模型、collection、状态与失败原因；模型或 collection 变化会强制补建，避免混用不同向量空间。Item 删除会进入幂等向量删除。索引只保存商品主数据文本和治理元数据，不保存价格、库存或交易数据。
 
+测试数据噪声通过 `MYAPP_AI_VECTOR_EXCLUDED_ITEM_PREFIXES` 治理。前缀匹配在增量写入、Item Hook、小时补偿、管理员重建、候选 collection 构建和语义候选二次过滤中统一执行。排除项已有 point 时转为幂等删除并把向量状态标记为 `deleted`；ERP Item、销售/采购/库存历史保持原样，避免破坏审计和外键引用。初始仅启用已确认的 `HTTP-` 测试前缀，其他疑似测试编码必须先审计交易引用再扩展。
+
 检索使用关键词候选与向量候选的 Reciprocal Rank Fusion，再叠加确定性字段命中和向量相似度进行第二阶段重排。Qdrant 候选必须回到 Frappe，重新执行当前用户记录权限、公司范围、启停状态、销售/采购属性，并通过 `search_product_v2` 读取实时价格、库存与 UOM；向量服务失败时降级到关键词检索。
 
-Qdrant 运行单元和内部 upsert/delete/search 契约已完成。LiteLLM `erp-embedding` 曾通过真实 `/v1/embeddings` 验证并返回 1024 维向量，现有 582 个 Item 已全部索引到 `myapp-products-v1`，最终 due/failed 均为 0。10 条中文固定语义查询 Top-1/Top-3 均为 10/10，向量不可达时关键词降级、权限拒绝、重复删除和恢复路径均已真实验收。当前在线 alias 继续指向该健康 v1 collection；新的 v2 单条与批量 Embedding 请求被外部 Provider 的 `unsupported operand type(s) for +: 'float' and 'str'` 阻断，因此候选 collection 不得审批或发布。模型或 collection 变化仍必须触发全量补建，不得在同一 collection 混用向量空间。
+Qdrant 运行单元和内部 upsert/delete/search 契约已完成。LiteLLM `erp-embedding` 曾通过真实 `/v1/embeddings` 验证并返回 1024 维向量；历史 582 points 基线完成删除幂等、恢复和 10 条中文 Top-1/Top-3 10/10 验收。2026-07-15 质量治理后，在线 alias 仍指向 `myapp-products-v1`，points 从 582 降到 143，剩余 payload 中 `HTTP-` 为 0 且 SKU001～SKU010 全部存在。新的 30 条中文门禁因外部 Provider 对全部请求返回 502 而失败关闭；直连 `erp-embedding` 为 HTTP 500 `float + str`，`erp-embedding-v2` 为 HTTP 400 模型不存在，因此候选 collection 不得创建、审批或发布。模型或 collection 变化仍必须触发全量补建，不得在同一 collection 混用向量空间。
 
-系统管理员可通过 `get_ai_product_vector_status_v1` 查看启用状态、索引版本、Embedding 模型、collection、商品总数、待建数量、状态分布、最近失败以及 Qdrant 点数/维度；`rebuild_ai_product_vector_index_v1` 支持指定商品、仅失败项和最多 500 条的受控分批重建。普通业务用户不能访问这两项治理接口。
+系统管理员可通过 `get_ai_product_vector_status_v1` 查看启用状态、索引版本、Embedding 模型、collection、商品总数、待建数量、状态分布、排除前缀/Item/仍已索引数量、最近失败以及 Qdrant 点数/维度；`rebuild_ai_product_vector_index_v1` 支持指定商品、仅失败项和最多 500 条的受控分批重建，且不会重新加入排除项。`cleanup_excluded_ai_product_vectors_v1` 支持 dry-run 和带原因、幂等键、critical 审计的正式清理，只删除 Qdrant points。普通业务用户不能访问这些治理接口。
+
+中文检索质量门禁使用版本化 `product-retrieval-zh-cn-v1` 数据集，围绕 SKU001～SKU010 各提供直接名称、用途表达和模糊描述三类查询，共 30 条。`python -m myapp_ai.retrieval_quality` 生成机器可读报告，检查 Top-1、Top-3、Provider 错误、排除候选泄漏和 p50/p95；真实运行必须显式启用 live eval。Provider 故障时门禁失败关闭，不能用 mock 通过替代真实发布证据。
 
 商品请求会先用确定性规则移除“帮我找、只说明”等操作语言，并从复合描述中提取最多 5 个搜索短语，再合并去重候选；该步骤不额外调用模型，控制测试和运行成本。
 

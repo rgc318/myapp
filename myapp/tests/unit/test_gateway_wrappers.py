@@ -12,6 +12,7 @@ from myapp.api.gateway import (
 	archive_ai_conversation_v1,
 	batch_set_users_enabled_v1,
 	chat_ai_v1,
+	cleanup_excluded_ai_product_vectors_v1,
 	generate_ai_inventory_adjustment_draft_v1,
 	cancel_delivery_note,
 	cancel_payment_entry,
@@ -170,6 +171,7 @@ class TestGatewayWrappers(TestCase):
 		self.assertIs(aggregated_batches, list_print_batches_v1)
 		self.assertIs(aggregated_jobs, list_print_jobs_v2)
 		from myapp.api.api import get_ai_product_vector_status_v1 as aggregated_vector_status
+		from myapp.api.api import cleanup_excluded_ai_product_vectors_v1 as aggregated_vector_cleanup
 		from myapp.api.api import get_ai_model_governance_overview_v1 as aggregated_governance_overview
 		from myapp.api.api import get_ai_model_policy_v1 as aggregated_policy_detail
 		from myapp.api.api import list_ai_models_v1 as aggregated_model_list
@@ -178,6 +180,7 @@ class TestGatewayWrappers(TestCase):
 		from myapp.api.api import list_ai_data_tasks_v1 as aggregated_data_tasks
 
 		self.assertIs(aggregated_vector_status, get_ai_product_vector_status_v1)
+		self.assertIs(aggregated_vector_cleanup, cleanup_excluded_ai_product_vectors_v1)
 		self.assertIs(aggregated_governance_overview, get_ai_model_governance_overview_v1)
 		self.assertIs(aggregated_policy_detail, get_ai_model_policy_v1)
 		self.assertIs(aggregated_model_list, list_ai_models_v1)
@@ -190,6 +193,7 @@ class TestGatewayWrappers(TestCase):
 			archive_ai_conversation_v1,
 			analyze_ai_product_data_v1,
 			chat_ai_v1,
+			cleanup_excluded_ai_product_vectors_v1,
 			create_ai_conversation_v1,
 			create_ai_data_task_v1,
 			execute_ai_data_task_v1,
@@ -378,6 +382,24 @@ class TestGatewayWrappers(TestCase):
 
 		mock_rebuild_service.assert_called_once_with(
 			item_codes=["ITEM-001"], failed_only=True, limit=25,
+		)
+
+	@patch("myapp.api.gateway.cleanup_excluded_ai_product_vectors_v1_service")
+	def test_cleanup_excluded_ai_product_vectors_passes_dry_run_and_audit_contract(self, mock_cleanup_service):
+		mock_cleanup_service.return_value = {"status": "success", "data": {"removed_count": 0}}
+
+		cleanup_excluded_ai_product_vectors_v1(
+			dry_run=False,
+			limit=500,
+			reason="排除 HTTP 测试向量",
+			request_id="cleanup-http-1",
+		)
+
+		mock_cleanup_service.assert_called_once_with(
+			dry_run=False,
+			limit=500,
+			reason="排除 HTTP 测试向量",
+			request_id="cleanup-http-1",
 		)
 
 	@patch("myapp.api.gateway.save_ai_model_policy_draft_v1_service")

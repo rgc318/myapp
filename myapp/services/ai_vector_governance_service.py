@@ -21,6 +21,8 @@ from myapp.services.ai_model_governance_service import (
 )
 from myapp.services.ai_vector_service import (
 	MAX_VECTOR_BATCH_SIZE,
+	_excluded_item_sql_condition,
+	_is_excluded_item_code,
 	build_product_vector_document,
 )
 from myapp.utils.idempotency import run_idempotent
@@ -196,7 +198,17 @@ def create_ai_vector_release_v1(*, payload, reason: str, request_id: str | None 
 				(provider.get("alias") or {}).get("collection"), actor, resolved_reason,
 			),
 		)
-		items = frappe.get_all("Item", pluck="name", order_by="name asc", limit_page_length=1_000_000)
+		eligible_condition, eligible_parameters = _excluded_item_sql_condition("item.name")
+		items = [row.item_code for row in frappe.db.sql(
+			f"""
+			SELECT item.name AS item_code
+			FROM `tabItem` item
+			WHERE {eligible_condition}
+			ORDER BY item.name ASC
+			""",
+			eligible_parameters,
+			as_dict=True,
+		)]
 		for item_code in items:
 			item_name = f"AI-VECTOR-BUILD-{hashlib.sha256(f'{release_code}:{item_code}'.encode()).hexdigest()}"
 			frappe.db.sql(
@@ -235,6 +247,12 @@ def build_ai_vector_release_batch(*, release_code: str, item_codes) -> dict:
 	documents = []
 	now = now_datetime()
 	for item_code in codes:
+		if _is_excluded_item_code(item_code):
+			frappe.db.sql(
+				f"DELETE FROM `{BUILD_ITEM_TABLE}` WHERE release_code = %s AND item_code = %s",
+				(release.release_code, item_code),
+			)
+			continue
 		if not frappe.db.exists("Item", item_code):
 			frappe.db.sql(
 				f"UPDATE `{BUILD_ITEM_TABLE}` SET status = 'failed', last_error = 'Item no longer exists', last_attempt_at = %s, modified = %s WHERE release_code = %s AND item_code = %s",
@@ -287,9 +305,28 @@ def retry_ai_vector_release_v1(*, release_code: str, request_id: str | None = No
 		release = _get_release(release_code, for_update=True)
 		if release.status not in {"building", "failed"}:
 			frappe.throw(_("当前向量发布状态不允许重试构建。"))
+		excluded_condition, excluded_parameters = _excluded_item_sql_condition(
+			"build_item.item_code", include_excluded=True,
+		)
+		if excluded_parameters:
+			frappe.db.sql(
+				f"""
+				DELETE build_item FROM `{BUILD_ITEM_TABLE}` build_item
+				WHERE build_item.release_code = %s AND {excluded_condition}
+				""",
+				(release.release_code, *excluded_parameters),
+			)
+		eligible_condition, eligible_parameters = _excluded_item_sql_condition("build_item.item_code")
 		codes = [row.item_code for row in frappe.db.sql(
-			f"SELECT item_code FROM `{BUILD_ITEM_TABLE}` WHERE release_code = %s AND status != 'indexed' ORDER BY item_code",
-			(release.release_code,), as_dict=True,
+			f"""
+			SELECT build_item.item_code
+			FROM `{BUILD_ITEM_TABLE}` build_item
+			WHERE build_item.release_code = %s
+			  AND build_item.status != 'indexed'
+			  AND {eligible_condition}
+			ORDER BY build_item.item_code
+			""",
+			(release.release_code, *eligible_parameters), as_dict=True,
 		)]
 		frappe.db.sql(f"UPDATE `{RELEASE_TABLE}` SET status = 'building', modified = %s, modified_by = %s WHERE release_code = %s", (now_datetime(), actor, release.release_code))
 		for offset in range(0, len(codes), 64):

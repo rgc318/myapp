@@ -77,6 +77,7 @@
 - `myapp.api.gateway.prepare_ai_draft_handoff_v1`
 - `myapp.api.gateway.get_ai_product_vector_status_v1`
 - `myapp.api.gateway.rebuild_ai_product_vector_index_v1`
+- `myapp.api.gateway.cleanup_excluded_ai_product_vectors_v1`
 
 本文档主结构按业务模块划分，而不是按“自定义接口 / 官方接口”二分。
 
@@ -98,7 +99,7 @@
 - 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`、`list_stock_ledger_entries_v1`
 - 库存：`list_inventory_stock_summary_v1`、`list_stock_ledger_entries_v1`、`transfer_inventory_stock_v1`、`reconcile_inventory_stock_v1`、`submit_inventory_stock_count_v1`
 - 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
-- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`get_ai_draft_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`
+- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`get_ai_draft_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
 - AI 模型治理：`get_ai_model_governance_overview_v1`、`sync_ai_model_registry_v1`、`list_ai_models_v1`、`update_ai_model_registry_v1`、`list_ai_model_policies_v1`、`get_ai_model_policy_v1`、`save_ai_model_policy_draft_v1`、`validate_ai_model_policy_v1`、`approve_ai_model_policy_v1`、`publish_ai_model_policy_v1`、`rollback_ai_model_policy_v1`、`get_ai_model_usage_summary_v1`
   - `update_ai_model_registry_v1` 只维护治理字段：状态、数据区域、留存策略、敏感数据许可、输入/输出成本和币种；供应商能力字段由同步维护。请求必须包含 `reason` 和幂等键，响应返回递增后的 `registry_version` 与受影响的已发布策略。
   - `get_ai_model_usage_summary_v1` 支持 `date_from`、`date_to`、`environment`、`company`，返回延迟/首 Token 平均值与 p50/p95、反馈计数和正向率。
@@ -132,6 +133,27 @@
 ### AI Copilot 结构化草稿
 
 销售订单、采购订单和库存调整分别通过 `generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1` 生成严格结构化候选。模型只负责提取用户原文；Frappe 重新按当前用户权限解析真实 Customer / Supplier / Item / Warehouse、UOM、价格或实时库存，并持久化为 `MyApp AI Draft`。
+
+### AI 商品向量质量治理
+
+`MYAPP_AI_VECTOR_EXCLUDED_ITEM_PREFIXES` 配置以逗号分隔的明确测试商品编码前缀。排除项不会进入增量同步、补偿重建、候选 collection 或语义搜索结果；若已有向量，Item 修改和补偿任务会转为幂等删除。该规则只治理 AI 索引，不删除、不停用 ERP Item，也不修改订单、采购、库存和会计历史。
+
+`get_ai_product_vector_status_v1` 除原有索引状态外返回：
+
+- `excluded_item_prefixes`：当前生效的排除前缀。
+- `excluded_item_count`：ERP 中匹配排除规则的 Item 数量。
+- `excluded_indexed_count`：仍标记为 indexed、等待清理的排除项数量。
+
+`cleanup_excluded_ai_product_vectors_v1` 仅允许 `System Manager` 通过 POST 调用：
+
+| 参数 | 约束 |
+|---|---|
+| `dry_run` | 默认 `true`；预检只返回候选和计数，不调用 Qdrant。 |
+| `limit` | 1～5000；执行时按内部删除上限分批。 |
+| `reason` | `dry_run=false` 时必填，写入 critical AI 审计。 |
+| `request_id` | 执行清理时用于幂等保护。 |
+
+返回 `excluded_count`、`selected_count`、`excluded_indexed_count`、`removed_count`、`remaining_indexed_count`、`item_codes` 和固定的 `erp_items_changed=0`。真实执行前必须先 dry-run，并核对在线 alias、ERP Item/订单数量和基准 SKU。
 
 ### AI 模型治理
 

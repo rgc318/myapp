@@ -21,7 +21,7 @@
 - Redis 不可用且已发布策略配置并发、RPM/TPM 或预算时失败关闭，不回退到进程内计数。
 - 非流式请求在尚未输出响应时允许使用已验证降级模型；SSE 输出后不跨模型续写。
 - 成功/失败、回退原因、Token 和估算成本进入 Run/每日聚合；Redis 并发租约异常退出后自动过期。
-- 当前 LiteLLM `erp-embedding` 路由出现服务端 `float + str` 配置错误，单条和批量 Embedding 均被拒绝；Qdrant 既有 582 points 未丢失，索引 Worker/批量契约代码和 mock 测试通过，但新的真实批量 Embedding 尚不能验收。
+- 当前 LiteLLM `erp-embedding` 路由出现服务端 `float + str` 配置错误，单条和批量 Embedding 均被拒绝；Qdrant 已按质量规则从历史 582 points 移除 439 个 `HTTP-` 测试 points，在线保留 143 个非排除 points，alias/维度和基准 SKU 完整。索引 Worker/批量契约代码和 mock 测试通过，但新的真实批量 Embedding 尚不能验收。
 
 当前剩余瓶颈：
 
