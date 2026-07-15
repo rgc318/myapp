@@ -1,6 +1,6 @@
 # AI Copilot 模块技术设计
 
-> 状态：Phase A 只读纵向链路、Phase B 三类结构化草稿、商品语义检索、模型治理控制面、高并发 P0、OTLP 可观测性、备份恢复演练和首期商品数据治理任务均已实现。2026-07-15 已从在线 `myapp-products-live → myapp-products-v1` 清理 439 个明确 `HTTP-` 测试 points，保留 143 个非排除商品向量 / 1024 维；582 个 ERP Item 和 854 个 Sales Order 未修改。新的 v2 Embedding 候选构建仍受外部 LiteLLM/Provider `float + str` 错误阻塞，不能宣称 v2 已发布。生产 Secret Manager、SSO 和正式环境密钥轮换仍属于部署侧待办。
+> 状态：Phase A 只读纵向链路、Phase B 三类结构化草稿、商品语义检索、模型治理控制面、高并发 P0、OTLP 可观测性、备份恢复演练和首期商品数据治理任务均已实现。2026-07-15 已从在线 `myapp-products-live → myapp-products-v1` 清理 439 个明确 `HTTP-` 测试 points，保留 143 个非排除商品向量 / 1024 维；582 个 ERP Item 和 854 个 Sales Order 未修改。`erp-embedding` 当前单条、批量和在线检索均已恢复，30 条中文门禁 Top-1 96.67%、Top-3 100%、Provider error 0。新的 v2 collection、完整删除/重建/恢复门禁和正式发布回滚尚未执行；生产 Secret Manager、SSO 和正式环境密钥轮换仍属于部署侧待办。
 
 ## 1. 目标与非目标
 
@@ -143,7 +143,7 @@ Web 显示草稿、来源、库存/价格/UOM/权限问题
 
 检索使用关键词候选与向量候选的 Reciprocal Rank Fusion，再叠加确定性字段命中和向量相似度进行第二阶段重排。Qdrant 候选必须回到 Frappe，重新执行当前用户记录权限、公司范围、启停状态、销售/采购属性，并通过 `search_product_v2` 读取实时价格、库存与 UOM；向量服务失败时降级到关键词检索。
 
-Qdrant 运行单元和内部 upsert/delete/search 契约已完成。LiteLLM `erp-embedding` 曾通过真实 `/v1/embeddings` 验证并返回 1024 维向量；历史 582 points 基线完成删除幂等、恢复和 10 条中文 Top-1/Top-3 10/10 验收。2026-07-15 质量治理后，在线 alias 仍指向 `myapp-products-v1`，points 从 582 降到 143，剩余 payload 中 `HTTP-` 为 0 且 SKU001～SKU010 全部存在。新的 30 条中文门禁因外部 Provider 对全部请求返回 502 而失败关闭；直连 `erp-embedding` 为 HTTP 500 `float + str`，`erp-embedding-v2` 为 HTTP 400 模型不存在，因此候选 collection 不得创建、审批或发布。模型或 collection 变化仍必须触发全量补建，不得在同一 collection 混用向量空间。
+Qdrant 运行单元和内部 upsert/delete/search 契约已完成。LiteLLM `erp-embedding` 当前单条字符串、单条数组和两条批量请求均返回 HTTP 200、1024 维；当前运行 Orchestrator 的真实 `数码相机` 查询返回 `SKU010` Top-1。历史 582 points 基线完成删除幂等、恢复和 10 条中文 Top-1/Top-3 10/10 验收；质量治理后在线 alias 仍指向 `myapp-products-v1`，points 从 582 降到 143，剩余 payload 中 `HTTP-` 为 0 且 SKU001～SKU010 全部存在。最新 30 条中文门禁 Top-1 96.67%、Top-3 100%、Provider error 0、排除候选泄漏 0、p50 145.692ms、p95 211.745ms，达到当前 v1 在线门槛；唯一 Top-1 未命中是背包用途表达，目标 `SKU008` 位于 Top-2。若底层模型权重或向量空间发生变化，仍必须新建 collection、全量补建、执行完整门禁并原子切换 alias，不得只复用别名覆盖旧向量空间。
 
 系统管理员可通过 `get_ai_product_vector_status_v1` 查看启用状态、索引版本、Embedding 模型、collection、商品总数、待建数量、状态分布、排除前缀/Item/仍已索引数量、最近失败以及 Qdrant 点数/维度；`rebuild_ai_product_vector_index_v1` 支持指定商品、仅失败项和最多 500 条的受控分批重建，且不会重新加入排除项。`cleanup_excluded_ai_product_vectors_v1` 支持 dry-run 和带原因、幂等键、critical 审计的正式清理，只删除 Qdrant points。普通业务用户不能访问这些治理接口。
 

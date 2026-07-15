@@ -1,6 +1,6 @@
 # AI 高并发与性能技术设计
 
-> 当前实现状态（2026-07-15）：高并发 P0 代码和单副本基线已完成。Orchestrator 已使用 FastAPI lifespan 共享 LiteLLM/Qdrant/Langfuse `httpx.AsyncClient`，Chat、structured、Embedding 使用独立 semaphore，池满稳定返回 429；Redis Lua 分布式 RPM/TPM/预算/并发租约、共享熔断和独立 `ai-vector` Worker 保持有效。合成 Provider 全矩阵、低并发真实 Provider 基线和 Qdrant `nofile=65536` 已验证，证据见父仓库 `docs/codex/AI_PERFORMANCE_SLO_BASELINE.zh-CN.md`。外部真实 Embedding、staging 完整付费矩阵、生产多副本和恢复演练仍未完成。
+> 当前实现状态（2026-07-16）：高并发 P0 代码和单副本基线已完成。Orchestrator 已使用 FastAPI lifespan 共享 LiteLLM/Qdrant/Langfuse `httpx.AsyncClient`，Chat、structured、Embedding 使用独立 semaphore，池满稳定返回 429；Redis Lua 分布式 RPM/TPM/预算/并发租约、共享熔断和独立 `ai-vector` Worker 保持有效。合成 Provider 全矩阵、低并发真实 Provider 基线、真实单条/批量 Embedding、30 条中文检索门禁和 Qdrant `nofile=65536` 已验证，证据见父仓库 `docs/codex/AI_PERFORMANCE_SLO_BASELINE.zh-CN.md`。staging 完整付费矩阵、生产多副本和恢复演练仍未完成。
 
 > 状态：P0 单副本实现与合成容量基线完成；P1/P2 多副本、Stream Gateway、高可用向量平台和生产恢复仍是待交付项。当前本地 `bench serve + 单 Uvicorn + 单 Qdrant` 不代表生产高可用。
 
@@ -21,7 +21,7 @@
 - Redis 不可用且已发布策略配置并发、RPM/TPM 或预算时失败关闭，不回退到进程内计数。
 - 非流式请求在尚未输出响应时允许使用已验证降级模型；SSE 输出后不跨模型续写。
 - 成功/失败、回退原因、Token 和估算成本进入 Run/每日聚合；Redis 并发租约异常退出后自动过期。
-- 当前 LiteLLM `erp-embedding` 路由出现服务端 `float + str` 配置错误，单条和批量 Embedding 均被拒绝；Qdrant 已按质量规则从历史 582 points 移除 439 个 `HTTP-` 测试 points，在线保留 143 个非排除 points，alias/维度和基准 SKU 完整。索引 Worker/批量契约代码和 mock 测试通过，但新的真实批量 Embedding 尚不能验收。
+- LiteLLM `erp-embedding` 早期 `float + str` 与后续 connection error 已修复；当前单条和两条批量请求均 HTTP 200、1024 维。Qdrant 已按质量规则从历史 582 points 移除 439 个 `HTTP-` 测试 points，在线保留 143 个非排除 points，alias/维度和基准 SKU 完整。30 条真实检索门禁 Top-1 96.67%、Top-3 100%、Provider error 0、p95 211.745ms；32/64/128 的当前新 Provider 批量容量、删除后重建恢复和多副本一致性仍需正式门禁。
 
 当前剩余瓶颈：
 

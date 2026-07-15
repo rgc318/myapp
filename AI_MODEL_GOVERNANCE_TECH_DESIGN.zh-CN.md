@@ -10,7 +10,7 @@
 - 发布门禁失败关闭：offline full gate 通过但缺少受控 live/Embedding 完整报告时，策略只能保持草稿，不能进入审批发布。
 - Orchestrator 已通过专用内部请求头读取 Frappe 已发布策略快照，按场景、公司、角色和稳定哈希灰度解析模型；刷新失败只使用最后一个已验证快照。无匹配策略时明确记录 `no_matching_published_policy` 并使用系统安全默认模型。
 - Run 已记录策略编码/版本/降级原因，成功和失败请求写入每日用量聚合。真实登录 → Gateway → Orchestrator → LiteLLM 回归已确认 608 tokens 和回退原因进入聚合表。
-- 尚未宣称完成：外部 Embedding 修复后的新 collection 全量补建与 full gate、生产多副本/压测、OTLP 和备份恢复演练仍待完成。
+- 当前 `erp-embedding` 单条/批量与 30 条在线质量门禁已恢复通过；尚未宣称完成的是新 collection 全量补建、权限/删除/恢复 full gate、审批发布回滚，以及生产多副本和真实 staging 门禁。OTLP 与本地备份恢复演练已有完成证据。
 
 ## 1. 目标与边界
 

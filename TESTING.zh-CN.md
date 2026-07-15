@@ -2125,3 +2125,5 @@ docker cp \
 ```
 
 默认门槛为 Top-1 ≥ 90%、Top-3 = 100%、Provider 错误为 0、排除前缀候选泄漏为 0；任一条件失败退出 `1`，配置或未显式启用退出 `2`。Provider 500/502 时必须保留失败报告，不得以 mock 单测结果替代真实发布证据。
+
+2026-07-15 23:57 CST 最新真实回归：`erp-embedding` 单条字符串、单条数组和两条批量请求均 HTTP 200、1024 维；当前 Orchestrator 通过 `myapp-products-live` 查询“数码相机”返回 `SKU010` Top-1。30 条 `product-retrieval-zh-cn-v1` 门禁通过：Top-1 96.67%、Top-3 100%、Provider error 0、排除候选泄漏 0、p50 145.692ms、p95 211.745ms。唯一 Top-1 未命中为 `sku008-backpack-purpose`，`SKU008` 位于 Top-2。该结果证明当前 v1 可在线使用，但不替代新向量空间发布所需的全量补建、权限、删除、恢复、审批和回滚门禁。
