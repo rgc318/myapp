@@ -61,6 +61,7 @@ Frappe 仍是权限事实源。高并发流式方案不能让浏览器直接持�
 
 - 使用 FastAPI lifespan 创建共享 `httpx.AsyncClient`。
 - 为 LiteLLM、Qdrant 和 Langfuse 配置独立连接池、keep-alive、连接超时和读取超时。
+- generation OTLP 使用进程内有界异步批处理 Dispatcher：请求路径只执行脱敏 payload 构建和 `put_nowait`，后台批量发送、有限重试并在关闭时限时排空；队列满或发送失败只丢弃观测，不阻断 Chat/SSE/structured。
 - Chat、structured、embedding、eval 使用独立 `asyncio.Semaphore`，避免互相挤占。
 - 设置请求体、上下文、消息数和输出 Token 上限。
 - 部署至少两个副本，由负载均衡执行健康检查和优雅摘流。
@@ -158,6 +159,7 @@ Qdrant 候选始终回到 Frappe执行权限和实时业务过滤，不能因缓
 - 各模型成功率、429、超时、5xx、降级和熔断状态。
 - RQ 队列长度、最老任务年龄、吞吐和失败数。
 - Qdrant 搜索、upsert、点数、segment、磁盘和 snapshot 状态。
+- Langfuse OTLP Dispatcher 的队列深度、入队/发送、批次失败、重试、丢弃和 Worker 状态；丢弃增长必须告警，入队成功不能当作最终持久化成功。
 - Frappe Worker、MariaDB、Redis 和连接池使用率。
 
 初始 SLO 必须在压测后确定；发布前至少保证错误预算、告警阈值和降级行为有明确负责人。
