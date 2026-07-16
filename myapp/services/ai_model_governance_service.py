@@ -408,12 +408,133 @@ def get_ai_model_governance_overview_v1() -> dict:
 		""",
 		as_dict=True,
 	)
+	data_task_counts = {}
+	if frappe.db.table_exists("MyApp AI Data Task"):
+		data_task_counts = {
+			row.status: cint(row.count)
+			for row in frappe.db.sql(
+				"SELECT status, COUNT(*) AS count FROM `tabMyApp AI Data Task` GROUP BY status",
+				as_dict=True,
+			)
+		}
+	vector_counts = {}
+	if frappe.db.table_exists("MyApp AI Product Vector State"):
+		vector_counts = {
+			row.status: cint(row.count)
+			for row in frappe.db.sql(
+				"SELECT status, COUNT(*) AS count FROM `tabMyApp AI Product Vector State` GROUP BY status",
+				as_dict=True,
+			)
+		}
+	usage_rows = frappe.db.sql(
+		f"""
+		SELECT COALESCE(SUM(request_count), 0) AS request_count,
+			COALESCE(SUM(success_count), 0) AS success_count,
+			COALESCE(SUM(error_count), 0) AS error_count,
+			COALESCE(SUM(total_tokens), 0) AS total_tokens,
+			COALESCE(SUM(estimated_cost), 0) AS estimated_cost,
+			MAX(cost_currency) AS cost_currency,
+			MAX(latency_p95_ms) AS latency_p95_ms,
+			MAX(first_token_p95_ms) AS first_token_p95_ms
+		FROM `{USAGE_TABLE}`
+		WHERE usage_date >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+		""",
+		as_dict=True,
+	)
+	usage_7d = dict(usage_rows[0]) if usage_rows else {}
+	try:
+		runtime_result = _call_orchestrator("/health", timeout=5)
+		runtime = {
+			"reachable": True,
+			"status": runtime_result.get("status"),
+			"model_alias": runtime_result.get("model_alias"),
+			"embedding_model": runtime_result.get("embedding_model"),
+			"vector_collection": runtime_result.get("vector_collection"),
+			"vector_search_configured": bool(runtime_result.get("vector_search_configured")),
+			"runtime_governance_configured": bool(runtime_result.get("runtime_governance_configured")),
+			"langfuse_configured": bool(runtime_result.get("langfuse_configured")),
+			"prompt_versions": runtime_result.get("prompt_versions") or {},
+		}
+	except Exception as error:
+		runtime = {"reachable": False, "error": type(error).__name__}
 	return {
 		"status": "success",
 		"data": {
 			"registry_counts": {row.status: cint(row.count) for row in registry_counts},
 			"policy_counts": {row.status: cint(row.count) for row in policy_counts},
+			"data_task_counts": data_task_counts,
+			"vector_counts": vector_counts,
+			"usage_7d": usage_7d,
+			"runtime": runtime,
 			"recent_audits": [dict(row) for row in recent_audits],
+		},
+	}
+
+
+def list_ai_audit_events_v1(
+	*, search: str | None = None, action: str | None = None,
+	object_type: str | None = None, priority: str | None = None,
+	date_from: str | None = None, date_to: str | None = None,
+	start: int = 0, limit: int = 20,
+) -> dict:
+	_require_viewer()
+	_ensure_tables()
+	start = max(0, cint(start))
+	limit = max(1, min(100, cint(limit) or 20))
+	conditions = []
+	parameters: list = []
+	resolved_search = _normalize_text(search, max_length=140)
+	if resolved_search:
+		conditions.append("(actor LIKE %s OR object_name LIKE %s OR reason LIKE %s)")
+		pattern = f"%{resolved_search}%"
+		parameters.extend((pattern, pattern, pattern))
+	for column, value, max_length in (
+		("action", action, 80),
+		("object_type", object_type, 80),
+		("priority", priority, 20),
+	):
+		resolved = _normalize_text(value, max_length=max_length)
+		if resolved:
+			conditions.append(f"{column} = %s")
+			parameters.append(resolved)
+	if date_from:
+		conditions.append("creation >= %s")
+		parameters.append(date_from)
+	if date_to:
+		conditions.append("creation < DATE_ADD(%s, INTERVAL 1 DAY)")
+		parameters.append(date_to)
+	where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+	count = frappe.db.sql(
+		f"SELECT COUNT(*) AS total FROM `{AUDIT_TABLE}` {where_sql}",
+		tuple(parameters), as_dict=True,
+	)
+	rows = frappe.db.sql(
+		f"""
+		SELECT name, actor, action, object_type, object_name, reason, priority,
+			parameter_hash, result_hash, metadata_json, creation
+		FROM `{AUDIT_TABLE}` {where_sql}
+		ORDER BY creation DESC LIMIT %s OFFSET %s
+		""",
+		(*parameters, limit, start), as_dict=True,
+	)
+	return {
+		"status": "success",
+		"data": {
+			"items": [
+				{
+					"name": row.name, "actor": row.actor, "action": row.action,
+					"object_type": row.object_type, "object_name": row.object_name,
+					"reason": row.reason, "priority": row.priority,
+					"parameter_hash": row.parameter_hash, "result_hash": row.result_hash,
+					"metadata": _safe_json_loads(row.metadata_json, {}),
+					"creation": str(row.creation or "") or None,
+				}
+				for row in rows
+			],
+			"pagination": {
+				"start": start, "limit": limit,
+				"total": cint(count[0].total if count else 0),
+			},
 		},
 	}
 

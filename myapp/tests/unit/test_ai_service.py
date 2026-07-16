@@ -16,6 +16,7 @@ from myapp.services.ai_service import (
 	generate_ai_inventory_adjustment_draft_v1,
 	generate_ai_purchase_order_draft_v1,
 	generate_ai_sales_order_draft_v1,
+	list_ai_drafts_v1,
 	stream_ai_message_v1,
 	submit_ai_feedback_v1,
 )
@@ -23,6 +24,21 @@ from myapp.utils.api_response import UpstreamServiceUnavailableError, map_except
 
 
 class TestAiService(TestCase):
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service.ai_repository.list_drafts")
+	def test_list_ai_drafts_uses_current_user_scope(self, mock_list, _current_user):
+		mock_list.return_value = {"items": [], "pagination": {"total": 0}}
+
+		result = list_ai_drafts_v1(
+			status="handed_off", draft_type="purchase_order", start=20, limit=10,
+		)
+
+		self.assertEqual(result["data"]["pagination"]["total"], 0)
+		mock_list.assert_called_once_with(
+			user="user@example.com", status="handed_off", draft_type="purchase_order",
+			start=20, limit=10,
+		)
+
 	@patch("myapp.services.ai_service.resolve_item_quantity_to_stock")
 	@patch("myapp.services.ai_service.search_product_v2")
 	@patch("myapp.services.ai_service.frappe.get_list", return_value=["ITEM-1"])

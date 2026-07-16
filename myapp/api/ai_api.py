@@ -9,6 +9,7 @@ from myapp.services.ai_service import (
 	get_ai_draft_v1 as get_ai_draft_v1_service,
 	get_ai_conversation_v1 as get_ai_conversation_v1_service,
 	list_ai_conversations_v1 as list_ai_conversations_v1_service,
+	list_ai_drafts_v1 as list_ai_drafts_v1_service,
 	list_ai_draft_versions_v1 as list_ai_draft_versions_v1_service,
 	stream_ai_message_v1 as stream_ai_message_v1_service,
 	submit_ai_feedback_v1 as submit_ai_feedback_v1_service,
@@ -36,6 +37,7 @@ from myapp.services.ai_model_governance_service import (
 	get_ai_model_governance_overview_v1 as get_ai_model_governance_overview_v1_service,
 	get_ai_model_policy_v1 as get_ai_model_policy_v1_service,
 	get_ai_model_usage_summary_v1 as get_ai_model_usage_summary_v1_service,
+	list_ai_audit_events_v1 as list_ai_audit_events_v1_service,
 	list_ai_models_v1 as list_ai_models_v1_service,
 	list_ai_model_policies_v1 as list_ai_model_policies_v1_service,
 	publish_ai_model_policy_v1 as publish_ai_model_policy_v1_service,
@@ -148,6 +150,15 @@ def generate_ai_inventory_adjustment_draft_v1(
 
 def get_ai_draft_v1(draft_id: str):
 	return get_ai_draft_v1_service(draft_id=draft_id)
+
+
+def list_ai_drafts_v1(
+	status: str = "draft", draft_type: str | None = None,
+	start: int = 0, limit: int = 20,
+):
+	return list_ai_drafts_v1_service(
+		status=status, draft_type=draft_type, start=start, limit=limit,
+	)
 
 
 def prepare_ai_draft_handoff_v1(draft_id: str):
@@ -277,6 +288,18 @@ def rollback_ai_vector_release_v1(
 
 def get_ai_model_governance_overview_v1():
 	return get_ai_model_governance_overview_v1_service()
+
+
+def list_ai_audit_events_v1(
+	search: str | None = None, action: str | None = None,
+	object_type: str | None = None, priority: str | None = None,
+	date_from: str | None = None, date_to: str | None = None,
+	start: int = 0, limit: int = 20,
+):
+	return list_ai_audit_events_v1_service(
+		search=search, action=action, object_type=object_type, priority=priority,
+		date_from=date_from, date_to=date_to, start=start, limit=limit,
+	)
 
 
 def get_ai_model_policy_v1(policy_code: str):

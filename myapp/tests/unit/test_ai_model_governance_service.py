@@ -11,6 +11,8 @@ from myapp.services.ai_model_governance_service import (
 	_validate_policy_conflicts,
 	_validate_registry_models,
 	approve_ai_model_policy_v1,
+	get_ai_model_governance_overview_v1,
+	list_ai_audit_events_v1,
 	publish_ai_model_policy_v1,
 	validate_ai_model_policy_v1,
 	update_ai_model_registry_v1,
@@ -23,6 +25,59 @@ def _run_immediately(_namespace, _request_id, callback, **_kwargs):
 
 
 class TestAiModelGovernanceService(TestCase):
+	@patch("myapp.services.ai_model_governance_service._call_orchestrator")
+	@patch("myapp.services.ai_model_governance_service._require_viewer")
+	def test_governance_overview_aggregates_runtime_usage_tasks_and_vectors(
+		self, _viewer, mock_orchestrator,
+	):
+		mock_orchestrator.return_value = {
+			"status": "ok", "model_alias": "erp-fast-chat",
+			"embedding_model": "erp-embedding", "vector_collection": "products-live",
+			"vector_search_configured": True, "runtime_governance_configured": True,
+			"langfuse_configured": True, "prompt_versions": {"general": "v5"},
+		}
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+			mock_frappe.db.table_exists.return_value = True
+			mock_frappe.db.sql.side_effect = [
+				[frappe._dict(status="active", count=2)],
+				[frappe._dict(status="active", count=1)],
+				[],
+				[frappe._dict(status="review_required", count=3)],
+				[frappe._dict(status="indexed", count=140), frappe._dict(status="failed", count=3)],
+				[frappe._dict(
+					request_count=20, success_count=19, error_count=1, total_tokens=1200,
+					estimated_cost=2.5, cost_currency="CNY", latency_p95_ms=1800,
+					first_token_p95_ms=500,
+				)],
+			]
+			result = get_ai_model_governance_overview_v1()
+
+		self.assertTrue(result["data"]["runtime"]["reachable"])
+		self.assertEqual(result["data"]["data_task_counts"]["review_required"], 3)
+		self.assertEqual(result["data"]["vector_counts"]["failed"], 3)
+		self.assertEqual(result["data"]["usage_7d"]["request_count"], 20)
+
+	@patch("myapp.services.ai_model_governance_service._ensure_tables")
+	@patch("myapp.services.ai_model_governance_service._require_viewer")
+	def test_audit_list_is_filtered_and_paginated(self, _viewer, _tables):
+		row = frappe._dict({
+			"name": "AI-AUDIT-1", "actor": "admin@example.com", "action": "publish_policy",
+			"object_type": "model_policy", "object_name": "general-prod",
+			"reason": "正式发布", "priority": "high", "parameter_hash": "a" * 64,
+			"result_hash": "b" * 64, "metadata_json": '{"result":{"status":"active"}}',
+			"creation": "2026-07-16 10:00:00",
+		})
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+			mock_frappe.db.sql.side_effect = [[frappe._dict(total=1)], [row]]
+			result = list_ai_audit_events_v1(
+				search="general", object_type="model_policy", priority="high",
+				date_from="2026-07-01", date_to="2026-07-16", start=20, limit=10,
+			)
+
+		self.assertEqual(result["data"]["pagination"]["total"], 1)
+		self.assertEqual(result["data"]["items"][0]["metadata"]["result"]["status"], "active")
+		self.assertEqual(mock_frappe.db.sql.call_args_list[1].args[1][-2:], (10, 20))
+
 	def test_policy_validation_requires_model_region_and_retention_review(self):
 		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
 			mock_frappe.db.sql.return_value = [frappe._dict({

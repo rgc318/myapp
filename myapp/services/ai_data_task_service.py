@@ -118,7 +118,44 @@ def _risk_level(fields: set[str]) -> str:
 	return "low"
 
 
-def _serialize(row) -> dict:
+def _task_actions(row, actor: str) -> dict:
+	roles = set(frappe.get_roles(actor) or [])
+	if actor == "Administrator":
+		roles.add("System Manager")
+	can_approve_role = bool(roles & APPROVER_ROLES)
+	can_steward_role = bool(roles & STEWARD_ROLES)
+	can_system_manage = "System Manager" in roles
+	approve_allowed = row.status == "review_required" and can_approve_role and actor != row.requested_by
+	execute_allowed = row.status == "approved" and can_steward_role and actor != row.reviewer
+	rollback_allowed = row.status == "executed" and can_system_manage
+	return {
+		"approve": {
+			"allowed": approve_allowed,
+			"reason": None if approve_allowed else (
+				_("发起人不能审批自己的任务。") if row.status == "review_required" and actor == row.requested_by
+				else _("当前状态或角色不允许审批。")
+			),
+		},
+		"reject": {
+			"allowed": approve_allowed,
+			"reason": None if approve_allowed else _("当前状态、角色或职责分离规则不允许驳回。"),
+		},
+		"execute": {
+			"allowed": execute_allowed,
+			"reason": None if execute_allowed else (
+				_("审批人不能执行同一任务。") if row.status == "approved" and actor == row.reviewer
+				else _("当前状态或角色不允许执行。")
+			),
+		},
+		"rollback": {
+			"allowed": rollback_allowed,
+			"reason": None if rollback_allowed else _("只有系统管理员可回滚已执行任务。"),
+		},
+	}
+
+
+def _serialize(row, *, actor: str | None = None) -> dict:
+	resolved_actor = actor or _current_user()
 	return {
 		"name": row.name,
 		"task_type": row.task_type,
@@ -152,6 +189,7 @@ def _serialize(row) -> dict:
 		"version": cint(row.version_no) or 1,
 		"creation": row.creation,
 		"modified": row.modified,
+		"actions": _task_actions(row, resolved_actor),
 	}
 
 
@@ -307,7 +345,7 @@ def analyze_ai_product_data_v1(item_codes=None, limit: int = 50, request_id: str
 
 def list_ai_data_tasks_v1(status: str | None = None, risk_level: str | None = None,
 	task_type: str | None = None, start: int = 0, limit: int = 20) -> dict:
-	_require_viewer()
+	actor = _require_viewer()
 	_ensure_tables()
 	conditions = ["1=1"]
 	values = []
@@ -332,13 +370,13 @@ def list_ai_data_tasks_v1(status: str | None = None, risk_level: str | None = No
 		f"SELECT COUNT(*) AS total FROM `{TASK_TABLE}` WHERE {' AND '.join(conditions)}",
 		tuple(values), as_dict=True,
 	)[0].total
-	return {"status": "success", "data": {"tasks": [_serialize(row) for row in rows], "total": cint(total), "start": start, "limit": limit}}
+	return {"status": "success", "data": {"tasks": [_serialize(row, actor=actor) for row in rows], "total": cint(total), "start": start, "limit": limit}}
 
 
 def get_ai_data_task_v1(task_name: str) -> dict:
-	_require_viewer()
+	actor = _require_viewer()
 	_ensure_tables()
-	return {"status": "success", "data": {"task": _serialize(_get_task(task_name))}}
+	return {"status": "success", "data": {"task": _serialize(_get_task(task_name), actor=actor)}}
 
 
 def review_ai_data_task_v1(task_name: str, action: str, reason: str, request_id: str | None = None) -> dict:

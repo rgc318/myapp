@@ -7,6 +7,7 @@ import frappe
 from myapp.services import ai_data_task_service
 from myapp.services.ai_data_task_service import (
 	_normalize_changes,
+	_task_actions,
 	execute_ai_data_task_v1,
 	review_ai_data_task_v1,
 	rollback_ai_data_task_v1,
@@ -29,6 +30,20 @@ def _task(**overrides):
 
 
 class TestAiDataTaskService(TestCase):
+	def test_task_actions_apply_role_and_separation_rules(self):
+		with patch.object(ai_data_task_service.frappe, "get_roles") as get_roles:
+			get_roles.return_value = ["AI Data Approver"]
+			approver_actions = _task_actions(
+				_task(status="review_required"), "approver@example.com",
+			)
+			requester_actions = _task_actions(
+				_task(status="review_required"), "steward@example.com",
+			)
+
+		self.assertTrue(approver_actions["approve"]["allowed"])
+		self.assertFalse(requester_actions["approve"]["allowed"])
+		self.assertIn("不能审批", requester_actions["approve"]["reason"])
+
 	@patch("myapp.services.ai_data_task_service.frappe.throw", side_effect=frappe.ValidationError)
 	def test_product_change_whitelist_rejects_stock_or_price_fields(self, _mock_throw):
 		with self.assertRaises(frappe.ValidationError):

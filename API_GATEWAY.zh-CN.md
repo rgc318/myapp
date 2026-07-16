@@ -70,6 +70,7 @@
 - `myapp.api.gateway.generate_ai_purchase_order_draft_v1`
 - `myapp.api.gateway.generate_ai_inventory_adjustment_draft_v1`
 - `myapp.api.gateway.get_ai_draft_v1`
+- `myapp.api.gateway.list_ai_drafts_v1`
 - `myapp.api.gateway.update_ai_draft_v1`
 - `myapp.api.gateway.discard_ai_draft_v1`
 - `myapp.api.gateway.list_ai_draft_versions_v1`
@@ -99,8 +100,8 @@
 - 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`、`list_stock_ledger_entries_v1`
 - 库存：`list_inventory_stock_summary_v1`、`list_stock_ledger_entries_v1`、`transfer_inventory_stock_v1`、`reconcile_inventory_stock_v1`、`submit_inventory_stock_count_v1`
 - 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
-- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`get_ai_draft_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
-- AI 模型治理：`get_ai_model_governance_overview_v1`、`sync_ai_model_registry_v1`、`list_ai_models_v1`、`update_ai_model_registry_v1`、`list_ai_model_policies_v1`、`get_ai_model_policy_v1`、`save_ai_model_policy_draft_v1`、`validate_ai_model_policy_v1`、`approve_ai_model_policy_v1`、`publish_ai_model_policy_v1`、`rollback_ai_model_policy_v1`、`get_ai_model_usage_summary_v1`
+- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`get_ai_draft_v1`、`list_ai_drafts_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
+- AI 模型治理：`get_ai_model_governance_overview_v1`、`list_ai_audit_events_v1`、`sync_ai_model_registry_v1`、`list_ai_models_v1`、`update_ai_model_registry_v1`、`list_ai_model_policies_v1`、`get_ai_model_policy_v1`、`save_ai_model_policy_draft_v1`、`validate_ai_model_policy_v1`、`approve_ai_model_policy_v1`、`publish_ai_model_policy_v1`、`rollback_ai_model_policy_v1`、`get_ai_model_usage_summary_v1`
   - `update_ai_model_registry_v1` 只维护治理字段：状态、数据区域、留存策略、敏感数据许可、输入/输出成本和币种；供应商能力字段由同步维护。请求必须包含 `reason` 和幂等键，响应返回递增后的 `registry_version` 与受影响的已发布策略。
   - `get_ai_model_usage_summary_v1` 支持 `date_from`、`date_to`、`environment`、`company`，返回延迟/首 Token 平均值与 p50/p95、反馈计数和正向率。
 - AI Embedding 发布治理：`list_ai_vector_releases_v1`、`get_ai_vector_release_v1`、`create_ai_vector_release_v1`、`retry_ai_vector_release_v1`、`validate_ai_vector_release_v1`、`approve_ai_vector_release_v1`、`publish_ai_vector_release_v1`、`rollback_ai_vector_release_v1`
@@ -161,6 +162,8 @@
 
 所有治理写接口均为 POST，并使用项目统一幂等机制。策略验证会同时检查注册模型能力/健康状态、当前 Prompt、确定性 offline full gate 和受控 live/Embedding 完整报告。缺少完整报告、报告为 partial、阈值失败、模型别名不一致或报告格式错误时，策略保持 `draft`，不能进入审批或发布。
 
+`list_ai_audit_events_v1` 提供服务端分页审计查询，支持关键词、动作、对象类型、优先级和日期范围筛选；仅治理查看角色可访问。返回参数/结果哈希及治理元数据，不返回供应商密钥或 Orchestrator Service Token。
+
 ### AI 数据治理任务
 
 Data Task 是商品主数据整理建议，不是 AI 直接写业务数据。Web 通过 `/administration/ai/data-tasks` 使用以下契约；所有写接口都是 POST，并使用统一幂等机制。
@@ -188,6 +191,8 @@ Data Task 是商品主数据整理建议，不是 AI 直接写业务数据。Web
 - 每个关键动作写入 `MyApp AI Audit Event`，审计正文保存哈希和必要元数据，不保存供应商密钥。
 
 草稿支持查询、人工更新后重新校验、放弃、不可变版本列表和历史恢复。`restore_ai_draft_version_v1` 会用当前主数据重新校验历史 payload，并创建新版本，不直接覆盖当前快照。
+
+`list_ai_drafts_v1` 只返回当前登录用户自己的草稿，支持 `status=draft/handed_off/discarded/all`、`draft_type=sales_order/purchase_order/inventory_adjustment`、`start` 和 `limit`。列表按最近修改时间倒序，调用方不得使用该接口查看其他用户草稿。
 
 `prepare_ai_draft_handoff_v1` 只允许 `draft` 且 `ready_for_handoff=true` 的草稿，返回现有销售、采购或库存编辑器可消费的安全预填载荷并把草稿标记为 `handed_off`。该接口不会调用 `create_order`、`create_purchase_order`、`reconcile_inventory_stock_v1` 或任何正式写入；尤其库存调整草稿不会创建或提交 `Stock Entry` / `Stock Reconciliation`。
 

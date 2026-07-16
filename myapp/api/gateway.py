@@ -15,6 +15,7 @@ from .ai_api import get_ai_draft_v1 as get_ai_draft_v1_service
 from .ai_api import get_ai_product_vector_status_v1 as get_ai_product_vector_status_v1_service
 from .ai_api import get_ai_conversation_v1 as get_ai_conversation_v1_service
 from .ai_api import list_ai_conversations_v1 as list_ai_conversations_v1_service
+from .ai_api import list_ai_drafts_v1 as list_ai_drafts_v1_service
 from .ai_api import list_ai_draft_versions_v1 as list_ai_draft_versions_v1_service
 from .ai_api import stream_ai_message_v1 as stream_ai_message_v1_service
 from .ai_api import submit_ai_feedback_v1 as submit_ai_feedback_v1_service
@@ -26,6 +27,7 @@ from .ai_api import approve_ai_model_policy_v1 as approve_ai_model_policy_v1_ser
 from .ai_api import get_ai_model_governance_overview_v1 as get_ai_model_governance_overview_v1_service
 from .ai_api import get_ai_model_policy_v1 as get_ai_model_policy_v1_service
 from .ai_api import get_ai_model_usage_summary_v1 as get_ai_model_usage_summary_v1_service
+from .ai_api import list_ai_audit_events_v1 as list_ai_audit_events_v1_service
 from .ai_api import list_ai_models_v1 as list_ai_models_v1_service
 from .ai_api import list_ai_model_policies_v1 as list_ai_model_policies_v1_service
 from .ai_api import publish_ai_model_policy_v1 as publish_ai_model_policy_v1_service
@@ -373,6 +375,19 @@ def get_ai_draft_v1(draft_id: str):
 	)
 
 
+@frappe.whitelist()
+def list_ai_drafts_v1(
+	status: str = "draft", draft_type: str | None = None,
+	start: int = 0, limit: int = 20,
+):
+	return _handle_gateway_call(
+		lambda: list_ai_drafts_v1_service(
+			status=status, draft_type=draft_type, start=start, limit=limit,
+		),
+		success_code="AI_DRAFTS_FETCHED",
+	)
+
+
 @frappe.whitelist(methods=["POST"])
 def prepare_ai_draft_handoff_v1(draft_id: str):
 	return _handle_gateway_call(
@@ -595,6 +610,22 @@ def get_ai_model_governance_overview_v1():
 	return _handle_gateway_call(
 		get_ai_model_governance_overview_v1_service,
 		success_code="AI_MODEL_GOVERNANCE_OVERVIEW_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def list_ai_audit_events_v1(
+	search: str | None = None, action: str | None = None,
+	object_type: str | None = None, priority: str | None = None,
+	date_from: str | None = None, date_to: str | None = None,
+	start: int = 0, limit: int = 20,
+):
+	return _handle_gateway_call(
+		lambda: list_ai_audit_events_v1_service(
+			search=search, action=action, object_type=object_type, priority=priority,
+			date_from=date_from, date_to=date_to, start=start, limit=limit,
+		),
+		success_code="AI_AUDIT_EVENTS_FETCHED",
 	)
 
 

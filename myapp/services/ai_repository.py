@@ -19,6 +19,7 @@ DRAFT_LINE_TABLE = "tabMyApp AI Draft Line"
 DRAFT_VERSION_TABLE = "tabMyApp AI Draft Version"
 DEFAULT_RETENTION_DAYS = 30
 MAX_CONVERSATION_PAGE_SIZE = 50
+MAX_DRAFT_PAGE_SIZE = 100
 
 
 def _name(prefix: str) -> str:
@@ -142,13 +143,21 @@ def get_conversation(*, conversation_id: str, user: str) -> dict:
 	conversation = _get_owned_conversation((conversation_id or "").strip(), user)
 	messages = frappe.db.sql(
 		f"""
-		SELECT name, sequence_no, role, content, scenario, run_id, citations_json, prompt_version, creation
-		FROM `{MESSAGE_TABLE}`
-		WHERE conversation = %s
-		ORDER BY sequence_no ASC
+		SELECT m.name, m.sequence_no, m.role, m.content, m.scenario, m.run_id,
+			m.citations_json, m.prompt_version, m.creation,
+			r.status AS run_status, r.model_alias, r.model, r.trace_id,
+			r.prompt_tokens, r.completion_tokens, r.total_tokens, r.reasoning_tokens,
+			r.latency_ms, r.error_code, r.error,
+			f.rating AS feedback_rating, f.category AS feedback_category,
+			f.comment AS feedback_comment
+		FROM `{MESSAGE_TABLE}` m
+		LEFT JOIN `{RUN_TABLE}` r ON r.name = m.run_id AND r.requested_by = %s
+		LEFT JOIN `{FEEDBACK_TABLE}` f ON f.run_id = m.run_id AND f.owner = %s
+		WHERE m.conversation = %s
+		ORDER BY m.sequence_no ASC
 		LIMIT 200
 		""",
-		(conversation.name,),
+		(user, user, conversation.name),
 		as_dict=True,
 	)
 	return {
@@ -164,6 +173,26 @@ def get_conversation(*, conversation_id: str, user: str) -> dict:
 				"citations": _safe_json_loads(row.citations_json, []),
 				"prompt_version": row.prompt_version,
 				"creation": str(row.creation or "") or None,
+				"run": {
+					"status": row.run_status,
+					"model_alias": row.model_alias,
+					"model": row.model,
+					"trace_id": row.trace_id,
+					"usage": {
+						"prompt_tokens": cint(row.prompt_tokens),
+						"completion_tokens": cint(row.completion_tokens),
+						"total_tokens": cint(row.total_tokens),
+						"reasoning_tokens": cint(row.reasoning_tokens),
+					},
+					"latency_ms": cint(row.latency_ms),
+					"error_code": row.error_code,
+					"error": row.error,
+				} if row.run_id else None,
+				"feedback": {
+					"rating": row.feedback_rating,
+					"category": row.feedback_category,
+					"comment": row.feedback_comment,
+				} if row.feedback_rating else None,
 			}
 			for row in messages
 		],
@@ -653,6 +682,54 @@ def get_draft(*, draft_id: str, user: str) -> dict:
 	if not rows:
 		raise frappe.PermissionError(_("AI 草稿不存在或无权访问。"))
 	return _serialize_draft(rows[0])
+
+
+def list_drafts(
+	*, user: str, status: str = "draft", draft_type: str | None = None,
+	start: int = 0, limit: int = 20,
+) -> dict:
+	_ensure_tables()
+	resolved_status = str(status or "draft").strip().lower()
+	if resolved_status not in {"draft", "handed_off", "discarded", "all"}:
+		frappe.throw(_("AI 草稿状态筛选不正确。"))
+	resolved_type = str(draft_type or "").strip()
+	if resolved_type and resolved_type not in {
+		"sales_order", "purchase_order", "inventory_adjustment",
+	}:
+		frappe.throw(_("AI 草稿类型筛选不正确。"))
+	start = max(0, cint(start))
+	limit = max(1, min(MAX_DRAFT_PAGE_SIZE, cint(limit) or 20))
+	conditions = ["owner = %s"]
+	parameters: list = [user]
+	if resolved_status != "all":
+		conditions.append("status = %s")
+		parameters.append(resolved_status)
+	if resolved_type:
+		conditions.append("draft_type = %s")
+		parameters.append(resolved_type)
+	where_sql = " AND ".join(conditions)
+	count = frappe.db.sql(
+		f"SELECT COUNT(*) AS total FROM `{DRAFT_TABLE}` WHERE {where_sql}",
+		tuple(parameters), as_dict=True,
+	)
+	rows = frappe.db.sql(
+		f"""
+		SELECT name, conversation, source_run, draft_type, status, company, title,
+			version_no, payload_json, validation_json, creation, modified
+		FROM `{DRAFT_TABLE}`
+		WHERE {where_sql}
+		ORDER BY modified DESC, creation DESC
+		LIMIT %s OFFSET %s
+		""",
+		(*parameters, limit, start), as_dict=True,
+	)
+	return {
+		"items": [_serialize_draft(row) for row in rows],
+		"pagination": {
+			"start": start, "limit": limit,
+			"total": cint(count[0].total if count else 0),
+		},
+	}
 
 
 def mark_draft_handed_off(*, draft_id: str, user: str) -> dict:

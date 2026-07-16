@@ -1591,6 +1591,20 @@ def get_ai_draft_v1(draft_id: str):
 	return {"status": "success", "message": _("AI 草稿获取成功。"), "data": ai_repository.get_draft(draft_id=draft_id, user=_current_user())}
 
 
+def list_ai_drafts_v1(
+	status: str = "draft", draft_type: str | None = None,
+	start: int = 0, limit: int = 20,
+):
+	return {
+		"status": "success",
+		"message": _("AI 草稿列表获取成功。"),
+		"data": ai_repository.list_drafts(
+			user=_current_user(), status=status, draft_type=draft_type,
+			start=start, limit=limit,
+		),
+	}
+
+
 def update_ai_draft_v1(draft_id: str, payload, _change_source: str = "user_edit"):
 	user = _current_user()
 	draft = ai_repository.get_draft(draft_id=draft_id, user=user)
