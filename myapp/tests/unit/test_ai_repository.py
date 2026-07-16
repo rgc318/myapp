@@ -79,6 +79,7 @@ class TestAiRepository(TestCase):
 			"run_status": "completed", "model_alias": "erp-fast-chat", "model": "provider-model",
 			"trace_id": "trace-1", "prompt_tokens": 10, "completion_tokens": 2,
 			"total_tokens": 12, "reasoning_tokens": 0, "latency_ms": 900,
+			"first_token_ms": 240,
 			"error_code": None, "error": None, "feedback_rating": "positive",
 			"feedback_category": "helpful", "feedback_comment": None,
 		})
@@ -90,6 +91,7 @@ class TestAiRepository(TestCase):
 			result = get_conversation(conversation_id="AI-CONV-1", user="user@example.com")
 
 		self.assertEqual(result["messages"][0]["run"]["usage"]["total_tokens"], 12)
+		self.assertEqual(result["messages"][0]["run"]["first_token_ms"], 240)
 		self.assertEqual(result["messages"][0]["feedback"]["rating"], "positive")
 		query_parameters = mock_frappe.db.sql.call_args.args[1]
 		self.assertEqual(query_parameters, ("user@example.com", "user@example.com", "AI-CONV-1"))

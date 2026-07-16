@@ -129,7 +129,9 @@
 
 当前聊天场景支持 `general`、`product_search`、`order_query`、`report_summary`。商品工具复用 `search_product_v2`，订单工具复用销售/采购订单工作台服务，报表工具复用既有经营报表服务；所有工具都强制 DocType、公司和记录级读取权限。
 
-同步接口返回 `conversation`、`run_id`、带 `citations` 的 `message`、模型、trace、Token、安全警告和 `events[]`。`stream_ai_message_v1` 返回真正 `text/event-stream`，事件包含 `run_started`、`tool_started`、`tool_completed`、`citation`、`message_delta`、`warning`、`completed` 和 `error`。`submit_ai_feedback_v1` 对本人已完成 Run 记录 `positive` / `negative` 反馈。正式单据创建、提交、取消、收付款和库存变更不属于这些接口能力。
+同步接口返回 `conversation`、`run_id`、带 `citations` 的 `message`、模型、trace、Token、安全警告、`events[]` 和持久 Run 摘要；Run 摘要包含 `status`、后端 `latency_ms` 和可选 `first_token_ms`。`stream_ai_message_v1` 返回真正 `text/event-stream`，事件包含 `run_started`、`tool_started`、`tool_completed`、`citation`、`message_delta`、`warning`、`completed` 和 `error`，最终 `completed` 同样携带持久 Run 摘要。`get_ai_conversation_v1` 的历史助手消息会恢复 Run 状态、模型、trace、Token、总耗时、首 Token、错误和已保存反馈。`submit_ai_feedback_v1` 对本人已完成 Run 记录 `positive` / `negative` 反馈。正式单据创建、提交、取消、收付款和库存变更不属于这些接口能力。
+
+已有会话的公司范围以会话持久化字段为准。调用方省略 `company` 时，Chat/SSE 会自动恢复会话公司；调用方显式传入与会话不同的公司时仍失败关闭并要求新建会话，避免同一上下文混入跨公司业务数据。工作偏好中的默认公司只用于创建新会话或无公司会话的首次业务上下文。
 
 ### AI Copilot 结构化草稿
 

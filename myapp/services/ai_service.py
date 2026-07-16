@@ -1337,9 +1337,10 @@ def generate_ai_sales_order_draft_v1(
 			conversation_id=conversation_id, user=user, role="assistant", content=assistant_content,
 			scenario=scenario, run_id=run_id, citations=[citation], prompt_version=prompt_version,
 		)
+		latency_ms = int((time.perf_counter() - started) * 1000)
 		ai_repository.complete_run(
 			run_id=run_id, user=user, result=result,
-			latency_ms=int((time.perf_counter() - started) * 1000),
+			latency_ms=latency_ms,
 			tool_calls=[{"tool": "build_sales_order_draft", "risk_level": "L2_DRAFT_ONLY", "draft_id": draft["name"]}],
 		)
 		frappe.db.commit()
@@ -1348,6 +1349,7 @@ def generate_ai_sales_order_draft_v1(
 			"data": {"conversation": conversation_id, "run_id": run_id, "draft": draft,
 				"message": {"role": "assistant", "content": assistant_content, "citations": [citation]},
 				"model": result.get("model"), "model_alias": result.get("model_alias"),
+				"run": {"status": "completed", "latency_ms": latency_ms, "first_token_ms": None},
 				"trace_id": result.get("trace_id"), "usage": result.get("usage") or {}, "warnings": result.get("warnings") or []},
 		}
 	except Exception as error:
@@ -1441,9 +1443,10 @@ def generate_ai_purchase_order_draft_v1(
 			conversation_id=conversation_id, user=user, role="assistant", content=assistant_content,
 			scenario=scenario, run_id=run_id, citations=[citation], prompt_version=prompt_version,
 		)
+		latency_ms = int((time.perf_counter() - started) * 1000)
 		ai_repository.complete_run(
 			run_id=run_id, user=user, result=result,
-			latency_ms=int((time.perf_counter() - started) * 1000),
+			latency_ms=latency_ms,
 			tool_calls=[{"tool": "build_purchase_order_draft", "risk_level": "L2_DRAFT_ONLY", "draft_id": draft["name"]}],
 		)
 		frappe.db.commit()
@@ -1452,6 +1455,7 @@ def generate_ai_purchase_order_draft_v1(
 			"data": {"conversation": conversation_id, "run_id": run_id, "draft": draft,
 				"message": {"role": "assistant", "content": assistant_content, "citations": [citation]},
 				"model": result.get("model"), "model_alias": result.get("model_alias"),
+				"run": {"status": "completed", "latency_ms": latency_ms, "first_token_ms": None},
 				"trace_id": result.get("trace_id"), "usage": result.get("usage") or {}, "warnings": result.get("warnings") or []},
 		}
 	except Exception as error:
@@ -1546,11 +1550,12 @@ def generate_ai_inventory_adjustment_draft_v1(
 			citations=[citation],
 			prompt_version=prompt_version,
 		)
+		latency_ms = int((time.perf_counter() - started) * 1000)
 		ai_repository.complete_run(
 			run_id=run_id,
 			user=user,
 			result=result,
-			latency_ms=int((time.perf_counter() - started) * 1000),
+			latency_ms=latency_ms,
 			tool_calls=[
 				{
 					"tool": "build_inventory_adjustment_draft",
@@ -1570,6 +1575,7 @@ def generate_ai_inventory_adjustment_draft_v1(
 				"message": {"role": "assistant", "content": assistant_content, "citations": [citation]},
 				"model": result.get("model"),
 				"model_alias": result.get("model_alias"),
+				"run": {"status": "completed", "latency_ms": latency_ms, "first_token_ms": None},
 				"trace_id": result.get("trace_id"),
 				"usage": result.get("usage") or {},
 				"warnings": result.get("warnings") or [],
@@ -1890,13 +1896,17 @@ def _prepare_chat_run(
 			frappe.throw(_("请提供用户消息。"))
 		current_content = user_messages[-1]
 
-	resolved_company = _resolve_company_scope(
-		company,
-		required=resolved_scenario in {"product_search", "order_query", "report_summary"},
-	)
 	is_new_conversation = not conversation_id
+	conversation = None
 	if conversation_id:
 		conversation = ai_repository.get_conversation(conversation_id=conversation_id, user=user)["conversation"]
+	conversation_company = str((conversation or {}).get("company") or "").strip() or None
+	requested_company = str(company or "").strip() or None
+	resolved_company = _resolve_company_scope(
+		requested_company or conversation_company,
+		required=resolved_scenario in {"product_search", "order_query", "report_summary"},
+	)
+	if conversation_id:
 		if resolved_company and conversation.get("company") and resolved_company != conversation.get("company"):
 			frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
 	else:
@@ -2017,6 +2027,11 @@ def _complete_chat_run(
 		tool_calls=prepared["tool_calls"],
 	)
 	frappe.db.commit()
+	return {
+		"status": "completed",
+		"latency_ms": latency_ms,
+		"first_token_ms": first_token_ms,
+	}
 
 
 def _fail_chat_run(prepared: dict, error: Exception):
@@ -2049,7 +2064,7 @@ def chat_ai_v1(
 		result = _call_ai_orchestrator(prepared["payload"])
 		message = result.get("message") or {}
 		assistant_content = str(message.get("content") or "").strip()
-		_complete_chat_run(prepared, result, assistant_content)
+		run_summary = _complete_chat_run(prepared, result, assistant_content)
 	except Exception as error:
 		_fail_chat_run(prepared, error)
 		raise
@@ -2072,6 +2087,7 @@ def chat_ai_v1(
 			"policy_version": result.get("policy_version"),
 			"fallback_reason": result.get("fallback_reason"),
 			"trace_id": result.get("trace_id"),
+			"run": run_summary,
 			"usage": result.get("usage") or {},
 			"warnings": warnings,
 			"events": _build_events(
@@ -2145,7 +2161,7 @@ def stream_ai_message_v1(
 				assistant_content = str((completed_result.get("message") or {}).get("content") or "").strip()
 			if not assistant_content or not completed_result:
 				raise UpstreamServiceUnavailableError(_("AI 流式服务返回了无效响应。"))
-			_complete_chat_run(
+			run_summary = _complete_chat_run(
 				prepared, completed_result, assistant_content, first_token_ms=first_token_ms,
 			)
 			yield _encode_sse(
@@ -2154,6 +2170,7 @@ def stream_ai_message_v1(
 					"type": "completed",
 					"conversation": prepared["conversation_id"],
 					"run_id": prepared["run_id"],
+					"run": run_summary,
 					"citations": prepared["citations"],
 				}
 			)

@@ -10,6 +10,7 @@ from myapp.services.ai_service import (
 	_build_report_query_dsl,
 	_hybrid_rerank_product_rows,
 	_extract_product_search_terms,
+	_prepare_chat_run,
 	_resolve_inventory_draft_item,
 	_resolve_prompt_version,
 	chat_ai_v1,
@@ -24,6 +25,30 @@ from myapp.utils.api_response import UpstreamServiceUnavailableError, map_except
 
 
 class TestAiService(TestCase):
+	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_existing_conversation_uses_its_persisted_company_when_request_omits_company(
+		self, _current_user, mock_resolve_company,
+	):
+		with patch("myapp.services.ai_service.ai_repository.get_conversation") as mock_get, patch(
+			"myapp.services.ai_service.ai_repository.append_message",
+		), patch(
+			"myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-1",
+		), patch(
+			"myapp.services.ai_service.ai_repository.load_model_messages", return_value=[],
+		), patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_get.return_value = {
+				"conversation": {"name": "AI-CONV-1", "company": "Original Company"},
+			}
+			mock_frappe.local.lang = "zh-CN"
+			prepared = _prepare_chat_run(
+				content="继续查询", scenario="general", conversation_id="AI-CONV-1",
+			)
+
+		self.assertEqual(prepared["company"], "Original Company")
+		self.assertEqual(prepared["payload"]["company"], "Original Company")
+		mock_resolve_company.assert_called_once_with("Original Company", required=False)
+
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	@patch("myapp.services.ai_service.ai_repository.list_drafts")
 	def test_list_ai_drafts_uses_current_user_scope(self, mock_list, _current_user):
@@ -140,6 +165,8 @@ class TestAiService(TestCase):
 			result = generate_ai_sales_order_draft_v1("给客户A开2箱相机", company="Test Company")
 
 		self.assertEqual(result["data"]["draft"]["name"], "AI-DRAFT-1")
+		self.assertEqual(result["data"]["run"]["status"], "completed")
+		self.assertGreaterEqual(result["data"]["run"]["latency_ms"], 0)
 		self.assertEqual(mock_create_draft.call_args.kwargs["payload"]["customer"], "CUST-1")
 		self.assertTrue(mock_create_draft.call_args.kwargs["validation"]["ready_for_handoff"])
 		self.assertEqual(_complete.call_args.kwargs["tool_calls"][0]["risk_level"], "L2_DRAFT_ONLY")
@@ -421,6 +448,9 @@ class TestAiService(TestCase):
 				},
 			]
 		)
+		mock_complete.return_value = {
+			"status": "completed", "latency_ms": 900, "first_token_ms": 120,
+		}
 
 		response = stream_ai_message_v1(content="你好")
 		body = b"".join(response.iter_encoded()).decode()
@@ -429,6 +459,8 @@ class TestAiService(TestCase):
 		self.assertIn('"type":"run_started"', body)
 		self.assertIn('"delta":"你"', body)
 		self.assertIn('"type":"completed"', body)
+		self.assertIn('"latency_ms":900', body)
+		self.assertIn('"first_token_ms":120', body)
 		mock_complete.assert_called_once()
 		self.assertEqual(mock_complete.call_args.args[2], "你好")
 		self.assertGreaterEqual(mock_complete.call_args.kwargs["first_token_ms"], 0)
@@ -469,6 +501,8 @@ class TestAiService(TestCase):
 		self.assertEqual(result["data"]["conversation"], "AI-CONV-1")
 		self.assertEqual(result["data"]["run_id"], "AI-RUN-1")
 		self.assertEqual(result["data"]["message"]["content"], "你好")
+		self.assertEqual(result["data"]["run"]["status"], "completed")
+		self.assertGreaterEqual(result["data"]["run"]["latency_ms"], 0)
 		self.assertEqual(result["data"]["events"][-1], {"type": "completed"})
 		self.assertEqual(mock_append_message.call_count, 2)
 		mock_complete_run.assert_called_once()

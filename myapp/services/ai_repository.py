@@ -147,7 +147,7 @@ def get_conversation(*, conversation_id: str, user: str) -> dict:
 			m.citations_json, m.prompt_version, m.creation,
 			r.status AS run_status, r.model_alias, r.model, r.trace_id,
 			r.prompt_tokens, r.completion_tokens, r.total_tokens, r.reasoning_tokens,
-			r.latency_ms, r.error_code, r.error,
+			r.latency_ms, r.first_token_ms, r.error_code, r.error,
 			f.rating AS feedback_rating, f.category AS feedback_category,
 			f.comment AS feedback_comment
 		FROM `{MESSAGE_TABLE}` m
@@ -185,6 +185,7 @@ def get_conversation(*, conversation_id: str, user: str) -> dict:
 						"reasoning_tokens": cint(row.reasoning_tokens),
 					},
 					"latency_ms": cint(row.latency_ms),
+					"first_token_ms": cint(row.first_token_ms) if row.first_token_ms is not None else None,
 					"error_code": row.error_code,
 					"error": row.error,
 				} if row.run_id else None,
