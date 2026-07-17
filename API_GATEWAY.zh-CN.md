@@ -58,7 +58,7 @@
 - `myapp.api.gateway.confirm_pending_document`
 - `myapp.api.gateway.get_mobile_release_info_v1`
 
-- AI Copilot（只读试运行）：
+- AI Copilot（受控业务查询与人工复核草稿）：
 - `myapp.api.gateway.create_ai_conversation_v1`
 - `myapp.api.gateway.list_ai_conversations_v1`
 - `myapp.api.gateway.get_ai_conversation_v1`
@@ -127,7 +127,9 @@
 }
 ```
 
-当前聊天场景支持 `general`、`product_search`、`order_query`、`report_summary`。商品工具复用 `search_product_v2`，订单工具复用销售/采购订单工作台服务，报表工具复用既有经营报表服务；所有工具都强制 DocType、公司和记录级读取权限。
+当前聊天场景支持 `auto`、`general`、`product_search`、`order_query`、`report_summary`。省略场景或传 `auto` 时，Frappe 根据当前用户问题确定实际场景，并把解析后的场景写入 Message、Run、Prompt 和 Orchestrator 请求。商品工具复用 `search_product_v2`；单据工具支持销售订单、销售发票、采购订单和采购发票的单类型或混合查询，订单复用销售/采购工作台服务，发票复用 `list_business_documents_v1`；报表工具复用既有经营报表服务。所有工具都强制 DocType、公司和记录级读取权限。
+
+未明确日期的“最新/最近”单据查询默认覆盖全部日期并按最新排序，不再隐式限制最近 30 天；用户明确说今天、本周、本月、上月或近 N 天时才应用对应日期范围。混合查询按每种单据类型分别应用数量上限和权限过滤，例如“最新 5 条销售订单、销售发票和采购订单”最多返回 5 + 5 + 5 条结构化引用。
 
 同步接口返回 `conversation`、`run_id`、带 `citations` 的 `message`、模型、trace、Token、安全警告、`events[]` 和持久 Run 摘要；Run 摘要包含 `status`、后端 `latency_ms` 和可选 `first_token_ms`。`stream_ai_message_v1` 返回真正 `text/event-stream`，事件包含 `run_started`、`run_progress`、`tool_started`、`tool_completed`、`citation`、`message_delta`、`warning`、`completed` 和 `error`。`run_progress` 用于上下文就绪、模型首段等待和流式输出阶段，不承载模型正文；最终 `completed` 同样携带持久 Run 摘要，并返回 `stream.delta_count` 与 `stream.streamed_chars` 供客户端证明和诊断实际增量输出。`get_ai_conversation_v1` 的历史助手消息会恢复 Run 状态、模型、trace、Token、总耗时、首 Token、错误和已保存反馈。`submit_ai_feedback_v1` 对本人已完成 Run 记录 `positive` / `negative` 反馈。正式单据创建、提交、取消、收付款和库存变更不属于这些接口能力。
 

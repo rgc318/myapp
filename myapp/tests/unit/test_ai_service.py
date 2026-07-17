@@ -6,11 +6,14 @@ import frappe
 from myapp.services.ai_service import (
 	_build_draft_version_diff,
 	_build_inventory_adjustment_draft,
+	_build_order_query_context,
 	_build_order_query_dsl,
 	_build_report_query_dsl,
 	_hybrid_rerank_product_rows,
 	_extract_product_search_terms,
+	_infer_ai_scenario,
 	_prepare_chat_run,
+	_query_business_document_entity,
 	_resolve_inventory_draft_item,
 	_resolve_prompt_version,
 	chat_ai_v1,
@@ -178,7 +181,7 @@ class TestAiService(TestCase):
 		)
 
 	def test_prompt_versions_are_mapped_by_scenario(self):
-		self.assertEqual(_resolve_prompt_version("general"), "erp-readonly-v5")
+		self.assertEqual(_resolve_prompt_version("general"), "erp-readonly-v6")
 		draft_versions = {
 			"sales_order_draft": "sales-order-draft-v2",
 			"purchase_order_draft": "purchase-order-draft-v2",
@@ -187,7 +190,7 @@ class TestAiService(TestCase):
 		for scenario, expected in draft_versions.items():
 			with self.subTest(scenario=scenario):
 				self.assertEqual(_resolve_prompt_version(scenario), expected)
-				self.assertNotEqual(expected, "erp-readonly-v5")
+				self.assertNotEqual(expected, "erp-readonly-v6")
 
 	@patch("myapp.services.ai_service.ai_repository.create_draft")
 	@patch("myapp.services.ai_service.ai_repository.fail_run")
@@ -322,6 +325,83 @@ class TestAiService(TestCase):
 		self.assertEqual(dsl["date_range"], "last_7_days")
 		self.assertEqual(dsl["min_amount"], 20000)
 		self.assertEqual(dsl["limit"], 3)
+
+	def test_auto_scenario_routes_document_queries_to_controlled_tools(self):
+		self.assertEqual(
+			_infer_ai_scenario("查询最新的5条销售订单和销售发票，以及采购订单"),
+			"order_query",
+		)
+		self.assertEqual(_infer_ai_scenario("解释本月销售表现"), "report_summary")
+		self.assertEqual(_infer_ai_scenario("帮我找蓝色包装商品"), "product_search")
+		self.assertEqual(_infer_ai_scenario("你可以做什么"), "general")
+
+	def test_build_order_query_dsl_supports_multiple_document_types(self):
+		dsl = _build_order_query_dsl(
+			"查询最新的5条销售订单和销售发票，以及采购订单",
+			company="rgc (Demo)",
+		)
+
+		self.assertEqual(
+			dsl["entities"],
+			["sales_order", "sales_invoice", "purchase_order"],
+		)
+		self.assertEqual(dsl["date_range"], "all")
+		self.assertIsNone(dsl["date_from"])
+		self.assertIsNone(dsl["date_to"])
+		self.assertEqual(dsl["limit"], 5)
+
+	@patch("myapp.services.ai_service._query_business_document_entity")
+	@patch("myapp.services.ai_service._resolve_company_scope", return_value="rgc (Demo)")
+	def test_build_order_query_context_groups_mixed_documents(self, _company, mock_query):
+		mock_query.side_effect = [
+			([{"document_type": "sales_order", "name": "SO-1", "party": "客户A"}], {"total": 1}),
+			([{"document_type": "sales_invoice", "name": "SI-1", "party": "客户A"}], {"total": 1}),
+			([{"document_type": "purchase_order", "name": "PO-1", "party": "供应商A"}], {"total": 1}),
+		]
+
+		context, citations, tool_calls = _build_order_query_context(
+			query="查询最新的5条销售订单和销售发票，以及采购订单",
+			company="rgc (Demo)",
+		)
+
+		self.assertEqual([group["entity"] for group in context["document_groups"]], [
+			"sales_order", "sales_invoice", "purchase_order",
+		])
+		self.assertEqual([citation["type"] for citation in citations], [
+			"sales_order", "sales_invoice", "purchase_order",
+		])
+		self.assertEqual([call["tool"] for call in tool_calls], [
+			"search_sales_orders", "list_sales_invoices", "search_purchase_orders",
+		])
+
+	@patch("myapp.services.ai_service.list_business_documents_v1")
+	@patch("myapp.services.ai_service.frappe")
+	def test_query_business_document_entity_normalizes_sales_invoice(self, mock_frappe, mock_list):
+		mock_frappe.has_permission.return_value = True
+		mock_frappe.get_list.return_value = ["SI-1"]
+		mock_list.return_value = {
+			"data": {
+				"items": [{
+					"name": "SI-1", "party_name": "客户A", "company": "rgc (Demo)",
+					"posting_date": "2026-07-17", "due_date": "2026-07-20",
+					"business_status": "Unpaid", "docstatus": 1, "amount": 1200,
+					"outstanding_amount": 1200, "paid_amount": 0,
+				}],
+				"summary": {"total_count": 1},
+			},
+		}
+		dsl = {
+			"company": "rgc (Demo)", "date_from": None, "date_to": None,
+			"status_filter": "all", "exclude_cancelled": True,
+			"sort_by": "latest", "min_amount": None, "limit": 5,
+		}
+
+		items, summary = _query_business_document_entity(entity="sales_invoice", dsl=dsl)
+
+		self.assertEqual(items[0]["document_type"], "sales_invoice")
+		self.assertEqual(items[0]["transaction_date"], "2026-07-17")
+		self.assertEqual(items[0]["outstanding_amount"], 1200)
+		self.assertEqual(summary["total_count"], 1)
 
 	def test_build_report_query_dsl_selects_report_and_date_range(self):
 		dsl = _build_report_query_dsl(

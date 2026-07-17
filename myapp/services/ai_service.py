@@ -17,6 +17,7 @@ from werkzeug.wrappers import Response
 from myapp.services import ai_repository
 from myapp.services.ai_vector_service import search_products_semantic
 from myapp.services.customer_service import list_customers_v2
+from myapp.services.document_list_service import list_business_documents_v1
 from myapp.services.order_service import search_sales_orders_v2
 from myapp.services.purchase_service import list_suppliers_v2, search_purchase_orders_v2
 from myapp.services.report_service import (
@@ -35,12 +36,12 @@ MAX_AI_MESSAGES = 20
 MAX_AI_MESSAGE_CHARS = 8000
 MAX_AI_PRODUCT_RESULTS = 8
 ALLOWED_AI_ROLES = {"user", "assistant"}
-ALLOWED_AI_SCENARIOS = {"general", "product_search", "order_query", "report_summary"}
+ALLOWED_AI_SCENARIOS = {"auto", "general", "product_search", "order_query", "report_summary"}
 PROMPT_VERSION_BY_SCENARIO = {
-	"general": "erp-readonly-v5",
-	"product_search": "erp-readonly-v5",
-	"order_query": "erp-readonly-v5",
-	"report_summary": "erp-readonly-v5",
+	"general": "erp-readonly-v6",
+	"product_search": "erp-readonly-v6",
+	"order_query": "erp-readonly-v6",
+	"report_summary": "erp-readonly-v6",
 	"sales_order_draft": "sales-order-draft-v2",
 	"purchase_order_draft": "purchase-order-draft-v2",
 	"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
@@ -86,10 +87,25 @@ def _normalize_messages(messages):
 
 
 def _resolve_scenario(scenario: str | None) -> str:
-	resolved = (scenario or "general").strip().lower()
+	resolved = (scenario or "auto").strip().lower()
 	if resolved not in ALLOWED_AI_SCENARIOS:
 		frappe.throw(_("不支持的 AI 场景。"))
 	return resolved
+
+
+def _infer_ai_scenario(content: str) -> str:
+	text = " ".join((content or "").strip().split())
+	if any(word in text for word in ("订单", "发票", "送货单", "收货单", "单据")) and any(
+		word in text for word in ("查询", "查找", "查看", "列出", "最新", "最近", "前")
+	):
+		return "order_query"
+	if any(word in text for word in ("报表", "分析", "趋势", "表现", "销售额", "采购额", "应收", "应付", "现金流")):
+		return "report_summary"
+	if any(word in text for word in ("商品", "产品", "库存", "价格")) and any(
+		word in text for word in ("查询", "查找", "搜索", "找", "有没有", "哪些")
+	):
+		return "product_search"
+	return "general"
 
 
 def _resolve_prompt_version(scenario: str) -> str:
@@ -444,12 +460,14 @@ def _parse_amount_value(value: str, unit: str | None) -> float:
 	return amount
 
 
-def _resolve_natural_date_range(query: str, *, as_of: date | None = None) -> dict:
+def _resolve_natural_date_range(
+	query: str, *, as_of: date | None = None, default_days: int | None = 30,
+) -> dict:
 	text = " ".join((query or "").strip().split())
 	today = as_of or date.today()
-	date_to = today
-	date_from = today - timedelta(days=29)
-	date_range = "last_30_days"
+	date_to = today if default_days is not None else None
+	date_from = today - timedelta(days=max(1, default_days or 1) - 1) if default_days is not None else None
+	date_range = f"last_{max(1, default_days or 1)}_days" if default_days is not None else "all"
 	if "今天" in text or "今日" in text:
 		date_from = date_to = today
 		date_range = "today"
@@ -470,8 +488,8 @@ def _resolve_natural_date_range(query: str, *, as_of: date | None = None) -> dic
 		date_range = f"last_{days}_days"
 	return {
 		"date_range": date_range,
-		"date_from": str(date_from),
-		"date_to": str(date_to),
+		"date_from": str(date_from) if date_from else None,
+		"date_to": str(date_to) if date_to else None,
 	}
 
 
@@ -479,11 +497,28 @@ def _build_order_query_dsl(query: str, *, company: str, as_of: date | None = Non
 	text = " ".join((query or "").strip().split())
 	mentions_sales = any(word in text for word in ("销售", "客户", "收款", "发货"))
 	mentions_purchase = any(word in text for word in ("采购", "供应商", "付款", "收货"))
-	if mentions_sales and mentions_purchase:
-		frappe.throw(_("订单查询同时包含销售和采购语义，请拆成两个问题。"))
-	entity = "purchase_order" if mentions_purchase else "sales_order"
+	entities = []
+	for entity, terms in (
+		("sales_order", ("销售订单", "客户订单")),
+		("sales_invoice", ("销售发票", "客户发票")),
+		("purchase_order", ("采购订单", "供应商订单")),
+		("purchase_invoice", ("采购发票", "供应商发票")),
+	):
+		if any(term in text for term in terms):
+			entities.append(entity)
+	if not any(entity.endswith("_invoice") for entity in entities) and "发票" in text:
+		entities.append("purchase_invoice" if mentions_purchase and not mentions_sales else "sales_invoice")
+	if not any(entity.endswith("_order") for entity in entities) and "订单" in text:
+		if mentions_sales:
+			entities.append("sales_order")
+		if mentions_purchase:
+			entities.append("purchase_order")
+	if not entities:
+		entities.append("purchase_order" if mentions_purchase else "sales_order")
+	entities = list(dict.fromkeys(entities))
+	entity = entities[0]
 
-	date_filter = _resolve_natural_date_range(text, as_of=as_of)
+	date_filter = _resolve_natural_date_range(text, as_of=as_of, default_days=None)
 
 	status_filter = "all"
 	if "未完成" in text or "进行中" in text:
@@ -516,6 +551,7 @@ def _build_order_query_dsl(query: str, *, company: str, as_of: date | None = Non
 
 	return {
 		"entity": entity,
+		"entities": entities,
 		"company": company,
 		**date_filter,
 		"status_filter": status_filter,
@@ -526,102 +562,193 @@ def _build_order_query_dsl(query: str, *, company: str, as_of: date | None = Non
 	}
 
 
-def _build_order_query_context(*, query: str, company: str | None) -> tuple[dict, list[dict], list[dict]]:
-	resolved_company = _resolve_company_scope(company, required=True)
-	dsl = _build_order_query_dsl(query, company=resolved_company)
-	is_sales = dsl["entity"] == "sales_order"
-	doctype = "Sales Order" if is_sales else "Purchase Order"
-	if not frappe.has_permission(doctype, ptype="read"):
-		raise frappe.PermissionError(_("无权读取{0}。" ).format(_("销售订单") if is_sales else _("采购订单")))
-	query_limit = 50 if dsl.get("min_amount") is not None else dsl["limit"]
-	if is_sales:
-		result = search_sales_orders_v2(
-			company=resolved_company,
-			date_from=dsl["date_from"],
-			date_to=dsl["date_to"],
-			status_filter=dsl["status_filter"],
-			exclude_cancelled=dsl["exclude_cancelled"],
-			sort_by=dsl["sort_by"],
-			limit=query_limit,
-			start=0,
-		)
-	else:
-		result = search_purchase_orders_v2(
-			company=resolved_company,
-			date_from=dsl["date_from"],
-			date_to=dsl["date_to"],
-			status_filter=dsl["status_filter"],
-			exclude_cancelled=dsl["exclude_cancelled"],
-			sort_by=dsl["sort_by"],
-			limit=query_limit,
-			start=0,
-		)
-	data = (result or {}).get("data") or {}
-	rows = data.get("items") or []
-	name_field = "order_name" if is_sales else "purchase_order_name"
+BUSINESS_DOCUMENT_QUERY_CONFIG = {
+	"sales_order": {
+		"doctype": "Sales Order",
+		"label": "销售订单",
+		"citation_type": "sales_order",
+		"href_prefix": "/sales/orders",
+		"tool": "search_sales_orders",
+	},
+	"sales_invoice": {
+		"doctype": "Sales Invoice",
+		"label": "销售发票",
+		"citation_type": "sales_invoice",
+		"href_prefix": "/sales/invoices",
+		"tool": "list_sales_invoices",
+	},
+	"purchase_order": {
+		"doctype": "Purchase Order",
+		"label": "采购订单",
+		"citation_type": "purchase_order",
+		"href_prefix": "/purchase/orders",
+		"tool": "search_purchase_orders",
+	},
+	"purchase_invoice": {
+		"doctype": "Purchase Invoice",
+		"label": "采购发票",
+		"citation_type": "purchase_invoice",
+		"href_prefix": "/purchase/invoices",
+		"tool": "list_purchase_invoices",
+	},
+}
+
+
+def _filter_allowed_document_names(doctype: str, rows: list[dict], name_field: str) -> set[str]:
 	candidate_names = [row.get(name_field) for row in rows if row.get(name_field)]
-	allowed_names = set(
+	if not candidate_names:
+		return set()
+	return set(
 		frappe.get_list(
 			doctype,
 			filters={"name": ["in", candidate_names]},
 			pluck="name",
 			limit_page_length=max(1, len(candidate_names)),
 		)
-		if candidate_names
-		else []
 	)
+
+
+def _query_business_document_entity(*, entity: str, dsl: dict) -> tuple[list[dict], dict]:
+	config = BUSINESS_DOCUMENT_QUERY_CONFIG[entity]
+	doctype = config["doctype"]
+	if not frappe.has_permission(doctype, ptype="read"):
+		raise frappe.PermissionError(_("无权读取{0}。").format(config["label"]))
+	query_limit = 50 if dsl.get("min_amount") is not None else dsl["limit"]
+	if entity in {"sales_order", "purchase_order"}:
+		is_sales = entity == "sales_order"
+		search = search_sales_orders_v2 if is_sales else search_purchase_orders_v2
+		result = search(
+			company=dsl["company"],
+			date_from=dsl["date_from"],
+			date_to=dsl["date_to"],
+			status_filter=dsl["status_filter"],
+			exclude_cancelled=dsl["exclude_cancelled"],
+			sort_by=dsl["sort_by"],
+			limit=query_limit,
+			start=0,
+		)
+		data = (result or {}).get("data") or {}
+		rows = data.get("items") or []
+		name_field = "order_name" if is_sales else "purchase_order_name"
+		allowed_names = _filter_allowed_document_names(doctype, rows, name_field)
+		items = []
+		for row in rows:
+			name = row.get(name_field)
+			amount = float(row.get("order_amount_estimate") or 0)
+			if name not in allowed_names:
+				continue
+			if dsl.get("min_amount") is not None and amount < dsl["min_amount"]:
+				continue
+			items.append(
+				{
+					"document_type": entity,
+					"name": name,
+					"party": row.get("customer_name") if is_sales else row.get("supplier_name"),
+					"company": row.get("company"),
+					"transaction_date": str(row.get("transaction_date") or ""),
+					"delivery_date": str(row.get("delivery_date") or "") or None,
+					"document_status": row.get("document_status"),
+					"amount": amount,
+					"outstanding_amount": float(row.get("outstanding_amount") or 0),
+					"completion": row.get("completion") or {},
+				}
+			)
+			if len(items) >= dsl["limit"]:
+				break
+		return items, data.get("summary") or {}
+
+	docstatus = 2 if dsl["status_filter"] == "cancelled" else 1 if dsl["status_filter"] == "completed" else None
+	result = list_business_documents_v1(
+		doctype=doctype,
+		company=dsl["company"],
+		date_from=dsl["date_from"],
+		date_to=dsl["date_to"],
+		docstatus=docstatus,
+		sort_by=dsl["sort_by"],
+		limit=query_limit,
+		start=0,
+	)
+	data = (result or {}).get("data") or {}
+	rows = data.get("items") or []
+	allowed_names = _filter_allowed_document_names(doctype, rows, "name")
 	items = []
 	for row in rows:
-		name = row.get(name_field)
-		amount = float(row.get("order_amount_estimate") or 0)
-		if name not in allowed_names:
+		amount = float(row.get("amount") or 0)
+		if row.get("name") not in allowed_names:
+			continue
+		if dsl["exclude_cancelled"] and int(row.get("docstatus") or 0) == 2:
 			continue
 		if dsl.get("min_amount") is not None and amount < dsl["min_amount"]:
 			continue
-		party_name = row.get("customer_name") if is_sales else row.get("supplier_name")
 		items.append(
 			{
-				"name": name,
-				"party": party_name,
+				"document_type": entity,
+				"name": row.get("name"),
+				"party": row.get("party_name") or row.get("party"),
 				"company": row.get("company"),
-				"transaction_date": str(row.get("transaction_date") or ""),
-				"delivery_date": str(row.get("delivery_date") or "") or None,
-				"document_status": row.get("document_status"),
+				"transaction_date": str(row.get("posting_date") or ""),
+				"due_date": str(row.get("due_date") or "") or None,
+				"document_status": row.get("business_status") or row.get("document_status"),
 				"amount": amount,
 				"outstanding_amount": float(row.get("outstanding_amount") or 0),
-				"completion": row.get("completion") or {},
+				"paid_amount": float(row.get("paid_amount") or 0),
 			}
 		)
 		if len(items) >= dsl["limit"]:
 			break
-	citation_type = "sales_order" if is_sales else "purchase_order"
-	href_prefix = "/sales/orders" if is_sales else "/purchases/orders"
-	citations = [
-		{
-			"type": citation_type,
-			"id": row["name"],
-			"label": f"{row['name']} · {row.get('party') or ''}",
-			"href": f"{href_prefix}/{row['name']}",
-			"data": row,
-		}
-		for row in items
-	]
-	tool_calls = [
-		{
-			"tool": "search_sales_orders" if is_sales else "search_purchase_orders",
-			"risk_level": "L1_READ_ONLY",
-			"dsl_hash": hashlib.sha256(json.dumps(dsl, sort_keys=True).encode("utf-8")).hexdigest(),
-			"company": resolved_company,
-			"result_count": len(items),
-		}
-	]
+	return items, data.get("summary") or {}
+
+
+def _build_order_query_context(*, query: str, company: str | None) -> tuple[dict, list[dict], list[dict]]:
+	resolved_company = _resolve_company_scope(company, required=True)
+	dsl = _build_order_query_dsl(query, company=resolved_company)
+	groups = []
+	citations = []
+	tool_calls = []
+	for entity in dsl["entities"]:
+		config = BUSINESS_DOCUMENT_QUERY_CONFIG[entity]
+		items, summary = _query_business_document_entity(entity=entity, dsl=dsl)
+		groups.append(
+			{
+				"entity": entity,
+				"label": config["label"],
+				"summary": summary,
+				"items": items,
+			}
+		)
+		citations.extend(
+			{
+				"type": config["citation_type"],
+				"id": row["name"],
+				"label": f"{config['label']} {row['name']} · {row.get('party') or ''}",
+				"href": f"{config['href_prefix']}/{row['name']}",
+				"data": row,
+			}
+			for row in items
+		)
+		tool_calls.append(
+			{
+				"tool": config["tool"],
+				"risk_level": "L1_READ_ONLY",
+				"dsl_hash": hashlib.sha256(
+					json.dumps({**dsl, "entity": entity}, sort_keys=True).encode("utf-8")
+				).hexdigest(),
+				"company": resolved_company,
+				"result_count": len(items),
+			}
+		)
+	documents = [row for group in groups for row in group["items"]]
 	context = {
-		"tool": tool_calls[0]["tool"],
+		"tool": "query_business_documents",
 		"query": query,
 		"dsl": dsl,
-		"summary": data.get("summary") or {},
-		"orders": items,
-		"instructions": "订单数据来自受控只读查询。回答必须说明公司、日期、状态和金额筛选口径，并引用订单号；不得编造未返回的订单。",
+		"document_groups": groups,
+		"documents": documents,
+		"orders": [row for row in documents if row["document_type"].endswith("_order")],
+		"instructions": (
+			"业务单据来自当前账号权限和公司范围内的受控业务查询。"
+			"回答必须按单据类型分组，说明公司、日期和排序口径，并引用真实单据号；不得编造未返回的记录。"
+		),
 	}
 	return context, citations, tool_calls
 
@@ -1884,8 +2011,7 @@ def _prepare_chat_run(
 	content: str | None = None,
 ):
 	user = _current_user()
-	resolved_scenario = _resolve_scenario(scenario)
-	prompt_version = _resolve_prompt_version(resolved_scenario)
+	requested_scenario = _resolve_scenario(scenario)
 	legacy_messages = _normalize_messages(messages) if messages not in (None, "", []) else []
 	current_content = _normalize_content(content) if content not in (None, "") else None
 	if not current_content:
@@ -1895,6 +2021,10 @@ def _prepare_chat_run(
 		if not user_messages:
 			frappe.throw(_("请提供用户消息。"))
 		current_content = user_messages[-1]
+	resolved_scenario = (
+		_infer_ai_scenario(current_content) if requested_scenario == "auto" else requested_scenario
+	)
+	prompt_version = _resolve_prompt_version(resolved_scenario)
 
 	is_new_conversation = not conversation_id
 	conversation = None
@@ -2135,7 +2265,7 @@ def stream_ai_message_v1(
 				{
 					"type": "run_progress",
 					"phase": "context_ready",
-					"message": _("已建立会话、权限与公司上下文"),
+					"message": _("已确认当前账号权限与公司范围"),
 				}
 			)
 			for tool_call in prepared["tool_calls"]:
@@ -2154,7 +2284,7 @@ def stream_ai_message_v1(
 				{
 					"type": "run_progress",
 					"phase": "generating",
-					"message": _("模型正在分析上下文并生成回答"),
+					"message": _("正在请求模型，等待首个 Token"),
 				}
 			)
 			for event in _stream_ai_orchestrator(prepared["payload"]):
@@ -2164,7 +2294,7 @@ def stream_ai_message_v1(
 						{
 							"type": "run_progress",
 							"phase": "model_started",
-							"message": _("模型已接收请求，正在生成首段内容"),
+							"message": _("模型已接收请求，等待首个 Token"),
 							"model_alias": event.get("model_alias"),
 						}
 					)
@@ -2176,7 +2306,7 @@ def stream_ai_message_v1(
 							{
 								"type": "run_progress",
 								"phase": "streaming",
-								"message": _("正在流式输出回答"),
+								"message": _("首个 Token 已到达，正在实时输出"),
 							}
 						)
 					if delta:

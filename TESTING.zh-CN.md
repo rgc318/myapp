@@ -2072,7 +2072,7 @@ docker exec \
 
 Prompt 版本必须在 Frappe 消息审计、Orchestrator registry 和 Langfuse metadata 中保持一致。当前有效版本：
 
-- 只读场景：`erp-readonly-v5`
+- 受控业务查询场景：`erp-readonly-v6`
 - 销售草稿：`sales-order-draft-v2`
 - 采购草稿：`purchase-order-draft-v2`
 - 库存调整草稿：`inventory-adjustment-draft-v2`
