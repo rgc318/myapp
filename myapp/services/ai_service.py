@@ -2121,12 +2121,21 @@ def stream_ai_message_v1(
 		content_parts = []
 		completed_result = None
 		first_token_ms = None
+		delta_count = 0
+		streamed_chars = 0
 		try:
 			yield _encode_sse(
 				{
 					"type": "run_started",
 					"conversation": prepared["conversation_id"],
 					"run_id": prepared["run_id"],
+				}
+			)
+			yield _encode_sse(
+				{
+					"type": "run_progress",
+					"phase": "context_ready",
+					"message": _("已建立会话、权限与公司上下文"),
 				}
 			)
 			for tool_call in prepared["tool_calls"]:
@@ -2141,12 +2150,38 @@ def stream_ai_message_v1(
 			for citation in prepared["citations"]:
 				yield _encode_sse({"type": "citation", "citation": citation})
 
+			yield _encode_sse(
+				{
+					"type": "run_progress",
+					"phase": "generating",
+					"message": _("模型正在分析上下文并生成回答"),
+				}
+			)
 			for event in _stream_ai_orchestrator(prepared["payload"]):
 				event_type = event.get("type")
-				if event_type == "message_delta":
+				if event_type == "started":
+					yield _encode_sse(
+						{
+							"type": "run_progress",
+							"phase": "model_started",
+							"message": _("模型已接收请求，正在生成首段内容"),
+							"model_alias": event.get("model_alias"),
+						}
+					)
+				elif event_type == "message_delta":
 					delta = str(event.get("delta") or "")
 					if delta and first_token_ms is None:
 						first_token_ms = max(0, int((time.perf_counter() - prepared["started"]) * 1000))
+						yield _encode_sse(
+							{
+								"type": "run_progress",
+								"phase": "streaming",
+								"message": _("正在流式输出回答"),
+							}
+						)
+					if delta:
+						delta_count += 1
+						streamed_chars += len(delta)
 					content_parts.append(delta)
 					yield _encode_sse(event)
 				elif event_type == "warning":
@@ -2171,6 +2206,10 @@ def stream_ai_message_v1(
 					"conversation": prepared["conversation_id"],
 					"run_id": prepared["run_id"],
 					"run": run_summary,
+					"stream": {
+						"delta_count": delta_count,
+						"streamed_chars": streamed_chars,
+					},
 					"citations": prepared["citations"],
 				}
 			)
