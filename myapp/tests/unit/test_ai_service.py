@@ -8,10 +8,12 @@ from myapp.services.ai_service import (
 	_build_inventory_adjustment_draft,
 	_build_order_query_context,
 	_build_order_query_dsl,
+	_build_product_setup_draft,
 	_build_report_query_dsl,
 	_hybrid_rerank_product_rows,
 	_extract_product_search_terms,
 	_infer_ai_scenario,
+	_infer_ai_action_scenario,
 	_prepare_chat_run,
 	_query_business_document_entity,
 	_resolve_inventory_draft_item,
@@ -181,16 +183,17 @@ class TestAiService(TestCase):
 		)
 
 	def test_prompt_versions_are_mapped_by_scenario(self):
-		self.assertEqual(_resolve_prompt_version("general"), "erp-readonly-v6")
+		self.assertEqual(_resolve_prompt_version("general"), "erp-readonly-v7")
 		draft_versions = {
 			"sales_order_draft": "sales-order-draft-v2",
 			"purchase_order_draft": "purchase-order-draft-v2",
 			"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
+			"product_setup_draft": "product-setup-draft-v1",
 		}
 		for scenario, expected in draft_versions.items():
 			with self.subTest(scenario=scenario):
 				self.assertEqual(_resolve_prompt_version(scenario), expected)
-				self.assertNotEqual(expected, "erp-readonly-v6")
+				self.assertNotEqual(expected, "erp-readonly-v7")
 
 	@patch("myapp.services.ai_service.ai_repository.create_draft")
 	@patch("myapp.services.ai_service.ai_repository.fail_run")
@@ -314,6 +317,7 @@ class TestAiService(TestCase):
 		self.assertEqual(dsl["status_filter"], "unfinished")
 		self.assertEqual(dsl["sort_by"], "amount_desc")
 		self.assertEqual(dsl["limit"], 5)
+		self.assertTrue(dsl["limit_explicit"])
 
 	def test_build_order_query_dsl_parses_amount_threshold(self):
 		dsl = _build_order_query_dsl(
@@ -335,6 +339,38 @@ class TestAiService(TestCase):
 		self.assertEqual(_infer_ai_scenario("帮我找蓝色包装商品"), "product_search")
 		self.assertEqual(_infer_ai_scenario("你可以做什么"), "general")
 
+	def test_action_scenario_routes_product_creation_to_draft(self):
+		self.assertEqual(
+			_infer_ai_action_scenario("添加一个新的商品叫做传承结晶，1000个，售价9999元每个"),
+			"product_setup_draft",
+		)
+		self.assertEqual(
+			_infer_ai_action_scenario("查询最新销售订单"),
+			"order_query",
+		)
+
+	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - TC")
+	@patch("myapp.services.ai_service._resolve_optional_master_name", return_value=None)
+	@patch("myapp.services.ai_service._resolve_product_setup_uom", return_value=("Unit", [{"name": "Unit"}]))
+	def test_product_setup_draft_keeps_selling_price_separate_from_valuation(
+		self, _uom, _master, _warehouse,
+	):
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.db.exists.return_value = False
+			mock_frappe.db.get_value.return_value = "CNY"
+			payload, validation = _build_product_setup_draft(
+				{
+					"item_name": "传承结晶", "opening_qty": 1000,
+					"opening_uom": "个", "standard_selling_rate": 9999,
+				},
+				company="Test Company",
+			)
+
+		self.assertEqual(payload["standard_selling_rate"], 9999)
+		self.assertIsNone(payload["valuation_rate"])
+		self.assertFalse(validation["ready_for_handoff"])
+		self.assertTrue(any("估值价" in error for error in validation["errors"]))
+
 	def test_build_order_query_dsl_supports_multiple_document_types(self):
 		dsl = _build_order_query_dsl(
 			"查询最新的5条销售订单和销售发票，以及采购订单",
@@ -349,6 +385,16 @@ class TestAiService(TestCase):
 		self.assertIsNone(dsl["date_from"])
 		self.assertIsNone(dsl["date_to"])
 		self.assertEqual(dsl["limit"], 5)
+		self.assertTrue(dsl["limit_explicit"])
+
+	def test_build_order_query_dsl_does_not_report_default_limit_as_user_request(self):
+		dsl = _build_order_query_dsl(
+			"查询最新销售订单",
+			company="rgc (Demo)",
+		)
+
+		self.assertEqual(dsl["limit"], 10)
+		self.assertFalse(dsl["limit_explicit"])
 
 	@patch("myapp.services.ai_service._query_business_document_entity")
 	@patch("myapp.services.ai_service._resolve_company_scope", return_value="rgc (Demo)")
@@ -367,9 +413,19 @@ class TestAiService(TestCase):
 		self.assertEqual([group["entity"] for group in context["document_groups"]], [
 			"sales_order", "sales_invoice", "purchase_order",
 		])
+		self.assertTrue(all("items" not in group for group in context["document_groups"]))
+		self.assertNotIn("documents", context)
+		self.assertNotIn("orders", context)
 		self.assertEqual([citation["type"] for citation in citations], [
-			"sales_order", "sales_invoice", "purchase_order",
+			"business_result_set", "sales_order", "sales_invoice", "purchase_order",
 		])
+		self.assertEqual(citations[0]["data"]["schema_version"], "business-result-set-v1")
+		self.assertEqual(citations[0]["data"]["status_semantics"], "result_coverage_only")
+		self.assertEqual(citations[0]["data"]["scope"]["limit_per_group"], 5)
+		self.assertEqual(
+			[group["status"] for group in citations[0]["data"]["groups"]],
+			["partial", "partial", "partial"],
+		)
 		self.assertEqual([call["tool"] for call in tool_calls], [
 			"search_sales_orders", "list_sales_invoices", "search_purchase_orders",
 		])

@@ -36,6 +36,7 @@ POLICY_SCENARIOS = {
 	"sales_order_draft",
 	"purchase_order_draft",
 	"inventory_adjustment_draft",
+	"product_setup_draft",
 }
 BUDGET_ACTIONS = {"warn", "use_lower_cost_fallback", "reject_noncritical"}
 ENVIRONMENTS = {"development", "test", "staging", "production"}

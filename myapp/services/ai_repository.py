@@ -695,7 +695,7 @@ def list_drafts(
 		frappe.throw(_("AI 草稿状态筛选不正确。"))
 	resolved_type = str(draft_type or "").strip()
 	if resolved_type and resolved_type not in {
-		"sales_order", "purchase_order", "inventory_adjustment",
+		"sales_order", "purchase_order", "inventory_adjustment", "product_setup",
 	}:
 		frappe.throw(_("AI 草稿类型筛选不正确。"))
 	start = max(0, cint(start))

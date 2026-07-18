@@ -6,6 +6,7 @@ from myapp.services.ai_service import (
 	generate_ai_inventory_adjustment_draft_v1 as generate_ai_inventory_adjustment_draft_v1_service,
 	generate_ai_sales_order_draft_v1 as generate_ai_sales_order_draft_v1_service,
 	generate_ai_purchase_order_draft_v1 as generate_ai_purchase_order_draft_v1_service,
+	generate_ai_product_setup_draft_v1 as generate_ai_product_setup_draft_v1_service,
 	get_ai_draft_v1 as get_ai_draft_v1_service,
 	get_ai_conversation_v1 as get_ai_conversation_v1_service,
 	list_ai_conversations_v1 as list_ai_conversations_v1_service,
@@ -15,6 +16,7 @@ from myapp.services.ai_service import (
 	submit_ai_feedback_v1 as submit_ai_feedback_v1_service,
 	prepare_ai_draft_handoff_v1 as prepare_ai_draft_handoff_v1_service,
 	restore_ai_draft_version_v1 as restore_ai_draft_version_v1_service,
+	resolve_ai_scenario_v1 as resolve_ai_scenario_v1_service,
 	update_ai_draft_v1 as update_ai_draft_v1_service,
 )
 from myapp.services.ai_vector_service import (
@@ -104,6 +106,10 @@ def stream_ai_message_v1(
 	)
 
 
+def resolve_ai_scenario_v1(content: str):
+	return resolve_ai_scenario_v1_service(content=content)
+
+
 def submit_ai_feedback_v1(
 	run_id: str,
 	rating: str,
@@ -144,6 +150,16 @@ def generate_ai_inventory_adjustment_draft_v1(
 	conversation_id: str | None = None,
 ):
 	return generate_ai_inventory_adjustment_draft_v1_service(
+		content=content, company=company, conversation_id=conversation_id,
+	)
+
+
+def generate_ai_product_setup_draft_v1(
+	content: str,
+	company: str | None = None,
+	conversation_id: str | None = None,
+):
+	return generate_ai_product_setup_draft_v1_service(
 		content=content, company=company, conversation_id=conversation_id,
 	)
 

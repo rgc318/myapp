@@ -1,6 +1,6 @@
 # AI Copilot 模块技术设计
 
-> 状态：Phase A 只读纵向链路、Phase B 三类结构化草稿、商品语义检索、模型治理控制面、高并发 P0、OTLP 可观测性、备份恢复演练和首期商品数据治理任务均已实现。2026-07-15 已从在线 `myapp-products-live → myapp-products-v1` 清理 439 个明确 `HTTP-` 测试 points，保留 143 个非排除商品向量 / 1024 维；582 个 ERP Item 和 854 个 Sales Order 未修改。`erp-embedding` 当前单条、批量和在线检索均已恢复，30 条中文门禁 Top-1 96.67%、Top-3 100%、Provider error 0。新的 v2 collection、完整删除/重建/恢复门禁和正式发布回滚尚未执行；生产 Secret Manager、SSO 和正式环境密钥轮换仍属于部署侧待办。
+> 状态：Phase A 只读纵向链路、Phase B 四类结构化草稿（销售订单、采购订单、库存调整、商品建档）、商品语义检索、模型治理控制面、高并发 P0、OTLP 可观测性、备份恢复演练和首期商品数据治理任务均已实现。2026-07-15 已从在线 `myapp-products-live → myapp-products-v1` 清理 439 个明确 `HTTP-` 测试 points，保留 143 个非排除商品向量 / 1024 维；582 个 ERP Item 和 854 个 Sales Order 未修改。`erp-embedding` 当前单条、批量和在线检索均已恢复，30 条中文门禁 Top-1 96.67%、Top-3 100%、Provider error 0。新的 v2 collection、完整删除/重建/恢复门禁和正式发布回滚尚未执行；生产 Secret Manager、SSO 和正式环境密钥轮换仍属于部署侧待办。
 
 ## 1. 目标与非目标
 
@@ -274,6 +274,8 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 
 库存调整草稿使用独立 `inventory_adjustment_draft` Schema 和 `/internal/v1/drafts/inventory-adjustment`，只允许单个库存商品的 `set_target`、`increase`、`decrease` 三种候选语义。Frappe 按当前用户和公司权限解析真实 Item / Warehouse，使用 `item_context=inventory` 和共享 UOM 换算重新计算实时库存、目标库存、差异数量与估值参考；调整原因必填，减少后目标库存不得为负。交接只把库存单位下的安全目标数量预填到现有 `/inventory/adjustments` 页面，AI 不调用 `reconcile_inventory_stock_v1`，也不创建或提交 `Stock Entry` / `Stock Reconciliation`。
 
+商品建档草稿使用独立 `product_setup_draft` Schema 和 `/internal/v1/drafts/product-setup`，从自然语言提取商品名称/编码、商品分类、品牌、库存单位、标准售价、初始库存、仓库、估值价、币种和描述候选。Frappe 重新校验 Item 创建权限、商品名称/编码重复、Item Group、Brand、UOM、公司仓库、Item Price 与 Stock Entry 权限。售价和库存估值价严格分离；初始库存大于 0 时必须提供当前公司叶子仓库和估值价。交接只预填 `/master-data/products` 新增商品表单，用户主动保存后才复用幂等 `create_product_v2` 原子创建 Item、价格和可选初始库存。
+
 ## 10. 可观测性、治理与防护
 
 - 使用 Langfuse 或等价自托管平台记录 trace、Prompt 版本、模型别名、Token、成本、延迟、失败和用户反馈。
@@ -288,7 +290,7 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 
 父仓库现提供 `overrides/compose.langfuse.yaml` 和随机密钥初始化脚本，本地固定使用 Langfuse v3.212.0，并隔离 PostgreSQL、ClickHouse、Redis、MinIO 数据卷。初始化脚本生成 `0600` 密钥文件且拒绝覆盖现有文件。Web/MinIO 只绑定 loopback，数据库、ClickHouse、Redis 和 MinIO Console 不发布宿主机端口。Orchestrator 镜像固定基础镜像 digest，以 UID/GID `10001` 运行，并由 Compose 强制只读根文件系统、清空 capabilities、启用 `no-new-privileges` 和 `/tmp` tmpfs。真实验收已确认 trace、generation、固定评测 score 和 `user-feedback` 可查询；停止 Langfuse Web 时模型调用仍完成，反馈仍被本地接受且明确返回观测未同步。
 
-固定评测集采用 21 个纯合成用例和确定性 grader，覆盖三类结构化草稿、grounding、无上下文事实边界、Prompt Injection、写操作诱导和系统提示/密钥提取。Offline replay 与低价真实模型 live gate 均需满足：critical、安全、Schema 和禁止模式 100%，结构化字段准确率不低于 95%，普通场景通过率不低于 90%。只有覆盖当前 mode 全部用例的报告具备 `release_gate_eligible=true`；`--case` / `--tag` 子集报告只用于诊断，缺失指标返回 `null`，未知 case ID 直接作为配置错误拒绝。报告默认只保留输出哈希、长度、失败原因、Prompt/DataSet 版本、延迟和 Token。当前受控业务查询 Prompt registry 的有效版本为 `erp-readonly-v6`，三类草稿分别为 `sales-order-draft-v2`、`purchase-order-draft-v2`、`inventory-adjustment-draft-v2`，Frappe 审计和 Orchestrator/Langfuse 必须保持同值。调用方显式提供不一致或空白 Prompt 版本时，Orchestrator 返回 HTTP `409`；`/health` 返回完整 `prompt_versions`，不得静默覆盖版本漂移。
+固定评测集采用 22 个纯合成用例和确定性 grader，覆盖四类结构化草稿、grounding、无上下文事实边界、Prompt Injection、写操作诱导和系统提示/密钥提取。Offline replay 与低价真实模型 live gate 均需满足：critical、安全、Schema 和禁止模式 100%，结构化字段准确率不低于 95%，普通场景通过率不低于 90%。只有覆盖当前 mode 全部用例的报告具备 `release_gate_eligible=true`；`--case` / `--tag` 子集报告只用于诊断，缺失指标返回 `null`，未知 case ID 直接作为配置错误拒绝。报告默认只保留输出哈希、长度、失败原因、Prompt/DataSet 版本、延迟和 Token。当前受控业务查询 Prompt registry 的有效版本为 `erp-readonly-v7`，四类草稿分别为 `sales-order-draft-v2`、`purchase-order-draft-v2`、`inventory-adjustment-draft-v2`、`product-setup-draft-v1`，Frappe 审计和 Orchestrator/Langfuse 必须保持同值。v7 在 v6 权限和写操作边界基础上增加“结构化结果不重复复述”约束：界面已经展示业务明细时，模型只概括范围、数量、空结果和异常。调用方显式提供不一致或空白 Prompt 版本时，Orchestrator 返回 HTTP `409`；`/health` 返回完整 `prompt_versions`，不得静默覆盖版本漂移。
 
 generation/trace 已迁移到 Langfuse OTLP HTTP `/api/public/otel/v1/traces`；用户反馈和固定评测 score 继续使用 score ingestion，并保留 HTTP 207 全事件成功校验。父仓库已完成 Qdrant snapshot、Langfuse PostgreSQL/ClickHouse/Redis/MinIO clean-stop 联合备份、隔离恢复和 AI 内部服务 Token 轮换演练。生产剩余缺口是正式 Secret Manager 下的 Langfuse Project Key/恢复根密钥轮换、SSO/访问治理、成本看板和定时异地备份。
 

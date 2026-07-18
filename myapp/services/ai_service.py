@@ -31,6 +31,7 @@ from myapp.services.wholesale_service import search_product_v2
 from myapp.utils.api_response import UpstreamServiceUnavailableError
 from myapp.utils.uom import resolve_item_quantity_to_stock
 from myapp.utils.uom_display import resolve_uom_display_name
+from myapp.utils.standard_uoms import STANDARD_UOMS
 
 MAX_AI_MESSAGES = 20
 MAX_AI_MESSAGE_CHARS = 8000
@@ -38,13 +39,14 @@ MAX_AI_PRODUCT_RESULTS = 8
 ALLOWED_AI_ROLES = {"user", "assistant"}
 ALLOWED_AI_SCENARIOS = {"auto", "general", "product_search", "order_query", "report_summary"}
 PROMPT_VERSION_BY_SCENARIO = {
-	"general": "erp-readonly-v6",
-	"product_search": "erp-readonly-v6",
-	"order_query": "erp-readonly-v6",
-	"report_summary": "erp-readonly-v6",
+	"general": "erp-readonly-v7",
+	"product_search": "erp-readonly-v7",
+	"order_query": "erp-readonly-v7",
+	"report_summary": "erp-readonly-v7",
 	"sales_order_draft": "sales-order-draft-v2",
 	"purchase_order_draft": "purchase-order-draft-v2",
 	"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
+	"product_setup_draft": "product-setup-draft-v1",
 }
 PRODUCT_SEARCH_PREFIX_PATTERN = re.compile(
 	r"^(?:请|麻烦|可以|能否|帮我|给我|我想|我要)*(?:查找|搜索|找一下|找一找|找找|找)?"
@@ -105,6 +107,29 @@ def _infer_ai_scenario(content: str) -> str:
 		word in text for word in ("查询", "查找", "搜索", "找", "有没有", "哪些")
 	):
 		return "product_search"
+	return "general"
+
+
+def _infer_ai_action_scenario(content: str) -> str:
+	text = " ".join((content or "").strip().split())
+	read_only_scenario = _infer_ai_scenario(text)
+	if read_only_scenario != "general":
+		return read_only_scenario
+	write_words = ("创建", "新增", "添加", "生成", "新建", "建档", "录入")
+	if any(word in text for word in ("商品", "产品", "SKU")) and any(word in text for word in write_words):
+		return "product_setup_draft"
+	if any(word in text for word in ("库存", "存量")) and any(
+		word in text for word in ("调整", "盘点", "增加", "减少", "改为", "设置为")
+	):
+		return "inventory_adjustment_draft"
+	if any(word in text for word in ("采购订单", "采购单", "向供应商采购", "进货")) and any(
+		word in text for word in write_words + ("向供应商", "进货",)
+	):
+		return "purchase_order_draft"
+	if any(word in text for word in ("销售订单", "销售单", "给客户", "卖给")) and any(
+		word in text for word in write_words + ("给客户", "卖给", "开",)
+	):
+		return "sales_order_draft"
 	return "general"
 
 
@@ -226,6 +251,25 @@ def _call_ai_orchestrator_inventory_adjustment_draft(payload: dict) -> dict:
 			result = json.loads(response.read().decode("utf-8") or "{}")
 	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
 		frappe.log_error(frappe.get_traceback(), _("AI 库存调整草稿调用失败"))
+		raise UpstreamServiceUnavailableError(_("AI 草稿服务暂时不可用，请稍后重试。"))
+	if not isinstance(result.get("draft"), dict):
+		raise UpstreamServiceUnavailableError(_("AI 草稿服务返回了无效响应。"))
+	return result
+
+
+def _call_ai_orchestrator_product_setup_draft(payload: dict) -> dict:
+	base_url, service_token = _get_ai_orchestrator_settings()
+	request = urllib.request.Request(
+		f"{base_url}/internal/v1/drafts/product-setup",
+		data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+		headers={"Authorization": f"Bearer {service_token}", "Content-Type": "application/json", "Accept": "application/json"},
+		method="POST",
+	)
+	try:
+		with urllib.request.urlopen(request, timeout=90) as response:
+			result = json.loads(response.read().decode("utf-8") or "{}")
+	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+		frappe.log_error(frappe.get_traceback(), _("AI 商品建档草稿调用失败"))
 		raise UpstreamServiceUnavailableError(_("AI 草稿服务暂时不可用，请稍后重试。"))
 	if not isinstance(result.get("draft"), dict):
 		raise UpstreamServiceUnavailableError(_("AI 草稿服务返回了无效响应。"))
@@ -473,6 +517,7 @@ def _resolve_natural_date_range(
 		date_range = "today"
 	elif "本周" in text or "这周" in text:
 		date_from = today - timedelta(days=today.weekday())
+		date_to = today
 		date_range = "this_week"
 	elif "上月" in text or "上个月" in text:
 		last_month_end = today.replace(day=1) - timedelta(days=1)
@@ -481,10 +526,12 @@ def _resolve_natural_date_range(
 		date_range = "last_month"
 	elif "本月" in text or "这个月" in text:
 		date_from = today.replace(day=1)
+		date_to = today
 		date_range = "this_month"
 	elif match := re.search(r"近\s*(\d{1,3})\s*天", text):
 		days = max(1, min(366, int(match.group(1))))
 		date_from = today - timedelta(days=days - 1)
+		date_to = today
 		date_range = f"last_{days}_days"
 	return {
 		"date_range": date_range,
@@ -506,16 +553,31 @@ def _build_order_query_dsl(query: str, *, company: str, as_of: date | None = Non
 	):
 		if any(term in text for term in terms):
 			entities.append(entity)
-	if not any(entity.endswith("_invoice") for entity in entities) and "发票" in text:
-		entities.append("purchase_invoice" if mentions_purchase and not mentions_sales else "sales_invoice")
-	if not any(entity.endswith("_order") for entity in entities) and "订单" in text:
-		if mentions_sales:
+	shared_invoice_noun = bool(
+		re.search(r"(?:销售\s*(?:和|与|、)\s*采购|采购\s*(?:和|与|、)\s*销售)发票", text)
+	)
+	shared_order_noun = bool(
+		re.search(r"(?:销售\s*(?:和|与|、)\s*采购|采购\s*(?:和|与|、)\s*销售)订单", text)
+	)
+	if "发票" in text and (shared_invoice_noun or not any(entity.endswith("_invoice") for entity in entities)):
+		if shared_invoice_noun or mentions_sales:
+			entities.append("sales_invoice")
+		if shared_invoice_noun or (mentions_purchase and not mentions_sales):
+			entities.append("purchase_invoice")
+		if not mentions_sales and not mentions_purchase:
+			entities.append("sales_invoice")
+	if "订单" in text and (shared_order_noun or not any(entity.endswith("_order") for entity in entities)):
+		if shared_order_noun or mentions_sales:
 			entities.append("sales_order")
-		if mentions_purchase:
+		if shared_order_noun or (mentions_purchase and not mentions_sales):
 			entities.append("purchase_order")
 	if not entities:
 		entities.append("purchase_order" if mentions_purchase else "sales_order")
-	entities = list(dict.fromkeys(entities))
+	entities = [
+		entity
+		for entity in ("sales_order", "sales_invoice", "purchase_order", "purchase_invoice")
+		if entity in entities
+	]
 	entity = entities[0]
 
 	date_filter = _resolve_natural_date_range(text, as_of=as_of, default_days=None)
@@ -546,8 +608,10 @@ def _build_order_query_dsl(query: str, *, company: str, as_of: date | None = Non
 	if match := re.search(r"(?:超过|大于|高于|不少于|至少)\s*([0-9][0-9,.]*)\s*(万|千)?", text):
 		min_amount = _parse_amount_value(match.group(1), match.group(2))
 	limit = 10
+	limit_explicit = False
 	if match := re.search(r"(?:前\s*)?(\d{1,2})\s*(?:条|个|笔)", text):
 		limit = max(1, min(20, int(match.group(1))))
+		limit_explicit = True
 
 	return {
 		"entity": entity,
@@ -559,6 +623,7 @@ def _build_order_query_dsl(query: str, *, company: str, as_of: date | None = Non
 		"sort_by": sort_by,
 		"min_amount": min_amount,
 		"limit": limit,
+		"limit_explicit": limit_explicit,
 	}
 
 
@@ -648,6 +713,7 @@ def _query_business_document_entity(*, entity: str, dsl: dict) -> tuple[list[dic
 					"transaction_date": str(row.get("transaction_date") or ""),
 					"delivery_date": str(row.get("delivery_date") or "") or None,
 					"document_status": row.get("document_status"),
+					"currency": row.get("currency") or "CNY",
 					"amount": amount,
 					"outstanding_amount": float(row.get("outstanding_amount") or 0),
 					"completion": row.get("completion") or {},
@@ -689,6 +755,7 @@ def _query_business_document_entity(*, entity: str, dsl: dict) -> tuple[list[dic
 				"transaction_date": str(row.get("posting_date") or ""),
 				"due_date": str(row.get("due_date") or "") or None,
 				"document_status": row.get("business_status") or row.get("document_status"),
+				"currency": row.get("currency") or "CNY",
 				"amount": amount,
 				"outstanding_amount": float(row.get("outstanding_amount") or 0),
 				"paid_amount": float(row.get("paid_amount") or 0),
@@ -737,17 +804,63 @@ def _build_order_query_context(*, query: str, company: str | None) -> tuple[dict
 				"result_count": len(items),
 			}
 		)
-	documents = [row for group in groups for row in group["items"]]
+	result_set = {
+		"schema_version": "business-result-set-v1",
+		"result_type": "business_documents",
+		"status_semantics": "result_coverage_only",
+		"scope": {
+			"company": resolved_company,
+			"date_range": dsl["date_range"],
+			"date_from": dsl["date_from"],
+			"date_to": dsl["date_to"],
+			"status_filter": dsl["status_filter"],
+			"sort_by": dsl["sort_by"],
+			"min_amount": dsl["min_amount"],
+			"limit_per_group": dsl["limit"],
+		},
+		"groups": [
+			{
+				"entity": group["entity"],
+				"label": group["label"],
+				"requested_count": dsl["limit"] if dsl["limit_explicit"] else None,
+				"returned_count": len(group["items"]),
+				"status": (
+					"empty"
+					if not group["items"]
+					else "partial"
+					if dsl["limit_explicit"] and len(group["items"]) < dsl["limit"]
+					else "success"
+				),
+			}
+			for group in groups
+		],
+	}
+	result_set_id = hashlib.sha256(
+		json.dumps(result_set, ensure_ascii=False, sort_keys=True).encode("utf-8")
+	).hexdigest()[:24]
+	citations.insert(
+		0,
+		{
+			"type": "business_result_set",
+			"id": result_set_id,
+			"label": _("业务查询结果"),
+			"href": None,
+			"data": result_set,
+		},
+	)
 	context = {
 		"tool": "query_business_documents",
 		"query": query,
 		"dsl": dsl,
-		"document_groups": groups,
-		"documents": documents,
-		"orders": [row for row in documents if row["document_type"].endswith("_order")],
+		"result_set": result_set,
+		"document_groups": result_set["groups"],
 		"instructions": (
 			"业务单据来自当前账号权限和公司范围内的受控业务查询。"
-			"回答必须按单据类型分组，说明公司、日期和排序口径，并引用真实单据号；不得编造未返回的记录。"
+			"界面会直接展示按单据类型分组的结构化明细、查询范围和数量不足提示。"
+			"回答不要逐条复述单据号、往来单位、日期、状态、金额或未结金额，也不要重复生成明细清单。"
+			"分组 status 只表示结果数量覆盖情况，不表示单据业务健康或没有异常。"
+			"只用最多三个简短要点概括查询范围、各类型返回数量和空结果；未提供明确异常字段时不得声称结果正常、无异常或无需关注。"
+			"不得编造未返回的记录。"
 		),
 	}
 	return context, citations, tool_calls
@@ -921,6 +1034,15 @@ def archive_ai_conversation_v1(conversation_id: str):
 		"status": "success",
 		"message": _("AI 会话已归档。"),
 		"data": ai_repository.archive_conversation(conversation_id=conversation_id, user=user),
+	}
+
+
+def resolve_ai_scenario_v1(content: str):
+	resolved_content = _normalize_content(content)
+	return {
+		"status": "success",
+		"message": _("AI 场景识别完成。"),
+		"data": {"scenario": _infer_ai_action_scenario(resolved_content)},
 	}
 
 
@@ -1720,6 +1842,240 @@ def generate_ai_inventory_adjustment_draft_v1(
 		raise
 
 
+def _resolve_product_setup_uom(query: str | None) -> tuple[str | None, list[dict]]:
+	resolved = str(query or "").strip()
+	rows = frappe.get_all(
+		"UOM",
+		fields=["name", "uom_name", "symbol"],
+		limit_page_length=0,
+	)
+	alias_map: dict[str, set[str]] = {}
+	for spec in STANDARD_UOMS:
+		values = {
+			str(spec.get("name") or ""),
+			str(spec.get("uom_name") or ""),
+			str(spec.get("display_name") or ""),
+			str(spec.get("symbol") or ""),
+			*(str(value) for value in spec.get("aliases") or ()),
+		}
+		alias_map.setdefault(str(spec.get("name") or ""), set()).update(values)
+
+	def row_values(row) -> set[str]:
+		name = str(row.get("name") or "")
+		return {
+			name,
+			str(row.get("uom_name") or ""),
+			str(row.get("symbol") or ""),
+			*alias_map.get(name, set()),
+		}
+
+	candidates = [
+		{"name": row.get("name"), "display_name": resolve_uom_display_name(
+			row.get("name"), uom_name=row.get("uom_name"), symbol=row.get("symbol")
+		)}
+		for row in rows
+		if not resolved or any(resolved.casefold() in value.casefold() for value in row_values(row) if value)
+	][:8]
+	if not resolved:
+		default_name = "Nos" if any(row.get("name") == "Nos" for row in rows) else (rows[0].get("name") if rows else None)
+		return default_name, candidates
+	exact = next(
+		(
+			row for row in rows
+			if resolved.casefold() in {value.casefold() for value in row_values(row) if value}
+		),
+		None,
+	)
+	if exact:
+		return str(exact.get("name")), candidates
+	return (str(candidates[0]["name"]) if len(candidates) == 1 else None), candidates
+
+
+def _resolve_optional_master_name(doctype: str, query: str | None) -> str | None:
+	resolved = str(query or "").strip()
+	if not resolved:
+		return None
+	if frappe.db.exists(doctype, resolved):
+		return resolved
+	rows = frappe.get_all(
+		doctype,
+		filters={"name": ["like", f"%{resolved}%"]},
+		pluck="name",
+		limit_page_length=5,
+	)
+	return str(rows[0]) if len(rows) == 1 else None
+
+
+def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, dict]:
+	item_name = str(candidate.get("item_name") or "").strip()[:140] or None
+	item_code = str(candidate.get("item_code") or "").strip()[:140] or None
+	item_group_query = str(candidate.get("item_group") or candidate.get("item_group_query") or "").strip() or None
+	brand_query = str(candidate.get("brand") or candidate.get("brand_query") or "").strip() or None
+	item_group = _resolve_optional_master_name("Item Group", item_group_query)
+	brand = _resolve_optional_master_name("Brand", brand_query)
+	requested_stock_uom = candidate.get("stock_uom") or candidate.get("opening_uom")
+	stock_uom, uom_candidates = _resolve_product_setup_uom(requested_stock_uom)
+	opening_uom, _opening_uom_candidates = _resolve_product_setup_uom(candidate.get("opening_uom") or stock_uom)
+	warehouse_query = candidate.get("warehouse") or candidate.get("warehouse_query")
+	warehouse = _resolve_sales_draft_warehouse(warehouse_query, company)
+	opening_qty = None if candidate.get("opening_qty") in (None, "") else flt(candidate.get("opening_qty"))
+	standard_selling_rate = (
+		None if candidate.get("standard_selling_rate") in (None, "")
+		else flt(candidate.get("standard_selling_rate"))
+	)
+	valuation_rate = (
+		None if candidate.get("valuation_rate") in (None, "")
+		else flt(candidate.get("valuation_rate"))
+	)
+	company_currency = frappe.db.get_value("Company", company, "default_currency") or None
+	currency_query = str(candidate.get("currency") or "").strip() or None
+	currency = company_currency
+	invalid_currency = False
+	if currency_query:
+		if frappe.db.exists("Currency", currency_query):
+			currency = currency_query
+		elif currency_query.upper() in {"RMB", "CNY"} or (
+			currency_query in {"元", "人民币"} and company_currency == "CNY"
+		):
+			currency = "CNY"
+		else:
+			invalid_currency = True
+	description = str(candidate.get("description") or "").strip()[:2000] or None
+	errors = []
+	warnings = []
+	if not item_name:
+		errors.append(_("请填写商品名称。"))
+	elif frappe.db.exists("Item", {"item_name": item_name}):
+		errors.append(_("商品名称 {0} 已存在，请确认是否应编辑现有商品。" ).format(item_name))
+	if item_code and frappe.db.exists("Item", item_code):
+		errors.append(_("商品编码 {0} 已存在。" ).format(item_code))
+	if item_group_query and not item_group:
+		errors.append(_("商品分类无法唯一匹配，请人工选择。"))
+	elif not item_group:
+		warnings.append(_("未指定商品分类，正式商品页面将使用后端默认分类。"))
+	if brand_query and not brand:
+		errors.append(_("品牌无法唯一匹配，请人工选择。"))
+	if invalid_currency:
+		errors.append(_("币种 {0} 无法识别，请人工选择标准币种代码。" ).format(currency_query))
+	if not stock_uom:
+		errors.append(_("库存单位无法唯一匹配，请人工选择。"))
+	if opening_uom and stock_uom and opening_uom != stock_uom:
+		errors.append(_("商品建档草稿首期只支持按库存基准单位初始化库存，请补充单位换算后再创建。"))
+	if opening_qty is not None and opening_qty < 0:
+		errors.append(_("初始库存数量不能为负数。"))
+	if opening_qty and not warehouse:
+		errors.append(_("填写初始库存时必须选择当前公司的叶子仓库。"))
+	if opening_qty and valuation_rate is None:
+		errors.append(_("填写初始库存时必须补充估值价；售价不能自动作为库存估值价。"))
+	if opening_qty and not frappe.has_permission("Stock Entry", ptype="create"):
+		errors.append(_("当前账号无权创建初始库存入库单。"))
+	if standard_selling_rate is not None and not frappe.has_permission("Item Price", ptype="create"):
+		errors.append(_("当前账号无权创建商品销售价格。"))
+	if standard_selling_rate is not None and standard_selling_rate < 0:
+		errors.append(_("标准售价不能为负数。"))
+	if valuation_rate is not None and valuation_rate < 0:
+		errors.append(_("估值价不能为负数。"))
+	payload = {
+		"company": company,
+		"item_name": item_name,
+		"item_code": item_code,
+		"item_group_query": item_group_query,
+		"item_group": item_group,
+		"brand_query": brand_query,
+		"brand": brand,
+		"stock_uom": stock_uom,
+		"stock_uom_display": resolve_uom_display_name(stock_uom),
+		"uom_candidates": uom_candidates,
+		"warehouse_query": warehouse_query,
+		"warehouse": warehouse,
+		"opening_qty": opening_qty,
+		"opening_uom": opening_uom or stock_uom,
+		"opening_uom_display": resolve_uom_display_name(opening_uom or stock_uom),
+		"standard_selling_rate": standard_selling_rate,
+		"valuation_rate": valuation_rate,
+		"currency": currency,
+		"description": description,
+	}
+	return payload, {"ready_for_handoff": not errors, "errors": errors, "warnings": warnings}
+
+
+def generate_ai_product_setup_draft_v1(
+	content: str,
+	company: str | None = None,
+	conversation_id: str | None = None,
+):
+	scenario = "product_setup_draft"
+	prompt_version = _resolve_prompt_version(scenario)
+	user = _current_user()
+	content = _normalize_content(content)
+	company = _resolve_company_scope(company, required=True)
+	if not frappe.has_permission("Item", ptype="create"):
+		raise frappe.PermissionError(_("无权创建商品建档草稿。"))
+	if not conversation_id:
+		conversation = ai_repository.create_conversation(user=user, title=content, company=company)
+		conversation_id = conversation["name"]
+	else:
+		conversation = ai_repository.get_conversation(conversation_id=conversation_id, user=user)["conversation"]
+		if conversation.get("company") and conversation.get("company") != company:
+			frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
+	ai_repository.append_message(
+		conversation_id=conversation_id, user=user, role="user", content=content,
+		scenario=scenario, prompt_version=prompt_version,
+	)
+	run_id = ai_repository.create_run(conversation_id=conversation_id, user=user, scenario=scenario)
+	frappe.db.commit()
+	started = time.perf_counter()
+	try:
+		model_messages = ai_repository.load_model_messages(
+			conversation_id=conversation_id, user=user, limit=MAX_AI_MESSAGES,
+		)
+		result = _call_ai_orchestrator_product_setup_draft({
+			"messages": model_messages, "scenario": scenario, "user": user,
+			"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
+			"prompt_version": prompt_version, "conversation_id": conversation_id, "run_id": run_id,
+		})
+		payload, validation = _build_product_setup_draft(result["draft"], company=company)
+		draft = ai_repository.create_draft(
+			user=user, conversation_id=conversation_id, source_run=run_id,
+			draft_type="product_setup", company=company, title=content,
+			payload=payload, validation=validation,
+		)
+		assistant_content = _("已生成商品建档草稿；{0}").format(
+			_("可以进入商品页面继续复核。") if validation["ready_for_handoff"]
+			else _("仍有商品、价格或初始库存字段需要人工确认。")
+		)
+		citation = {"type": "ai_draft", "id": draft["name"], "label": draft["title"], "href": None, "data": draft}
+		ai_repository.append_message(
+			conversation_id=conversation_id, user=user, role="assistant", content=assistant_content,
+			scenario=scenario, run_id=run_id, citations=[citation], prompt_version=prompt_version,
+		)
+		latency_ms = int((time.perf_counter() - started) * 1000)
+		ai_repository.complete_run(
+			run_id=run_id, user=user, result=result, latency_ms=latency_ms,
+			tool_calls=[{"tool": "build_product_setup_draft", "risk_level": "L2_DRAFT_ONLY", "draft_id": draft["name"]}],
+		)
+		frappe.db.commit()
+		return {
+			"status": "success", "message": assistant_content,
+			"data": {
+				"conversation": conversation_id, "run_id": run_id, "draft": draft,
+				"message": {"role": "assistant", "content": assistant_content, "citations": [citation]},
+				"model": result.get("model"), "model_alias": result.get("model_alias"),
+				"run": {"status": "completed", "latency_ms": latency_ms, "first_token_ms": None},
+				"trace_id": result.get("trace_id"), "usage": result.get("usage") or {},
+				"warnings": result.get("warnings") or [],
+			},
+		}
+	except Exception as error:
+		frappe.db.rollback()
+		ai_repository.fail_run(
+			run_id=run_id, user=user, error=error,
+			latency_ms=int((time.perf_counter() - started) * 1000),
+		)
+		frappe.db.commit()
+		raise
+
+
 def get_ai_draft_v1(draft_id: str):
 	return {"status": "success", "message": _("AI 草稿获取成功。"), "data": ai_repository.get_draft(draft_id=draft_id, user=_current_user())}
 
@@ -1758,6 +2114,21 @@ def update_ai_draft_v1(draft_id: str, payload, _change_source: str = "user_edit"
 		return {
 			"status": "success",
 			"message": _("AI 库存调整草稿已更新并按实时库存重新校验。"),
+			"data": updated,
+		}
+	if draft["draft_type"] == "product_setup":
+		next_payload, validation = _build_product_setup_draft(payload, company=draft["company"])
+		updated = ai_repository.update_draft(
+			draft_id=draft_id,
+			user=user,
+			payload=next_payload,
+			validation=validation,
+			change_source=_change_source,
+		)
+		frappe.db.commit()
+		return {
+			"status": "success",
+			"message": _("AI 商品建档草稿已更新并重新校验。"),
 			"data": updated,
 		}
 	if draft["draft_type"] == "purchase_order":
@@ -1881,6 +2252,17 @@ def _build_draft_version_diff(previous: dict | None, current: dict) -> dict:
 		"warehouse",
 		"reason",
 		"remarks",
+		"item_name",
+		"item_code",
+		"item_group",
+		"brand",
+		"stock_uom",
+		"opening_qty",
+		"opening_uom",
+		"standard_selling_rate",
+		"valuation_rate",
+		"currency",
+		"description",
 	):
 		before = previous_payload.get(field)
 		after = current_payload.get(field)
@@ -1951,7 +2333,7 @@ def restore_ai_draft_version_v1(draft_id: str, version: int):
 def prepare_ai_draft_handoff_v1(draft_id: str):
 	user = _current_user()
 	draft = ai_repository.get_draft(draft_id=draft_id, user=user)
-	if draft["draft_type"] not in {"sales_order", "purchase_order", "inventory_adjustment"}:
+	if draft["draft_type"] not in {"sales_order", "purchase_order", "inventory_adjustment", "product_setup"}:
 		frappe.throw(_("当前草稿类型不支持交接。"))
 	if draft["status"] != "draft":
 		frappe.throw(_("只有 draft 状态的草稿可以交接。"))
@@ -1960,7 +2342,23 @@ def prepare_ai_draft_handoff_v1(draft_id: str):
 	payload = draft["payload"]
 	ai_repository.mark_draft_handed_off(draft_id=draft_id, user=user)
 	frappe.db.commit()
-	if draft["draft_type"] == "inventory_adjustment":
+	if draft["draft_type"] == "product_setup":
+		handoff_payload = {
+			"company": payload.get("company"),
+			"item_name": payload.get("item_name"),
+			"item_code": payload.get("item_code"),
+			"item_group": payload.get("item_group"),
+			"brand": payload.get("brand"),
+			"stock_uom": payload.get("stock_uom"),
+			"warehouse": payload.get("warehouse"),
+			"warehouse_stock_qty": payload.get("opening_qty"),
+			"warehouse_stock_uom": payload.get("opening_uom"),
+			"standard_selling_rate": payload.get("standard_selling_rate"),
+			"valuation_rate": payload.get("valuation_rate"),
+			"currency": payload.get("currency"),
+			"description": payload.get("description"),
+		}
+	elif draft["draft_type"] == "inventory_adjustment":
 		row = (payload.get("items") or [{}])[0]
 		handoff_payload = {
 			"company": payload.get("company"),

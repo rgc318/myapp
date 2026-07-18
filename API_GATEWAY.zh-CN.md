@@ -65,10 +65,12 @@
 - `myapp.api.gateway.archive_ai_conversation_v1`
 - `myapp.api.gateway.chat_ai_v1`
 - `myapp.api.gateway.stream_ai_message_v1`
+- `myapp.api.gateway.resolve_ai_scenario_v1`
 - `myapp.api.gateway.submit_ai_feedback_v1`
 - `myapp.api.gateway.generate_ai_sales_order_draft_v1`
 - `myapp.api.gateway.generate_ai_purchase_order_draft_v1`
 - `myapp.api.gateway.generate_ai_inventory_adjustment_draft_v1`
+- `myapp.api.gateway.generate_ai_product_setup_draft_v1`
 - `myapp.api.gateway.get_ai_draft_v1`
 - `myapp.api.gateway.list_ai_drafts_v1`
 - `myapp.api.gateway.update_ai_draft_v1`
@@ -100,7 +102,7 @@
 - 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`、`list_stock_ledger_entries_v1`
 - 库存：`list_inventory_stock_summary_v1`、`list_stock_ledger_entries_v1`、`transfer_inventory_stock_v1`、`reconcile_inventory_stock_v1`、`submit_inventory_stock_count_v1`
 - 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
-- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`get_ai_draft_v1`、`list_ai_drafts_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
+- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`resolve_ai_scenario_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1`、`get_ai_draft_v1`、`list_ai_drafts_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
 - AI 模型治理：`get_ai_model_governance_overview_v1`、`list_ai_audit_events_v1`、`sync_ai_model_registry_v1`、`list_ai_models_v1`、`update_ai_model_registry_v1`、`list_ai_model_policies_v1`、`get_ai_model_policy_v1`、`save_ai_model_policy_draft_v1`、`validate_ai_model_policy_v1`、`approve_ai_model_policy_v1`、`publish_ai_model_policy_v1`、`rollback_ai_model_policy_v1`、`get_ai_model_usage_summary_v1`
   - `update_ai_model_registry_v1` 只维护治理字段：状态、数据区域、留存策略、敏感数据许可、输入/输出成本和币种；供应商能力字段由同步维护。请求必须包含 `reason` 和幂等键，响应返回递增后的 `registry_version` 与受影响的已发布策略。
   - `get_ai_model_usage_summary_v1` 支持 `date_from`、`date_to`、`environment`、`company`，返回延迟/首 Token 平均值与 p50/p95、反馈计数和正向率。
@@ -127,9 +129,9 @@
 }
 ```
 
-当前聊天场景支持 `auto`、`general`、`product_search`、`order_query`、`report_summary`。省略场景或传 `auto` 时，Frappe 根据当前用户问题确定实际场景，并把解析后的场景写入 Message、Run、Prompt 和 Orchestrator 请求。商品工具复用 `search_product_v2`；单据工具支持销售订单、销售发票、采购订单和采购发票的单类型或混合查询，订单复用销售/采购工作台服务，发票复用 `list_business_documents_v1`；报表工具复用既有经营报表服务。所有工具都强制 DocType、公司和记录级读取权限。
+当前聊天场景支持 `auto`、`general`、`product_search`、`order_query`、`report_summary`。省略场景或传 `auto` 时，Frappe 根据当前用户问题确定实际场景，并把解析后的场景写入 Message、Run、Prompt 和 Orchestrator 请求。商品工具复用 `search_product_v2`；单据工具支持销售订单、销售发票、采购订单和采购发票的单类型或混合查询，订单复用销售/采购工作台服务，发票复用 `list_business_documents_v1`；报表工具复用既有经营报表服务。所有工具都强制 DocType、公司和记录级读取权限。单据查询 citation 首项为版本化 `business_result_set`，包含查询范围、每类请求/返回数量和 `success / partial / empty` 覆盖状态；`status_semantics=result_coverage_only` 明确这些状态不代表单据业务健康或异常判断。后续 citation 保留逐单据详情与受控跳转，供 Web 聚合表格和历史会话恢复。
 
-未明确日期的“最新/最近”单据查询默认覆盖全部日期并按最新排序，不再隐式限制最近 30 天；用户明确说今天、本周、本月、上月或近 N 天时才应用对应日期范围。混合查询按每种单据类型分别应用数量上限和权限过滤，例如“最新 5 条销售订单、销售发票和采购订单”最多返回 5 + 5 + 5 条结构化引用。
+未明确日期的“最新/最近”单据查询默认覆盖全部日期并按最新排序，不再隐式限制最近 30 天；用户明确说今天、本周、本月、上月或近 N 天时才应用对应日期范围。混合查询按每种单据类型分别应用数量上限和权限过滤，例如“最新 5 条销售订单、销售发票和采购订单”最多返回 5 + 5 + 5 条结构化引用。结构化明细只通过 citation 交给 Web；发送给模型的上下文只包含查询范围和各组请求/返回数量，不包含逐单据字段。当前 `erp-readonly-v7` 模型摘要只概括查询范围、数量不足和空结果。
 
 同步接口返回 `conversation`、`run_id`、带 `citations` 的 `message`、模型、trace、Token、安全警告、`events[]` 和持久 Run 摘要；Run 摘要包含 `status`、后端 `latency_ms` 和可选 `first_token_ms`。`stream_ai_message_v1` 返回真正 `text/event-stream`，事件包含 `run_started`、`run_progress`、`tool_started`、`tool_completed`、`citation`、`message_delta`、`warning`、`completed` 和 `error`。`run_progress` 用于上下文就绪、模型首段等待和流式输出阶段，不承载模型正文；最终 `completed` 同样携带持久 Run 摘要，并返回 `stream.delta_count` 与 `stream.streamed_chars` 供客户端证明和诊断实际增量输出。`get_ai_conversation_v1` 的历史助手消息会恢复 Run 状态、模型、trace、Token、总耗时、首 Token、错误和已保存反馈。`submit_ai_feedback_v1` 对本人已完成 Run 记录 `positive` / `negative` 反馈。正式单据创建、提交、取消、收付款和库存变更不属于这些接口能力。
 
@@ -137,7 +139,9 @@
 
 ### AI Copilot 结构化草稿
 
-销售订单、采购订单和库存调整分别通过 `generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1` 生成严格结构化候选。模型只负责提取用户原文；Frappe 重新按当前用户权限解析真实 Customer / Supplier / Item / Warehouse、UOM、价格或实时库存，并持久化为 `MyApp AI Draft`。
+销售订单、采购订单、库存调整和商品建档分别通过 `generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1` 生成严格结构化候选。模型只负责提取用户原文；Frappe 重新按当前用户权限解析真实 Customer / Supplier / Item / Warehouse、商品分类、品牌、UOM、价格或实时库存，并持久化为 `MyApp AI Draft`。`resolve_ai_scenario_v1` 是 Web 自动识别的后端事实来源，写意图可以返回上述四类草稿场景，Web 不复制关键词规则。
+
+商品建档草稿类型为 `product_setup`，同时承载 Item 主数据、Standard Selling 售价和可选初始库存预填，但不执行任何写入。初始库存大于 0 时必须补齐当前公司叶子仓库和独立估值价；售价不得自动作为库存估值价。交接后进入 `/master-data/products` 新增商品表单，最终由用户主动调用既有幂等 `create_product_v2`。
 
 ### AI 商品向量质量治理
 

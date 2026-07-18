@@ -10,6 +10,7 @@ from .ai_api import create_ai_conversation_v1 as create_ai_conversation_v1_servi
 from .ai_api import discard_ai_draft_v1 as discard_ai_draft_v1_service
 from .ai_api import generate_ai_inventory_adjustment_draft_v1 as generate_ai_inventory_adjustment_draft_v1_service
 from .ai_api import generate_ai_purchase_order_draft_v1 as generate_ai_purchase_order_draft_v1_service
+from .ai_api import generate_ai_product_setup_draft_v1 as generate_ai_product_setup_draft_v1_service
 from .ai_api import generate_ai_sales_order_draft_v1 as generate_ai_sales_order_draft_v1_service
 from .ai_api import get_ai_draft_v1 as get_ai_draft_v1_service
 from .ai_api import get_ai_product_vector_status_v1 as get_ai_product_vector_status_v1_service
@@ -21,6 +22,7 @@ from .ai_api import stream_ai_message_v1 as stream_ai_message_v1_service
 from .ai_api import submit_ai_feedback_v1 as submit_ai_feedback_v1_service
 from .ai_api import prepare_ai_draft_handoff_v1 as prepare_ai_draft_handoff_v1_service
 from .ai_api import restore_ai_draft_version_v1 as restore_ai_draft_version_v1_service
+from .ai_api import resolve_ai_scenario_v1 as resolve_ai_scenario_v1_service
 from .ai_api import rebuild_ai_product_vector_index_v1 as rebuild_ai_product_vector_index_v1_service
 from .ai_api import update_ai_draft_v1 as update_ai_draft_v1_service
 from .ai_api import approve_ai_model_policy_v1 as approve_ai_model_policy_v1_service
@@ -326,6 +328,14 @@ def submit_ai_feedback_v1(
 
 
 @frappe.whitelist(methods=["POST"])
+def resolve_ai_scenario_v1(content: str):
+	return _handle_gateway_call(
+		lambda: resolve_ai_scenario_v1_service(content=content),
+		success_code="AI_SCENARIO_RESOLVED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
 def generate_ai_sales_order_draft_v1(
 	content: str,
 	company: str | None = None,
@@ -364,6 +374,20 @@ def generate_ai_inventory_adjustment_draft_v1(
 			content=content, company=company, conversation_id=conversation_id,
 		),
 		success_code="AI_INVENTORY_ADJUSTMENT_DRAFT_CREATED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def generate_ai_product_setup_draft_v1(
+	content: str,
+	company: str | None = None,
+	conversation_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: generate_ai_product_setup_draft_v1_service(
+			content=content, company=company, conversation_id=conversation_id,
+		),
+		success_code="AI_PRODUCT_SETUP_DRAFT_CREATED",
 	)
 
 

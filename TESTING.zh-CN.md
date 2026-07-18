@@ -2031,7 +2031,7 @@ MYAPP_HTTP_ENABLE_AI_TESTS=1 python3 -m unittest \
 
 ### 24.1 AI 固定评测集与 Prompt 版本回归（2026-07-13）
 
-Frappe 确定性评测使用纯合成 fixture，固定 `as_of`，覆盖商品搜索短语、订单 DSL、报表 DSL 和三类草稿 Prompt 版本，不产生模型费用：
+Frappe 确定性评测使用纯合成 fixture，固定 `as_of`，覆盖商品搜索短语、订单 DSL、报表 DSL、自动写意图识别和四类草稿 Prompt 版本，不产生模型费用：
 
 ```bash
 docker exec frappe_docker-backend-1 bash -lc '
@@ -2072,12 +2072,13 @@ docker exec \
 
 Prompt 版本必须在 Frappe 消息审计、Orchestrator registry 和 Langfuse metadata 中保持一致。当前有效版本：
 
-- 受控业务查询场景：`erp-readonly-v6`
+- 受控业务查询场景：`erp-readonly-v7`
 - 销售草稿：`sales-order-draft-v2`
 - 采购草稿：`purchase-order-draft-v2`
 - 库存调整草稿：`inventory-adjustment-draft-v2`
+- 商品建档草稿：`product-setup-draft-v1`
 
-聊天、流式和三类草稿接口显式收到其他版本或空字符串时应返回 HTTP `409`；`GET /health` 必须返回上述全部 `prompt_versions`。Langfuse 207 批次验收需同时断言 `errors` 为空且 `successes` 覆盖全部事件 ID；反馈默认只保存 comment 哈希/长度，eval 与 feedback score 的 `source` 分别为 `EVAL` / `API`，且携带正确 `environment`。
+聊天、流式和四类草稿接口显式收到其他版本或空字符串时应返回 HTTP `409`；`GET /health` 必须返回上述全部 `prompt_versions`。Langfuse 207 批次验收需同时断言 `errors` 为空且 `successes` 覆盖全部事件 ID；反馈默认只保存 comment 哈希/长度，eval 与 feedback score 的 `source` 分别为 `EVAL` / `API`，且携带正确 `environment`。
 
 2026-07-13 最终回归：Orchestrator test target 37 项通过，offline full gate 21/21；后端 AI 服务、确定性 fixture 与 gateway wrappers 132 项通过。
 

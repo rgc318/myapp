@@ -14,6 +14,7 @@ from myapp.api.gateway import (
 	chat_ai_v1,
 	cleanup_excluded_ai_product_vectors_v1,
 	generate_ai_inventory_adjustment_draft_v1,
+	generate_ai_product_setup_draft_v1,
 	cancel_delivery_note,
 	cancel_payment_entry,
 	cancel_print_batch_v1,
@@ -73,6 +74,7 @@ from myapp.api.gateway import (
 	list_ai_model_policies_v1,
 	list_stock_ledger_entries_v1,
 	reconcile_inventory_stock_v1,
+	resolve_ai_scenario_v1,
 	execute_ai_data_task_v1,
 	submit_inventory_stock_count_v1,
 	transfer_inventory_stock_v1,
@@ -356,6 +358,34 @@ class TestGatewayWrappers(TestCase):
 
 		mock_draft_service.assert_called_once_with(
 			content="把相机库存调整到 8 个",
+			company="rgc (Demo)",
+			conversation_id="AI-CONV-1",
+		)
+
+	@patch("myapp.api.gateway.resolve_ai_scenario_v1_service")
+	def test_resolve_ai_scenario_passes_content(self, mock_resolve_service):
+		mock_resolve_service.return_value = {
+			"status": "success", "data": {"scenario": "product_setup_draft"},
+		}
+
+		resolve_ai_scenario_v1(content="新增商品传承结晶")
+
+		mock_resolve_service.assert_called_once_with(content="新增商品传承结晶")
+
+	@patch("myapp.api.gateway.generate_ai_product_setup_draft_v1_service")
+	def test_generate_ai_product_setup_draft_passes_company_scope(self, mock_draft_service):
+		mock_draft_service.return_value = {
+			"status": "success", "data": {"draft": {"name": "AI-DRAFT-PRODUCT"}},
+		}
+
+		generate_ai_product_setup_draft_v1(
+			content="新增商品传承结晶",
+			company="rgc (Demo)",
+			conversation_id="AI-CONV-1",
+		)
+
+		mock_draft_service.assert_called_once_with(
+			content="新增商品传承结晶",
 			company="rgc (Demo)",
 			conversation_id="AI-CONV-1",
 		)

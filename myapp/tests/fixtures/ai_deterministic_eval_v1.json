@@ -59,6 +59,9 @@
         "query": "查询上个月未完成的大额采购订单，前5条",
         "expected": {
           "entity": "purchase_order",
+          "entities": [
+            "purchase_order"
+          ],
           "company": "Synthetic Test Company",
           "date_range": "last_month",
           "date_from": "2026-06-01",
@@ -67,7 +70,8 @@
           "exclude_cancelled": true,
           "sort_by": "amount_desc",
           "min_amount": null,
-          "limit": 5
+          "limit": 5,
+          "limit_explicit": true
         }
       },
       {
@@ -75,6 +79,9 @@
         "query": "近7天金额超过2万的销售订单，前3条",
         "expected": {
           "entity": "sales_order",
+          "entities": [
+            "sales_order"
+          ],
           "company": "Synthetic Test Company",
           "date_range": "last_7_days",
           "date_from": "2026-07-07",
@@ -83,7 +90,8 @@
           "exclude_cancelled": true,
           "sort_by": "latest",
           "min_amount": 20000.0,
-          "limit": 3
+          "limit": 3,
+          "limit_explicit": true
         }
       },
       {
@@ -91,6 +99,9 @@
         "query": "今天待发货销售订单，按金额从低到高前20条",
         "expected": {
           "entity": "sales_order",
+          "entities": [
+            "sales_order"
+          ],
           "company": "Synthetic Test Company",
           "date_range": "today",
           "date_from": "2026-07-13",
@@ -99,7 +110,8 @@
           "exclude_cancelled": true,
           "sort_by": "amount_asc",
           "min_amount": null,
-          "limit": 20
+          "limit": 20,
+          "limit_explicit": true
         }
       },
       {
@@ -107,6 +119,9 @@
         "query": "本周最早的待收货采购订单，前2条",
         "expected": {
           "entity": "purchase_order",
+          "entities": [
+            "purchase_order"
+          ],
           "company": "Synthetic Test Company",
           "date_range": "this_week",
           "date_from": "2026-07-13",
@@ -115,7 +130,8 @@
           "exclude_cancelled": true,
           "sort_by": "oldest",
           "min_amount": null,
-          "limit": 2
+          "limit": 2,
+          "limit_explicit": true
         }
       },
       {
@@ -123,15 +139,19 @@
         "query": "查询取消的销售订单",
         "expected": {
           "entity": "sales_order",
+          "entities": [
+            "sales_order"
+          ],
           "company": "Synthetic Test Company",
-          "date_range": "last_30_days",
-          "date_from": "2026-06-14",
-          "date_to": "2026-07-13",
+          "date_range": "all",
+          "date_from": null,
+          "date_to": null,
           "status_filter": "cancelled",
           "exclude_cancelled": false,
           "sort_by": "latest",
           "min_amount": null,
-          "limit": 10
+          "limit": 10,
+          "limit_explicit": false
         }
       },
       {
@@ -139,6 +159,9 @@
         "query": "近999天未付款采购订单，前99条",
         "expected": {
           "entity": "purchase_order",
+          "entities": [
+            "purchase_order"
+          ],
           "company": "Synthetic Test Company",
           "date_range": "last_366_days",
           "date_from": "2025-07-13",
@@ -147,7 +170,8 @@
           "exclude_cancelled": true,
           "sort_by": "latest",
           "min_amount": null,
-          "limit": 20
+          "limit": 20,
+          "limit_explicit": true
         }
       },
       {
@@ -155,6 +179,9 @@
         "query": "本月已完成客户订单，金额至少1,500千，前4笔",
         "expected": {
           "entity": "sales_order",
+          "entities": [
+            "sales_order"
+          ],
           "company": "Synthetic Test Company",
           "date_range": "this_month",
           "date_from": "2026-07-01",
@@ -163,13 +190,30 @@
           "exclude_cancelled": true,
           "sort_by": "latest",
           "min_amount": 1500000.0,
-          "limit": 4
+          "limit": 4,
+          "limit_explicit": true
         }
       },
       {
-        "id": "order-reject-mixed-sales-and-purchase",
+        "id": "order-support-mixed-sales-and-purchase",
         "query": "查询本月销售和采购订单",
-        "expected_error": "订单查询同时包含销售和采购语义"
+        "expected": {
+          "entity": "sales_order",
+          "entities": [
+            "sales_order",
+            "purchase_order"
+          ],
+          "company": "Synthetic Test Company",
+          "date_range": "this_month",
+          "date_from": "2026-07-01",
+          "date_to": "2026-07-13",
+          "status_filter": "all",
+          "exclude_cancelled": true,
+          "sort_by": "latest",
+          "min_amount": null,
+          "limit": 10,
+          "limit_explicit": false
+        }
       }
     ],
     "report_query_dsl": [
