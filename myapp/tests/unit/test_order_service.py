@@ -5,6 +5,8 @@ import frappe
 
 from myapp.services.order_service import (
 	_build_action_flags,
+	_check_doc_permission,
+	_get_sales_order_doc_for_update,
 	_build_payment_summary,
 	_build_sales_invoice_action_flags,
 	_build_sales_order_timeline,
@@ -38,6 +40,24 @@ from myapp.services.order_service import (
 
 
 class TestOrderService(TestCase):
+	def test_check_doc_permission_delegates_to_frappe_document(self):
+		document = MagicMock()
+
+		_check_doc_permission(document, "write")
+
+		document.check_permission.assert_called_once_with("write")
+
+	@patch("myapp.services.order_service.frappe.get_doc")
+	def test_get_sales_order_doc_for_update_checks_requested_permission(self, mock_get_doc):
+		order = MagicMock()
+		order.docstatus = 1
+		mock_get_doc.return_value = order
+
+		result = _get_sales_order_doc_for_update("SO-SECURE-001", permission_type="cancel")
+
+		self.assertIs(result, order)
+		order.check_permission.assert_called_once_with("cancel")
+
 	def test_order_action_flags_require_invoice_outstanding_for_payment(self):
 		fulfillment = {"is_fully_delivered": True}
 
@@ -465,6 +485,7 @@ class TestOrderService(TestCase):
 				],
 			}
 		)
+		delivery_note.check_permission = MagicMock()
 		mock_get_doc.return_value = delivery_note
 		mock_build_delivery_note_references.return_value = {
 			"sales_orders": ["SO-0001"],
@@ -570,6 +591,7 @@ class TestOrderService(TestCase):
 				],
 			}
 		)
+		sales_invoice.check_permission = MagicMock()
 		mock_get_doc.return_value = sales_invoice
 		mock_build_sales_invoice_references.return_value = {
 			"sales_orders": ["SO-0001"],
@@ -653,6 +675,7 @@ class TestOrderService(TestCase):
 				"items": [],
 			}
 		)
+		mock_get_doc.return_value.check_permission = MagicMock()
 		mock_get_latest_payment_entry_summary.return_value = {
 			"payment_entry": None,
 			"total_actual_paid_amount": 0,
@@ -1716,6 +1739,7 @@ class TestOrderService(TestCase):
 				],
 			}
 		)
+		so.check_permission = MagicMock()
 		so.get = lambda key, default=None: so[key] if key in so else default
 		contact_doc = frappe._dict(
 			{
@@ -2061,7 +2085,7 @@ class TestOrderService(TestCase):
 		self.assertEqual(result[0]["risk"]["delivery_overdue_days"], 3)
 
 	@patch("myapp.services.order_service._build_sales_order_summary_rows")
-	@patch("myapp.services.order_service.frappe.get_all")
+	@patch("myapp.services.order_service.frappe.get_list")
 	def test_get_sales_order_status_summary_returns_list(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
@@ -2095,7 +2119,7 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["meta"]["filters"]["customer"], "Test Customer")
 
 	@patch("myapp.services.order_service._build_sales_order_summary_rows")
-	@patch("myapp.services.order_service.frappe.get_all")
+	@patch("myapp.services.order_service.frappe.get_list")
 	def test_search_sales_orders_v2_filters_out_cancelled_by_default(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
@@ -2150,7 +2174,7 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"]["summary"]["cancelled_count"], 1)
 
 	@patch("myapp.services.order_service._build_sales_order_summary_rows")
-	@patch("myapp.services.order_service.frappe.get_all")
+	@patch("myapp.services.order_service.frappe.get_list")
 	def test_search_sales_orders_v2_passes_search_filters_and_sorts(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
@@ -2228,7 +2252,7 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"]["meta"]["filters"]["date_to"], "2026-03-31")
 
 	@patch("myapp.services.order_service._build_sales_order_summary_rows")
-	@patch("myapp.services.order_service.frappe.get_all")
+	@patch("myapp.services.order_service.frappe.get_list")
 	def test_search_sales_orders_v2_supports_delivery_overdue_risk_filter(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict({"name": "SO-OVERDUE"}),
@@ -2266,7 +2290,7 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"]["meta"]["filters"]["risk_filter"], "delivery_overdue")
 
 	@patch("myapp.services.order_service._build_sales_order_summary_rows")
-	@patch("myapp.services.order_service.frappe.get_all")
+	@patch("myapp.services.order_service.frappe.get_list")
 	def test_search_sales_orders_v2_supports_payment_overdue_risk_filter(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict({"name": "SO-PAYMENT-OVERDUE"}),
@@ -2358,7 +2382,7 @@ class TestOrderService(TestCase):
 		)
 
 	@patch("myapp.services.order_service._build_sales_order_summary_rows")
-	@patch("myapp.services.order_service.frappe.get_all")
+	@patch("myapp.services.order_service.frappe.get_list")
 	def test_search_sales_orders_v2_supports_amount_asc_sort(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
@@ -2425,7 +2449,7 @@ class TestOrderService(TestCase):
 		self.assertEqual(result["data"]["items"][1]["order_name"], "SO-0002")
 
 	@patch("myapp.services.order_service._build_sales_order_summary_rows")
-	@patch("myapp.services.order_service.frappe.get_all")
+	@patch("myapp.services.order_service.frappe.get_list")
 	def test_get_sales_order_status_summary_supports_date_range_filters(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(

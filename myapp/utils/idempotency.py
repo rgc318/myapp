@@ -1,5 +1,6 @@
 import hashlib
 import time
+from collections.abc import Mapping
 
 import frappe
 from frappe.utils import add_to_date, now_datetime
@@ -8,6 +9,10 @@ from frappe.utils.synchronization import filelock
 
 DEFAULT_TTL = 24 * 60 * 60
 LOCK_TIMEOUT_SECONDS = 60
+# The processing lease protects real business execution, which may include
+# submitting multiple ERP documents. Keep it comfortably above the short
+# waiter/file-lock timeout so a healthy slow request is not reclaimed.
+PROCESSING_LEASE_SECONDS = 15 * 60
 POLL_INTERVAL_SECONDS = 0.2
 CLEANUP_BATCH_SIZE = 1000
 TABLE_NAME = "tabMyApp Idempotency Key"
@@ -93,7 +98,7 @@ def _get_current_request_payload():
 	except Exception:
 		return None
 
-	if not form_dict:
+	if not form_dict or not isinstance(form_dict, Mapping):
 		return None
 
 	return dict(form_dict)
@@ -143,6 +148,10 @@ def _expires_at(ttl_seconds: int):
 	return add_to_date(now_datetime(), seconds=ttl_seconds)
 
 
+def _processing_lease_expires_at():
+	return _expires_at(PROCESSING_LEASE_SECONDS)
+
+
 def _is_retryable_exception(exc: Exception, retryable_exceptions: tuple[type[Exception], ...] = ()) -> bool:
 	if retryable_exceptions and isinstance(exc, retryable_exceptions):
 		return True
@@ -176,7 +185,7 @@ def _insert_processing_record(
 				request_id,
 				request_hash,
 				request_json,
-				_expires_at(ttl_seconds),
+				_processing_lease_expires_at(),
 			),
 		)
 		frappe.db.commit()
@@ -266,9 +275,51 @@ def _claim_retryable_record(
 			now,
 			request_hash,
 			request_json,
-			_expires_at(ttl_seconds),
+			_processing_lease_expires_at(),
 			namespace,
 			request_id,
+		),
+	)
+	rows = frappe.db.sql("SELECT ROW_COUNT() AS row_count", as_dict=True)
+	frappe.db.commit()
+	return bool(rows and rows[0].row_count)
+
+
+def _claim_expired_processing_record(
+	namespace: str,
+	request_id: str,
+	request_hash: str | None,
+	request_json: str | None,
+) -> bool:
+	_refresh_transaction_snapshot()
+	row = _get_record(namespace, request_id)
+	_assert_request_hash_matches(row, request_hash)
+	if not row or row.status != "processing":
+		return False
+
+	now = now_datetime()
+	frappe.db.sql(
+		f"""
+		UPDATE `{TABLE_NAME}`
+		SET modified = %s,
+			request_hash = %s,
+			request_json = %s,
+			response_json = NULL,
+			error = NULL,
+			expires_at = %s
+		WHERE namespace = %s
+			AND request_id = %s
+			AND status = 'processing'
+			AND expires_at < %s
+		""",
+		(
+			now,
+			request_hash,
+			request_json,
+			_processing_lease_expires_at(),
+			namespace,
+			request_id,
+			now,
 		),
 	)
 	rows = frappe.db.sql("SELECT ROW_COUNT() AS row_count", as_dict=True)
@@ -363,8 +414,11 @@ def _execute_and_store_result(
 		)
 		raise
 
-	store_idempotent_result(namespace, request_id, result, ttl_seconds=ttl_seconds)
 	_mark_record_succeeded(namespace, request_id, result, ttl_seconds)
+	try:
+		store_idempotent_result(namespace, request_id, result, ttl_seconds=ttl_seconds)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "幂等结果缓存写入失败")
 	return result
 
 
@@ -381,6 +435,9 @@ def _run_persistent_idempotent(
 		return _execute_and_store_result(namespace, request_id, callback, ttl_seconds, retryable_exceptions)
 
 	if _claim_retryable_record(namespace, request_id, request_hash, request_json, ttl_seconds):
+		return _execute_and_store_result(namespace, request_id, callback, ttl_seconds, retryable_exceptions)
+
+	if _claim_expired_processing_record(namespace, request_id, request_hash, request_json):
 		return _execute_and_store_result(namespace, request_id, callback, ttl_seconds, retryable_exceptions)
 
 	return _wait_for_record_result(namespace, request_id, request_hash)

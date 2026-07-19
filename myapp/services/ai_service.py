@@ -2152,7 +2152,6 @@ def _update_ai_draft_once(
 			expected_version=expected_version,
 			change_source=change_source,
 		)
-		frappe.db.commit()
 		return {
 			"status": "success",
 			"message": _("AI 库存调整草稿已更新并按实时库存重新校验。"),
@@ -2168,7 +2167,6 @@ def _update_ai_draft_once(
 			expected_version=expected_version,
 			change_source=change_source,
 		)
-		frappe.db.commit()
 		return {
 			"status": "success",
 			"message": _("AI 商品建档草稿已更新并重新校验。"),
@@ -2220,7 +2218,6 @@ def _update_ai_draft_once(
 			draft_id=draft_id, user=user, payload=next_payload, validation=validation,
 			expected_version=expected_version, change_source=change_source,
 		)
-		frappe.db.commit()
 		return {"status": "success", "message": _("AI 采购草稿已更新并重新校验。"), "data": updated}
 	if draft["draft_type"] != "sales_order":
 		frappe.throw(_("不支持的 AI 草稿类型。"))
@@ -2268,7 +2265,6 @@ def _update_ai_draft_once(
 		draft_id=draft_id, user=user, payload=next_payload, validation=validation,
 		expected_version=expected_version, change_source=change_source,
 	)
-	frappe.db.commit()
 	return {"status": "success", "message": _("AI 草稿已更新并重新校验。"), "data": updated}
 
 
@@ -2633,7 +2629,6 @@ def execute_ai_draft_v1(
 					request_id=resolved_request_id,
 					result={"status": "succeeded", **execution_result},
 				)
-				frappe.db.commit()
 				return {
 					"status": "success", "message": _("AI 草稿已由当前用户确认并执行。"),
 					"data": {"draft": updated, "execution": updated["execution"], "replayed": False},

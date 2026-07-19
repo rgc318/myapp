@@ -45,12 +45,12 @@ def _merge_kwargs(kwargs, extra_kwargs):
 	return merged
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_purchase_order(supplier: str, items, **kwargs):
 	return create_purchase_order_service(supplier=supplier, items=items, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def quick_create_purchase_order_v2(supplier: str, items, **kwargs):
 	return quick_create_purchase_order_v2_service(supplier=supplier, items=items, **kwargs)
 
@@ -154,37 +154,37 @@ def get_supplier_detail_v2(supplier: str):
 	return get_supplier_detail_v2_service(supplier=supplier)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_supplier_v2(supplier_name: str, **kwargs):
 	return create_supplier_v2_service(supplier_name=supplier_name, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_supplier_v2(supplier: str, **kwargs):
 	return update_supplier_v2_service(supplier=supplier, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def disable_supplier_v2(supplier: str, disabled: bool = True, **kwargs):
 	return disable_supplier_v2_service(supplier=supplier, disabled=disabled, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_purchase_order_v2(order_name: str, **kwargs):
 	return update_purchase_order_v2_service(order_name=order_name, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_purchase_order_items_v2(order_name: str, items, **kwargs):
 	return update_purchase_order_items_v2_service(order_name=order_name, items=items, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_purchase_order_v2(order_name: str, **kwargs):
 	return cancel_purchase_order_v2_service(order_name=order_name, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def quick_cancel_purchase_order_v2(order_name: str, rollback_payment: bool = True, **kwargs):
 	return quick_cancel_purchase_order_v2_service(
 		order_name=order_name,
@@ -193,22 +193,22 @@ def quick_cancel_purchase_order_v2(order_name: str, rollback_payment: bool = Tru
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_purchase_receipt_v2(receipt_name: str, **kwargs):
 	return cancel_purchase_receipt_v2_service(receipt_name=receipt_name, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_purchase_invoice_v2(invoice_name: str, **kwargs):
 	return cancel_purchase_invoice_v2_service(invoice_name=invoice_name, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_supplier_payment(payment_entry_name: str, **kwargs):
 	return cancel_supplier_payment_service(payment_entry_name=payment_entry_name, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def receive_purchase_order(order_name: str, receipt_items=None, kwargs=None, **extra_kwargs):
 	return receive_purchase_order_service(
 		order_name=order_name,
@@ -217,7 +217,7 @@ def receive_purchase_order(order_name: str, receipt_items=None, kwargs=None, **e
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_purchase_invoice(source_name: str, invoice_items=None, kwargs=None, **extra_kwargs):
 	return create_purchase_invoice_service(
 		source_name=source_name,
@@ -226,7 +226,7 @@ def create_purchase_invoice(source_name: str, invoice_items=None, kwargs=None, *
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_purchase_invoice_from_receipt(receipt_name: str, invoice_items=None, kwargs=None, **extra_kwargs):
 	return create_purchase_invoice_from_receipt_service(
 		receipt_name=receipt_name,
@@ -235,12 +235,12 @@ def create_purchase_invoice_from_receipt(receipt_name: str, invoice_items=None, 
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def record_supplier_payment(reference_name: str, paid_amount: float, **kwargs):
 	return record_supplier_payment_service(reference_name=reference_name, paid_amount=paid_amount, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def process_purchase_return(source_doctype: str, source_name: str, return_items=None, **kwargs):
 	return process_purchase_return_service(
 		source_doctype=source_doctype,

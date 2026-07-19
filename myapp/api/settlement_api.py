@@ -11,12 +11,12 @@ from myapp.services.settlement_service import process_sales_return as process_sa
 from myapp.services.settlement_service import update_payment_status as update_payment_status_service
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def confirm_pending_document(doctype: str, docname: str, **kwargs):
 	return confirm_pending_document_service(doctype=doctype, docname=docname, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_payment_status(reference_doctype: str, reference_name: str, paid_amount: float, **kwargs):
 	return update_payment_status_service(
 		reference_doctype=reference_doctype,
@@ -26,12 +26,12 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_payment_entry(payment_entry_name: str, **kwargs):
 	return cancel_payment_entry_service(payment_entry_name=payment_entry_name, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_customer_refund(return_invoice_name: str, refund_amount: float, **kwargs):
 	return create_customer_refund_service(
 		return_invoice_name=return_invoice_name,
@@ -45,7 +45,7 @@ def get_customer_refund_context_v1(return_invoice_name: str):
 	return get_customer_refund_context_service(return_invoice_name=return_invoice_name)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_supplier_refund(return_invoice_name: str, refund_amount: float, **kwargs):
 	return create_supplier_refund_service(
 		return_invoice_name=return_invoice_name,
@@ -64,7 +64,7 @@ def get_payment_entry_detail_v1(payment_entry_name: str):
 	return get_payment_entry_detail_service(payment_entry_name=payment_entry_name)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def process_sales_return(source_doctype: str, source_name: str, return_items=None, **kwargs):
 	return process_sales_return_service(
 		source_doctype=source_doctype,

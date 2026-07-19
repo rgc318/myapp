@@ -26,17 +26,17 @@ def _merge_kwargs(kwargs, extra_kwargs):
 	return merged
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_order(customer: str, items, immediate: bool = False, **kwargs):
 	return create_order_service(customer=customer, items=items, immediate=immediate, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_order_v2(customer: str, items, immediate: bool = False, **kwargs):
 	return create_order_v2_service(customer=customer, items=items, immediate=immediate, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def quick_create_order_v2(customer: str, items, **kwargs):
 	return quick_create_order_v2_service(customer=customer, items=items, **kwargs)
 
@@ -46,7 +46,7 @@ def get_customer_sales_context(customer: str):
 	return get_customer_sales_context_service(customer=customer)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def submit_delivery(order_name: str, delivery_items=None, kwargs=None, **extra_kwargs):
 	return submit_delivery_service(
 		order_name=order_name,
@@ -55,7 +55,7 @@ def submit_delivery(order_name: str, delivery_items=None, kwargs=None, **extra_k
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_sales_invoice(source_name: str, invoice_items=None, kwargs=None, **extra_kwargs):
 	return create_sales_invoice_service(
 		source_name=source_name,
@@ -64,12 +64,12 @@ def create_sales_invoice(source_name: str, invoice_items=None, kwargs=None, **ex
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_delivery_note(delivery_note_name: str, **kwargs):
 	return cancel_delivery_note_service(delivery_note_name=delivery_note_name, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_sales_invoice(sales_invoice_name: str, **kwargs):
 	return cancel_sales_invoice_service(sales_invoice_name=sales_invoice_name, **kwargs)
 
@@ -162,21 +162,21 @@ def export_sales_orders_v2(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_order_v2(order_name: str, **kwargs):
 	return cancel_order_v2_service(order_name=order_name, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def quick_cancel_order_v2(order_name: str, rollback_payment: bool = True, **kwargs):
 	return quick_cancel_order_v2_service(order_name=order_name, rollback_payment=rollback_payment, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_order_v2(order_name: str, **kwargs):
 	return update_order_v2_service(order_name=order_name, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_order_items_v2(order_name: str, items, **kwargs):
 	return update_order_items_v2_service(order_name=order_name, items=items, **kwargs)

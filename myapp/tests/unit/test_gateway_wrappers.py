@@ -168,6 +168,20 @@ from myapp.api.gateway import (
 
 
 class TestGatewayWrappers(TestCase):
+	def test_gateway_hides_internal_exception_details(self):
+		with patch.object(gateway_module, "frappe") as mock_frappe:
+			mock_frappe.local.response = {}
+			result = gateway_module._handle_gateway_call(
+				lambda: (_ for _ in ()).throw(RuntimeError("table tabSecret does not exist")),
+				success_code="UNUSED",
+			)
+
+		self.assertEqual(result["code"], "INTERNAL_ERROR")
+		self.assertEqual(result["message"], "系统内部错误，请稍后重试。")
+		self.assertNotIn("tabSecret", result["message"])
+		self.assertEqual(mock_frappe.local.response["http_status_code"], 500)
+		mock_frappe.log_error.assert_called_once()
+
 	def test_api_aggregator_exports_print_center_methods(self):
 		from myapp.api.api import download_print_file_v1 as aggregated_download
 		from myapp.api.api import list_print_batches_v1 as aggregated_batches

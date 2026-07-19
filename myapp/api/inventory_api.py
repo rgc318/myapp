@@ -54,7 +54,7 @@ def list_stock_ledger_entries_v1(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def transfer_inventory_stock_v1(
 	item_code: str,
 	source_warehouse: str,
@@ -77,7 +77,7 @@ def transfer_inventory_stock_v1(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def reconcile_inventory_stock_v1(
 	item_code: str,
 	warehouse: str,
@@ -100,7 +100,7 @@ def reconcile_inventory_stock_v1(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def submit_inventory_stock_count_v1(
 	items,
 	company: str | None = None,

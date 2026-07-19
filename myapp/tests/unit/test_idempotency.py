@@ -9,6 +9,12 @@ from myapp.utils.idempotency import IdempotencyConflictError, build_request_fing
 
 
 class TestIdempotency(TestCase):
+	def test_processing_lease_covers_slow_business_transactions(self):
+		from myapp.utils.idempotency import LOCK_TIMEOUT_SECONDS, PROCESSING_LEASE_SECONDS
+
+		self.assertGreaterEqual(PROCESSING_LEASE_SECONDS, 15 * 60)
+		self.assertGreater(PROCESSING_LEASE_SECONDS, LOCK_TIMEOUT_SECONDS)
+
 	@patch("myapp.utils.idempotency.store_idempotent_result")
 	@patch("myapp.utils.idempotency.get_idempotent_result")
 	def test_run_idempotent_returns_cached_result(self, mock_get_idempotent_result, mock_store_idempotent_result):
@@ -136,6 +142,14 @@ class TestIdempotency(TestCase):
 
 		self.assertNotEqual(first_hash, second_hash)
 
+	@patch("myapp.utils.idempotency.frappe")
+	def test_current_request_payload_ignores_non_mapping_context(self, mock_frappe):
+		from myapp.utils.idempotency import _get_current_request_payload
+
+		mock_frappe.local.form_dict = MagicMock()
+
+		self.assertIsNone(_get_current_request_payload())
+
 	def test_wait_for_record_result_rejects_same_request_id_with_different_payload(self):
 		from myapp.utils.idempotency import _wait_for_record_result
 
@@ -214,6 +228,55 @@ class TestIdempotency(TestCase):
 		self.assertEqual(result["order"], "SO-0040")
 		mock_claim_retryable_record.assert_called_once()
 		mock_execute_and_store_result.assert_called_once()
+
+	@patch("myapp.utils.idempotency._execute_and_store_result")
+	@patch("myapp.utils.idempotency._claim_expired_processing_record", return_value=True)
+	@patch("myapp.utils.idempotency._claim_retryable_record", return_value=False)
+	@patch("myapp.utils.idempotency._insert_processing_record", return_value=False)
+	def test_persistent_store_reclaims_an_expired_processing_lease(
+		self,
+		mock_insert_processing_record,
+		mock_claim_retryable_record,
+		mock_claim_expired_processing_record,
+		mock_execute_and_store_result,
+	):
+		from myapp.utils.idempotency import _run_persistent_idempotent
+
+		mock_execute_and_store_result.return_value = {"status": "success", "order": "SO-0041"}
+
+		result = _run_persistent_idempotent(
+			"create_order",
+			"req-expired-processing",
+			"hash-1",
+			'{"customer": "CUST-001"}',
+			lambda: {"status": "success", "order": "SO-0041"},
+			60,
+		)
+
+		self.assertEqual(result["order"], "SO-0041")
+		mock_claim_retryable_record.assert_called_once()
+		mock_claim_expired_processing_record.assert_called_once()
+		mock_execute_and_store_result.assert_called_once()
+
+	@patch("myapp.utils.idempotency.frappe.log_error")
+	@patch("myapp.utils.idempotency.store_idempotent_result", side_effect=RuntimeError("cache unavailable"))
+	@patch("myapp.utils.idempotency._mark_record_succeeded")
+	def test_persistent_store_keeps_database_success_when_cache_write_fails(
+		self, mock_mark_record_succeeded, mock_store_idempotent_result, mock_log_error,
+	):
+		from myapp.utils.idempotency import _execute_and_store_result
+
+		result = _execute_and_store_result(
+			"create_order",
+			"req-cache-failure",
+			lambda: {"status": "success", "order": "SO-0042"},
+			60,
+		)
+
+		self.assertEqual(result["order"], "SO-0042")
+		mock_mark_record_succeeded.assert_called_once()
+		mock_store_idempotent_result.assert_called_once()
+		mock_log_error.assert_called_once()
 
 	@patch("myapp.utils.idempotency._table_exists", return_value=True)
 	@patch("myapp.utils.idempotency.now_datetime", return_value="2026-05-27 10:00:00")

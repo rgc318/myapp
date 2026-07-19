@@ -5,7 +5,7 @@ from myapp.services.media_service import replace_item_image as replace_item_imag
 from myapp.services.media_service import upload_item_image as upload_item_image_service
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def upload_item_image(
 	filename: str,
 	file_content_base64: str,
@@ -22,7 +22,7 @@ def upload_item_image(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def replace_item_image(
 	item_code: str,
 	filename: str,
@@ -39,6 +39,6 @@ def replace_item_image(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def delete_item_image(item_code: str):
 	return delete_item_image_service(item_code=item_code)

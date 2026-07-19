@@ -40,16 +40,16 @@ def get_warehouse_detail_v2(warehouse: str):
 	return get_warehouse_detail_v2_service(warehouse=warehouse)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_warehouse_v2(warehouse_name: str, company: str, **kwargs):
 	return create_warehouse_v2_service(warehouse_name=warehouse_name, company=company, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_warehouse_v2(warehouse: str, **kwargs):
 	return update_warehouse_v2_service(warehouse=warehouse, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def disable_warehouse_v2(warehouse: str, disabled: bool = True, **kwargs):
 	return disable_warehouse_v2_service(warehouse=warehouse, disabled=disabled, **kwargs)

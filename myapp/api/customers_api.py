@@ -38,16 +38,16 @@ def get_customer_detail_v2(customer: str):
 	return get_customer_detail_v2_service(customer=customer)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_customer_v2(customer_name: str, **kwargs):
 	return create_customer_v2_service(customer_name=customer_name, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_customer_v2(customer: str, **kwargs):
 	return update_customer_v2_service(customer=customer, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def disable_customer_v2(customer: str, disabled: bool = True, **kwargs):
 	return disable_customer_v2_service(customer=customer, disabled=disabled, **kwargs)

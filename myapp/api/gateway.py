@@ -219,7 +219,15 @@ def _handle_gateway_call(callback, *, success_code: str):
 	except Exception as exc:
 		code, http_status = map_exception_to_error(exc)
 		frappe.local.response["http_status_code"] = http_status
-		return error_response(message=str(exc), code=code)
+		message = str(exc)
+		if http_status >= 500:
+			frappe.log_error(frappe.get_traceback(), "Gateway 请求处理失败")
+			message = (
+				"上游服务暂不可用，请稍后重试。"
+				if http_status == 503
+				else "系统内部错误，请稍后重试。"
+			)
+		return error_response(message=message, code=code)
 
 
 def _merge_kwargs(kwargs, extra_kwargs):
@@ -228,8 +236,9 @@ def _merge_kwargs(kwargs, extra_kwargs):
 	return merged
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def test_remote_debug():
+	frappe.only_for("System Manager")
 	welcome_message = "太棒了！你的 VS Code 原生调试彻底打通了！"
 
 	a = 10
@@ -244,7 +253,7 @@ def test_remote_debug():
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_ai_conversation_v1(title: str | None = None, company: str | None = None):
 	return _handle_gateway_call(
 		lambda: create_ai_conversation_v1_service(title=title, company=company),
@@ -268,7 +277,7 @@ def get_ai_conversation_v1(conversation_id: str):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def archive_ai_conversation_v1(conversation_id: str):
 	return _handle_gateway_call(
 		lambda: archive_ai_conversation_v1_service(conversation_id=conversation_id),
@@ -276,7 +285,7 @@ def archive_ai_conversation_v1(conversation_id: str):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def chat_ai_v1(
 	messages=None,
 	scenario: str | None = None,
@@ -861,7 +870,7 @@ def get_ai_runtime_policy_snapshot_v1():
 	return get_published_ai_model_policies_for_runtime()
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_order(customer: str, items, immediate: bool = False, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_order_service(customer=customer, items=items, immediate=immediate, **kwargs),
@@ -903,7 +912,7 @@ def get_print_templates_v1(doctype: str):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_print_batch_v1(
 	documents,
 	output: str = "pdf",
@@ -963,7 +972,7 @@ def get_print_settings_v1():
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def set_print_default_template_v1(
 	doctype: str,
 	template: str,
@@ -981,7 +990,7 @@ def set_print_default_template_v1(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_print_batch_v1(batch_id: str):
 	return _handle_gateway_call(
 		lambda: cancel_print_batch_v1_service(batch_id=batch_id),
@@ -989,7 +998,7 @@ def cancel_print_batch_v1(batch_id: str):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def retry_print_batch_failed_v1(
 	batch_id: str,
 	run_async: bool | int | str = True,
@@ -1005,7 +1014,7 @@ def retry_print_batch_failed_v1(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def record_print_job_v1(
 	doctype: str,
 	docname: str,
@@ -1188,12 +1197,12 @@ def get_current_user_profile_v1():
 	return _handle_gateway_call(lambda: get_current_user_profile_v1_service(), success_code="CURRENT_USER_PROFILE_FETCHED")
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_current_user_profile_v1(**kwargs):
 	return _handle_gateway_call(lambda: update_current_user_profile_v1_service(**kwargs), success_code="CURRENT_USER_PROFILE_UPDATED")
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def upload_current_user_avatar_v1(filename: str, file_content_base64: str, content_type=None):
 	return _handle_gateway_call(
 		lambda: upload_current_user_avatar_v1_service(filename=filename, file_content_base64=file_content_base64, content_type=content_type),
@@ -1201,7 +1210,7 @@ def upload_current_user_avatar_v1(filename: str, file_content_base64: str, conte
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def change_current_user_password_v1(old_password: str, new_password: str, logout_all_sessions=1):
 	return _handle_gateway_call(
 		lambda: change_current_user_password_v1_service(old_password=old_password, new_password=new_password, logout_all_sessions=logout_all_sessions),
@@ -1225,7 +1234,7 @@ def get_user_management_overview_v1():
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def batch_set_users_enabled_v1(users=None, enabled=1):
 	return _handle_gateway_call(
 		lambda: batch_set_users_enabled_v1_service(users=users, enabled=enabled),
@@ -1243,7 +1252,7 @@ def get_user_security_v1(user: str | None = None):
 	return _handle_gateway_call(lambda: get_user_security_v1_service(user=user), success_code="USER_SECURITY_FETCHED")
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def revoke_user_sessions_v1(user: str | None = None):
 	return _handle_gateway_call(lambda: revoke_user_sessions_v1_service(user=user), success_code="USER_SESSIONS_REVOKED")
 
@@ -1256,7 +1265,7 @@ def get_user_permission_snapshot_v1(user: str):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_user_v1(email: str, first_name: str, roles=None, password=None, send_welcome_email=0, enabled=1, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_user_v1_service(email=email, first_name=first_name, roles=roles, password=password, send_welcome_email=send_welcome_email, enabled=enabled, **kwargs),
@@ -1264,17 +1273,17 @@ def create_user_v1(email: str, first_name: str, roles=None, password=None, send_
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_user_v1(user: str, **kwargs):
 	return _handle_gateway_call(lambda: update_user_v1_service(user=user, **kwargs), success_code="USER_UPDATED")
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def set_user_enabled_v1(user: str, enabled=1):
 	return _handle_gateway_call(lambda: set_user_enabled_v1_service(user=user, enabled=enabled), success_code="USER_STATUS_UPDATED")
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_user_roles_v1(user: str, roles=None):
 	return _handle_gateway_call(lambda: update_user_roles_v1_service(user=user, roles=roles), success_code="USER_ROLES_UPDATED")
 
@@ -1284,7 +1293,7 @@ def list_roles_v1(search=None):
 	return _handle_gateway_call(lambda: list_roles_v1_service(search=search), success_code="ROLES_FETCHED")
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def add_user_permission_v1(user: str, allow: str, for_value: str, is_default=0, apply_to_all_doctypes=1, applicable_for=None, hide_descendants=0):
 	return _handle_gateway_call(
 		lambda: add_user_permission_v1_service(user=user, allow=allow, for_value=for_value, is_default=is_default, apply_to_all_doctypes=apply_to_all_doctypes, applicable_for=applicable_for, hide_descendants=hide_descendants),
@@ -1292,7 +1301,7 @@ def add_user_permission_v1(user: str, allow: str, for_value: str, is_default=0, 
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def delete_user_permission_v1(user: str, permission_name: str):
 	return _handle_gateway_call(
 		lambda: delete_user_permission_v1_service(user=user, permission_name=permission_name),
@@ -1320,7 +1329,7 @@ def search_link_options_v1(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_current_user_workspace_preferences_v1(
 	default_company: str | None = None,
 	default_warehouse: str | None = None,
@@ -1516,7 +1525,7 @@ def list_stock_ledger_entries_v1(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def transfer_inventory_stock_v1(
 	item_code: str,
 	source_warehouse: str,
@@ -1542,7 +1551,7 @@ def transfer_inventory_stock_v1(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def reconcile_inventory_stock_v1(
 	item_code: str,
 	warehouse: str,
@@ -1568,7 +1577,7 @@ def reconcile_inventory_stock_v1(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def submit_inventory_stock_count_v1(
 	items,
 	company: str | None = None,
@@ -1588,7 +1597,7 @@ def submit_inventory_stock_count_v1(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_order_v2(customer: str, items, immediate: bool = False, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_order_v2_service(customer=customer, items=items, immediate=immediate, **kwargs),
@@ -1596,7 +1605,7 @@ def create_order_v2(customer: str, items, immediate: bool = False, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def quick_create_order_v2(customer: str, items, **kwargs):
 	return _handle_gateway_call(
 		lambda: quick_create_order_v2_service(customer=customer, items=items, **kwargs),
@@ -1648,7 +1657,7 @@ def get_customer_detail_v2(customer: str):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_customer_v2(customer_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_customer_v2_service(customer_name=customer_name, **kwargs),
@@ -1656,7 +1665,7 @@ def create_customer_v2(customer_name: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_customer_v2(customer: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: update_customer_v2_service(customer=customer, **kwargs),
@@ -1664,7 +1673,7 @@ def update_customer_v2(customer: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def disable_customer_v2(customer: str, disabled: bool = True, **kwargs):
 	return _handle_gateway_call(
 		lambda: disable_customer_v2_service(customer=customer, disabled=disabled, **kwargs),
@@ -1708,7 +1717,7 @@ def get_uom_detail_v2(uom: str):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_uom_v2(uom_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_uom_v2_service(uom_name=uom_name, **kwargs),
@@ -1716,7 +1725,7 @@ def create_uom_v2(uom_name: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_uom_v2(uom: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: update_uom_v2_service(uom=uom, **kwargs),
@@ -1724,7 +1733,7 @@ def update_uom_v2(uom: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def disable_uom_v2(uom: str, disabled: bool = True, **kwargs):
 	return _handle_gateway_call(
 		lambda: disable_uom_v2_service(uom=uom, disabled=disabled, **kwargs),
@@ -1732,7 +1741,7 @@ def disable_uom_v2(uom: str, disabled: bool = True, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def delete_uom_v2(uom: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: delete_uom_v2_service(uom=uom, **kwargs),
@@ -1778,7 +1787,7 @@ def get_warehouse_detail_v2(warehouse: str):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_warehouse_v2(warehouse_name: str, company: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_warehouse_v2_service(warehouse_name=warehouse_name, company=company, **kwargs),
@@ -1786,7 +1795,7 @@ def create_warehouse_v2(warehouse_name: str, company: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_warehouse_v2(warehouse: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: update_warehouse_v2_service(warehouse=warehouse, **kwargs),
@@ -1794,7 +1803,7 @@ def update_warehouse_v2(warehouse: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def disable_warehouse_v2(warehouse: str, disabled: bool = True, **kwargs):
 	return _handle_gateway_call(
 		lambda: disable_warehouse_v2_service(warehouse=warehouse, disabled=disabled, **kwargs),
@@ -1938,7 +1947,7 @@ def export_sales_orders_v2(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_order_v2(order_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: cancel_order_v2_service(order_name=order_name, **kwargs),
@@ -1946,7 +1955,7 @@ def cancel_order_v2(order_name: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def quick_cancel_order_v2(order_name: str, rollback_payment: bool = True, **kwargs):
 	return _handle_gateway_call(
 		lambda: quick_cancel_order_v2_service(
@@ -1958,7 +1967,7 @@ def quick_cancel_order_v2(order_name: str, rollback_payment: bool = True, **kwar
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_order_v2(order_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: update_order_v2_service(order_name=order_name, **kwargs),
@@ -1966,7 +1975,7 @@ def update_order_v2(order_name: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_order_items_v2(order_name: str, items, **kwargs):
 	return _handle_gateway_call(
 		lambda: update_order_items_v2_service(order_name=order_name, items=items, **kwargs),
@@ -1974,7 +1983,7 @@ def update_order_items_v2(order_name: str, items, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_purchase_order(supplier: str, items, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_purchase_order_service(supplier=supplier, items=items, **kwargs),
@@ -1982,7 +1991,7 @@ def create_purchase_order(supplier: str, items, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def quick_create_purchase_order_v2(supplier: str, items, **kwargs):
 	return _handle_gateway_call(
 		lambda: quick_create_purchase_order_v2_service(supplier=supplier, items=items, **kwargs),
@@ -2124,7 +2133,7 @@ def get_supplier_detail_v2(supplier: str):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_supplier_v2(supplier_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_supplier_v2_service(supplier_name=supplier_name, **kwargs),
@@ -2132,7 +2141,7 @@ def create_supplier_v2(supplier_name: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_supplier_v2(supplier: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: update_supplier_v2_service(supplier=supplier, **kwargs),
@@ -2140,7 +2149,7 @@ def update_supplier_v2(supplier: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def disable_supplier_v2(supplier: str, disabled: bool = True, **kwargs):
 	return _handle_gateway_call(
 		lambda: disable_supplier_v2_service(supplier=supplier, disabled=disabled, **kwargs),
@@ -2148,7 +2157,7 @@ def disable_supplier_v2(supplier: str, disabled: bool = True, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_purchase_order_v2(order_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: update_purchase_order_v2_service(order_name=order_name, **kwargs),
@@ -2156,7 +2165,7 @@ def update_purchase_order_v2(order_name: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_purchase_order_items_v2(order_name: str, items, **kwargs):
 	return _handle_gateway_call(
 		lambda: update_purchase_order_items_v2_service(order_name=order_name, items=items, **kwargs),
@@ -2164,7 +2173,7 @@ def update_purchase_order_items_v2(order_name: str, items, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_purchase_order_v2(order_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: cancel_purchase_order_v2_service(order_name=order_name, **kwargs),
@@ -2172,7 +2181,7 @@ def cancel_purchase_order_v2(order_name: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def quick_cancel_purchase_order_v2(order_name: str, rollback_payment: bool = True, **kwargs):
 	return _handle_gateway_call(
 		lambda: quick_cancel_purchase_order_v2_service(
@@ -2184,7 +2193,7 @@ def quick_cancel_purchase_order_v2(order_name: str, rollback_payment: bool = Tru
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_purchase_receipt_v2(receipt_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: cancel_purchase_receipt_v2_service(receipt_name=receipt_name, **kwargs),
@@ -2192,7 +2201,7 @@ def cancel_purchase_receipt_v2(receipt_name: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_purchase_invoice_v2(invoice_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: cancel_purchase_invoice_v2_service(invoice_name=invoice_name, **kwargs),
@@ -2200,7 +2209,7 @@ def cancel_purchase_invoice_v2(invoice_name: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_supplier_payment(payment_entry_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: cancel_supplier_payment_service(payment_entry_name=payment_entry_name, **kwargs),
@@ -2208,7 +2217,7 @@ def cancel_supplier_payment(payment_entry_name: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def submit_delivery(order_name: str, delivery_items=None, kwargs=None, **extra_kwargs):
 	return _handle_gateway_call(
 		lambda: submit_delivery_service(
@@ -2220,7 +2229,7 @@ def submit_delivery(order_name: str, delivery_items=None, kwargs=None, **extra_k
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_sales_invoice(source_name: str, invoice_items=None, kwargs=None, **extra_kwargs):
 	return _handle_gateway_call(
 		lambda: create_sales_invoice_service(
@@ -2232,7 +2241,7 @@ def create_sales_invoice(source_name: str, invoice_items=None, kwargs=None, **ex
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_delivery_note(delivery_note_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: cancel_delivery_note_service(delivery_note_name=delivery_note_name, **kwargs),
@@ -2240,7 +2249,7 @@ def cancel_delivery_note(delivery_note_name: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_sales_invoice(sales_invoice_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: cancel_sales_invoice_service(sales_invoice_name=sales_invoice_name, **kwargs),
@@ -2248,7 +2257,7 @@ def cancel_sales_invoice(sales_invoice_name: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def receive_purchase_order(order_name: str, receipt_items=None, kwargs=None, **extra_kwargs):
 	return _handle_gateway_call(
 		lambda: receive_purchase_order_service(
@@ -2260,7 +2269,7 @@ def receive_purchase_order(order_name: str, receipt_items=None, kwargs=None, **e
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_purchase_invoice(source_name: str, invoice_items=None, kwargs=None, **extra_kwargs):
 	return _handle_gateway_call(
 		lambda: create_purchase_invoice_service(
@@ -2272,7 +2281,7 @@ def create_purchase_invoice(source_name: str, invoice_items=None, kwargs=None, *
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_purchase_invoice_from_receipt(receipt_name: str, invoice_items=None, kwargs=None, **extra_kwargs):
 	return _handle_gateway_call(
 		lambda: create_purchase_invoice_from_receipt_service(
@@ -2344,7 +2353,7 @@ def search_product_v2(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_product_and_stock(item_name: str, warehouse: str | None = None, opening_qty: float = 0, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_product_and_stock_service(
@@ -2357,7 +2366,7 @@ def create_product_and_stock(item_name: str, warehouse: str | None = None, openi
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_product_v2(item_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_product_v2_service(item_name=item_name, **kwargs),
@@ -2429,7 +2438,7 @@ def get_product_detail_v2(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_product_v2(item_code: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: update_product_v2_service(item_code=item_code, **kwargs),
@@ -2437,7 +2446,7 @@ def update_product_v2(item_code: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def disable_product_v2(item_code: str, disabled: bool = True, **kwargs):
 	return _handle_gateway_call(
 		lambda: disable_product_v2_service(item_code=item_code, disabled=disabled, **kwargs),
@@ -2445,7 +2454,7 @@ def disable_product_v2(item_code: str, disabled: bool = True, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def add_product_barcode_v2(item_code: str, barcode: str, set_primary: bool = False, **kwargs):
 	return _handle_gateway_call(
 		lambda: add_product_barcode_v2_service(
@@ -2458,7 +2467,7 @@ def add_product_barcode_v2(item_code: str, barcode: str, set_primary: bool = Fal
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def set_primary_product_barcode_v2(item_code: str, barcode: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: set_primary_product_barcode_v2_service(item_code=item_code, barcode=barcode, **kwargs),
@@ -2466,7 +2475,7 @@ def set_primary_product_barcode_v2(item_code: str, barcode: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def delete_product_barcode_v2(item_code: str, barcode: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: delete_product_barcode_v2_service(item_code=item_code, barcode=barcode, **kwargs),
@@ -2474,7 +2483,7 @@ def delete_product_barcode_v2(item_code: str, barcode: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def upload_item_image(
 	filename: str,
 	file_content_base64: str,
@@ -2494,7 +2503,7 @@ def upload_item_image(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def replace_item_image(
 	item_code: str,
 	filename: str,
@@ -2514,7 +2523,7 @@ def replace_item_image(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def delete_item_image(item_code: str):
 	return _handle_gateway_call(
 		lambda: delete_item_image_service(item_code=item_code),
@@ -2522,7 +2531,7 @@ def delete_item_image(item_code: str):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def confirm_pending_document(doctype: str, docname: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: confirm_pending_document_service(doctype=doctype, docname=docname, **kwargs),
@@ -2530,7 +2539,7 @@ def confirm_pending_document(doctype: str, docname: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cancel_payment_entry(payment_entry_name: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: cancel_payment_entry_service(payment_entry_name=payment_entry_name, **kwargs),
@@ -2538,7 +2547,7 @@ def cancel_payment_entry(payment_entry_name: str, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_payment_status(reference_doctype: str, reference_name: str, paid_amount: float, **kwargs):
 	return _handle_gateway_call(
 		lambda: update_payment_status_service(
@@ -2551,7 +2560,7 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_customer_refund(return_invoice_name: str, refund_amount: float, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_customer_refund_service(
@@ -2571,7 +2580,7 @@ def get_customer_refund_context_v1(return_invoice_name: str):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_supplier_refund(return_invoice_name: str, refund_amount: float, **kwargs):
 	return _handle_gateway_call(
 		lambda: create_supplier_refund_service(
@@ -2599,7 +2608,7 @@ def get_payment_entry_detail_v1(payment_entry_name: str):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def record_supplier_payment(reference_name: str, paid_amount: float, **kwargs):
 	return _handle_gateway_call(
 		lambda: record_supplier_payment_service(
@@ -2611,7 +2620,7 @@ def record_supplier_payment(reference_name: str, paid_amount: float, **kwargs):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def process_sales_return(source_doctype: str, source_name: str, return_items=None, **kwargs):
 	return _handle_gateway_call(
 		lambda: process_sales_return_service(
@@ -2624,7 +2633,7 @@ def process_sales_return(source_doctype: str, source_name: str, return_items=Non
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def process_purchase_return(source_doctype: str, source_name: str, return_items=None, **kwargs):
 	return _handle_gateway_call(
 		lambda: process_purchase_return_service(

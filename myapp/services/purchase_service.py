@@ -26,6 +26,10 @@ from myapp.utils.warehouse import validate_transaction_warehouse
 PURCHASE_ORDER_REMARK_FIELD = "custom_order_remark"
 
 
+def _check_doc_permission(doc, permission_type: str):
+	doc.check_permission(permission_type)
+
+
 def _coerce_json_value(value, default):
 	if value in (None, ""):
 		return default
@@ -1433,6 +1437,7 @@ def get_purchase_order_detail_v2(order_name: str):
 
 	try:
 		po = frappe.get_doc("Purchase Order", order_name)
+		_check_doc_permission(po, "read")
 		order_items = list(po.get("items") or [])
 		receipt_names, invoice_names = _collect_purchase_order_reference_names(order_name)
 		receiving, billing, payment, completion, latest_payment_entry = _build_purchase_order_financial_summary(
@@ -1500,6 +1505,7 @@ def get_purchase_receipt_detail_v2(receipt_name: str):
 
 	try:
 		pr = frappe.get_doc("Purchase Receipt", receipt_name)
+		_check_doc_permission(pr, "read")
 		receipt_items = list(pr.get("items") or [])
 		references = _build_purchase_receipt_references(receipt_name, receipt_items)
 		total_qty = _sum_row_values(receipt_items, "qty")
@@ -1549,6 +1555,7 @@ def get_purchase_invoice_detail_v2(invoice_name: str):
 
 	try:
 		pi = frappe.get_doc("Purchase Invoice", invoice_name)
+		_check_doc_permission(pi, "read")
 		invoice_items = list(pi.get("items") or [])
 		references = _build_purchase_invoice_references(invoice_items)
 		payment = _build_payment_summary([pi])
@@ -1621,7 +1628,7 @@ def get_purchase_order_status_summary(
 		filters["transaction_date"] = ["<=", resolved_date_to]
 
 	try:
-		order_rows = frappe.get_all(
+		order_rows = frappe.get_list(
 			"Purchase Order",
 			filters=filters,
 			fields=[
@@ -1739,7 +1746,7 @@ def search_purchase_orders_v2(
 		batch_size = _purchase_search_batch_size(limit, start)
 
 		while True:
-			order_rows = frappe.get_all(
+			order_rows = frappe.get_list(
 				"Purchase Order",
 				filters=filters,
 				or_filters=or_filters,
@@ -2276,11 +2283,14 @@ def disable_supplier_v2(supplier: str, disabled: bool | int = True, **kwargs):
 	return run_idempotent("disable_supplier_v2", request_id, _disable_supplier)
 
 
-def _get_purchase_order_doc_for_update(order_name: str, *, allow_cancelled: bool = False):
+def _get_purchase_order_doc_for_update(
+	order_name: str, *, allow_cancelled: bool = False, permission_type: str = "write",
+):
 	if not order_name:
 		frappe.throw(_("order_name 不能为空。"))
 
 	po = frappe.get_doc("Purchase Order", order_name)
+	_check_doc_permission(po, permission_type)
 	if cint(po.docstatus) == 2 and not allow_cancelled:
 		frappe.throw(_("已取消的采购订单不允许继续修改。"))
 	return po
@@ -2314,6 +2324,7 @@ def _prepare_purchase_order_for_item_replacement(po):
 	if cint(po.docstatus) != 1:
 		return po, po.name
 
+	_check_doc_permission(po, "cancel")
 	original_name = po.name
 	po.cancel()
 	amended = frappe.copy_doc(po)
@@ -2427,7 +2438,9 @@ def cancel_purchase_order_v2(order_name: str, **kwargs):
 
 	try:
 		def _cancel_purchase_order_v2():
-			po = _get_purchase_order_doc_for_update(order_name, allow_cancelled=True)
+			po = _get_purchase_order_doc_for_update(
+				order_name, allow_cancelled=True, permission_type="cancel",
+			)
 			receipt_names, invoice_names = _collect_purchase_order_reference_names(po.name)
 
 			if cint(po.docstatus) == 2:
@@ -2473,6 +2486,7 @@ def cancel_purchase_receipt_v2(receipt_name: str, **kwargs):
 	try:
 		def _cancel_purchase_receipt_v2():
 			pr = frappe.get_doc("Purchase Receipt", receipt_name)
+			_check_doc_permission(pr, "cancel")
 			references = _build_purchase_receipt_references(receipt_name, list(pr.get("items") or []))
 
 			if cint(pr.docstatus) == 2:
@@ -2516,6 +2530,7 @@ def cancel_purchase_invoice_v2(invoice_name: str, **kwargs):
 	try:
 		def _cancel_purchase_invoice_v2():
 			pi = frappe.get_doc("Purchase Invoice", invoice_name)
+			_check_doc_permission(pi, "cancel")
 			detail_before = get_purchase_invoice_detail_v2(pi.name).get("data", {})
 
 			if cint(pi.docstatus) == 2:

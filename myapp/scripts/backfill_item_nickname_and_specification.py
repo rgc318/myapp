@@ -31,8 +31,7 @@ def _infer_from_item_name(item_name: str) -> tuple[str | None, str | None]:
     return (nickname or normalized), specification
 
 
-@frappe.whitelist()
-def run(commit: bool = False):
+def _run_backfill(commit: bool = False):
     commit_flag = frappe.utils.cint(commit) == 1 or commit is True
     rows = frappe.get_all(
         "Item",
@@ -96,6 +95,12 @@ def run(commit: bool = False):
     return summary
 
 
+@frappe.whitelist(methods=["POST"])
+def run(commit: bool = False):
+    frappe.only_for("System Manager")
+    return _run_backfill(commit=commit)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Backfill item nickname/specification from item_name.")
     parser.add_argument("--site", default="localhost", help="Frappe site name.")
@@ -105,7 +110,7 @@ def main():
     frappe.init(site=args.site, sites_path="/home/frappe/frappe-bench/sites")
     frappe.connect()
     try:
-        result = run(commit=args.commit)
+        result = _run_backfill(commit=args.commit)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     finally:
         frappe.destroy()

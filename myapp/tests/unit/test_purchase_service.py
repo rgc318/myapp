@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 import frappe
 
 from myapp.services.purchase_service import (
+	_check_doc_permission,
+	_get_purchase_order_doc_for_update,
 	_collect_purchase_order_reference_names,
 	_serialize_purchase_invoice_items,
 	_serialize_purchase_order_items,
@@ -33,6 +35,24 @@ from myapp.services.purchase_service import (
 
 
 class TestPurchaseService(TestCase):
+	def test_check_doc_permission_delegates_to_frappe_document(self):
+		document = MagicMock()
+
+		_check_doc_permission(document, "read")
+
+		document.check_permission.assert_called_once_with("read")
+
+	@patch("myapp.services.purchase_service.frappe.get_doc")
+	def test_get_purchase_order_doc_for_update_checks_requested_permission(self, mock_get_doc):
+		order = MagicMock()
+		order.docstatus = 1
+		mock_get_doc.return_value = order
+
+		result = _get_purchase_order_doc_for_update("PO-SECURE-001", permission_type="cancel")
+
+		self.assertIs(result, order)
+		order.check_permission.assert_called_once_with("cancel")
+
 	@patch("myapp.services.purchase_service.frappe.get_all")
 	def test_collect_purchase_order_reference_names_excludes_return_documents(self, mock_get_all):
 		mock_get_all.side_effect = [
@@ -843,6 +863,7 @@ class TestPurchaseService(TestCase):
 				],
 			}
 		)
+		po.check_permission = MagicMock()
 		mock_get_doc.return_value = po
 		mock_get_all.return_value = [frappe._dict({"name": "ITEM-001", "custom_specification": "500ml", "image": "/files/item-001.png"})]
 		mock_collect_refs.return_value = (["PR-0001"], ["PINV-0001"])
@@ -903,6 +924,7 @@ class TestPurchaseService(TestCase):
 				],
 			}
 		)
+		po.check_permission = MagicMock()
 		mock_get_doc.return_value = po
 		mock_get_all.return_value = [frappe._dict({"name": "ITEM-001", "custom_specification": "500ml", "image": "/files/item-001.png"})]
 		mock_collect_refs.return_value = ([], [])
@@ -958,6 +980,7 @@ class TestPurchaseService(TestCase):
 				],
 			}
 		)
+		po.check_permission = MagicMock()
 		mock_get_doc.return_value = po
 		mock_get_all.side_effect = [
 			[frappe._dict({"po_detail": "POI-003", "qty": 10})],
@@ -1010,6 +1033,7 @@ class TestPurchaseService(TestCase):
 				"items": [frappe._dict({"name": "PRI-001", "item_code": "ITEM-001", "qty": 2, "rate": 100, "amount": 200})],
 			}
 		)
+		pr.check_permission = MagicMock()
 		mock_get_doc.return_value = pr
 		mock_get_all.return_value = [frappe._dict({"name": "ITEM-001", "custom_specification": "500ml", "image": "/files/item-001.png"})]
 		mock_build_references.return_value = {"purchase_orders": ["PO-0001"], "purchase_invoices": ["PINV-0001"]}
@@ -1048,6 +1072,7 @@ class TestPurchaseService(TestCase):
 				"items": [frappe._dict({"name": "PII-001", "item_code": "ITEM-001", "qty": 2, "rate": 100, "amount": 200})],
 			}
 		)
+		pi.check_permission = MagicMock()
 		mock_get_doc.return_value = pi
 		mock_get_all.return_value = [frappe._dict({"name": "ITEM-001", "custom_specification": "500ml", "image": "/files/item-001.png"})]
 		mock_latest_payment.return_value = {
@@ -1069,7 +1094,7 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["data"]["items"][0]["image"], "/files/item-001.png")
 
 	@patch("myapp.services.purchase_service._build_purchase_order_summary_rows")
-	@patch("myapp.services.purchase_service.frappe.get_all")
+	@patch("myapp.services.purchase_service.frappe.get_list")
 	def test_get_purchase_order_status_summary_uses_summary_rows(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
@@ -1102,7 +1127,7 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["data"][0]["receiving"]["status"], "partial")
 
 	@patch("myapp.services.purchase_service._build_purchase_order_summary_rows")
-	@patch("myapp.services.purchase_service.frappe.get_all")
+	@patch("myapp.services.purchase_service.frappe.get_list")
 	def test_search_purchase_orders_v2_filters_out_cancelled_by_default(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
@@ -1157,7 +1182,7 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["data"]["summary"]["cancelled_count"], 1)
 
 	@patch("myapp.services.purchase_service._build_purchase_order_summary_rows")
-	@patch("myapp.services.purchase_service.frappe.get_all")
+	@patch("myapp.services.purchase_service.frappe.get_list")
 	def test_search_purchase_orders_v2_passes_search_filters_and_sorts(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
@@ -1235,7 +1260,7 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["data"]["meta"]["filters"]["date_to"], "2026-03-31")
 
 	@patch("myapp.services.purchase_service._build_purchase_order_summary_rows")
-	@patch("myapp.services.purchase_service.frappe.get_all")
+	@patch("myapp.services.purchase_service.frappe.get_list")
 	def test_search_purchase_orders_v2_supports_amount_asc_sort(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
@@ -1302,7 +1327,7 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["data"]["items"][1]["purchase_order_name"], "PO-0002")
 
 	@patch("myapp.services.purchase_service._build_purchase_order_summary_rows")
-	@patch("myapp.services.purchase_service.frappe.get_all")
+	@patch("myapp.services.purchase_service.frappe.get_list")
 	def test_search_purchase_orders_v2_supports_order_date_desc_sort(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(
@@ -1370,7 +1395,7 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["data"]["meta"]["filters"]["sort_by"], "order_date_desc")
 
 	@patch("myapp.services.purchase_service._build_purchase_order_summary_rows")
-	@patch("myapp.services.purchase_service.frappe.get_all")
+	@patch("myapp.services.purchase_service.frappe.get_list")
 	def test_get_purchase_order_status_summary_supports_date_range_filters(self, mock_get_all, mock_build_summary_rows):
 		mock_get_all.return_value = [
 			frappe._dict(

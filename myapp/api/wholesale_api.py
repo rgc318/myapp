@@ -33,7 +33,7 @@ def search_product(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_product_and_stock(item_name: str, warehouse: str | None = None, opening_qty: float = 0, **kwargs):
 	return create_product_and_stock_service(
 		item_name=item_name,
@@ -136,22 +136,22 @@ def get_product_detail_v2(
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_product_v2(item_name: str, **kwargs):
 	return create_product_v2_service(item_name=item_name, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_product_v2(item_code: str, **kwargs):
 	return update_product_v2_service(item_code=item_code, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def disable_product_v2(item_code: str, disabled: bool = True, **kwargs):
 	return disable_product_v2_service(item_code=item_code, disabled=disabled, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def add_product_barcode_v2(item_code: str, barcode: str, set_primary: bool = False, **kwargs):
 	return add_product_barcode_v2_service(
 		item_code=item_code,
@@ -161,11 +161,11 @@ def add_product_barcode_v2(item_code: str, barcode: str, set_primary: bool = Fal
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def set_primary_product_barcode_v2(item_code: str, barcode: str, **kwargs):
 	return set_primary_product_barcode_v2_service(item_code=item_code, barcode=barcode, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def delete_product_barcode_v2(item_code: str, barcode: str, **kwargs):
 	return delete_product_barcode_v2_service(item_code=item_code, barcode=barcode, **kwargs)

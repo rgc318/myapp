@@ -11,7 +11,7 @@ def get_current_user_workspace_preferences_v1():
 	return get_current_user_workspace_preferences_service()
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_current_user_workspace_preferences_v1(
 	default_company: str | None = None,
 	default_warehouse: str | None = None,

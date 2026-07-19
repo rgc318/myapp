@@ -39,21 +39,21 @@ def get_uom_detail_v2(uom: str):
 	return get_uom_detail_v2_service(uom=uom)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_uom_v2(uom_name: str, **kwargs):
 	return create_uom_v2_service(uom_name=uom_name, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_uom_v2(uom: str, **kwargs):
 	return update_uom_v2_service(uom=uom, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def disable_uom_v2(uom: str, disabled: bool = True, **kwargs):
 	return disable_uom_v2_service(uom=uom, disabled=disabled, **kwargs)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def delete_uom_v2(uom: str, **kwargs):
 	return delete_uom_v2_service(uom=uom, **kwargs)

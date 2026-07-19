@@ -20,6 +20,10 @@ ORDER_ITEM_SALES_MODE_FIELD = "custom_sales_mode"
 SALES_ORDER_EXPORT_LIMIT = 1000
 
 
+def _check_doc_permission(doc, permission_type: str):
+	doc.check_permission(permission_type)
+
+
 def _coerce_json_value(value, default):
 	if value in (None, ""):
 		return default
@@ -2084,11 +2088,14 @@ def _apply_sales_invoice_return_adjustments(invoice_rows):
 	return adjusted_rows
 
 
-def _get_sales_order_doc_for_update(order_name: str, *, allow_cancelled: bool = False):
+def _get_sales_order_doc_for_update(
+	order_name: str, *, allow_cancelled: bool = False, permission_type: str = "write",
+):
 	if not order_name:
 		frappe.throw(_("order_name 不能为空。"))
 
 	so = frappe.get_doc("Sales Order", order_name)
+	_check_doc_permission(so, permission_type)
 	if cint(so.docstatus) == 2 and not allow_cancelled:
 		frappe.throw(_("已取消的销售订单不允许继续修改。"))
 	return so
@@ -2109,7 +2116,6 @@ def _ensure_sales_order_items_editable(so):
 
 def _save_sales_order_after_update(so):
 	so.flags.ignore_validate_update_after_submit = True
-	so.flags.ignore_permissions = True
 	so.save()
 	return so
 
@@ -2181,6 +2187,7 @@ def _prepare_sales_order_for_item_replacement(so):
 	if cint(so.docstatus) != 1:
 		return so, so.name
 
+	_check_doc_permission(so, "cancel")
 	original_name = so.name
 	so.cancel()
 	amended = frappe.copy_doc(so)
@@ -2207,6 +2214,7 @@ def get_sales_order_detail(order_name: str):
 
 	try:
 		so = frappe.get_doc("Sales Order", order_name)
+		_check_doc_permission(so, "read")
 		order_items = list(so.get("items") or [])
 		delivery_note_names, invoice_names = _collect_sales_order_reference_names(order_name)
 		fulfillment, payment, completion, latest_payment_entry = _build_sales_order_financial_summary(
@@ -2282,6 +2290,7 @@ def get_delivery_note_detail(delivery_note_name: str):
 
 	try:
 		dn = frappe.get_doc("Delivery Note", delivery_note_name)
+		_check_doc_permission(dn, "read")
 		delivery_items = list(dn.get("items") or [])
 		references = _build_delivery_note_references(delivery_items)
 		total_qty = _sum_row_values(delivery_items, "qty")
@@ -2332,6 +2341,7 @@ def get_sales_invoice_detail(sales_invoice_name: str):
 
 	try:
 		si = frappe.get_doc("Sales Invoice", sales_invoice_name)
+		_check_doc_permission(si, "read")
 		invoice_items = list(si.get("items") or [])
 		references = _build_sales_invoice_references(invoice_items)
 		invoice_amount = flt(si.get("rounded_total") or si.get("grand_total") or 0)
@@ -2414,7 +2424,7 @@ def get_sales_order_status_summary(
 		filters["transaction_date"] = ["<=", resolved_date_to]
 
 	try:
-		order_rows = frappe.get_all(
+		order_rows = frappe.get_list(
 			"Sales Order",
 			filters=filters,
 			fields=[
@@ -2538,7 +2548,7 @@ def search_sales_orders_v2(
 		batch_size = _sales_search_batch_size(limit, start)
 
 		while True:
-			order_rows = frappe.get_all(
+			order_rows = frappe.get_list(
 				"Sales Order",
 				filters=filters,
 				or_filters=or_filters,
@@ -3118,7 +3128,9 @@ def cancel_order_v2(order_name: str, **kwargs):
 
 	try:
 		def _cancel_order_v2():
-			so = _get_sales_order_doc_for_update(order_name, allow_cancelled=True)
+			so = _get_sales_order_doc_for_update(
+				order_name, allow_cancelled=True, permission_type="cancel",
+			)
 			delivery_note_names, invoice_names = _collect_sales_order_reference_names(so.name)
 
 			if cint(so.docstatus) == 2:
@@ -3527,6 +3539,7 @@ def cancel_delivery_note(delivery_note_name: str, **kwargs):
 	try:
 		def _cancel_delivery_note():
 			dn = frappe.get_doc("Delivery Note", delivery_note_name)
+			_check_doc_permission(dn, "cancel")
 			references = _build_delivery_note_references(list(dn.get("items") or []))
 
 			if cint(dn.docstatus) == 2:
@@ -3580,6 +3593,7 @@ def cancel_sales_invoice(sales_invoice_name: str, **kwargs):
 	try:
 		def _cancel_sales_invoice():
 			si = frappe.get_doc("Sales Invoice", sales_invoice_name)
+			_check_doc_permission(si, "cancel")
 			references = _build_sales_invoice_references(list(si.get("items") or []))
 
 			if cint(si.docstatus) == 2:

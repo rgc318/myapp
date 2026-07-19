@@ -153,7 +153,7 @@ class TestAiService(TestCase):
 		executed = {**draft, "status": "executed", "execution": {"target_name": "SO-001"}}
 		with patch("myapp.services.ai_service.ai_repository.get_draft", return_value=draft), patch(
 			"myapp.services.ai_service.ai_repository.mark_draft_executed", return_value=executed,
-		) as mock_mark, patch("myapp.services.ai_service.frappe"):
+		) as mock_mark, patch("myapp.services.ai_service.frappe") as mock_frappe:
 			result = execute_ai_draft_v1(
 				draft_id="AI-DRAFT-1", expected_version=3, confirmed=True, request_id="REQ-1",
 			)
@@ -164,6 +164,7 @@ class TestAiService(TestCase):
 			target_doctype="Sales Order", target_name="SO-001",
 			result={"status": "success", "order": "SO-001"},
 		)
+		mock_frappe.db.commit.assert_not_called()
 
 	@patch("myapp.services.ai_service._update_ai_draft_once")
 	@patch(
