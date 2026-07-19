@@ -71,6 +71,7 @@
 - `myapp.api.gateway.generate_ai_purchase_order_draft_v1`
 - `myapp.api.gateway.generate_ai_inventory_adjustment_draft_v1`
 - `myapp.api.gateway.generate_ai_product_setup_draft_v1`
+- `myapp.api.gateway.execute_ai_draft_v1`
 - `myapp.api.gateway.get_ai_draft_v1`
 - `myapp.api.gateway.list_ai_drafts_v1`
 - `myapp.api.gateway.update_ai_draft_v1`
@@ -102,7 +103,7 @@
 - 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`、`list_stock_ledger_entries_v1`
 - 库存：`list_inventory_stock_summary_v1`、`list_stock_ledger_entries_v1`、`transfer_inventory_stock_v1`、`reconcile_inventory_stock_v1`、`submit_inventory_stock_count_v1`
 - 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
-- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`resolve_ai_scenario_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1`、`get_ai_draft_v1`、`list_ai_drafts_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
+- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`list_ai_selectable_models_v1`、`resolve_ai_scenario_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1`、`get_ai_draft_v1`、`list_ai_drafts_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`execute_ai_draft_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
 - AI 模型治理：`get_ai_model_governance_overview_v1`、`list_ai_audit_events_v1`、`sync_ai_model_registry_v1`、`list_ai_models_v1`、`update_ai_model_registry_v1`、`list_ai_model_policies_v1`、`get_ai_model_policy_v1`、`save_ai_model_policy_draft_v1`、`validate_ai_model_policy_v1`、`approve_ai_model_policy_v1`、`publish_ai_model_policy_v1`、`rollback_ai_model_policy_v1`、`get_ai_model_usage_summary_v1`
   - `update_ai_model_registry_v1` 只维护治理字段：状态、数据区域、留存策略、敏感数据许可、输入/输出成本和币种；供应商能力字段由同步维护。请求必须包含 `reason` 和幂等键，响应返回递增后的 `registry_version` 与受影响的已发布策略。
   - `get_ai_model_usage_summary_v1` 支持 `date_from`、`date_to`、`environment`、`company`，返回延迟/首 Token 平均值与 p50/p95、反馈计数和正向率。
@@ -125,9 +126,12 @@
   "content": "帮我找数码相机",
   "conversation_id": "AI-CONV-...",
   "scenario": "product_search",
-  "company": "rgc (Demo)"
+  "company": "rgc (Demo)",
+  "model_alias": "opencode-glm-5.2"
 }
 ```
+
+`model_alias` 可省略。省略时继续使用已发布模型策略；显式提供时，Frappe 只接受注册表中状态为 `active / validated` 且能力为 `fast_chat / reasoning / structured` 的模型。`list_ai_selectable_models_v1` 为所有已登录 AI 用户返回这一受控列表，不返回 Embedding、停用、退役、缺失或未验证模型。浏览器不能自行提交注册表外别名，也不能直连 Orchestrator 或 LiteLLM。显式选择会传给同步 Chat、SSE 和四类草稿，并禁用该次请求的静默模型 fallback，最终响应中的 `model_alias` 用于核对实际执行模型。
 
 当前聊天场景支持 `auto`、`general`、`product_search`、`order_query`、`report_summary`。省略场景或传 `auto` 时，Frappe 根据当前用户问题确定实际场景，并把解析后的场景写入 Message、Run、Prompt 和 Orchestrator 请求。商品工具复用 `search_product_v2`；单据工具支持销售订单、销售发票、采购订单和采购发票的单类型或混合查询，订单复用销售/采购工作台服务，发票复用 `list_business_documents_v1`；报表工具复用既有经营报表服务。所有工具都强制 DocType、公司和记录级读取权限。单据查询 citation 首项为版本化 `business_result_set`，包含查询范围、每类请求/返回数量和 `success / partial / empty` 覆盖状态；`status_semantics=result_coverage_only` 明确这些状态不代表单据业务健康或异常判断。后续 citation 保留逐单据详情与受控跳转，供 Web 聚合表格和历史会话恢复。
 
@@ -139,9 +143,11 @@
 
 ### AI Copilot 结构化草稿
 
-销售订单、采购订单、库存调整和商品建档分别通过 `generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1` 生成严格结构化候选。模型只负责提取用户原文；Frappe 重新按当前用户权限解析真实 Customer / Supplier / Item / Warehouse、商品分类、品牌、UOM、价格或实时库存，并持久化为 `MyApp AI Draft`。`resolve_ai_scenario_v1` 是 Web 自动识别的后端事实来源，写意图可以返回上述四类草稿场景，Web 不复制关键词规则。
+销售订单、采购订单、库存调整和商品建档分别通过 `generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1` 生成严格结构化候选。模型只负责提取用户原文；Frappe 重新按当前用户权限解析真实 Customer / Supplier / Item / Warehouse、商品分类、品牌、UOM、价格或实时库存，并持久化为 `MyApp AI Draft`。`resolve_ai_scenario_v1` 是 Web 自动识别的后端事实来源，写意图可以返回上述四类草稿场景，商品是否入库、到货、现货或库存状态等问法返回 `product_search`；Web 不复制关键词规则。
 
-商品建档草稿类型为 `product_setup`，同时承载 Item 主数据、Standard Selling 售价和可选初始库存预填，但不执行任何写入。初始库存大于 0 时必须补齐当前公司叶子仓库和独立估值价；售价不得自动作为库存估值价。交接后进入 `/master-data/products` 新增商品表单，最终由用户主动调用既有幂等 `create_product_v2`。
+商品建档草稿类型为 `product_setup`，同时承载 Item 主数据、Standard Selling 售价、Standard Buying 默认采购价和可选初始库存预填，但模型生成阶段不执行任何写入。初始库存统一使用 `stock_uom` 作为 `opening_uom`；初始库存大于 0 时必须补齐当前公司叶子仓库和 `standard_buying_rate`。正式执行会把默认采购价写入 Standard Buying，并作为首次入库成本，标准售价不得自动用于库存计价。旧草稿的 `valuation_rate` 仅作为兼容输入读取。用户可在 AI 工作台确认当前版本后由 `execute_ai_draft_v1` 复用幂等 `create_product_v2`，也可选择进入 `/master-data/products` 处理复杂字段。
+
+`execute_ai_draft_v1` 是四类草稿的统一原地确认执行接口。请求必须为 POST，携带 `draft_id`、用户当前看到的 `expected_version`、`confirmed=1` 和 `Idempotency-Key`。服务端重新检查草稿 owner、状态、版本和 `ready_for_handoff`，再分别调用 `create_product_v2`、`create_order_v2`、`create_purchase_order` 或 `reconcile_inventory_stock_v1`；成功后草稿进入 `executed` 并保存执行人、执行时间、正式 DocType、正式名称和结果回执。模型或后台任务不能绕过用户确认调用该能力。
 
 ### AI 商品向量质量治理
 
@@ -166,7 +172,7 @@
 
 ### AI 模型治理
 
-模型治理接口只面向 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 的职责范围。模型注册同步只从受服务 Token 保护的 Orchestrator 读取 LiteLLM capability 别名，不保存供应商 Key。策略草稿、验证、审批、发布和回滚使用不可变版本与审计事件；生产策略起草人与审批人必须分离，只有 System Manager 可以发布或紧急回滚。
+模型治理接口只面向 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 的职责范围。模型注册同步只从受服务 Token 保护的 Orchestrator 读取当前 LiteLLM Key 可见的完整模型库存，不保存供应商 Key；同步中已消失的 LiteLLM 模型标记为 `degraded / missing`，人工维护的 `disabled / retired` 状态不会被同步覆盖。策略草稿、验证、审批、发布和回滚使用不可变版本与审计事件；生产策略起草人与审批人必须分离，只有 System Manager 可以发布或紧急回滚。
 
 所有治理写接口均为 POST，并使用项目统一幂等机制。策略验证会同时检查注册模型能力/健康状态、当前 Prompt、确定性 offline full gate 和受控 live/Embedding 完整报告。缺少完整报告、报告为 partial、阈值失败、模型别名不一致或报告格式错误时，策略保持 `draft`，不能进入审批或发布。
 

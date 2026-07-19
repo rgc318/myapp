@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
@@ -9,6 +10,7 @@ from myapp.services.ai_service import (
 	_build_order_query_context,
 	_build_order_query_dsl,
 	_build_product_setup_draft,
+	_execute_ai_draft_payload,
 	_build_report_query_dsl,
 	_hybrid_rerank_product_rows,
 	_extract_product_search_terms,
@@ -17,8 +19,11 @@ from myapp.services.ai_service import (
 	_prepare_chat_run,
 	_query_business_document_entity,
 	_resolve_inventory_draft_item,
+	_resolve_purchase_draft_item,
 	_resolve_prompt_version,
+	_resolve_sales_draft_item,
 	chat_ai_v1,
+	execute_ai_draft_v1,
 	generate_ai_inventory_adjustment_draft_v1,
 	generate_ai_purchase_order_draft_v1,
 	generate_ai_sales_order_draft_v1,
@@ -30,6 +35,133 @@ from myapp.utils.api_response import UpstreamServiceUnavailableError, map_except
 
 
 class TestAiService(TestCase):
+	@patch("myapp.services.ai_service.search_product_v2")
+	@patch("myapp.services.ai_service.frappe.get_list")
+	def test_user_edited_order_prices_override_reference_prices_but_model_prices_do_not(
+		self, mock_allowed, mock_search,
+	):
+		mock_allowed.return_value = ["ITEM-001"]
+		base = {
+			"item_code": "ITEM-001", "item_name": "煌星", "uom": "Unit",
+			"uom_display": "个", "all_uoms": [{"uom": "Unit", "conversion_factor": 1}],
+			"price": 100, "price_summary": {
+				"standard_buying_rate": 60, "buying_prices": [{"rate": 60}],
+			},
+		}
+		mock_search.return_value = {"data": [base]}
+		candidate = {
+			"item_query": "ITEM-001", "qty": 2, "uom": "Unit", "price": 88,
+			"warehouse_query": "Stores - DC",
+		}
+
+		model_sales = _resolve_sales_draft_item(
+			candidate, company="Demo Company", default_warehouse="Stores - DC",
+		)
+		user_sales = _resolve_sales_draft_item(
+			candidate, company="Demo Company", default_warehouse="Stores - DC",
+			allow_user_price=True,
+		)
+		user_purchase = _resolve_purchase_draft_item(
+			candidate, company="Demo Company", default_warehouse="Stores - DC",
+			allow_user_price=True,
+		)
+
+		self.assertEqual(model_sales["price"], 100)
+		self.assertEqual(user_sales["price"], 88)
+		self.assertEqual(user_purchase["price"], 88)
+	@patch("myapp.services.ai_service.create_product_v2")
+	def test_execute_product_setup_draft_reuses_product_domain_service(self, mock_create):
+		mock_create.return_value = {"status": "success", "data": {"item_code": "ITEM-001"}}
+		result = _execute_ai_draft_payload({
+			"draft_type": "product_setup",
+			"payload": {
+				"item_name": "煌星", "item_code": "ITEM-001", "company": "Demo Company",
+				"item_group": "Products", "brand": "Brand A", "stock_uom": "Unit",
+				"standard_selling_rate": 10000, "standard_buying_rate": 5000,
+				"currency": "CNY", "warehouse": "Stores - DC", "opening_qty": 5,
+				"opening_uom": "Unit", "description": "测试商品",
+			},
+		}, request_id="REQ-1")
+
+		self.assertEqual(result["target_doctype"], "Item")
+		self.assertEqual(result["target_name"], "ITEM-001")
+		mock_create.assert_called_once_with(
+			item_name="煌星", item_code="ITEM-001", item_group="Products", brand="Brand A",
+			stock_uom="Unit", standard_rate=10000, valuation_rate=5000, currency="CNY",
+			buying_prices=[{"price_list": "Standard Buying", "rate": 5000, "currency": "CNY"}],
+			description="测试商品", company="Demo Company", warehouse="Stores - DC",
+			warehouse_stock_qty=5, warehouse_stock_uom="Unit", request_id="REQ-1",
+		)
+
+	@patch("myapp.services.ai_service.create_order_v2")
+	@patch("myapp.services.ai_service.create_purchase_order")
+	@patch("myapp.services.ai_service.reconcile_inventory_stock_v1")
+	def test_execute_transaction_drafts_reuse_existing_domain_services(
+		self, mock_inventory, mock_purchase, mock_sales,
+	):
+		mock_sales.return_value = {"status": "success", "order": "SO-001"}
+		mock_purchase.return_value = {"status": "success", "purchase_order": "PO-001"}
+		mock_inventory.return_value = {"status": "success", "data": {"stock_entry": "STE-001"}}
+		line = {"item_code": "ITEM-001", "qty": 2, "uom": "Unit", "price": 10, "warehouse": "Stores - DC"}
+
+		sales = _execute_ai_draft_payload({
+			"draft_type": "sales_order", "payload": {
+				"customer": "CUST-1", "company": "Demo Company", "transaction_date": "2026-07-18",
+				"delivery_date": "2026-07-20", "warehouse": "Stores - DC",
+				"default_sales_mode": "wholesale", "remarks": "AI 草稿", "items": [line],
+			},
+		}, request_id="REQ-S")
+		purchase = _execute_ai_draft_payload({
+			"draft_type": "purchase_order", "payload": {
+				"supplier": "SUP-1", "company": "Demo Company", "transaction_date": "2026-07-18",
+				"schedule_date": "2026-07-20", "warehouse": "Stores - DC", "currency": "CNY",
+				"supplier_ref": "REF-1", "remarks": "AI 草稿", "items": [line],
+			},
+		}, request_id="REQ-P")
+		inventory = _execute_ai_draft_payload({
+			"draft_type": "inventory_adjustment", "payload": {
+				"warehouse": "Stores - DC", "posting_date": "2026-07-18", "reason": "盘点差异",
+				"items": [{"item_code": "ITEM-001", "target_stock_qty": 8, "stock_uom": "Unit", "valuation_rate": 5}],
+			},
+		}, request_id="REQ-I")
+
+		self.assertEqual(sales["target_name"], "SO-001")
+		self.assertEqual(purchase["target_name"], "PO-001")
+		self.assertEqual(inventory["target_name"], "STE-001")
+		mock_sales.assert_called_once()
+		mock_purchase.assert_called_once()
+		mock_inventory.assert_called_once()
+
+	@patch("myapp.services.ai_service.run_idempotent", side_effect=lambda _namespace, _request_id, callback, **_kwargs: callback())
+	@patch("myapp.services.ai_service.filelock", side_effect=lambda *_args, **_kwargs: nullcontext())
+	@patch("myapp.services.ai_service._record_ai_draft_execution_audit")
+	@patch("myapp.services.ai_service._execute_ai_draft_payload")
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_execute_ai_draft_checks_version_and_persists_receipt(
+		self, _user, mock_execute, _audit, _lock, _idempotent,
+	):
+		draft = {
+			"name": "AI-DRAFT-1", "draft_type": "sales_order", "status": "draft", "version": 3,
+			"payload": {}, "validation": {"ready_for_handoff": True}, "execution": None,
+		}
+		mock_execute.return_value = {
+			"target_doctype": "Sales Order", "target_name": "SO-001",
+			"result": {"status": "success", "order": "SO-001"},
+		}
+		executed = {**draft, "status": "executed", "execution": {"target_name": "SO-001"}}
+		with patch("myapp.services.ai_service.ai_repository.get_draft", return_value=draft), patch(
+			"myapp.services.ai_service.ai_repository.mark_draft_executed", return_value=executed,
+		) as mock_mark, patch("myapp.services.ai_service.frappe"):
+			result = execute_ai_draft_v1(
+				draft_id="AI-DRAFT-1", expected_version=3, confirmed=True, request_id="REQ-1",
+			)
+
+		self.assertEqual(result["data"]["execution"]["target_name"], "SO-001")
+		mock_mark.assert_called_once_with(
+			draft_id="AI-DRAFT-1", user="user@example.com", request_id="REQ-1",
+			target_doctype="Sales Order", target_name="SO-001",
+			result={"status": "success", "order": "SO-001"},
+		)
 	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	def test_existing_conversation_uses_its_persisted_company_when_request_omits_company(
@@ -345,14 +477,34 @@ class TestAiService(TestCase):
 			"product_setup_draft",
 		)
 		self.assertEqual(
+			_infer_ai_action_scenario("添加一个新商品，煌星，10000一个，入库5000个"),
+			"product_setup_draft",
+		)
+		self.assertEqual(
+			_infer_ai_action_scenario("查询并添加一个新商品，名字叫煌星"),
+			"product_setup_draft",
+		)
+		self.assertEqual(
 			_infer_ai_action_scenario("查询最新销售订单"),
 			"order_query",
 		)
 
+	def test_auto_scenario_routes_product_stock_status_queries_to_product_search(self):
+		self.assertEqual(
+			_infer_ai_action_scenario("查询一下煌星是否已经正常入库"),
+			"product_search",
+		)
+		self.assertEqual(
+			_infer_ai_action_scenario("煌星现在有现货吗"),
+			"product_search",
+		)
+		self.assertEqual(_extract_product_search_terms("查询一下煌星是否已经正常入库"), ["煌星"])
+		self.assertEqual(_extract_product_search_terms("煌星现在有现货吗"), ["煌星"])
+
 	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - TC")
 	@patch("myapp.services.ai_service._resolve_optional_master_name", return_value=None)
 	@patch("myapp.services.ai_service._resolve_product_setup_uom", return_value=("Unit", [{"name": "Unit"}]))
-	def test_product_setup_draft_keeps_selling_price_separate_from_valuation(
+	def test_product_setup_draft_keeps_selling_price_separate_from_default_buying_price(
 		self, _uom, _master, _warehouse,
 	):
 		with patch("myapp.services.ai_service.frappe") as mock_frappe:
@@ -367,9 +519,31 @@ class TestAiService(TestCase):
 			)
 
 		self.assertEqual(payload["standard_selling_rate"], 9999)
-		self.assertIsNone(payload["valuation_rate"])
+		self.assertIsNone(payload["standard_buying_rate"])
 		self.assertFalse(validation["ready_for_handoff"])
-		self.assertTrue(any("估值价" in error for error in validation["errors"]))
+		self.assertTrue(any("默认采购价" in error for error in validation["errors"]))
+
+	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - TC")
+	@patch("myapp.services.ai_service._resolve_optional_master_name", return_value=None)
+	@patch("myapp.services.ai_service._resolve_product_setup_uom", return_value=("Unit", [{"name": "Unit"}]))
+	def test_product_setup_draft_accepts_default_buying_price_for_opening_stock(
+		self, _uom, _master, _warehouse,
+	):
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.db.exists.return_value = False
+			mock_frappe.db.get_value.return_value = "CNY"
+			mock_frappe.has_permission.return_value = True
+			payload, validation = _build_product_setup_draft(
+				{
+					"item_name": "传承结晶", "opening_qty": 1000,
+					"stock_uom": "Unit", "standard_selling_rate": 9999,
+					"standard_buying_rate": 5000, "warehouse": "Stores - TC",
+				},
+				company="Test Company",
+			)
+
+		self.assertEqual(payload["standard_buying_rate"], 5000)
+		self.assertTrue(validation["ready_for_handoff"])
 
 	def test_build_order_query_dsl_supports_multiple_document_types(self):
 		dsl = _build_order_query_dsl(
@@ -613,8 +787,13 @@ class TestAiService(TestCase):
 	@patch("myapp.services.ai_service.ai_repository.create_conversation")
 	@patch("myapp.services.ai_service._call_ai_orchestrator")
 	@patch("myapp.services.ai_service._resolve_company_scope", return_value="rgc (Demo)")
+	@patch(
+		"myapp.services.ai_service.resolve_ai_selected_model_alias",
+		return_value="opencode-glm-5.2",
+	)
 	def test_chat_ai_v1_persists_conversation_run_and_messages(
 		self,
+		mock_selected_model,
 		mock_company,
 		mock_call,
 		mock_create_conversation,
@@ -637,7 +816,10 @@ class TestAiService(TestCase):
 		with patch("myapp.services.ai_service.frappe") as mock_frappe:
 			mock_frappe.session.user = "user@example.com"
 			mock_frappe.local.lang = "zh-CN"
-			result = chat_ai_v1(content="  你好  ", scenario="general", company="rgc (Demo)")
+			result = chat_ai_v1(
+				content="  你好  ", scenario="general", company="rgc (Demo)",
+				model_alias="opencode-glm-5.2",
+			)
 
 		self.assertEqual(result["data"]["conversation"], "AI-CONV-1")
 		self.assertEqual(result["data"]["run_id"], "AI-RUN-1")
@@ -652,6 +834,8 @@ class TestAiService(TestCase):
 		self.assertIsNone(payload["context"])
 		self.assertEqual(payload["conversation_id"], "AI-CONV-1")
 		self.assertEqual(payload["run_id"], "AI-RUN-1")
+		self.assertEqual(payload["model_alias"], "opencode-glm-5.2")
+		mock_selected_model.assert_called_once_with("opencode-glm-5.2")
 
 	@patch("myapp.services.ai_service.ai_repository.complete_run")
 	@patch("myapp.services.ai_service.ai_repository.load_model_messages")

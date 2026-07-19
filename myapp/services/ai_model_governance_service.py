@@ -575,7 +575,12 @@ def sync_ai_model_registry_v1(*, request_id: str | None = None) -> dict:
 					%s, %s, %s, %s, %s, %s, %s, 1, %s, %s)
 				ON DUPLICATE KEY UPDATE
 					modified = VALUES(modified), modified_by = VALUES(modified_by), capability = VALUES(capability),
-					status = IF(status = 'discovered', VALUES(status), status), provider_family = VALUES(provider_family),
+					status = CASE
+						WHEN status IN ('disabled', 'retired') THEN status
+						WHEN status = 'validated' AND VALUES(status) = 'active' THEN status
+						ELSE VALUES(status)
+					END,
+					provider_family = VALUES(provider_family),
 					provider_model_display = VALUES(provider_model_display), supports_streaming = VALUES(supports_streaming),
 					supports_json_schema = VALUES(supports_json_schema), supports_vision = VALUES(supports_vision),
 					embedding_dimensions = VALUES(embedding_dimensions), embedding_space_version = VALUES(embedding_space_version),
@@ -602,7 +607,35 @@ def sync_ai_model_registry_v1(*, request_id: str | None = None) -> dict:
 					source_hash, frappe.as_json(source),
 				),
 			)
-		response = {"synced_count": len(seen_aliases), "model_aliases": seen_aliases}
+		missing_count = 0
+		if seen_aliases:
+			placeholders = ", ".join(["%s"] * len(seen_aliases))
+			missing_count = frappe.db.sql(
+				f"""
+				SELECT COUNT(*) FROM `{REGISTRY_TABLE}`
+				WHERE provider_family = 'litellm'
+					AND model_alias NOT IN ({placeholders})
+					AND status NOT IN ('disabled', 'retired')
+				""",
+				tuple(seen_aliases),
+			)[0][0]
+			frappe.db.sql(
+				f"""
+				UPDATE `{REGISTRY_TABLE}`
+				SET status = 'degraded', last_health_at = %s,
+					last_health_status = 'missing', last_error_code = 'MODEL_ALIAS_NOT_FOUND',
+					modified = %s, modified_by = %s
+				WHERE provider_family = 'litellm'
+					AND model_alias NOT IN ({placeholders})
+					AND status NOT IN ('disabled', 'retired')
+				""",
+				(now, now, actor, *seen_aliases),
+			)
+		response = {
+			"synced_count": len(seen_aliases),
+			"missing_count": cint(missing_count),
+			"model_aliases": seen_aliases,
+		}
 		_record_audit(actor=actor, action="sync_model_registry", object_type="model_registry", object_name="all", parameters={}, result=response)
 		return {"status": "success", "message": _("AI 模型注册表已同步。"), "data": response}
 
@@ -649,6 +682,60 @@ def list_ai_models_v1(
 			"pagination": {"start": start, "limit": limit, "total": cint(total)},
 		},
 	}
+
+
+def list_ai_selectable_models_v1() -> dict:
+	_current_user()
+	_ensure_tables()
+	rows = frappe.db.sql(
+		f"""
+		SELECT model_alias, capability, provider_model_display, supports_streaming,
+			supports_json_schema, status
+		FROM `{REGISTRY_TABLE}`
+		WHERE status IN ('active', 'validated')
+			AND capability IN ('fast_chat', 'reasoning', 'structured')
+		ORDER BY model_alias
+		""",
+		as_dict=True,
+	)
+	return {
+		"status": "success",
+		"data": {
+			"items": [
+				{
+					"model_alias": row.model_alias,
+					"capability": row.capability,
+					"display_name": row.provider_model_display or row.model_alias,
+					"supports_streaming": bool(cint(row.supports_streaming)),
+					"supports_json_schema": bool(cint(row.supports_json_schema)),
+					"status": row.status,
+				}
+				for row in rows
+			],
+		},
+	}
+
+
+def resolve_ai_selected_model_alias(model_alias: str | None) -> str | None:
+	resolved = _normalize_text(model_alias, max_length=140)
+	if not resolved:
+		return None
+	_current_user()
+	_ensure_tables()
+	row = frappe.db.sql(
+		f"""
+		SELECT model_alias FROM `{REGISTRY_TABLE}`
+		WHERE model_alias = %s
+			AND status IN ('active', 'validated')
+			AND capability IN ('fast_chat', 'reasoning', 'structured')
+		LIMIT 1
+		""",
+		(resolved,),
+		as_dict=True,
+	)
+	if not row:
+		frappe.throw(_("所选 AI 模型不可用，请刷新模型列表后重试。"))
+	return str(row[0].model_alias)
 
 
 def update_ai_model_registry_v1(
@@ -1269,7 +1356,7 @@ def get_published_ai_model_policies_for_runtime() -> dict:
 			}
 			for row in rows
 		]
-	aliases = sorted({
+	policy_aliases = sorted({
 		alias
 		for item in policies
 		for alias in [
@@ -1282,11 +1369,20 @@ def get_published_ai_model_policies_for_runtime() -> dict:
 		f"""
 		SELECT model_alias, capability, status, supports_json_schema, input_cost, output_cost, currency,
 			data_region, retention_policy, sensitive_data_allowed, registry_version
-		FROM `{REGISTRY_TABLE}` WHERE model_alias IN ({', '.join(['%s'] * len(aliases))})
+		FROM `{REGISTRY_TABLE}`
+		WHERE status IN ('active', 'validated')
+			OR model_alias IN ({', '.join(['%s'] * len(policy_aliases))})
 		""",
-		tuple(aliases),
+		tuple(policy_aliases),
 		as_dict=True,
-	) if aliases else []
+	) if policy_aliases else frappe.db.sql(
+		f"""
+		SELECT model_alias, capability, status, supports_json_schema, input_cost, output_cost, currency,
+			data_region, retention_policy, sensitive_data_allowed, registry_version
+		FROM `{REGISTRY_TABLE}` WHERE status IN ('active', 'validated')
+		""",
+		as_dict=True,
+	)
 	return {
 		"policies": policies,
 		"models": {

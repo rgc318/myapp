@@ -8,6 +8,7 @@ from .ai_api import chat_ai_v1 as chat_ai_v1_service
 from .ai_api import cleanup_excluded_ai_product_vectors_v1 as cleanup_excluded_ai_product_vectors_v1_service
 from .ai_api import create_ai_conversation_v1 as create_ai_conversation_v1_service
 from .ai_api import discard_ai_draft_v1 as discard_ai_draft_v1_service
+from .ai_api import execute_ai_draft_v1 as execute_ai_draft_v1_service
 from .ai_api import generate_ai_inventory_adjustment_draft_v1 as generate_ai_inventory_adjustment_draft_v1_service
 from .ai_api import generate_ai_purchase_order_draft_v1 as generate_ai_purchase_order_draft_v1_service
 from .ai_api import generate_ai_product_setup_draft_v1 as generate_ai_product_setup_draft_v1_service
@@ -31,6 +32,7 @@ from .ai_api import get_ai_model_policy_v1 as get_ai_model_policy_v1_service
 from .ai_api import get_ai_model_usage_summary_v1 as get_ai_model_usage_summary_v1_service
 from .ai_api import list_ai_audit_events_v1 as list_ai_audit_events_v1_service
 from .ai_api import list_ai_models_v1 as list_ai_models_v1_service
+from .ai_api import list_ai_selectable_models_v1 as list_ai_selectable_models_v1_service
 from .ai_api import list_ai_model_policies_v1 as list_ai_model_policies_v1_service
 from .ai_api import publish_ai_model_policy_v1 as publish_ai_model_policy_v1_service
 from .ai_api import rollback_ai_model_policy_v1 as rollback_ai_model_policy_v1_service
@@ -281,6 +283,7 @@ def chat_ai_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 	content: str | None = None,
+	model_alias: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: chat_ai_v1_service(
@@ -289,6 +292,7 @@ def chat_ai_v1(
 			company=company,
 			conversation_id=conversation_id,
 			content=content,
+			model_alias=model_alias,
 		),
 		success_code="AI_CHAT_COMPLETED",
 	)
@@ -300,12 +304,22 @@ def stream_ai_message_v1(
 	scenario: str | None = None,
 	company: str | None = None,
 	conversation_id: str | None = None,
+	model_alias: str | None = None,
 ):
 	return stream_ai_message_v1_service(
 		content=content,
 		scenario=scenario,
 		company=company,
 		conversation_id=conversation_id,
+		model_alias=model_alias,
+	)
+
+
+@frappe.whitelist()
+def list_ai_selectable_models_v1():
+	return _handle_gateway_call(
+		list_ai_selectable_models_v1_service,
+		success_code="AI_SELECTABLE_MODELS_FETCHED",
 	)
 
 
@@ -340,10 +354,11 @@ def generate_ai_sales_order_draft_v1(
 	content: str,
 	company: str | None = None,
 	conversation_id: str | None = None,
+	model_alias: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: generate_ai_sales_order_draft_v1_service(
-			content=content, company=company, conversation_id=conversation_id,
+			content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
 		),
 		success_code="AI_SALES_ORDER_DRAFT_CREATED",
 	)
@@ -354,10 +369,11 @@ def generate_ai_purchase_order_draft_v1(
 	content: str,
 	company: str | None = None,
 	conversation_id: str | None = None,
+	model_alias: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: generate_ai_purchase_order_draft_v1_service(
-			content=content, company=company, conversation_id=conversation_id,
+			content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
 		),
 		success_code="AI_PURCHASE_ORDER_DRAFT_CREATED",
 	)
@@ -368,10 +384,11 @@ def generate_ai_inventory_adjustment_draft_v1(
 	content: str,
 	company: str | None = None,
 	conversation_id: str | None = None,
+	model_alias: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: generate_ai_inventory_adjustment_draft_v1_service(
-			content=content, company=company, conversation_id=conversation_id,
+			content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
 		),
 		success_code="AI_INVENTORY_ADJUSTMENT_DRAFT_CREATED",
 	)
@@ -382,10 +399,11 @@ def generate_ai_product_setup_draft_v1(
 	content: str,
 	company: str | None = None,
 	conversation_id: str | None = None,
+	model_alias: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: generate_ai_product_setup_draft_v1_service(
-			content=content, company=company, conversation_id=conversation_id,
+			content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
 		),
 		success_code="AI_PRODUCT_SETUP_DRAFT_CREATED",
 	)
@@ -433,6 +451,20 @@ def discard_ai_draft_v1(draft_id: str):
 	return _handle_gateway_call(
 		lambda: discard_ai_draft_v1_service(draft_id=draft_id),
 		success_code="AI_DRAFT_DISCARDED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def execute_ai_draft_v1(
+	draft_id: str, expected_version: int, confirmed: bool | int = False,
+	request_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: execute_ai_draft_v1_service(
+			draft_id=draft_id, expected_version=expected_version,
+			confirmed=confirmed, request_id=request_id,
+		),
+		success_code="AI_DRAFT_EXECUTED",
 	)
 
 

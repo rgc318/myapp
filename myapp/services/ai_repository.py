@@ -589,6 +589,7 @@ def refresh_ai_usage_daily_metrics(*, days: int = 3) -> dict:
 
 
 def _serialize_draft(row, lines=None) -> dict:
+	execution_result = _safe_json_loads(getattr(row, "execution_result_json", None), {})
 	return {
 		"name": row.name,
 		"conversation": row.conversation,
@@ -600,6 +601,14 @@ def _serialize_draft(row, lines=None) -> dict:
 		"version": cint(row.version_no),
 		"payload": _safe_json_loads(row.payload_json, {}),
 		"validation": _safe_json_loads(row.validation_json, {}),
+		"execution": {
+			"request_id": getattr(row, "execution_request_id", None),
+			"executed_by": getattr(row, "executed_by", None),
+			"executed_at": str(getattr(row, "executed_at", None) or "") or None,
+			"target_doctype": getattr(row, "target_doctype", None),
+			"target_name": getattr(row, "target_name", None),
+			"result": execution_result,
+		} if getattr(row, "target_name", None) or execution_result else None,
 		"lines": lines or [],
 		"creation": str(row.creation or "") or None,
 		"modified": str(row.modified or "") or None,
@@ -674,7 +683,9 @@ def get_draft(*, draft_id: str, user: str) -> dict:
 	rows = frappe.db.sql(
 		f"""
 		SELECT name, conversation, source_run, draft_type, status, company, title,
-			version_no, payload_json, validation_json, creation, modified
+			version_no, payload_json, validation_json, execution_request_id,
+			executed_by, executed_at, target_doctype, target_name,
+			execution_result_json, creation, modified
 		FROM `{DRAFT_TABLE}` WHERE name = %s AND owner = %s LIMIT 1
 		""",
 		(draft_id, user),
@@ -691,7 +702,7 @@ def list_drafts(
 ) -> dict:
 	_ensure_tables()
 	resolved_status = str(status or "draft").strip().lower()
-	if resolved_status not in {"draft", "handed_off", "discarded", "all"}:
+	if resolved_status not in {"draft", "executed", "handed_off", "discarded", "all"}:
 		frappe.throw(_("AI 草稿状态筛选不正确。"))
 	resolved_type = str(draft_type or "").strip()
 	if resolved_type and resolved_type not in {
@@ -716,7 +727,9 @@ def list_drafts(
 	rows = frappe.db.sql(
 		f"""
 		SELECT name, conversation, source_run, draft_type, status, company, title,
-			version_no, payload_json, validation_json, creation, modified
+			version_no, payload_json, validation_json, execution_request_id,
+			executed_by, executed_at, target_doctype, target_name,
+			execution_result_json, creation, modified
 		FROM `{DRAFT_TABLE}`
 		WHERE {where_sql}
 		ORDER BY modified DESC, creation DESC
@@ -740,6 +753,31 @@ def mark_draft_handed_off(*, draft_id: str, user: str) -> dict:
 			f"UPDATE `{DRAFT_TABLE}` SET status = 'handed_off', modified = %s, modified_by = %s WHERE name = %s",
 			(now_datetime(), user, draft_id),
 		)
+	return get_draft(draft_id=draft_id, user=user)
+
+
+def mark_draft_executed(
+	*, draft_id: str, user: str, request_id: str | None,
+	target_doctype: str, target_name: str, result: dict,
+) -> dict:
+	draft = get_draft(draft_id=draft_id, user=user)
+	if draft["status"] == "executed":
+		return draft
+	if draft["status"] != "draft":
+		frappe.throw(_("只有 draft 状态的 AI 草稿可以执行。"))
+	now = now_datetime()
+	frappe.db.sql(
+		f"""
+		UPDATE `{DRAFT_TABLE}` SET status = 'executed', modified = %s, modified_by = %s,
+			execution_request_id = %s, executed_by = %s, executed_at = %s,
+			target_doctype = %s, target_name = %s, execution_result_json = %s
+		WHERE name = %s AND owner = %s AND status = 'draft'
+		""",
+		(
+			now, user, request_id, user, now, target_doctype, target_name,
+			frappe.as_json(result), draft_id, user,
+		),
+	)
 	return get_draft(draft_id=draft_id, user=user)
 
 

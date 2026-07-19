@@ -8,11 +8,31 @@ from myapp.services.ai_repository import (
 	_nearest_rank_percentile,
 	get_conversation,
 	list_drafts,
+	mark_draft_executed,
 	submit_feedback,
 )
 
 
 class TestAiRepository(TestCase):
+	def test_mark_draft_executed_persists_business_receipt(self):
+		draft = {
+			"name": "AI-DRAFT-1", "status": "draft", "version": 2,
+		}
+		executed = {**draft, "status": "executed", "execution": {"target_name": "SO-001"}}
+		with patch.object(ai_repository, "get_draft", side_effect=[draft, executed]), patch.object(
+			ai_repository, "frappe",
+		) as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value="2026-07-18 12:00:00",
+		):
+			result = mark_draft_executed(
+				draft_id="AI-DRAFT-1", user="user@example.com", request_id="REQ-1",
+				target_doctype="Sales Order", target_name="SO-001",
+				result={"status": "success", "order": "SO-001"},
+			)
+
+		self.assertEqual(result["status"], "executed")
+		parameters = mock_frappe.db.sql.call_args.args[1]
+		self.assertEqual(parameters[2:8], ("REQ-1", "user@example.com", "2026-07-18 12:00:00", "Sales Order", "SO-001", mock_frappe.as_json.return_value))
 	def test_nearest_rank_percentile_uses_sorted_observations(self):
 		values = [900, 100, 500, 300, 700]
 

@@ -30,3 +30,4 @@ myapp.patches.create_ai_model_governance_tables
 myapp.patches.extend_ai_model_usage_metrics
 myapp.patches.create_ai_vector_governance_tables
 myapp.patches.create_ai_data_task_table
+myapp.patches.extend_ai_draft_execution_fields

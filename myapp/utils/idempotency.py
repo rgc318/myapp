@@ -49,6 +49,10 @@ def _get_current_request_id(request_id) -> str | None:
 	return normalize_request_id(request_id)
 
 
+def get_current_request_id(request_id=None) -> str | None:
+	return _get_current_request_id(request_id)
+
+
 def build_idempotency_key(namespace: str, request_id: str) -> str:
 	return f"myapp:idempotency:{namespace}:{request_id}"
 

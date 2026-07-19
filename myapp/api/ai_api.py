@@ -3,6 +3,7 @@ from myapp.services.ai_service import (
 	chat_ai_v1 as chat_ai_v1_service,
 	create_ai_conversation_v1 as create_ai_conversation_v1_service,
 	discard_ai_draft_v1 as discard_ai_draft_v1_service,
+	execute_ai_draft_v1 as execute_ai_draft_v1_service,
 	generate_ai_inventory_adjustment_draft_v1 as generate_ai_inventory_adjustment_draft_v1_service,
 	generate_ai_sales_order_draft_v1 as generate_ai_sales_order_draft_v1_service,
 	generate_ai_purchase_order_draft_v1 as generate_ai_purchase_order_draft_v1_service,
@@ -41,6 +42,7 @@ from myapp.services.ai_model_governance_service import (
 	get_ai_model_usage_summary_v1 as get_ai_model_usage_summary_v1_service,
 	list_ai_audit_events_v1 as list_ai_audit_events_v1_service,
 	list_ai_models_v1 as list_ai_models_v1_service,
+	list_ai_selectable_models_v1 as list_ai_selectable_models_v1_service,
 	list_ai_model_policies_v1 as list_ai_model_policies_v1_service,
 	publish_ai_model_policy_v1 as publish_ai_model_policy_v1_service,
 	rollback_ai_model_policy_v1 as rollback_ai_model_policy_v1_service,
@@ -82,6 +84,7 @@ def chat_ai_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 	content: str | None = None,
+	model_alias: str | None = None,
 ):
 	return chat_ai_v1_service(
 		messages=messages,
@@ -89,6 +92,7 @@ def chat_ai_v1(
 		company=company,
 		conversation_id=conversation_id,
 		content=content,
+		model_alias=model_alias,
 	)
 
 
@@ -97,12 +101,14 @@ def stream_ai_message_v1(
 	scenario: str | None = None,
 	company: str | None = None,
 	conversation_id: str | None = None,
+	model_alias: str | None = None,
 ):
 	return stream_ai_message_v1_service(
 		content=content,
 		scenario=scenario,
 		company=company,
 		conversation_id=conversation_id,
+		model_alias=model_alias,
 	)
 
 
@@ -128,9 +134,10 @@ def generate_ai_sales_order_draft_v1(
 	content: str,
 	company: str | None = None,
 	conversation_id: str | None = None,
+	model_alias: str | None = None,
 ):
 	return generate_ai_sales_order_draft_v1_service(
-		content=content, company=company, conversation_id=conversation_id,
+		content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
 	)
 
 
@@ -138,9 +145,10 @@ def generate_ai_purchase_order_draft_v1(
 	content: str,
 	company: str | None = None,
 	conversation_id: str | None = None,
+	model_alias: str | None = None,
 ):
 	return generate_ai_purchase_order_draft_v1_service(
-		content=content, company=company, conversation_id=conversation_id,
+		content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
 	)
 
 
@@ -148,9 +156,10 @@ def generate_ai_inventory_adjustment_draft_v1(
 	content: str,
 	company: str | None = None,
 	conversation_id: str | None = None,
+	model_alias: str | None = None,
 ):
 	return generate_ai_inventory_adjustment_draft_v1_service(
-		content=content, company=company, conversation_id=conversation_id,
+		content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
 	)
 
 
@@ -158,10 +167,15 @@ def generate_ai_product_setup_draft_v1(
 	content: str,
 	company: str | None = None,
 	conversation_id: str | None = None,
+	model_alias: str | None = None,
 ):
 	return generate_ai_product_setup_draft_v1_service(
-		content=content, company=company, conversation_id=conversation_id,
+		content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
 	)
+
+
+def list_ai_selectable_models_v1():
+	return list_ai_selectable_models_v1_service()
 
 
 def get_ai_draft_v1(draft_id: str):
@@ -187,6 +201,16 @@ def update_ai_draft_v1(draft_id: str, payload):
 
 def discard_ai_draft_v1(draft_id: str):
 	return discard_ai_draft_v1_service(draft_id=draft_id)
+
+
+def execute_ai_draft_v1(
+	draft_id: str, expected_version: int, confirmed: bool | int = False,
+	request_id: str | None = None,
+):
+	return execute_ai_draft_v1_service(
+		draft_id=draft_id, expected_version=expected_version,
+		confirmed=confirmed, request_id=request_id,
+	)
 
 
 def list_ai_draft_versions_v1(draft_id: str):

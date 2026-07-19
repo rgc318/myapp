@@ -243,6 +243,7 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 - `archive_ai_conversation_v1`（已实现）
 - `chat_ai_v1`（已实现同步事件契约）
 - `stream_ai_message_v1`（已实现真正 SSE）
+- `list_ai_selectable_models_v1`（已实现登录用户可选模型列表）
 - `get_ai_draft_v1`
 - `update_ai_draft_v1`
 - `validate_ai_draft_v1`
@@ -260,7 +261,9 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 
 `chat_ai_v1` 保留同步兼容契约；Web 默认使用 `stream_ai_message_v1`，通过 POST、JWT Bearer 和 `ReadableStream` 增量消费 SSE。浏览器不使用无法携带 POST body / Authorization 的原生 `EventSource`。流中断会把 Run 标为失败，不会生成半条成功消息。
 
-`prepare_ai_draft_handoff_v1` 只返回可被现有订单/库存编辑器预填的安全载荷与当前校验结果；它不创建正式单据。
+模型选择同时支持“自动选择（策略）”和用户显式固定模型。Frappe 注册表从 Orchestrator 同步当前 LiteLLM Key 可见的全部模型，普通用户只能通过 `list_ai_selectable_models_v1` 选择 `active / validated` 的聊天能力模型；Embedding、停用、退役或缺失模型不会暴露。显式 `model_alias` 在进入 Orchestrator 前再次由 Frappe 校验，并应用于同步 Chat、SSE 及四类草稿；该次请求不允许静默切换到其他模型，便于用户确认、成本归属和运行审计。浏览器始终不能直接访问 LiteLLM。
+
+`prepare_ai_draft_handoff_v1` 保留为复杂场景进入完整业务编辑器的次级路径。默认闭环使用 `execute_ai_draft_v1`：当前用户明确确认并提交所见草稿版本后，Frappe 再次检查 owner、状态、版本和 `ready_for_handoff`，调用既有商品、销售、采购或库存领域服务，并把正式业务对象回执保存到草稿。模型仍不能自行执行正式写操作。
 
 当前销售订单草稿已实现 `generate_ai_sales_order_draft_v1`、`get_ai_draft_v1` 和 `prepare_ai_draft_handoff_v1`。模型只提取客户/商品称呼、数量、单位、日期和备注候选；Frappe 再按当前用户权限解析真实 Customer、Item、Warehouse，使用商品接口返回的 UOM、换算系数和当前参考价，并把歧义保存为候选与校验错误。模型建议价格不会直接采用。只有 `ready_for_handoff=true` 的草稿可交接，Web 使用一次性 sessionStorage 载荷预填现有销售订单页面；用户仍需主动点击创建，既有 v2 接口会再次校验。
 
@@ -274,7 +277,7 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 
 库存调整草稿使用独立 `inventory_adjustment_draft` Schema 和 `/internal/v1/drafts/inventory-adjustment`，只允许单个库存商品的 `set_target`、`increase`、`decrease` 三种候选语义。Frappe 按当前用户和公司权限解析真实 Item / Warehouse，使用 `item_context=inventory` 和共享 UOM 换算重新计算实时库存、目标库存、差异数量与估值参考；调整原因必填，减少后目标库存不得为负。交接只把库存单位下的安全目标数量预填到现有 `/inventory/adjustments` 页面，AI 不调用 `reconcile_inventory_stock_v1`，也不创建或提交 `Stock Entry` / `Stock Reconciliation`。
 
-商品建档草稿使用独立 `product_setup_draft` Schema 和 `/internal/v1/drafts/product-setup`，从自然语言提取商品名称/编码、商品分类、品牌、库存单位、标准售价、初始库存、仓库、估值价、币种和描述候选。Frappe 重新校验 Item 创建权限、商品名称/编码重复、Item Group、Brand、UOM、公司仓库、Item Price 与 Stock Entry 权限。售价和库存估值价严格分离；初始库存大于 0 时必须提供当前公司叶子仓库和估值价。交接只预填 `/master-data/products` 新增商品表单，用户主动保存后才复用幂等 `create_product_v2` 原子创建 Item、价格和可选初始库存。
+商品建档草稿使用独立 `product_setup_draft` Schema 和 `/internal/v1/drafts/product-setup`，从自然语言提取商品名称/编码、商品分类、品牌、库存基准单位、标准售价、初始库存、仓库、默认采购价、币种和描述候选。Frappe 重新校验 Item 创建权限、商品名称/编码重复、Item Group、Brand、UOM、公司仓库、Item Price 与 Stock Entry 权限。初始库存统一按库存基准单位写入，不允许在草稿中另选一套未配置换算关系的入库单位；初始库存大于 0 时必须提供当前公司叶子仓库和默认采购价。正式执行时默认采购价同时写入 Standard Buying，并作为首次入库成本，标准售价不会用于库存计价。
 
 ## 10. 可观测性、治理与防护
 

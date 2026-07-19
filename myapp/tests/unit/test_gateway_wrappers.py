@@ -70,12 +70,14 @@ from myapp.api.gateway import (
 	list_ai_conversations_v1,
 	list_ai_data_tasks_v1,
 	list_ai_models_v1,
+	list_ai_selectable_models_v1,
 	list_ai_vector_releases_v1,
 	list_ai_model_policies_v1,
 	list_stock_ledger_entries_v1,
 	reconcile_inventory_stock_v1,
 	resolve_ai_scenario_v1,
 	execute_ai_data_task_v1,
+	execute_ai_draft_v1,
 	submit_inventory_stock_count_v1,
 	transfer_inventory_stock_v1,
 	list_cashflow_entries_v1,
@@ -177,6 +179,7 @@ class TestGatewayWrappers(TestCase):
 		from myapp.api.api import get_ai_model_governance_overview_v1 as aggregated_governance_overview
 		from myapp.api.api import get_ai_model_policy_v1 as aggregated_policy_detail
 		from myapp.api.api import list_ai_models_v1 as aggregated_model_list
+		from myapp.api.api import list_ai_selectable_models_v1 as aggregated_selectable_models
 		from myapp.api.api import update_ai_model_registry_v1 as aggregated_model_update
 		from myapp.api.api import list_ai_vector_releases_v1 as aggregated_vector_releases
 		from myapp.api.api import list_ai_data_tasks_v1 as aggregated_data_tasks
@@ -186,6 +189,7 @@ class TestGatewayWrappers(TestCase):
 		self.assertIs(aggregated_governance_overview, get_ai_model_governance_overview_v1)
 		self.assertIs(aggregated_policy_detail, get_ai_model_policy_v1)
 		self.assertIs(aggregated_model_list, list_ai_models_v1)
+		self.assertIs(aggregated_selectable_models, list_ai_selectable_models_v1)
 		self.assertIs(aggregated_model_update, update_ai_model_registry_v1)
 		self.assertIs(aggregated_vector_releases, list_ai_vector_releases_v1)
 		self.assertIs(aggregated_data_tasks, list_ai_data_tasks_v1)
@@ -205,6 +209,7 @@ class TestGatewayWrappers(TestCase):
 			get_ai_model_governance_overview_v1,
 			get_ai_model_policy_v1,
 			list_ai_models_v1,
+			list_ai_selectable_models_v1,
 			list_ai_model_policies_v1,
 			update_ai_model_registry_v1,
 			list_ai_vector_releases_v1,
@@ -336,6 +341,7 @@ class TestGatewayWrappers(TestCase):
 			conversation_id="AI-CONV-1",
 			scenario="product_search",
 			company="rgc (Demo)",
+			model_alias="opencode-glm-5.2",
 		)
 
 		mock_chat_service.assert_called_once_with(
@@ -344,7 +350,16 @@ class TestGatewayWrappers(TestCase):
 			conversation_id="AI-CONV-1",
 			scenario="product_search",
 			company="rgc (Demo)",
+			model_alias="opencode-glm-5.2",
 		)
+
+	@patch("myapp.api.gateway.list_ai_selectable_models_v1_service")
+	def test_list_ai_selectable_models_v1_uses_public_model_service(self, mock_model_service):
+		mock_model_service.return_value = {"status": "success", "data": {"items": []}}
+
+		list_ai_selectable_models_v1()
+
+		mock_model_service.assert_called_once_with()
 
 	@patch("myapp.api.gateway.generate_ai_inventory_adjustment_draft_v1_service")
 	def test_generate_ai_inventory_adjustment_draft_passes_company_scope(self, mock_draft_service):
@@ -360,6 +375,7 @@ class TestGatewayWrappers(TestCase):
 			content="把相机库存调整到 8 个",
 			company="rgc (Demo)",
 			conversation_id="AI-CONV-1",
+			model_alias=None,
 		)
 
 	@patch("myapp.api.gateway.resolve_ai_scenario_v1_service")
@@ -371,6 +387,18 @@ class TestGatewayWrappers(TestCase):
 		resolve_ai_scenario_v1(content="新增商品传承结晶")
 
 		mock_resolve_service.assert_called_once_with(content="新增商品传承结晶")
+
+	@patch("myapp.api.gateway.execute_ai_draft_v1_service")
+	def test_execute_ai_draft_passes_confirmation_and_version(self, mock_execute_service):
+		mock_execute_service.return_value = {"status": "success", "data": {"execution": {}}}
+
+		execute_ai_draft_v1(
+			draft_id="AI-DRAFT-1", expected_version=3, confirmed=True, request_id="REQ-1",
+		)
+
+		mock_execute_service.assert_called_once_with(
+			draft_id="AI-DRAFT-1", expected_version=3, confirmed=True, request_id="REQ-1",
+		)
 
 	@patch("myapp.api.gateway.generate_ai_product_setup_draft_v1_service")
 	def test_generate_ai_product_setup_draft_passes_company_scope(self, mock_draft_service):
@@ -388,6 +416,7 @@ class TestGatewayWrappers(TestCase):
 			content="新增商品传承结晶",
 			company="rgc (Demo)",
 			conversation_id="AI-CONV-1",
+			model_alias=None,
 		)
 
 	@patch("myapp.api.gateway.get_ai_product_vector_status_v1_service")
