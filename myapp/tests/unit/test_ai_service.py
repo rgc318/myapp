@@ -12,6 +12,7 @@ from myapp.services.ai_service import (
 	_build_product_setup_draft,
 	_execute_ai_draft_payload,
 	_build_report_query_dsl,
+	_update_ai_draft_once,
 	_hybrid_rerank_product_rows,
 	_extract_product_search_terms,
 	_infer_ai_scenario,
@@ -30,6 +31,7 @@ from myapp.services.ai_service import (
 	list_ai_drafts_v1,
 	stream_ai_message_v1,
 	submit_ai_feedback_v1,
+	update_ai_draft_v1,
 )
 from myapp.utils.api_response import UpstreamServiceUnavailableError, map_exception_to_error
 
@@ -162,6 +164,122 @@ class TestAiService(TestCase):
 			target_doctype="Sales Order", target_name="SO-001",
 			result={"status": "success", "order": "SO-001"},
 		)
+
+	@patch("myapp.services.ai_service._update_ai_draft_once")
+	@patch(
+		"myapp.services.ai_service.run_idempotent",
+		side_effect=lambda _namespace, _request_id, callback, **_kwargs: callback(),
+	)
+	@patch("myapp.services.ai_service.get_current_request_id", return_value="REQ-UPDATE-1")
+	def test_update_ai_draft_uses_expected_version_and_idempotency(
+		self, _request_id, mock_idempotent, mock_update_once,
+	):
+		mock_update_once.return_value = {"status": "success", "data": {"version": 3}}
+
+		result = update_ai_draft_v1(
+			draft_id="AI-DRAFT-1",
+			payload={"remarks": "修改后"},
+			expected_version=2,
+			request_id="REQ-UPDATE-1",
+		)
+
+		self.assertEqual(result["data"]["version"], 3)
+		mock_update_once.assert_called_once_with(
+			draft_id="AI-DRAFT-1",
+			payload={"remarks": "修改后"},
+			expected_version=2,
+			change_source="user_edit",
+		)
+		self.assertEqual(mock_idempotent.call_args.args[:2], ("update_ai_draft_v1", "REQ-UPDATE-1"))
+
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_update_sales_draft_preserves_edited_item_fields_and_version(self, _user):
+		draft = {"draft_type": "sales_order", "company": "Demo Company"}
+		resolved_item = {
+			"item_code": "ITEM-001", "item_name": "相机", "qty": 5,
+			"uom": "Unit", "price": 120, "warehouse": "Stores - DC", "warnings": [],
+		}
+		updated = {"name": "AI-DRAFT-1", "version": 3}
+		with patch("myapp.services.ai_service.ai_repository.get_draft", return_value=draft), patch(
+			"myapp.services.ai_service._resolve_sales_draft_customer",
+			return_value=({"name": "CUST-1", "display_name": "客户A"}, []),
+		), patch(
+			"myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - DC",
+		), patch(
+			"myapp.services.ai_service._resolve_sales_draft_item", return_value=resolved_item,
+		), patch(
+			"myapp.services.ai_service.ai_repository.update_draft", return_value=updated,
+		) as mock_update, patch("myapp.services.ai_service.frappe"):
+			result = _update_ai_draft_once(
+				draft_id="AI-DRAFT-1",
+				payload={
+					"customer": "CUST-1", "warehouse": "Stores - DC",
+					"transaction_date": "2026-07-19", "delivery_date": "2026-07-20",
+					"items": [{"item_code": "ITEM-001", "qty": 5, "price": 120}],
+				},
+				expected_version=2,
+			)
+
+		self.assertEqual(result["data"]["version"], 3)
+		call = mock_update.call_args.kwargs
+		self.assertEqual(call["expected_version"], 2)
+		self.assertEqual(call["payload"]["items"][0]["qty"], 5)
+		self.assertEqual(call["payload"]["items"][0]["price"], 120)
+
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_update_purchase_draft_preserves_currency_reference_and_version(self, _user):
+		draft = {"draft_type": "purchase_order", "company": "Demo Company"}
+		resolved_item = {
+			"item_code": "ITEM-001", "item_name": "相机", "qty": 3,
+			"uom": "Unit", "price": 80, "warehouse": "Stores - DC", "warnings": [],
+		}
+		updated = {"name": "AI-DRAFT-1", "version": 3}
+		with patch("myapp.services.ai_service.ai_repository.get_draft", return_value=draft), patch(
+			"myapp.services.ai_service._resolve_purchase_draft_supplier",
+			return_value=({"name": "SUP-1", "display_name": "供应商A"}, []),
+		), patch(
+			"myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - DC",
+		), patch(
+			"myapp.services.ai_service._resolve_purchase_draft_item", return_value=resolved_item,
+		), patch(
+			"myapp.services.ai_service.ai_repository.update_draft", return_value=updated,
+		) as mock_update, patch("myapp.services.ai_service.frappe"):
+			result = _update_ai_draft_once(
+				draft_id="AI-DRAFT-1",
+				payload={
+					"supplier": "SUP-1", "warehouse": "Stores - DC", "currency": "USD",
+					"supplier_ref": "SUP-REF-001", "transaction_date": "2026-07-19",
+					"schedule_date": "2026-07-22", "items": [{"item_code": "ITEM-001", "qty": 3}],
+				},
+				expected_version=2,
+			)
+
+		self.assertEqual(result["data"]["version"], 3)
+		call = mock_update.call_args.kwargs
+		self.assertEqual(call["expected_version"], 2)
+		self.assertEqual(call["payload"]["currency"], "USD")
+		self.assertEqual(call["payload"]["supplier_ref"], "SUP-REF-001")
+
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_update_inventory_and_product_drafts_pass_expected_version(self, _user):
+		for draft_type, builder_name in (
+			("inventory_adjustment", "_build_inventory_adjustment_draft"),
+			("product_setup", "_build_product_setup_draft"),
+		):
+			with self.subTest(draft_type=draft_type), patch(
+				"myapp.services.ai_service.ai_repository.get_draft",
+				return_value={"draft_type": draft_type, "company": "Demo Company"},
+			), patch(
+				f"myapp.services.ai_service.{builder_name}",
+				return_value=({"company": "Demo Company"}, {"ready_for_handoff": True}),
+			), patch(
+				"myapp.services.ai_service.ai_repository.update_draft",
+				return_value={"name": "AI-DRAFT-1", "version": 3},
+			) as mock_update, patch("myapp.services.ai_service.frappe"):
+				_update_ai_draft_once(
+					draft_id="AI-DRAFT-1", payload={}, expected_version=2,
+				)
+				self.assertEqual(mock_update.call_args.kwargs["expected_version"], 2)
 	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	def test_existing_conversation_uses_its_persisted_company_when_request_omits_company(

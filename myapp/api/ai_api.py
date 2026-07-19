@@ -195,8 +195,13 @@ def prepare_ai_draft_handoff_v1(draft_id: str):
 	return prepare_ai_draft_handoff_v1_service(draft_id=draft_id)
 
 
-def update_ai_draft_v1(draft_id: str, payload):
-	return update_ai_draft_v1_service(draft_id=draft_id, payload=payload)
+def update_ai_draft_v1(
+	draft_id: str, payload, expected_version: int, request_id: str | None = None,
+):
+	return update_ai_draft_v1_service(
+		draft_id=draft_id, payload=payload,
+		expected_version=expected_version, request_id=request_id,
+	)
 
 
 def discard_ai_draft_v1(draft_id: str):
@@ -217,8 +222,14 @@ def list_ai_draft_versions_v1(draft_id: str):
 	return list_ai_draft_versions_v1_service(draft_id=draft_id)
 
 
-def restore_ai_draft_version_v1(draft_id: str, version: int):
-	return restore_ai_draft_version_v1_service(draft_id=draft_id, version=version)
+def restore_ai_draft_version_v1(
+	draft_id: str, version: int, expected_version: int,
+	request_id: str | None = None,
+):
+	return restore_ai_draft_version_v1_service(
+		draft_id=draft_id, version=version,
+		expected_version=expected_version, request_id=request_id,
+	)
 
 
 def get_ai_product_vector_status_v1(failure_limit: int = 20):

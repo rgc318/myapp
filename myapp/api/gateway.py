@@ -439,9 +439,15 @@ def prepare_ai_draft_handoff_v1(draft_id: str):
 
 
 @frappe.whitelist(methods=["POST"])
-def update_ai_draft_v1(draft_id: str, payload):
+def update_ai_draft_v1(
+	draft_id: str, payload, expected_version: int,
+	request_id: str | None = None,
+):
 	return _handle_gateway_call(
-		lambda: update_ai_draft_v1_service(draft_id=draft_id, payload=payload),
+		lambda: update_ai_draft_v1_service(
+			draft_id=draft_id, payload=payload,
+			expected_version=expected_version, request_id=request_id,
+		),
 		success_code="AI_DRAFT_UPDATED",
 	)
 
@@ -477,9 +483,15 @@ def list_ai_draft_versions_v1(draft_id: str):
 
 
 @frappe.whitelist(methods=["POST"])
-def restore_ai_draft_version_v1(draft_id: str, version: int):
+def restore_ai_draft_version_v1(
+	draft_id: str, version: int, expected_version: int,
+	request_id: str | None = None,
+):
 	return _handle_gateway_call(
-		lambda: restore_ai_draft_version_v1_service(draft_id=draft_id, version=version),
+		lambda: restore_ai_draft_version_v1_service(
+			draft_id=draft_id, version=version,
+			expected_version=expected_version, request_id=request_id,
+		),
 		success_code="AI_DRAFT_VERSION_RESTORED",
 	)
 

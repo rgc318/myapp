@@ -267,7 +267,7 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 
 当前销售订单草稿已实现 `generate_ai_sales_order_draft_v1`、`get_ai_draft_v1` 和 `prepare_ai_draft_handoff_v1`。模型只提取客户/商品称呼、数量、单位、日期和备注候选；Frappe 再按当前用户权限解析真实 Customer、Item、Warehouse，使用商品接口返回的 UOM、换算系数和当前参考价，并把歧义保存为候选与校验错误。模型建议价格不会直接采用。只有 `ready_for_handoff=true` 的草稿可交接，Web 使用一次性 sessionStorage 载荷预填现有销售订单页面；用户仍需主动点击创建，既有 v2 接口会再次校验。
 
-草稿生命周期已补充 `update_ai_draft_v1` 和 `discard_ai_draft_v1`。人工修改保存后，Frappe 不信任浏览器提交的商品事实或价格，会重新解析真实主数据、重建 Draft Line、递增版本并刷新 validation；行审计记录 `updated_by_user`。只有 `draft` 状态允许修改、放弃或交接，`handed_off` 状态不可再次修改或放弃。Web 草稿卡片提供结构化编辑表单、校验错误、版本和状态展示。
+草稿生命周期已补充 `update_ai_draft_v1` 和 `discard_ai_draft_v1`。人工修改保存后，Frappe 不信任浏览器提交的商品事实或价格，会重新解析真实主数据、重建 Draft Line、递增版本并刷新 validation；行审计记录 `updated_by_user`。更新和历史恢复必须提交用户当前看到的 `expected_version` 与幂等键，Repository 对草稿行执行 `FOR UPDATE` 后比较版本，防止多标签页旧表单覆盖新版本，并避免网络重试重复生成版本。只有 `draft` 状态允许修改、放弃或交接，`handed_off` 状态不可再次修改或放弃。Web 草稿卡片提供结构化编辑表单、校验错误、版本和状态展示。
 
 版本治理使用不可变 `MyApp AI Draft Version` 快照。每次生成、人工修改或历史恢复都会保存 payload、validation、变更来源、操作者和版本号；`list_ai_draft_versions_v1` 返回字段与商品行差异。`restore_ai_draft_version_v1` 不直接覆盖当前 JSON，而是把历史 payload 重新送入当前主数据解析和校验流程，并创建一个新的版本，避免恢复旧价格、失效仓库或过期 UOM。
 

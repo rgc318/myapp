@@ -801,20 +801,41 @@ def _insert_draft_version(
 
 
 def update_draft(
-	*, draft_id: str, user: str, payload: dict, validation: dict, change_source: str = "user_edit",
+	*, draft_id: str, user: str, payload: dict, validation: dict,
+	expected_version: int, change_source: str = "user_edit",
 ) -> dict:
-	draft = get_draft(draft_id=draft_id, user=user)
-	if draft["status"] != "draft":
+	_ensure_tables()
+	locked_rows = frappe.db.sql(
+		f"""
+		SELECT status, version_no
+		FROM `{DRAFT_TABLE}`
+		WHERE name = %s AND owner = %s
+		LIMIT 1
+		FOR UPDATE
+		""",
+		(draft_id, user),
+		as_dict=True,
+	)
+	if not locked_rows:
+		raise frappe.PermissionError(_("AI 草稿不存在或无权访问。"))
+	locked = locked_rows[0]
+	if locked.status != "draft":
 		frappe.throw(_("只有 draft 状态的 AI 草稿可以修改。"))
+	expected_version = cint(expected_version)
+	if expected_version < 1 or cint(locked.version_no) != expected_version:
+		frappe.throw(_("草稿版本已变化，请重新打开最新版本后再保存。"))
 	now = now_datetime()
-	next_version = cint(draft["version"]) + 1
+	next_version = expected_version + 1
 	frappe.db.sql(
 		f"""
 		UPDATE `{DRAFT_TABLE}` SET modified = %s, modified_by = %s,
-			version_no = version_no + 1, payload_json = %s, validation_json = %s,
+			version_no = %s, payload_json = %s, validation_json = %s,
 			retention_until = %s WHERE name = %s AND owner = %s
 		""",
-		(now, user, frappe.as_json(payload), frappe.as_json(validation), add_days(now, _retention_days()), draft_id, user),
+		(
+			now, user, next_version, frappe.as_json(payload), frappe.as_json(validation),
+			add_days(now, _retention_days()), draft_id, user,
+		),
 	)
 	frappe.db.sql(f"DELETE FROM `{DRAFT_LINE_TABLE}` WHERE draft = %s", (draft_id,))
 	for index, line in enumerate(payload.get("items") or [], 1):

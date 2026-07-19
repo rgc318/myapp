@@ -10,10 +10,53 @@ from myapp.services.ai_repository import (
 	list_drafts,
 	mark_draft_executed,
 	submit_feedback,
+	update_draft,
 )
 
 
 class TestAiRepository(TestCase):
+	def test_update_draft_locks_and_advances_the_expected_version(self):
+		updated = {"name": "AI-DRAFT-1", "status": "draft", "version": 3}
+		with patch.object(ai_repository, "get_draft", return_value=updated), patch.object(
+			ai_repository, "frappe",
+		) as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value="2026-07-19 12:00:00",
+		):
+			mock_frappe.db.sql.side_effect = [
+				[frappe._dict({"status": "draft", "version_no": 2})],
+				None,
+				None,
+				None,
+			]
+			result = update_draft(
+				draft_id="AI-DRAFT-1",
+				user="user@example.com",
+				payload={"remarks": "修改后"},
+				validation={"ready_for_handoff": True},
+				expected_version=2,
+			)
+
+		self.assertEqual(result["version"], 3)
+		self.assertIn("FOR UPDATE", mock_frappe.db.sql.call_args_list[0].args[0])
+		update_parameters = mock_frappe.db.sql.call_args_list[1].args[1]
+		self.assertEqual(update_parameters[2], 3)
+
+	def test_update_draft_rejects_a_stale_expected_version(self):
+		with patch.object(ai_repository, "frappe") as mock_frappe:
+			mock_frappe.db.sql.return_value = [
+				frappe._dict({"status": "draft", "version_no": 3}),
+			]
+			mock_frappe.throw.side_effect = frappe.ValidationError
+
+			with self.assertRaises(frappe.ValidationError):
+				update_draft(
+					draft_id="AI-DRAFT-1",
+					user="user@example.com",
+					payload={},
+					validation={},
+					expected_version=2,
+				)
+
 	def test_mark_draft_executed_persists_business_receipt(self):
 		draft = {
 			"name": "AI-DRAFT-1", "status": "draft", "version": 2,

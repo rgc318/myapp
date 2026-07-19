@@ -2133,7 +2133,9 @@ def list_ai_drafts_v1(
 	}
 
 
-def update_ai_draft_v1(draft_id: str, payload, _change_source: str = "user_edit"):
+def _update_ai_draft_once(
+	draft_id: str, payload, *, expected_version: int, change_source: str = "user_edit",
+):
 	user = _current_user()
 	draft = ai_repository.get_draft(draft_id=draft_id, user=user)
 	if isinstance(payload, str):
@@ -2147,7 +2149,8 @@ def update_ai_draft_v1(draft_id: str, payload, _change_source: str = "user_edit"
 			user=user,
 			payload=next_payload,
 			validation=validation,
-			change_source=_change_source,
+			expected_version=expected_version,
+			change_source=change_source,
 		)
 		frappe.db.commit()
 		return {
@@ -2162,7 +2165,8 @@ def update_ai_draft_v1(draft_id: str, payload, _change_source: str = "user_edit"
 			user=user,
 			payload=next_payload,
 			validation=validation,
-			change_source=_change_source,
+			expected_version=expected_version,
+			change_source=change_source,
 		)
 		frappe.db.commit()
 		return {
@@ -2213,7 +2217,8 @@ def update_ai_draft_v1(draft_id: str, payload, _change_source: str = "user_edit"
 		validation = {"ready_for_handoff": not errors, "errors": errors,
 			"warnings": [warning for row in items for warning in row.get("warnings") or []]}
 		updated = ai_repository.update_draft(
-			draft_id=draft_id, user=user, payload=next_payload, validation=validation, change_source=_change_source,
+			draft_id=draft_id, user=user, payload=next_payload, validation=validation,
+			expected_version=expected_version, change_source=change_source,
 		)
 		frappe.db.commit()
 		return {"status": "success", "message": _("AI 采购草稿已更新并重新校验。"), "data": updated}
@@ -2261,10 +2266,41 @@ def update_ai_draft_v1(draft_id: str, payload, _change_source: str = "user_edit"
 	}
 	updated = ai_repository.update_draft(
 		draft_id=draft_id, user=user, payload=next_payload, validation=validation,
-		change_source=_change_source,
+		expected_version=expected_version, change_source=change_source,
 	)
 	frappe.db.commit()
 	return {"status": "success", "message": _("AI 草稿已更新并重新校验。"), "data": updated}
+
+
+def update_ai_draft_v1(
+	draft_id: str, payload, expected_version: int,
+	request_id: str | None = None, _change_source: str = "user_edit",
+):
+	expected_version = cint(expected_version)
+	if expected_version < 1:
+		frappe.throw(_("草稿版本号不正确。"))
+	resolved_request_id = get_current_request_id(request_id)
+	namespace = (
+		"restore_ai_draft_version_v1"
+		if str(_change_source or "").startswith("restore_v")
+		else "update_ai_draft_v1"
+	)
+	return run_idempotent(
+		namespace,
+		resolved_request_id,
+		lambda: _update_ai_draft_once(
+			draft_id=draft_id,
+			payload=payload,
+			expected_version=expected_version,
+			change_source=_change_source,
+		),
+		request_payload={
+			"draft_id": draft_id,
+			"expected_version": expected_version,
+			"payload": payload,
+			"change_source": _change_source,
+		},
+	)
 
 
 def discard_ai_draft_v1(draft_id: str):
@@ -2361,11 +2397,18 @@ def list_ai_draft_versions_v1(draft_id: str):
 	}
 
 
-def restore_ai_draft_version_v1(draft_id: str, version: int):
+def restore_ai_draft_version_v1(
+	draft_id: str, version: int, expected_version: int,
+	request_id: str | None = None,
+):
 	user = _current_user()
 	snapshot = ai_repository.get_draft_version(draft_id=draft_id, user=user, version_no=version)
 	result = update_ai_draft_v1(
-		draft_id=draft_id, payload=snapshot["payload"], _change_source=f"restore_v{cint(version)}",
+		draft_id=draft_id,
+		payload=snapshot["payload"],
+		expected_version=expected_version,
+		request_id=request_id,
+		_change_source=f"restore_v{cint(version)}",
 	)
 	result["message"] = _("AI 草稿历史版本已重新校验并恢复为新版本。")
 	return result

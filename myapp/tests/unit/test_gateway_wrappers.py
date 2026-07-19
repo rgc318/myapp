@@ -76,10 +76,12 @@ from myapp.api.gateway import (
 	list_stock_ledger_entries_v1,
 	reconcile_inventory_stock_v1,
 	resolve_ai_scenario_v1,
+	restore_ai_draft_version_v1,
 	execute_ai_data_task_v1,
 	execute_ai_draft_v1,
 	submit_inventory_stock_count_v1,
 	transfer_inventory_stock_v1,
+	update_ai_draft_v1,
 	list_cashflow_entries_v1,
 	list_business_documents_v1,
 	list_print_doctypes_v1,
@@ -398,6 +400,34 @@ class TestGatewayWrappers(TestCase):
 
 		mock_execute_service.assert_called_once_with(
 			draft_id="AI-DRAFT-1", expected_version=3, confirmed=True, request_id="REQ-1",
+		)
+
+	@patch("myapp.api.gateway.update_ai_draft_v1_service")
+	def test_update_ai_draft_passes_expected_version_and_request_id(self, mock_update_service):
+		mock_update_service.return_value = {"status": "success", "data": {"version": 3}}
+
+		update_ai_draft_v1(
+			draft_id="AI-DRAFT-1", payload={"remarks": "修改后"},
+			expected_version=2, request_id="REQ-UPDATE-1",
+		)
+
+		mock_update_service.assert_called_once_with(
+			draft_id="AI-DRAFT-1", payload={"remarks": "修改后"},
+			expected_version=2, request_id="REQ-UPDATE-1",
+		)
+
+	@patch("myapp.api.gateway.restore_ai_draft_version_v1_service")
+	def test_restore_ai_draft_passes_current_and_target_versions(self, mock_restore_service):
+		mock_restore_service.return_value = {"status": "success", "data": {"version": 4}}
+
+		restore_ai_draft_version_v1(
+			draft_id="AI-DRAFT-1", version=1,
+			expected_version=3, request_id="REQ-RESTORE-1",
+		)
+
+		mock_restore_service.assert_called_once_with(
+			draft_id="AI-DRAFT-1", version=1,
+			expected_version=3, request_id="REQ-RESTORE-1",
 		)
 
 	@patch("myapp.api.gateway.generate_ai_product_setup_draft_v1_service")

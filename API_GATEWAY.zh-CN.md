@@ -204,9 +204,9 @@ Data Task 是商品主数据整理建议，不是 AI 直接写业务数据。Web
 - 执行与回滚均调用既有 `update_product_v2`；回滚还要求当前值仍等于 `proposed_value`，因此不会覆盖任务后的人工变更。
 - 每个关键动作写入 `MyApp AI Audit Event`，审计正文保存哈希和必要元数据，不保存供应商密钥。
 
-草稿支持查询、人工更新后重新校验、放弃、不可变版本列表和历史恢复。`restore_ai_draft_version_v1` 会用当前主数据重新校验历史 payload，并创建新版本，不直接覆盖当前快照。
+草稿支持查询、人工更新后重新校验、放弃、不可变版本列表和历史恢复。`update_ai_draft_v1` 必须使用 POST，携带 `draft_id`、完整 `payload`、用户打开编辑器时看到的 `expected_version` 和 `Idempotency-Key`；服务端锁定草稿行并校验版本，版本已变化时拒绝旧表单覆盖。`restore_ai_draft_version_v1` 同样必须携带目标历史 `version`、当前 `expected_version` 和幂等键；历史 payload 会用当前主数据重新校验并创建新版本，不直接覆盖当前快照。重复的同参数幂等请求返回已有结果，不重复递增草稿版本。
 
-`list_ai_drafts_v1` 只返回当前登录用户自己的草稿，支持 `status=draft/handed_off/discarded/all`、`draft_type=sales_order/purchase_order/inventory_adjustment`、`start` 和 `limit`。列表按最近修改时间倒序，调用方不得使用该接口查看其他用户草稿。
+`list_ai_drafts_v1` 只返回当前登录用户自己的草稿，支持 `status=draft/executed/handed_off/discarded/all`、`draft_type=sales_order/purchase_order/inventory_adjustment/product_setup`、`start` 和 `limit`。列表按最近修改时间倒序，调用方不得使用该接口查看其他用户草稿。
 
 `prepare_ai_draft_handoff_v1` 只允许 `draft` 且 `ready_for_handoff=true` 的草稿，返回现有销售、采购或库存编辑器可消费的安全预填载荷并把草稿标记为 `handed_off`。该接口不会调用 `create_order`、`create_purchase_order`、`reconcile_inventory_stock_v1` 或任何正式写入；尤其库存调整草稿不会创建或提交 `Stock Entry` / `Stock Reconciliation`。
 
