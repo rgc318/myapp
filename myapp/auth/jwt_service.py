@@ -4,6 +4,8 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from rgc_backend_kit.security import InvalidTokenError
+
 from myapp.auth.jwt_config import build_jwt_config
 from myapp.auth.token_store import FrappeCacheTokenStore
 

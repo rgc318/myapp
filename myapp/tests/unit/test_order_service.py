@@ -2661,7 +2661,7 @@ class TestOrderService(TestCase):
 
 		mock_cancel_payment_entry.assert_called_once_with("PE-REF-0001")
 		self.assertEqual(
-			[call.args[0] for call in mock_cancel_sales_invoice.call_args_list],
+			[call_arg.args[0] for call_arg in mock_cancel_sales_invoice.call_args_list],
 			["SINV-RET-0001", "SINV-0001"],
 		)
 		mock_cancel_delivery_note.assert_called_once_with("DN-0001")

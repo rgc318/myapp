@@ -1340,7 +1340,7 @@ class PurchaseQuickHttpTestCase(unittest.TestCase):
 					"request_id": self._unique_request_id("supplier-payment-overpay"),
 				},
 			)
-			self._assert_validation_error(overpay_status, overpay_payload, contains="已分配金额不能大于未付金额")
+			self._assert_validation_error(overpay_status, overpay_payload, contains="付款金额不能大于当前未付金额")
 
 			detail_status_after, detail_payload_after = self._post_method(
 				"myapp.api.gateway.get_purchase_order_detail_v2",

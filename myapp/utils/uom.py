@@ -35,7 +35,7 @@ def build_item_uom_context_map(item_codes: list[str]) -> dict[str, dict]:
 		context_map.setdefault(parent, {"stock_uom": None, "conversion_factors": {}})
 		context_map[parent]["conversion_factors"][uom] = flt(getattr(row, "conversion_factor", 0) or 0)
 
-	for item_code, context in context_map.items():
+	for _item_code, context in context_map.items():
 		stock_uom = _normalize_uom(context.get("stock_uom"))
 		if stock_uom:
 			context["conversion_factors"].setdefault(stock_uom, 1.0)

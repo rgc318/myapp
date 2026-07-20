@@ -1,7 +1,6 @@
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest import TestCase
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -198,6 +197,8 @@ class TestSettlementService(TestCase):
 			)
 
 		fake_get_payment_entry.assert_called_once_with("Sales Invoice", "SINV-0002", party_amount=1000)
+		self.assertEqual(pe.paid_amount, 900)
+		self.assertEqual(pe.received_amount, 900)
 		pe.set_amounts.assert_called_once()
 		pe.set_gain_or_loss.assert_called_once()
 		self.assertEqual(result["payment_entry"], "ACC-PAY-0002")
@@ -239,8 +240,41 @@ class TestSettlementService(TestCase):
 			"Purchase Invoice", "PINV-0002", party_amount=1000
 		)
 		self.assertEqual(pe.paid_amount, 900)
-		self.assertEqual(pe.received_amount, 1000)
+		self.assertEqual(pe.received_amount, 900)
 		self.assertEqual(result["writeoff_amount"], 100)
+
+	def test_update_payment_status_rejects_multi_currency_writeoff(self):
+		pe = MagicMock()
+		pe.mode_of_payment = None
+		pe.paid_from_account_currency = "CNY"
+		pe.paid_to_account_currency = "USD"
+
+		fake_payment_entry_module = ModuleType("payment_entry")
+		fake_payment_entry_module.get_payment_entry = MagicMock(return_value=pe)
+
+		with patch.dict(
+			sys.modules,
+			{"erpnext.accounts.doctype.payment_entry.payment_entry": fake_payment_entry_module},
+		), patch.object(
+			frappe,
+			"db",
+			MagicMock(get_value=MagicMock(return_value=1000)),
+		), patch.object(
+			frappe,
+			"throw",
+			side_effect=frappe.ValidationError("当前暂不支持多币种差额核销"),
+		):
+			with self.assertRaisesRegex(frappe.ValidationError, "多币种差额核销"):
+				update_payment_status(
+					"Sales Invoice",
+					"SINV-0004",
+					900,
+					settlement_mode="writeoff",
+					reference_date="2026-07-19",
+				)
+
+		pe.insert.assert_not_called()
+		pe.submit.assert_not_called()
 
 	def test_update_payment_status_supports_unallocated_overpayment(self):
 		pe = MagicMock()

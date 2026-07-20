@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - develop
   pull_request:
 
 concurrency:
@@ -92,6 +93,7 @@ jobs:
           bench setup requirements --dev
           bench new-site --db-root-password root --admin-password admin test_site
           bench --site test_site install-app myapp
+          env/bin/pip check
           bench build
         env:
           CI: 'Yes'

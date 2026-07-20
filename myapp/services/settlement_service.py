@@ -28,6 +28,31 @@ def _get_payment_entry_writeoff_defaults(company: str):
 	}
 
 
+def _apply_payment_entry_writeoff(pe, *, paid_amount: float, writeoff_reason: str | None = None):
+	paid_from_currency = getattr(pe, "paid_from_account_currency", None)
+	paid_to_currency = getattr(pe, "paid_to_account_currency", None)
+	paid_from_currency = paid_from_currency.strip() if isinstance(paid_from_currency, str) else ""
+	paid_to_currency = paid_to_currency.strip() if isinstance(paid_to_currency, str) else ""
+	if paid_from_currency and paid_to_currency and paid_from_currency != paid_to_currency:
+		frappe.throw(_("当前暂不支持多币种差额核销，请使用标准 Payment Entry 完成处理。"))
+
+	# ERPNext 的同币种 Payment Entry 会让 received_amount 跟随 paid_amount。
+	# 保留来源发票的完整 allocated_amount，仅把实际现金收付金额设置到付款单，
+	# 再由 deductions 抵销 difference_amount。
+	pe.paid_amount = paid_amount
+	pe.received_amount = paid_amount
+	pe.set_amounts()
+
+	difference_amount = flt(pe.difference_amount)
+	if abs(difference_amount) <= 0.0001:
+		frappe.throw(_("当前无需执行差额核销。"))
+
+	account_details = _get_payment_entry_writeoff_defaults(pe.company)
+	account_details["description"] = writeoff_reason or _("移动端优惠/抹零结清")
+	pe.set_gain_or_loss(account_details=account_details)
+	return abs(difference_amount)
+
+
 def _build_item_override_map(items, *, detail_keys: tuple[str, ...]):
 	override_map = {}
 
@@ -156,23 +181,11 @@ def update_payment_status(reference_doctype: str, reference_name: str, paid_amou
 			writeoff_amount = 0
 			unallocated_amount = 0
 			if settlement_mode == "writeoff":
-				# 对销售发票，少收部分作为核销；对采购发票，少付部分作为核销。
-				# Payment Entry 的差额方向相反，必须保留完整的发票分配金额。
-				if payment_type == "Pay":
-					pe.paid_amount = paid_amount
-					pe.received_amount = seed_amount
-				else:
-					pe.paid_amount = seed_amount
-					pe.received_amount = paid_amount
-				pe.set_amounts()
-
-				if not pe.difference_amount:
-					frappe.throw(_("当前无需执行差额核销。"))
-
-				writeoff_amount = abs(flt(pe.difference_amount))
-				account_details = _get_payment_entry_writeoff_defaults(pe.company)
-				account_details["description"] = kwargs.get("writeoff_reason") or _("移动端优惠/抹零结清")
-				pe.set_gain_or_loss(account_details=account_details)
+				writeoff_amount = _apply_payment_entry_writeoff(
+					pe,
+					paid_amount=paid_amount,
+					writeoff_reason=kwargs.get("writeoff_reason"),
+				)
 			elif paid_amount > seed_amount:
 				pe.paid_amount = paid_amount
 				pe.received_amount = paid_amount

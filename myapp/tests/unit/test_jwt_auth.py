@@ -2,6 +2,7 @@ from unittest import TestCase
 from unittest.mock import Mock, patch
 
 import frappe
+from rgc_backend_kit.security import InvalidTokenError
 
 from myapp.auth import jwt_auth
 from myapp.auth.jwt_service import validate_auth_generation
@@ -120,5 +121,5 @@ class TestFrappeCacheTokenStore(TestCase):
 	@patch("myapp.auth.jwt_service.get_user_auth_generation", return_value=2)
 	def test_auth_generation_rejects_old_token(self, _mock_generation):
 		payload = Mock(subject="user@example.com", claims={"auth_generation": 1})
-		with self.assertRaises(Exception):
+		with self.assertRaises(InvalidTokenError):
 			validate_auth_generation(payload)

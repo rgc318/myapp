@@ -2222,7 +2222,7 @@ class TestGatewayWrappers(TestCase):
 		mock_delete_item_image_service.assert_called_once_with(item_code="ITEM-001")
 
 	@patch("myapp.api.gateway.get_sales_order_status_summary_service")
-	def test_get_sales_order_status_summary_passes_filters_to_service(
+	def test_get_sales_order_status_summary_passes_default_filters_to_service(
 		self, mock_get_sales_order_status_summary_service
 	):
 		mock_get_sales_order_status_summary_service.return_value = {
@@ -2236,6 +2236,8 @@ class TestGatewayWrappers(TestCase):
 			customer="Test Customer",
 			company="Test Company",
 			limit=5,
+			date_from=None,
+			date_to=None,
 		)
 
 	@patch("myapp.api.gateway.search_sales_orders_v2_service")
@@ -2300,7 +2302,7 @@ class TestGatewayWrappers(TestCase):
 		)
 
 	@patch("myapp.api.gateway.get_sales_order_status_summary_service")
-	def test_get_sales_order_status_summary_passes_filters_to_service(
+	def test_get_sales_order_status_summary_passes_date_filters_to_service(
 		self, mock_get_sales_order_status_summary_service
 	):
 		mock_get_sales_order_status_summary_service.return_value = {"status": "success", "data": []}

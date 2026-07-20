@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor
 from http.cookiejar import CookieJar
 from unittest import TestCase
 
-
 DEFAULT_ENV_FILE = pathlib.Path(__file__).resolve().parents[3] / ".env.http-test"
 
 
@@ -72,24 +71,42 @@ class GatewayHttpTestCase(TestCase):
 		if BEARER_TOKEN:
 			cls._auth_mode = "bearer"
 			cls._opener = urllib.request.build_opener()
-			return
-
-		if TOKEN_KEY and TOKEN_SECRET:
+		elif TOKEN_KEY and TOKEN_SECRET:
 			cls._auth_mode = "token"
 			cls._opener = urllib.request.build_opener()
-			return
-
-		if USERNAME and PASSWORD:
+		elif USERNAME and PASSWORD:
 			cls._auth_mode = "session"
 			cls._cookies = CookieJar()
 			cls._opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cls._cookies))
 			cls._login()
-			return
+		else:
+			raise cls.skipTest(
+				"HTTP gateway tests require MYAPP_HTTP_BEARER_TOKEN, MYAPP_HTTP_API_KEY/MYAPP_HTTP_API_SECRET "
+				"or MYAPP_HTTP_USERNAME/MYAPP_HTTP_PASSWORD."
+			)
 
-		raise cls.skipTest(
-			"HTTP gateway tests require MYAPP_HTTP_BEARER_TOKEN, MYAPP_HTTP_API_KEY/MYAPP_HTTP_API_SECRET "
-			"or MYAPP_HTTP_USERNAME/MYAPP_HTTP_PASSWORD."
+		cls._sales_transaction_item_code = cls._create_isolated_sales_test_item()
+
+	@classmethod
+	def _create_isolated_sales_test_item(cls):
+		suffix = str(time.time_ns())[-12:]
+		status_code, payload = cls._post_method(
+			"myapp.api.gateway.create_product_and_stock",
+			{
+				"item_name": f"HTTP-SALES-FIXTURE-{suffix}",
+				"default_warehouse": SALES_WAREHOUSE,
+				"opening_qty": 1000,
+				"opening_uom": "Nos",
+				"stock_uom": "Nos",
+				"uom_conversions": [{"uom": "Nos", "conversion_factor": 1}],
+				"standard_rate": 1000,
+				"barcode": f"HT{suffix}",
+				"request_id": f"http-sales-fixture-{time.time_ns()}",
+			},
 		)
+		if status_code != 200 or not payload.get("message", {}).get("ok"):
+			raise AssertionError(f"Unable to create isolated HTTP sales fixture: HTTP {status_code}")
+		return payload["message"]["data"]["item_code"]
 
 	@classmethod
 	def _headers(cls):
@@ -244,7 +261,7 @@ class GatewayHttpTestCase(TestCase):
 			"customer": SALES_CUSTOMER,
 			"items": [
 				{
-					"item_code": item_code or SALES_ITEM_CODE,
+					"item_code": item_code or self._sales_transaction_item_code,
 					"qty": qty if qty is not None else SALES_QTY,
 					"warehouse": SALES_WAREHOUSE,
 				}

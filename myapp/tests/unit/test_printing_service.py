@@ -377,7 +377,6 @@ class TestPrintingService(TestCase):
 			{
 				"name": "PRN-BATCH-001",
 				"status": "queued",
-				"requested_by": "Administrator",
 				"requested_by": "test@example.com",
 				"items_json": '[{"idx": 1, "doctype": "Sales Invoice", "docname": "SINV-0001"}, {"idx": 2, "doctype": "Sales Invoice", "docname": "SINV-0002"}]',
 			}

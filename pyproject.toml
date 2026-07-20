@@ -10,6 +10,8 @@ dynamic = ["version"]
 dependencies = [
     # "frappe~=16.0.0" # Installed and managed by bench.
     "rgc-backend-kit>=0.1.1,<0.2.0",
+    # Frappe 16.18.x currently requires requests~=2.33.0.
+    "requests>=2.33.0,<2.34.0",
 ]
 
 [build-system]
@@ -54,6 +56,13 @@ ignore = [
     "UP032", # Use f-string instead of `format` call (translations)
     "UP037", # quoted annotations
     "UP040", # Use type aliases instead of type annotations
+    "RUF001", # Chinese business strings intentionally use full-width punctuation
+    "RUF002", # Chinese docstrings intentionally use full-width punctuation
+    "RUF003", # Chinese comments intentionally use full-width punctuation
+    "I001", # Preserve the current import layout until a dedicated formatting-only migration
+    "RUF005", # Iterable unpacking suggestions are non-functional style changes
+    "RUF022", # Preserve public API export ordering until a dedicated formatting-only migration
+    "RUF059", # HTTP tests intentionally keep selected request payloads for debugging symmetry
 ]
 typing-modules = ["frappe.types.DF"]
 

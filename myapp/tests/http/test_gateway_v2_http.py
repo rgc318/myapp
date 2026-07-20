@@ -403,7 +403,7 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		)
 
 	def test_disable_product_v2_and_list_products_v2_distinguishes_status(self):
-		create_request, create_payload = self._create_product_and_stock(
+		_create_request, create_payload = self._create_product_and_stock(
 			item_name=f"HTTP-V2-停用商品-{time.time_ns()}",
 			standard_rate=12,
 		)
@@ -437,7 +437,7 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 
 	def test_create_product_v2_without_stock_supports_specification(self):
 		specification = f"规格-{time.time_ns()}"
-		create_request, create_payload = self._create_product_v2(
+		_create_request, create_payload = self._create_product_v2(
 			item_name=f"HTTP-V2-纯建档规格商品-{time.time_ns()}",
 			specification=specification,
 			nickname=f"纯建档昵称-{time.time_ns()}",
@@ -1305,7 +1305,7 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 
 	def test_list_products_v2_supports_creation_date_range_filter(self):
 		today = date.today().isoformat()
-		create_request, create_payload = self._create_product_and_stock(item_name=f"Range Product {time.time_ns()}")
+		_create_request, create_payload = self._create_product_and_stock(item_name=f"Range Product {time.time_ns()}")
 		item_code = create_payload["message"]["data"]["item_code"]
 
 		status_code, payload = self._call_gateway(

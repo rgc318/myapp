@@ -167,7 +167,7 @@ def get_managed_print_format_version(print_format_name: str | None):
 
 	html = _read_template_file(definition.html_path)
 	css = _read_template_file(definition.css_path) if definition.css_path else ""
-	fingerprint = sha256(f"{html}\n{css}".encode("utf-8")).hexdigest()
+	fingerprint = sha256(f"{html}\n{css}".encode()).hexdigest()
 	return {
 		"managed": True,
 		"version": fingerprint[:12],

@@ -430,7 +430,7 @@ class TestWholesaleService(TestCase):
 	@patch("myapp.services.wholesale_service._get_price_map")
 	@patch("myapp.services.wholesale_service._get_item_data_map")
 	@patch("myapp.services.wholesale_service._search_item_codes")
-	def test_search_product_calls_price_summary_maps_once(self, mock_search_item_codes, mock_get_item_data_map, mock_get_price_map, mock_get_uom_map, mock_get_qty_map, mock_get_multi_price_map):
+	def test_search_product_skips_unused_price_summary_maps(self, mock_search_item_codes, mock_get_item_data_map, mock_get_price_map, mock_get_uom_map, mock_get_qty_map, mock_get_multi_price_map):
 		mock_search_item_codes.return_value = ["ITEM-001"]
 		mock_get_item_data_map.return_value = {
 			"ITEM-001": frappe._dict(
@@ -445,15 +445,10 @@ class TestWholesaleService(TestCase):
 		mock_get_price_map.return_value = {"ITEM-001": 10}
 		mock_get_uom_map.return_value = {"ITEM-001": []}
 		mock_get_qty_map.return_value = {"ITEM-001": 5}
-		mock_get_multi_price_map.side_effect = [
-			{"ITEM-001": {"Wholesale": {"price_list": "Wholesale", "rate": 9, "currency": "CNY"}}},
-			{"ITEM-001": {"Standard Buying": {"price_list": "Standard Buying", "rate": 6, "currency": "CNY"}}},
-		]
-
 		result = search_product("商品", company="Test Company")
 
 		self.assertEqual(len(result["data"]), 1)
-		self.assertEqual(mock_get_multi_price_map.call_count, 2)
+		mock_get_multi_price_map.assert_not_called()
 
 	@patch("myapp.services.wholesale_service._get_multi_price_map")
 	@patch("myapp.services.wholesale_service._get_warehouse_stock_detail_map")
