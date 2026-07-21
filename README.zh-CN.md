@@ -20,6 +20,7 @@
 - 开发设计基准文档：`WHOLESALE_TECH_DESIGN.zh-CN.md`
 - 采购与进货流程设计文档：`PURCHASE_TECH_DESIGN.zh-CN.md`
 - 扫码识别与条码多源解析设计文档：`BARCODE_SCANNING_TECH_DESIGN.zh-CN.md`
+- 测试数据管理设计与使用说明：`TEST_DATA_MANAGEMENT.zh-CN.md`
 
 ### 安装
 

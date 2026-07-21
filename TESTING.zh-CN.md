@@ -6,6 +6,8 @@
 
 当前项目以 VS Code devcontainer / Docker 中运行的 ERPNext 环境作为开发与验收基准。
 
+人工联调、演示和验收需要可重复业务数据时，使用 `TEST_DATA_MANAGEMENT.zh-CN.md` 中的标准测试数据集。共享测试数据不能替代单元测试和集成测试自行创建、隔离前置数据的原则。
+
 对 `myapp.api.gateway.*` 这类对外接口，优先使用 HTTP 方式测试，不以 WSL 宿主机直接导入 Frappe 服务层作为主验收方式。
 
 推荐原因：
