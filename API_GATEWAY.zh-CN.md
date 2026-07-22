@@ -104,7 +104,7 @@
 - 库存：`list_inventory_stock_summary_v1`、`list_stock_ledger_entries_v1`、`transfer_inventory_stock_v1`、`reconcile_inventory_stock_v1`、`submit_inventory_stock_count_v1`
 - 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
 - AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`list_ai_selectable_models_v1`、`resolve_ai_scenario_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1`、`get_ai_draft_v1`、`list_ai_drafts_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`execute_ai_draft_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
-- AI 模型治理：`get_ai_model_governance_overview_v1`、`list_ai_audit_events_v1`、`sync_ai_model_registry_v1`、`list_ai_models_v1`、`update_ai_model_registry_v1`、`list_ai_model_policies_v1`、`get_ai_model_policy_v1`、`save_ai_model_policy_draft_v1`、`validate_ai_model_policy_v1`、`approve_ai_model_policy_v1`、`publish_ai_model_policy_v1`、`rollback_ai_model_policy_v1`、`get_ai_model_usage_summary_v1`
+- AI 模型管理：`get_ai_model_governance_overview_v1`、`list_ai_audit_events_v1`、`sync_ai_model_registry_v1`、`check_ai_model_availability_v1`、`list_ai_models_v1`、`update_ai_model_registry_v1`、`list_ai_model_policies_v1`、`get_ai_model_policy_v1`、`save_ai_model_policy_draft_v1`、`validate_ai_model_policy_v1`、`approve_ai_model_policy_v1`、`publish_ai_model_policy_v1`、`rollback_ai_model_policy_v1`、`get_ai_model_usage_summary_v1`
   - `update_ai_model_registry_v1` 只维护治理字段：状态、数据区域、留存策略、敏感数据许可、输入/输出成本和币种；供应商能力字段由同步维护。请求必须包含 `reason` 和幂等键，响应返回递增后的 `registry_version` 与受影响的已发布策略。
   - `get_ai_model_usage_summary_v1` 支持 `date_from`、`date_to`、`environment`、`company`，返回延迟/首 Token 平均值与 p50/p95、反馈计数和正向率。
 - AI Embedding 发布治理：`list_ai_vector_releases_v1`、`get_ai_vector_release_v1`、`create_ai_vector_release_v1`、`retry_ai_vector_release_v1`、`validate_ai_vector_release_v1`、`approve_ai_vector_release_v1`、`publish_ai_vector_release_v1`、`rollback_ai_vector_release_v1`
@@ -170,9 +170,9 @@
 
 返回 `excluded_count`、`selected_count`、`excluded_indexed_count`、`removed_count`、`remaining_indexed_count`、`item_codes` 和固定的 `erp_items_changed=0`。真实执行前必须先 dry-run，并核对在线 alias、ERP Item/订单数量和基准 SKU。
 
-### AI 模型治理
+### AI 模型管理
 
-模型治理接口只面向 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 的职责范围。模型注册同步只从受服务 Token 保护的 Orchestrator 读取当前 LiteLLM Key 可见的完整模型库存，不保存供应商 Key；同步中已消失的 LiteLLM 模型标记为 `degraded / missing`，人工维护的 `disabled / retired` 状态不会被同步覆盖。策略草稿、验证、审批、发布和回滚使用不可变版本与审计事件；生产策略起草人与审批人必须分离，只有 System Manager 可以发布或紧急回滚。
+模型管理接口只面向 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 的职责范围。模型注册同步只从受服务 Token 保护的 Orchestrator 读取当前 LiteLLM Key 可见的完整模型库存，不保存供应商 Key；同步中已消失的 LiteLLM 模型标记为 `degraded / missing`，人工维护的 `disabled / retired` 状态不会被同步覆盖。同步只证明当前 Key 在 LiteLLM `/v1/models` 中可见，不证明推理可用。`check_ai_model_availability_v1` 会对每个未停用模型发起一次最小 Chat 或 Embedding 请求，更新 `available / unavailable` 健康状态并记录审计，可能产生少量 Provider 费用，但不会自动修改人工管理状态。策略草稿、验证、审批、发布和回滚使用不可变版本与审计事件；生产策略起草人与审批人必须分离，只有 System Manager 可以发布或紧急回滚。
 
 所有治理写接口均为 POST，并使用项目统一幂等机制。策略验证会同时检查注册模型能力/健康状态、当前 Prompt、确定性 offline full gate 和受控 live/Embedding 完整报告。缺少完整报告、报告为 partial、阈值失败、模型别名不一致或报告格式错误时，策略保持 `draft`，不能进入审批或发布。
 

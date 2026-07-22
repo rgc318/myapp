@@ -38,6 +38,7 @@ from .ai_api import publish_ai_model_policy_v1 as publish_ai_model_policy_v1_ser
 from .ai_api import rollback_ai_model_policy_v1 as rollback_ai_model_policy_v1_service
 from .ai_api import save_ai_model_policy_draft_v1 as save_ai_model_policy_draft_v1_service
 from .ai_api import sync_ai_model_registry_v1 as sync_ai_model_registry_v1_service
+from .ai_api import check_ai_model_availability_v1 as check_ai_model_availability_v1_service
 from .ai_api import update_ai_model_registry_v1 as update_ai_model_registry_v1_service
 from .ai_api import validate_ai_model_policy_v1 as validate_ai_model_policy_v1_service
 from .ai_api import approve_ai_vector_release_v1 as approve_ai_vector_release_v1_service
@@ -719,6 +720,14 @@ def sync_ai_model_registry_v1(request_id: str | None = None):
 	return _handle_gateway_call(
 		lambda: sync_ai_model_registry_v1_service(request_id=request_id),
 		success_code="AI_MODEL_REGISTRY_SYNCED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def check_ai_model_availability_v1(request_id: str | None = None):
+	return _handle_gateway_call(
+		lambda: check_ai_model_availability_v1_service(request_id=request_id),
+		success_code="AI_MODEL_AVAILABILITY_CHECKED",
 	)
 
 

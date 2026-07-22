@@ -12,6 +12,7 @@ from myapp.api.gateway import (
 	archive_ai_conversation_v1,
 	batch_set_users_enabled_v1,
 	chat_ai_v1,
+	check_ai_model_availability_v1,
 	cleanup_excluded_ai_product_vectors_v1,
 	generate_ai_inventory_adjustment_draft_v1,
 	generate_ai_product_setup_draft_v1,
@@ -199,6 +200,7 @@ class TestGatewayWrappers(TestCase):
 		from myapp.api.api import update_ai_model_registry_v1 as aggregated_model_update
 		from myapp.api.api import list_ai_vector_releases_v1 as aggregated_vector_releases
 		from myapp.api.api import list_ai_data_tasks_v1 as aggregated_data_tasks
+		from myapp.api.api import check_ai_model_availability_v1 as aggregated_availability_check
 
 		self.assertIs(aggregated_vector_status, get_ai_product_vector_status_v1)
 		self.assertIs(aggregated_vector_cleanup, cleanup_excluded_ai_product_vectors_v1)
@@ -209,12 +211,14 @@ class TestGatewayWrappers(TestCase):
 		self.assertIs(aggregated_model_update, update_ai_model_registry_v1)
 		self.assertIs(aggregated_vector_releases, list_ai_vector_releases_v1)
 		self.assertIs(aggregated_data_tasks, list_ai_data_tasks_v1)
+		self.assertIs(aggregated_availability_check, check_ai_model_availability_v1)
 
 	def test_gateway_methods_are_not_exposed_to_guest(self):
 		for method in (
 			archive_ai_conversation_v1,
 			analyze_ai_product_data_v1,
 			chat_ai_v1,
+			check_ai_model_availability_v1,
 			cleanup_excluded_ai_product_vectors_v1,
 			create_ai_conversation_v1,
 			create_ai_data_task_v1,
@@ -376,6 +380,18 @@ class TestGatewayWrappers(TestCase):
 		list_ai_selectable_models_v1()
 
 		mock_model_service.assert_called_once_with()
+
+	@patch("myapp.api.gateway.check_ai_model_availability_v1_service")
+	def test_check_ai_model_availability_v1_forwards_request_id(self, mock_service):
+		mock_service.return_value = {
+			"status": "success",
+			"data": {"checked_count": 2, "available_count": 1, "unavailable_count": 1},
+		}
+
+		result = check_ai_model_availability_v1(request_id="availability-1")
+
+		mock_service.assert_called_once_with(request_id="availability-1")
+		self.assertEqual(result["code"], "AI_MODEL_AVAILABILITY_CHECKED")
 
 	@patch("myapp.api.gateway.generate_ai_inventory_adjustment_draft_v1_service")
 	def test_generate_ai_inventory_adjustment_draft_passes_company_scope(self, mock_draft_service):

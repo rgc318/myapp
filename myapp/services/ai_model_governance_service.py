@@ -64,7 +64,7 @@ def _require_roles(allowed_roles: set[str], message: str) -> str:
 
 
 def _require_viewer() -> str:
-	return _require_roles(VIEW_ROLES, _("无权查看 AI 模型治理信息。"))
+	return _require_roles(VIEW_ROLES, _("无权查看 AI 模型管理信息。"))
 
 
 def _require_manager() -> str:
@@ -81,7 +81,7 @@ def _require_system_manager() -> str:
 
 def _ensure_tables() -> None:
 	if not frappe.db.table_exists("MyApp AI Model Registry"):
-		frappe.throw(_("AI 模型治理表尚未初始化，请先执行 bench migrate。"))
+		frappe.throw(_("AI 模型管理表尚未初始化，请先执行 bench migrate。"))
 
 
 def _safe_json_loads(value, default):
@@ -230,7 +230,7 @@ def _serialize_registry(row) -> dict:
 def _normalize_model_metadata_payload(payload) -> dict:
 	payload = _safe_json_loads(payload, payload)
 	if not isinstance(payload, dict):
-		frappe.throw(_("模型治理元数据必须是对象。"))
+		frappe.throw(_("模型管理信息必须是对象。"))
 	allowed_fields = {
 		"status", "data_region", "retention_policy", "sensitive_data_allowed",
 		"input_cost", "output_cost", "currency",
@@ -239,12 +239,12 @@ def _normalize_model_metadata_payload(payload) -> dict:
 	if unknown_fields:
 		frappe.throw(_("不允许维护模型字段：{0}。").format(", ".join(unknown_fields)))
 	if not payload:
-		frappe.throw(_("至少需要提交一个模型治理字段。"))
+		frappe.throw(_("至少需要提交一个模型管理字段。"))
 	result = {}
 	if "status" in payload:
 		status = _normalize_text(payload.get("status"), max_length=20)
 		if status not in MANAGED_MODEL_STATUSES:
-			frappe.throw(_("模型治理状态不正确。"))
+			frappe.throw(_("模型管理状态不正确。"))
 		result["status"] = status
 	for field, maximum in (("data_region", 80), ("retention_policy", 140)):
 		if field in payload:
@@ -386,10 +386,10 @@ def _call_orchestrator(path: str, *, payload: dict | None = None, method: str = 
 		with urllib.request.urlopen(request, timeout=timeout) as response:
 			result = json.loads(response.read().decode("utf-8") or "{}")
 	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-		frappe.log_error(frappe.get_traceback(), _("AI 模型治理 Orchestrator 调用失败"))
-		frappe.throw(_("AI 模型治理服务暂时不可用。"))
+		frappe.log_error(frappe.get_traceback(), _("AI 模型管理 Orchestrator 调用失败"))
+		frappe.throw(_("AI 模型管理服务暂时不可用。"))
 	if not isinstance(result, dict):
-		frappe.throw(_("AI 模型治理服务返回了无效响应。"))
+		frappe.throw(_("AI 模型管理服务返回了无效响应。"))
 	return result
 
 
@@ -584,8 +584,21 @@ def sync_ai_model_registry_v1(*, request_id: str | None = None) -> dict:
 					provider_model_display = VALUES(provider_model_display), supports_streaming = VALUES(supports_streaming),
 					supports_json_schema = VALUES(supports_json_schema), supports_vision = VALUES(supports_vision),
 					embedding_dimensions = VALUES(embedding_dimensions), embedding_space_version = VALUES(embedding_space_version),
-					last_health_at = VALUES(last_health_at),
-					last_health_status = VALUES(last_health_status), last_error_code = VALUES(last_error_code),
+					last_health_at = CASE
+						WHEN last_health_status IN ('available', 'unavailable')
+							AND VALUES(last_health_status) = 'listed' THEN last_health_at
+						ELSE VALUES(last_health_at)
+					END,
+					last_health_status = CASE
+						WHEN last_health_status IN ('available', 'unavailable')
+							AND VALUES(last_health_status) = 'listed' THEN last_health_status
+						ELSE VALUES(last_health_status)
+					END,
+					last_error_code = CASE
+						WHEN last_health_status IN ('available', 'unavailable')
+							AND VALUES(last_health_status) = 'listed' THEN last_error_code
+						ELSE VALUES(last_error_code)
+					END,
 					registry_version = IF(source_hash = VALUES(source_hash), registry_version, registry_version + 1),
 					source_hash = VALUES(source_hash), source_json = VALUES(source_json)
 				""",
@@ -632,6 +645,12 @@ def sync_ai_model_registry_v1(*, request_id: str | None = None) -> dict:
 				(now, now, actor, *seen_aliases),
 			)
 		response = {
+			"source": _normalize_text(result.get("source"), max_length=40) or "litellm",
+			"visible_count": (
+				cint(result.get("visible_count"))
+				if "visible_count" in result
+				else len(seen_aliases)
+			),
 			"synced_count": len(seen_aliases),
 			"missing_count": cint(missing_count),
 			"model_aliases": seen_aliases,
@@ -640,6 +659,94 @@ def sync_ai_model_registry_v1(*, request_id: str | None = None) -> dict:
 		return {"status": "success", "message": _("AI 模型注册表已同步。"), "data": response}
 
 	return run_idempotent("sync_ai_model_registry_v1", request_id, _sync, request_payload={})
+
+
+def check_ai_model_availability_v1(*, request_id: str | None = None) -> dict:
+	actor = _require_manager()
+	_ensure_tables()
+
+	def _check():
+		rows = frappe.db.sql(
+			f"""
+			SELECT model_alias FROM `{REGISTRY_TABLE}`
+			WHERE status NOT IN ('disabled', 'retired')
+			ORDER BY model_alias
+			""",
+			as_dict=True,
+		)
+		model_aliases = [str(row.model_alias) for row in rows]
+		result = _call_orchestrator(
+			"/internal/v1/governance/models/availability",
+			payload={"model_aliases": model_aliases},
+			method="POST",
+			timeout=180,
+		)
+		items = result.get("items")
+		if not isinstance(items, list):
+			frappe.throw(_("Orchestrator 未返回有效的模型可用性结果。"))
+
+		now = now_datetime()
+		normalized_items = []
+		for item in items:
+			if not isinstance(item, dict):
+				continue
+			model_alias = _normalize_text(item.get("model_alias"), max_length=140)
+			if not model_alias or model_alias not in model_aliases:
+				continue
+			available = bool(item.get("available"))
+			error_code = _normalize_text(item.get("error_code"), max_length=140) or None
+			provider_model = _normalize_text(item.get("provider_model"), max_length=255) or None
+			latency_ms = max(0, int(float(item.get("latency_ms") or 0)))
+			frappe.db.sql(
+				f"""
+				UPDATE `{REGISTRY_TABLE}`
+				SET last_health_at = %s, last_health_status = %s, last_error_code = %s,
+					provider_model_display = COALESCE(%s, provider_model_display),
+					modified = %s, modified_by = %s
+				WHERE model_alias = %s
+				""",
+				(
+					now, "available" if available else "unavailable", error_code,
+					provider_model, now, actor, model_alias,
+				),
+			)
+			normalized_items.append({
+				"model_alias": model_alias,
+				"capability": _normalize_text(item.get("capability"), max_length=30) or None,
+				"available": available,
+				"latency_ms": latency_ms,
+				"provider_model": provider_model,
+				"error_code": error_code,
+			})
+
+		available_count = sum(1 for item in normalized_items if item["available"])
+		response = {
+			"source": _normalize_text(result.get("source"), max_length=40) or "litellm",
+			"checked_count": len(normalized_items),
+			"available_count": available_count,
+			"unavailable_count": len(normalized_items) - available_count,
+			"items": normalized_items,
+		}
+		_record_audit(
+			actor=actor,
+			action="check_model_availability",
+			object_type="model_registry",
+			object_name="all",
+			parameters={"model_aliases": model_aliases},
+			result=response,
+		)
+		return {
+			"status": "success",
+			"message": _("AI 模型可用性检查已完成。"),
+			"data": response,
+		}
+
+	return run_idempotent(
+		"check_ai_model_availability_v1",
+		request_id,
+		_check,
+		request_payload={},
+	)
 
 
 def list_ai_models_v1(
@@ -748,7 +855,7 @@ def update_ai_model_registry_v1(
 	if not resolved_alias:
 		frappe.throw(_("模型别名不能为空。"))
 	if not resolved_reason:
-		frappe.throw(_("维护模型治理元数据必须填写原因。"))
+		frappe.throw(_("维护模型管理信息必须填写原因。"))
 	normalized = _normalize_model_metadata_payload(payload)
 
 	def _update():
@@ -805,7 +912,7 @@ def update_ai_model_registry_v1(
 			object_name=resolved_alias, parameters={"before": before, "changes": normalized},
 			result=response, reason=resolved_reason, priority="critical",
 		)
-		return {"status": "success", "message": _("AI 模型治理元数据已更新。"), "data": response}
+		return {"status": "success", "message": _("AI 模型管理信息已更新。"), "data": response}
 
 	return run_idempotent(
 		"update_ai_model_registry_v1", request_id, _update,

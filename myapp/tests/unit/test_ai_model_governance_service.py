@@ -11,6 +11,7 @@ from myapp.services.ai_model_governance_service import (
 	_validate_policy_conflicts,
 	_validate_registry_models,
 	approve_ai_model_policy_v1,
+	check_ai_model_availability_v1,
 	get_ai_model_governance_overview_v1,
 	list_ai_selectable_models_v1,
 	list_ai_audit_events_v1,
@@ -27,6 +28,61 @@ def _run_immediately(_namespace, _request_id, callback, **_kwargs):
 
 
 class TestAiModelGovernanceService(TestCase):
+	@patch("myapp.services.ai_model_governance_service._record_audit")
+	@patch("myapp.services.ai_model_governance_service._call_orchestrator")
+	@patch("myapp.services.ai_model_governance_service._ensure_tables")
+	@patch("myapp.services.ai_model_governance_service._require_manager", return_value="manager@example.com")
+	@patch("myapp.services.ai_model_governance_service.run_idempotent", side_effect=_run_immediately)
+	def test_availability_check_updates_health_without_changing_governance_status(
+		self, _mock_idempotent, _mock_actor, _mock_tables, mock_orchestrator, mock_audit,
+	):
+		mock_orchestrator.return_value = {
+			"source": "litellm",
+			"items": [
+				{
+					"model_alias": "erp-fast-chat", "capability": "fast_chat",
+					"available": True, "latency_ms": 123.8,
+					"provider_model": "openai/gpt-5", "error_code": None,
+				},
+				{
+					"model_alias": "erp-embedding", "capability": "embedding",
+					"available": False, "latency_ms": 456.2,
+					"provider_model": None, "error_code": "PROVIDER_HTTP_429",
+				},
+			],
+		}
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe, patch(
+			"myapp.services.ai_model_governance_service.now_datetime",
+			return_value="2026-07-22 18:00:00",
+		):
+			mock_frappe.db.sql.side_effect = [
+				[
+					frappe._dict(model_alias="erp-embedding"),
+					frappe._dict(model_alias="erp-fast-chat"),
+				],
+				None,
+				None,
+			]
+			result = check_ai_model_availability_v1(request_id="health-1")
+
+		self.assertEqual(result["data"]["checked_count"], 2)
+		self.assertEqual(result["data"]["available_count"], 1)
+		self.assertEqual(result["data"]["unavailable_count"], 1)
+		mock_orchestrator.assert_called_once_with(
+			"/internal/v1/governance/models/availability",
+			payload={"model_aliases": ["erp-embedding", "erp-fast-chat"]},
+			method="POST",
+			timeout=180,
+		)
+		update_calls = mock_frappe.db.sql.call_args_list[1:]
+		self.assertTrue(all("SET last_health_at" in call.args[0] for call in update_calls))
+		self.assertTrue(all("SET status" not in call.args[0] for call in update_calls))
+		self.assertEqual(update_calls[0].args[1][1], "available")
+		self.assertEqual(update_calls[1].args[1][1], "unavailable")
+		self.assertEqual(update_calls[1].args[1][2], "PROVIDER_HTTP_429")
+		mock_audit.assert_called_once()
+		self.assertEqual(mock_audit.call_args.kwargs["action"], "check_model_availability")
+
 	@patch("myapp.services.ai_model_governance_service._ensure_tables")
 	@patch("myapp.services.ai_model_governance_service._current_user", return_value="user@example.com")
 	def test_selectable_models_only_include_active_chat_capabilities(self, _user, _tables):

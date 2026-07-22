@@ -37,6 +37,7 @@ from myapp.services.ai_vector_governance_service import (
 )
 from myapp.services.ai_model_governance_service import (
 	approve_ai_model_policy_v1 as approve_ai_model_policy_v1_service,
+	check_ai_model_availability_v1 as check_ai_model_availability_v1_service,
 	get_ai_model_governance_overview_v1 as get_ai_model_governance_overview_v1_service,
 	get_ai_model_policy_v1 as get_ai_model_policy_v1_service,
 	get_ai_model_usage_summary_v1 as get_ai_model_usage_summary_v1_service,
@@ -359,6 +360,10 @@ def get_ai_model_policy_v1(policy_code: str):
 
 def sync_ai_model_registry_v1(request_id: str | None = None):
 	return sync_ai_model_registry_v1_service(request_id=request_id)
+
+
+def check_ai_model_availability_v1(request_id: str | None = None):
+	return check_ai_model_availability_v1_service(request_id=request_id)
 
 
 def list_ai_models_v1(
