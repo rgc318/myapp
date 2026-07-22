@@ -177,7 +177,15 @@ class AiGatewayHttpTestCase(unittest.TestCase):
 		self.assertEqual(event_types[-1], "completed")
 		citations = [event["citation"] for event in events if event.get("type") == "citation"]
 		self.assertTrue(citations)
-		self.assertTrue(all(citation["type"] == "purchase_order" for citation in citations))
+		result_set = citations[0]
+		self.assertEqual(result_set["type"], "business_result_set")
+		self.assertEqual(result_set["data"]["schema_version"], "business-result-set-v1")
+		self.assertEqual(result_set["data"]["groups"][0]["entity"], "purchase_order")
+		document_citations = citations[1:]
+		self.assertTrue(document_citations)
+		self.assertTrue(
+			all(citation["type"] == "purchase_order" for citation in document_citations)
+		)
 		completed = events[-1]
 		self.assertEqual(completed["model"], self.expected_model)
 
