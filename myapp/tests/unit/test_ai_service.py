@@ -79,7 +79,8 @@ class TestAiService(TestCase):
 			"payload": {
 				"item_name": "煌星", "item_code": "ITEM-001", "company": "Demo Company",
 				"item_group": "Products", "brand": "Brand A", "stock_uom": "Unit",
-				"standard_selling_rate": 10000, "standard_buying_rate": 5000,
+				"standard_selling_rate": 10000, "wholesale_rate": 8800,
+				"retail_rate": 10800, "standard_buying_rate": 5000,
 				"currency": "CNY", "warehouse": "Stores - DC", "opening_qty": 5,
 				"opening_uom": "Unit", "description": "测试商品",
 			},
@@ -90,6 +91,10 @@ class TestAiService(TestCase):
 		mock_create.assert_called_once_with(
 			item_name="煌星", item_code="ITEM-001", item_group="Products", brand="Brand A",
 			stock_uom="Unit", standard_rate=10000, valuation_rate=5000, currency="CNY",
+			selling_prices=[
+				{"price_list": "Wholesale", "rate": 8800, "currency": "CNY"},
+				{"price_list": "Retail", "rate": 10800, "currency": "CNY"},
+			],
 			buying_prices=[{"price_list": "Standard Buying", "rate": 5000, "currency": "CNY"}],
 			description="测试商品", company="Demo Company", warehouse="Stores - DC",
 			warehouse_stock_qty=5, warehouse_stock_uom="Unit", request_id="REQ-1",
@@ -439,7 +444,7 @@ class TestAiService(TestCase):
 			"sales_order_draft": "sales-order-draft-v2",
 			"purchase_order_draft": "purchase-order-draft-v2",
 			"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
-			"product_setup_draft": "product-setup-draft-v1",
+			"product_setup_draft": "product-setup-draft-v2",
 		}
 		for scenario, expected in draft_versions.items():
 			with self.subTest(scenario=scenario):
@@ -656,12 +661,15 @@ class TestAiService(TestCase):
 				{
 					"item_name": "传承结晶", "opening_qty": 1000,
 					"stock_uom": "Unit", "standard_selling_rate": 9999,
+					"wholesale_rate": 8800, "retail_rate": 10800,
 					"standard_buying_rate": 5000, "warehouse": "Stores - TC",
 				},
 				company="Test Company",
 			)
 
 		self.assertEqual(payload["standard_buying_rate"], 5000)
+		self.assertEqual(payload["wholesale_rate"], 8800)
+		self.assertEqual(payload["retail_rate"], 10800)
 		self.assertTrue(validation["ready_for_handoff"])
 
 	def test_build_order_query_dsl_supports_multiple_document_types(self):

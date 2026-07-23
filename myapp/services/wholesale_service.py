@@ -6,7 +6,7 @@ from frappe.utils import cint, flt, getdate
 from myapp.services.media_service import bind_uploaded_item_image, cleanup_temporary_item_image
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.pagination import build_offset_pagination
-from myapp.utils.uom_display import build_uom_display_map
+from myapp.utils.uom_display import build_uom_display_map, sort_uom_rows
 from myapp.utils.uom import resolve_item_quantity_to_stock
 
 ITEM_NICKNAME_FIELD = "custom_nickname"
@@ -219,7 +219,7 @@ def _decorate_uom_rows_with_display(rows, uom_display_map: dict[str, str]):
 		next_row = dict(row)
 		next_row["uom_display"] = uom_display_map.get(uom) if uom else None
 		decorated.append(next_row)
-	return decorated
+	return sort_uom_rows(decorated)
 
 
 def _search_item_codes(

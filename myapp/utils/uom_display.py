@@ -50,6 +50,17 @@ _COMMON_UOM_DISPLAY_NAMES = {
 }
 _COMMON_UOM_DISPLAY_NAMES.update(STANDARD_UOM_DISPLAY_ALIASES)
 
+_UOM_BUSINESS_PRIORITY = {
+	"BOX": 0,
+	"BOXES": 0,
+	"箱": 0,
+	"NOS": 1,
+	"NO": 1,
+	"PCS": 1,
+	"PC": 1,
+	"件": 1,
+}
+
 
 def normalize_uom_text(value: str | None) -> str | None:
 	normalized = (value or "").strip()
@@ -79,6 +90,47 @@ def resolve_uom_display_name(
 			return mapped
 
 	return normalize_uom_text(uom_name) or normalized_uom
+
+
+def get_uom_business_priority(
+	uom: str | None,
+	*,
+	display_name: str | None = None,
+) -> int:
+	for candidate in (normalize_uom_text(uom), normalize_uom_text(display_name)):
+		if candidate:
+			priority = _UOM_BUSINESS_PRIORITY.get(candidate.upper())
+			if priority is not None:
+				return priority
+	return len(_UOM_BUSINESS_PRIORITY)
+
+
+def _get_row_uom(row):
+	return getattr(row, "uom", None) if not isinstance(row, dict) else row.get("uom")
+
+
+def _get_row_uom_display(row):
+	return getattr(row, "uom_display", None) if not isinstance(row, dict) else row.get("uom_display")
+
+
+def sort_uom_rows(rows, *, uom_getter=None, display_getter=None):
+	"""Stable business ordering for UOM choices: Box first, then Nos."""
+	resolved_uom_getter = uom_getter or _get_row_uom
+	resolved_display_getter = display_getter or _get_row_uom_display
+
+	return [
+		row
+		for _index, row in sorted(
+			enumerate(rows or []),
+			key=lambda pair: (
+				get_uom_business_priority(
+					resolved_uom_getter(pair[1]),
+					display_name=resolved_display_getter(pair[1]),
+				),
+				pair[0],
+			),
+		)
+	]
 
 
 def build_uom_display_map(uom_names: list[str] | tuple[str, ...]) -> dict[str, str]:

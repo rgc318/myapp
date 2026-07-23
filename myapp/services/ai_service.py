@@ -50,7 +50,7 @@ PROMPT_VERSION_BY_SCENARIO = {
 	"sales_order_draft": "sales-order-draft-v2",
 	"purchase_order_draft": "purchase-order-draft-v2",
 	"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
-	"product_setup_draft": "product-setup-draft-v1",
+	"product_setup_draft": "product-setup-draft-v2",
 }
 PRODUCT_SEARCH_PREFIX_PATTERN = re.compile(
 	r"^(?:请|麻烦|可以|能否|帮我|给我|我想|我要)*(?:查询|查看|查找|搜索|检索|找一下|找一找|找找|找)?(?:一下|下)?"
@@ -1954,10 +1954,18 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 		None if candidate.get("standard_selling_rate") in (None, "")
 		else flt(candidate.get("standard_selling_rate"))
 	)
+	wholesale_rate = (
+		None if candidate.get("wholesale_rate") in (None, "")
+		else flt(candidate.get("wholesale_rate"))
+	)
+	retail_rate = (
+		None if candidate.get("retail_rate") in (None, "")
+		else flt(candidate.get("retail_rate"))
+	)
 	standard_buying_rate_value = candidate.get("standard_buying_rate")
 	if standard_buying_rate_value in (None, ""):
 		# 兼容已经生成的旧版商品草稿和当前 Orchestrator 字段；Web 新版本
-		# 统一使用业务人员熟悉的“默认采购价”。
+		# 统一使用“成本价（默认采购价）”业务语义。
 		standard_buying_rate_value = candidate.get("valuation_rate")
 	standard_buying_rate = (
 		None if standard_buying_rate_value in (None, "")
@@ -2002,15 +2010,21 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 	if opening_qty and not warehouse:
 		errors.append(_("填写初始库存时必须选择当前公司的叶子仓库。"))
 	if opening_qty and standard_buying_rate is None:
-		errors.append(_("填写初始库存时必须补充默认采购价；系统会将其作为首次入库成本，售价不会用于库存计价。"))
+		errors.append(_("填写初始库存时必须补充成本价（默认采购价）；系统会将其作为首次入库成本，售价不会用于库存计价。"))
 	if opening_qty and not frappe.has_permission("Stock Entry", ptype="create"):
 		errors.append(_("当前账号无权创建初始库存入库单。"))
-	if standard_selling_rate is not None and not frappe.has_permission("Item Price", ptype="create"):
+	if any(rate is not None for rate in (standard_selling_rate, wholesale_rate, retail_rate)) and not frappe.has_permission(
+		"Item Price", ptype="create"
+	):
 		errors.append(_("当前账号无权创建商品销售价格。"))
 	if standard_selling_rate is not None and standard_selling_rate < 0:
 		errors.append(_("标准售价不能为负数。"))
+	if wholesale_rate is not None and wholesale_rate < 0:
+		errors.append(_("批发价不能为负数。"))
+	if retail_rate is not None and retail_rate < 0:
+		errors.append(_("零售价不能为负数。"))
 	if standard_buying_rate is not None and standard_buying_rate < 0:
-		errors.append(_("默认采购价不能为负数。"))
+		errors.append(_("成本价（默认采购价）不能为负数。"))
 	payload = {
 		"company": company,
 		"item_name": item_name,
@@ -2028,6 +2042,8 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 		"opening_uom": opening_uom or stock_uom,
 		"opening_uom_display": resolve_uom_display_name(opening_uom or stock_uom),
 		"standard_selling_rate": standard_selling_rate,
+		"wholesale_rate": wholesale_rate,
+		"retail_rate": retail_rate,
 		"standard_buying_rate": standard_buying_rate,
 		"currency": currency,
 		"description": description,
@@ -2437,6 +2453,8 @@ def prepare_ai_draft_handoff_v1(draft_id: str):
 			"warehouse_stock_qty": payload.get("opening_qty"),
 			"warehouse_stock_uom": payload.get("opening_uom"),
 			"standard_selling_rate": payload.get("standard_selling_rate"),
+			"wholesale_rate": payload.get("wholesale_rate"),
+			"retail_rate": payload.get("retail_rate"),
 			"standard_buying_rate": standard_buying_rate,
 			"valuation_rate": standard_buying_rate,
 			"currency": payload.get("currency"),
@@ -2534,12 +2552,23 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 				"rate": standard_buying_rate,
 				"currency": payload.get("currency"),
 			})
+		selling_prices = []
+		for price_list, rate in (
+			("Wholesale", payload.get("wholesale_rate")),
+			("Retail", payload.get("retail_rate")),
+		):
+			if rate not in (None, ""):
+				selling_prices.append({
+					"price_list": price_list,
+					"rate": rate,
+					"currency": payload.get("currency"),
+				})
 		result = create_product_v2(
 			item_name=payload.get("item_name"), item_code=payload.get("item_code"),
 			item_group=payload.get("item_group"), brand=payload.get("brand"),
 			stock_uom=payload.get("stock_uom"), standard_rate=payload.get("standard_selling_rate"),
 			valuation_rate=standard_buying_rate, currency=payload.get("currency"),
-			buying_prices=buying_prices,
+			selling_prices=selling_prices, buying_prices=buying_prices,
 			description=payload.get("description"), company=payload.get("company"),
 			warehouse=payload.get("warehouse"), warehouse_stock_qty=payload.get("opening_qty"),
 			warehouse_stock_uom=payload.get("opening_uom"), request_id=request_id,
