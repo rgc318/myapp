@@ -139,6 +139,8 @@
 
 同步接口返回 `conversation`、`run_id`、带 `citations` 的 `message`、模型、trace、Token、安全警告、`events[]` 和持久 Run 摘要；Run 摘要包含 `status`、后端 `latency_ms` 和可选 `first_token_ms`。`stream_ai_message_v1` 返回真正 `text/event-stream`，事件包含 `run_started`、`run_progress`、`tool_started`、`tool_completed`、`citation`、`message_delta`、`warning`、`completed` 和 `error`。`run_progress` 用于上下文就绪、模型首段等待和流式输出阶段，不承载模型正文；最终 `completed` 同样携带持久 Run 摘要，并返回 `stream.delta_count` 与 `stream.streamed_chars` 供客户端证明和诊断实际增量输出。`get_ai_conversation_v1` 的历史助手消息会恢复 Run 状态、模型、trace、Token、总耗时、首 Token、错误和已保存反馈。`submit_ai_feedback_v1` 对本人已完成 Run 记录 `positive` / `negative` 反馈。正式单据创建、提交、取消、收付款和库存变更不属于这些接口能力。
 
+AI 流式失败事件和持久化 Run 必须保留稳定 `error_code`。运行时限流、预算、并发、模型熔断、配置版本、内部认证和服务不可用等错误不得统一折叠为 Python 异常类名或通用文案；SSE `error.code` 与 Run `error_code` 应保持一致，供 Web 区分“稍后重试、修改输入、权限拒绝和系统/治理故障”。未知异常统一记录为 `AI_RUN_FAILED`，不得把堆栈或供应商原始错误正文暴露给普通用户。
+
 已有会话的公司范围以会话持久化字段为准。调用方省略 `company` 时，Chat/SSE 会自动恢复会话公司；调用方显式传入与会话不同的公司时仍失败关闭并要求新建会话，避免同一上下文混入跨公司业务数据。工作偏好中的默认公司只用于创建新会话或无公司会话的首次业务上下文。
 
 ### AI Copilot 结构化草稿

@@ -389,6 +389,23 @@ def complete_run(
 
 def fail_run(*, run_id: str, user: str, error: Exception, latency_ms: int):
 	now = now_datetime()
+	error_code = str(getattr(error, "code", "") or "").strip()
+	if not error_code:
+		if isinstance(error, frappe.PermissionError):
+			error_code = "PERMISSION_DENIED"
+		elif isinstance(error, frappe.AuthenticationError):
+			error_code = "AUTHENTICATION_REQUIRED"
+		elif isinstance(error, frappe.ValidationError):
+			error_code = "VALIDATION_ERROR"
+		elif type(error).__name__ == "UpstreamServiceUnavailableError":
+			error_code = "AI_SERVICE_UNAVAILABLE"
+		else:
+			error_code = "AI_RUN_FAILED"
+	error_message = (
+		str(error)
+		if error_code != "AI_RUN_FAILED"
+		else _("AI 运行失败，请稍后重试或联系管理员查看诊断。")
+	)
 	frappe.db.sql(
 		f"""
 		UPDATE `{RUN_TABLE}`
@@ -400,8 +417,8 @@ def fail_run(*, run_id: str, user: str, error: Exception, latency_ms: int):
 			now,
 			user,
 			max(0, cint(latency_ms)),
-			type(error).__name__,
-			str(error)[:2000],
+			error_code,
+			error_message[:2000],
 			now,
 			run_id,
 			user,

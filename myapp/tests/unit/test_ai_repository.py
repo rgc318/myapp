@@ -6,16 +6,55 @@ import frappe
 from myapp.services import ai_repository
 from myapp.services.ai_repository import (
 	_nearest_rank_percentile,
+	fail_run,
 	get_conversation,
 	list_drafts,
 	mark_draft_executed,
 	submit_feedback,
 	update_draft,
 )
-from myapp.utils.ai_errors import AiDraftVersionConflictError
+from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
 
 
 class TestAiRepository(TestCase):
+	def test_fail_run_persists_stable_ai_error_code(self):
+		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value="2026-07-23 23:30:00",
+		):
+			mock_frappe.db.table_exists.return_value = False
+			fail_run(
+				run_id="AI-RUN-1",
+				user="user@example.com",
+				error=AiServiceError(
+					"AI 请求过于频繁，请稍后重试。",
+					code="AI_REQUEST_RATE_LIMITED",
+					http_status=429,
+				),
+				latency_ms=120,
+			)
+
+		parameters = mock_frappe.db.sql.call_args.args[1]
+		self.assertEqual(parameters[3], "AI_REQUEST_RATE_LIMITED")
+
+	def test_fail_run_hides_unknown_internal_error_details(self):
+		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value="2026-07-23 23:30:00",
+		):
+			mock_frappe.PermissionError = frappe.PermissionError
+			mock_frappe.AuthenticationError = frappe.AuthenticationError
+			mock_frappe.ValidationError = frappe.ValidationError
+			mock_frappe.db.table_exists.return_value = False
+			fail_run(
+				run_id="AI-RUN-2",
+				user="user@example.com",
+				error=RuntimeError("database password leaked"),
+				latency_ms=120,
+			)
+
+		parameters = mock_frappe.db.sql.call_args.args[1]
+		self.assertEqual(parameters[3], "AI_RUN_FAILED")
+		self.assertNotIn("password", parameters[4])
+
 	def test_update_draft_locks_and_advances_the_expected_version(self):
 		updated = {"name": "AI-DRAFT-1", "status": "draft", "version": 3}
 		with patch.object(ai_repository, "get_draft", return_value=updated), patch.object(

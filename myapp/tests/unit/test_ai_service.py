@@ -1,3 +1,5 @@
+import io
+import urllib.error
 from contextlib import nullcontext
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
@@ -23,6 +25,7 @@ from myapp.services.ai_service import (
 	_resolve_purchase_draft_item,
 	_resolve_prompt_version,
 	_resolve_sales_draft_item,
+	_stream_ai_orchestrator,
 	chat_ai_v1,
 	execute_ai_draft_v1,
 	generate_ai_inventory_adjustment_draft_v1,
@@ -33,11 +36,30 @@ from myapp.services.ai_service import (
 	submit_ai_feedback_v1,
 	update_ai_draft_v1,
 )
-from myapp.utils.ai_errors import AiDraftVersionConflictError
+from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
 from myapp.utils.api_response import UpstreamServiceUnavailableError, map_exception_to_error
 
 
 class TestAiService(TestCase):
+	@patch("myapp.services.ai_service._get_ai_orchestrator_settings", return_value=("http://ai", "token"))
+	@patch("myapp.services.ai_service.urllib.request.urlopen")
+	def test_stream_orchestrator_preserves_runtime_limit_code(self, mock_urlopen, _settings):
+		mock_urlopen.side_effect = urllib.error.HTTPError(
+			url="http://ai/internal/v1/chat/stream",
+			code=429,
+			msg="Too Many Requests",
+			hdrs=None,
+			fp=io.BytesIO(
+				b'{"detail":{"code":"AI_DAILY_BUDGET_EXCEEDED","message":"budget exceeded"}}'
+			),
+		)
+
+		with self.assertRaises(AiServiceError) as caught:
+			list(_stream_ai_orchestrator({"messages": []}))
+
+		self.assertEqual(caught.exception.code, "AI_DAILY_BUDGET_EXCEEDED")
+		self.assertEqual(caught.exception.http_status, 429)
+
 	@patch("myapp.services.ai_service.search_product_v2")
 	@patch("myapp.services.ai_service.frappe.get_list")
 	def test_user_edited_order_prices_override_reference_prices_but_model_prices_do_not(
@@ -841,6 +863,14 @@ class TestAiService(TestCase):
 			("AI_DRAFT_VERSION_CONFLICT", 409),
 		)
 
+	def test_ai_service_errors_preserve_stable_code_and_http_status(self):
+		self.assertEqual(
+			map_exception_to_error(
+				AiServiceError("rate limited", code="AI_REQUEST_RATE_LIMITED", http_status=429)
+			),
+			("AI_REQUEST_RATE_LIMITED", 429),
+		)
+
 	@patch("myapp.services.ai_service.ai_repository.submit_feedback")
 	@patch("myapp.services.ai_service._sync_ai_feedback_to_orchestrator", return_value=True)
 	def test_submit_ai_feedback_v1_normalizes_and_records_feedback(self, mock_sync_feedback, mock_submit_feedback):
@@ -932,6 +962,38 @@ class TestAiService(TestCase):
 		mock_complete.assert_called_once()
 		self.assertEqual(mock_complete.call_args.args[2], "你好")
 		self.assertGreaterEqual(mock_complete.call_args.kwargs["first_token_ms"], 0)
+
+	@patch("myapp.services.ai_service._fail_chat_run")
+	@patch("myapp.services.ai_service._stream_ai_orchestrator")
+	@patch("myapp.services.ai_service._prepare_chat_run")
+	def test_stream_ai_message_v1_preserves_stable_failure_code(
+		self, mock_prepare, mock_stream, mock_fail,
+	):
+		mock_prepare.return_value = {
+			"user": "user@example.com",
+			"scenario": "general",
+			"conversation_id": "AI-CONV-1",
+			"run_id": "AI-RUN-1",
+			"started": 1,
+			"citations": [],
+			"tool_calls": [],
+			"payload": {"messages": [{"role": "user", "content": "你好"}]},
+		}
+		mock_stream.return_value = iter([
+			{
+				"type": "error",
+				"code": "AI_REQUEST_RATE_LIMITED",
+				"message": "AI 请求过于频繁，请稍后重试。",
+			},
+		])
+
+		response = stream_ai_message_v1(content="你好")
+		body = b"".join(response.iter_encoded()).decode()
+
+		self.assertIn('"type":"error"', body)
+		self.assertIn('"code":"AI_REQUEST_RATE_LIMITED"', body)
+		self.assertIsInstance(mock_fail.call_args.args[1], AiServiceError)
+		self.assertEqual(mock_fail.call_args.args[1].code, "AI_REQUEST_RATE_LIMITED")
 
 	@patch("myapp.services.ai_service.ai_repository.complete_run")
 	@patch("myapp.services.ai_service.ai_repository.load_model_messages")

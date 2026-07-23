@@ -84,10 +84,12 @@ def map_exception_to_error(exc: Exception):
 		pass
 
 	try:
-		from myapp.utils.ai_errors import AiDraftVersionConflictError
+		from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
 
 		if isinstance(exc, AiDraftVersionConflictError):
 			return "AI_DRAFT_VERSION_CONFLICT", 409
+		if isinstance(exc, AiServiceError):
+			return exc.code, exc.http_status
 	except Exception:
 		pass
 

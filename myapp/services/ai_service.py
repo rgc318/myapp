@@ -31,7 +31,7 @@ from myapp.services.report_service import (
 	get_sales_report_v1,
 )
 from myapp.services.wholesale_service import create_product_v2, search_product_v2
-from myapp.utils.ai_errors import AiDraftVersionConflictError
+from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
 from myapp.utils.api_response import UpstreamServiceUnavailableError
 from myapp.utils.idempotency import get_current_request_id, run_idempotent
 from myapp.utils.uom import resolve_item_quantity_to_stock
@@ -303,9 +303,49 @@ def _stream_ai_orchestrator(payload: dict):
 				data = json.loads(line[5:].strip())
 				if isinstance(data, dict):
 					yield data
-	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+	except urllib.error.HTTPError as error:
 		frappe.log_error(frappe.get_traceback(), _("AI Orchestrator 流式调用失败"))
-		raise UpstreamServiceUnavailableError(_("AI 流式服务暂时不可用，请稍后重试。"))
+		code = {
+			401: "AI_SERVICE_AUTHENTICATION_FAILED",
+			403: "AI_SERVICE_AUTHENTICATION_FAILED",
+			409: "AI_PROMPT_VERSION_MISMATCH",
+			422: "AI_REQUEST_INVALID",
+			429: "AI_REQUEST_RATE_LIMITED",
+		}.get(error.code, "AI_SERVICE_UNAVAILABLE")
+		try:
+			body = json.loads(error.read().decode("utf-8") or "{}")
+			detail = body.get("detail") if isinstance(body, dict) else None
+			candidate = detail.get("code") if isinstance(detail, dict) else None
+			if isinstance(candidate, str) and (
+				candidate.startswith("AI_") or candidate == "MODEL_PROVIDER_REJECTED"
+			):
+				code = candidate
+		except (UnicodeDecodeError, json.JSONDecodeError):
+			pass
+		message = {
+			"AI_DAILY_BUDGET_EXCEEDED": _("今日 AI 使用预算已达到上限。"),
+			"AI_LOCAL_CONCURRENCY_LIMITED": _("当前 AI 请求较多，请稍后重试。"),
+			"AI_MODEL_CIRCUIT_OPEN": _("当前模型暂时不可用，请稍后重试。"),
+			"AI_MONTHLY_BUDGET_EXCEEDED": _("本月 AI 使用预算已达到上限。"),
+			"AI_PROMPT_VERSION_MISMATCH": _("AI 配置版本不一致，请联系管理员处理。"),
+			"AI_REQUEST_INVALID": _("AI 请求内容未通过校验，请修改后重试。"),
+			"AI_REQUEST_RATE_LIMITED": _("AI 请求过于频繁，请稍后重试。"),
+			"AI_RUNTIME_GOVERNANCE_UNAVAILABLE": _("AI 运行治理服务暂时不可用。"),
+			"AI_SERVICE_AUTHENTICATION_FAILED": _("AI 内部服务认证失败，请联系管理员。"),
+		}.get(code, _("AI 流式服务暂时不可用，请稍后重试。"))
+		raise AiServiceError(message, code=code, http_status=error.code) from error
+	except (urllib.error.URLError, TimeoutError):
+		frappe.log_error(frappe.get_traceback(), _("AI Orchestrator 流式调用失败"))
+		raise AiServiceError(
+			_("AI 流式服务暂时不可用，请稍后重试。"),
+			code="AI_SERVICE_UNAVAILABLE",
+		) from None
+	except (UnicodeDecodeError, json.JSONDecodeError):
+		frappe.log_error(frappe.get_traceback(), _("AI Orchestrator 流式响应解析失败"))
+		raise AiServiceError(
+			_("AI 流式响应格式异常，请稍后重试。"),
+			code="AI_STREAM_PROTOCOL_ERROR",
+		) from None
 
 
 def _resolve_company_scope(company: str | None, *, required: bool = False) -> str | None:
@@ -3003,7 +3043,10 @@ def stream_ai_message_v1(
 				elif event_type == "warning":
 					yield _encode_sse(event)
 				elif event_type == "error":
-					raise UpstreamServiceUnavailableError(str(event.get("message") or _("AI 服务暂时不可用。")))
+					raise AiServiceError(
+						str(event.get("message") or _("AI 服务暂时不可用。")),
+						code=str(event.get("code") or "AI_SERVICE_UNAVAILABLE"),
+					)
 				elif event_type == "completed":
 					completed_result = event
 
@@ -3034,11 +3077,17 @@ def stream_ai_message_v1(
 			raise error
 		except Exception as error:
 			_fail_chat_run(prepared, error)
+			error_code = str(getattr(error, "code", "") or "AI_STREAM_FAILED")
+			error_message = (
+				str(error)
+				if isinstance(error, AiServiceError)
+				else _("AI 流式服务暂时不可用，请稍后重试。")
+			)
 			yield _encode_sse(
 				{
 					"type": "error",
-					"code": "AI_STREAM_FAILED",
-					"message": str(error) or _("AI 流式服务暂时不可用。"),
+					"code": error_code,
+					"message": error_message,
 					"conversation": prepared["conversation_id"],
 					"run_id": prepared["run_id"],
 				}
