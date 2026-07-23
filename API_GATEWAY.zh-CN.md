@@ -147,7 +147,7 @@
 
 商品建档草稿类型为 `product_setup`，同时承载 Item 主数据、Standard Selling 默认单价、Wholesale 批发价、Retail 零售价、Standard Buying 成本价（默认采购价）和可选初始库存预填，但模型生成阶段不执行任何写入。对应字段为 `standard_selling_rate`、`wholesale_rate`、`retail_rate`、`standard_buying_rate`。初始库存统一使用 `stock_uom` 作为 `opening_uom`；初始库存大于 0 时必须补齐当前公司叶子仓库和 `standard_buying_rate`。正式执行会把批发价、零售价分别写入 Wholesale、Retail 价格表，把成本价写入 Standard Buying 并作为首次入库成本，任何售价都不得自动用于库存计价。旧草稿的 `valuation_rate` 仅作为兼容输入读取。用户可在 AI 工作台确认当前版本后由 `execute_ai_draft_v1` 复用幂等 `create_product_v2`，也可选择进入 `/master-data/products` 处理复杂字段。
 
-`execute_ai_draft_v1` 是四类草稿的统一原地确认执行接口。请求必须为 POST，携带 `draft_id`、用户当前看到的 `expected_version`、`confirmed=1` 和 `Idempotency-Key`。服务端重新检查草稿 owner、状态、版本和 `ready_for_handoff`，再分别调用 `create_product_v2`、`create_order_v2`、`create_purchase_order` 或 `reconcile_inventory_stock_v1`；成功后草稿进入 `executed` 并保存执行人、执行时间、正式 DocType、正式名称和结果回执。模型或后台任务不能绕过用户确认调用该能力。
+`execute_ai_draft_v1` 是四类草稿的统一原地确认执行接口。请求必须为 POST，携带 `draft_id`、用户当前看到的 `expected_version`、`confirmed=1` 和 `Idempotency-Key`。服务端重新检查草稿 owner、状态、版本和 `ready_for_handoff`，再分别调用 `create_product_v2`、`create_order_v2`、`create_purchase_order` 或 `reconcile_inventory_stock_v1`；成功后草稿进入 `executed` 并保存执行人、执行时间、正式 DocType、正式名称和结果回执。模型或后台任务不能绕过用户确认调用该能力。保存、历史恢复或执行使用的 `expected_version` 已过期时，Gateway 稳定返回 HTTP `409` 与 `code=AI_DRAFT_VERSION_CONFLICT`，Web 应读取最新草稿并进入显式版本对比，不得依赖错误文案或静默覆盖。
 
 ### AI 商品向量质量治理
 
@@ -204,7 +204,7 @@ Data Task 是商品主数据整理建议，不是 AI 直接写业务数据。Web
 - 执行与回滚均调用既有 `update_product_v2`；回滚还要求当前值仍等于 `proposed_value`，因此不会覆盖任务后的人工变更。
 - 每个关键动作写入 `MyApp AI Audit Event`，审计正文保存哈希和必要元数据，不保存供应商密钥。
 
-草稿支持查询、人工更新后重新校验、放弃、不可变版本列表和历史恢复。`update_ai_draft_v1` 必须使用 POST，携带 `draft_id`、完整 `payload`、用户打开编辑器时看到的 `expected_version` 和 `Idempotency-Key`；服务端锁定草稿行并校验版本，版本已变化时拒绝旧表单覆盖。`restore_ai_draft_version_v1` 同样必须携带目标历史 `version`、当前 `expected_version` 和幂等键；历史 payload 会用当前主数据重新校验并创建新版本，不直接覆盖当前快照。重复的同参数幂等请求返回已有结果，不重复递增草稿版本。
+草稿支持查询、人工更新后重新校验、放弃、不可变版本列表和历史恢复。`update_ai_draft_v1` 必须使用 POST，携带 `draft_id`、完整 `payload`、用户打开编辑器时看到的 `expected_version` 和 `Idempotency-Key`；服务端锁定草稿行并校验版本，版本已变化时以 `AI_DRAFT_VERSION_CONFLICT` 拒绝旧表单覆盖。`restore_ai_draft_version_v1` 同样必须携带目标历史 `version`、当前 `expected_version` 和幂等键；历史 payload 会用当前主数据重新校验并创建新版本，不直接覆盖当前快照。重复的同参数幂等请求返回已有结果，不重复递增草稿版本。
 
 `list_ai_drafts_v1` 只返回当前登录用户自己的草稿，支持 `status=draft/executed/handed_off/discarded/all`、`draft_type=sales_order/purchase_order/inventory_adjustment/product_setup`、`start` 和 `limit`。列表按最近修改时间倒序，调用方不得使用该接口查看其他用户草稿。
 

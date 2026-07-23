@@ -31,6 +31,7 @@ from myapp.services.report_service import (
 	get_sales_report_v1,
 )
 from myapp.services.wholesale_service import create_product_v2, search_product_v2
+from myapp.utils.ai_errors import AiDraftVersionConflictError
 from myapp.utils.api_response import UpstreamServiceUnavailableError
 from myapp.utils.idempotency import get_current_request_id, run_idempotent
 from myapp.utils.uom import resolve_item_quantity_to_stock
@@ -2641,7 +2642,7 @@ def execute_ai_draft_v1(
 			if draft["status"] != "draft":
 				frappe.throw(_("只有 draft 状态的 AI 草稿可以执行。"))
 			if cint(draft["version"]) != expected_version:
-				frappe.throw(_("草稿版本已变化，请刷新并重新确认后再执行。"))
+				raise AiDraftVersionConflictError(_("草稿版本已变化，请刷新并重新确认后再执行。"))
 			if not draft["validation"].get("ready_for_handoff"):
 				frappe.throw(_("草稿仍有未解决的校验问题，不能执行。"))
 			try:

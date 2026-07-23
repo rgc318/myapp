@@ -33,6 +33,7 @@ from myapp.services.ai_service import (
 	submit_ai_feedback_v1,
 	update_ai_draft_v1,
 )
+from myapp.utils.ai_errors import AiDraftVersionConflictError
 from myapp.utils.api_response import UpstreamServiceUnavailableError, map_exception_to_error
 
 
@@ -170,6 +171,25 @@ class TestAiService(TestCase):
 			result={"status": "success", "order": "SO-001"},
 		)
 		mock_frappe.db.commit.assert_not_called()
+
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_execute_ai_draft_rejects_a_stale_version_with_domain_conflict(self, _user):
+		draft = {
+			"name": "AI-DRAFT-1", "draft_type": "sales_order", "status": "draft", "version": 4,
+			"payload": {}, "validation": {"ready_for_handoff": True}, "execution": None,
+		}
+		with patch(
+			"myapp.services.ai_service.ai_repository.get_draft", return_value=draft,
+		), patch(
+			"myapp.services.ai_service.filelock", side_effect=lambda *_args, **_kwargs: nullcontext(),
+		), patch(
+			"myapp.services.ai_service.run_idempotent",
+			side_effect=lambda _namespace, _request_id, callback, **_kwargs: callback(),
+		):
+			with self.assertRaises(AiDraftVersionConflictError):
+				execute_ai_draft_v1(
+					draft_id="AI-DRAFT-1", expected_version=3, confirmed=True, request_id="REQ-STALE",
+				)
 
 	@patch("myapp.services.ai_service._update_ai_draft_once")
 	@patch(
@@ -813,6 +833,12 @@ class TestAiService(TestCase):
 		self.assertEqual(
 			map_exception_to_error(UpstreamServiceUnavailableError("temporarily unavailable")),
 			("UPSTREAM_SERVICE_UNAVAILABLE", 503),
+		)
+
+	def test_ai_draft_version_conflicts_map_to_conflict_http_status(self):
+		self.assertEqual(
+			map_exception_to_error(AiDraftVersionConflictError("stale draft")),
+			("AI_DRAFT_VERSION_CONFLICT", 409),
 		)
 
 	@patch("myapp.services.ai_service.ai_repository.submit_feedback")

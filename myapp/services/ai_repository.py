@@ -9,6 +9,8 @@ import frappe
 from frappe import _
 from frappe.utils import add_days, cint, now_datetime
 
+from myapp.utils.ai_errors import AiDraftVersionConflictError
+
 
 CONVERSATION_TABLE = "tabMyApp AI Conversation"
 MESSAGE_TABLE = "tabMyApp AI Message"
@@ -823,7 +825,7 @@ def update_draft(
 		frappe.throw(_("只有 draft 状态的 AI 草稿可以修改。"))
 	expected_version = cint(expected_version)
 	if expected_version < 1 or cint(locked.version_no) != expected_version:
-		frappe.throw(_("草稿版本已变化，请重新打开最新版本后再保存。"))
+		raise AiDraftVersionConflictError(_("草稿版本已变化，请重新打开最新版本后再保存。"))
 	now = now_datetime()
 	next_version = expected_version + 1
 	frappe.db.sql(

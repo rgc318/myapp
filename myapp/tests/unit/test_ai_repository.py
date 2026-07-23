@@ -12,6 +12,7 @@ from myapp.services.ai_repository import (
 	submit_feedback,
 	update_draft,
 )
+from myapp.utils.ai_errors import AiDraftVersionConflictError
 
 
 class TestAiRepository(TestCase):
@@ -46,9 +47,8 @@ class TestAiRepository(TestCase):
 			mock_frappe.db.sql.return_value = [
 				frappe._dict({"status": "draft", "version_no": 3}),
 			]
-			mock_frappe.throw.side_effect = frappe.ValidationError
 
-			with self.assertRaises(frappe.ValidationError):
+			with self.assertRaises(AiDraftVersionConflictError):
 				update_draft(
 					draft_id="AI-DRAFT-1",
 					user="user@example.com",

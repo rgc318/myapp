@@ -83,6 +83,14 @@ def map_exception_to_error(exc: Exception):
 	except Exception:
 		pass
 
+	try:
+		from myapp.utils.ai_errors import AiDraftVersionConflictError
+
+		if isinstance(exc, AiDraftVersionConflictError):
+			return "AI_DRAFT_VERSION_CONFLICT", 409
+	except Exception:
+		pass
+
 	if isinstance(exc, frappe.ValidationError):
 		code = "VALIDATION_ERROR"
 		http_status = 422

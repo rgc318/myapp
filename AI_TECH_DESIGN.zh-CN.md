@@ -213,7 +213,7 @@ AI Orchestrator 不直连 MariaDB，也不调用 Frappe 的泛化 `get_list` / `
 - `validate_document_draft`
 - `save_ai_draft`
 
-AI 不拥有 `submit`、`cancel`、`record_payment`、`adjust_stock` 等执行工具。正式写入只能由用户在既有页面调用既有 API 完成。
+AI 模型不拥有 `submit`、`cancel`、`record_payment`、`adjust_stock` 等执行工具。正式写入只能在当前用户明确确认后，由 Frappe 调用既有正式领域服务完成；确认入口可以位于 AI 工作台，也可以位于完整业务页面。
 
 每次工具调用均由 Frappe 根据当前用户重新计算公司、仓库、客户、供应商和 DocType 权限；不得信任模型请求中携带的 company 或数据范围。
 
@@ -293,7 +293,7 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 
 父仓库现提供 `overrides/compose.langfuse.yaml` 和随机密钥初始化脚本，本地固定使用 Langfuse v3.212.0，并隔离 PostgreSQL、ClickHouse、Redis、MinIO 数据卷。初始化脚本生成 `0600` 密钥文件且拒绝覆盖现有文件。Web/MinIO 只绑定 loopback，数据库、ClickHouse、Redis 和 MinIO Console 不发布宿主机端口。Orchestrator 镜像固定基础镜像 digest，以 UID/GID `10001` 运行，并由 Compose 强制只读根文件系统、清空 capabilities、启用 `no-new-privileges` 和 `/tmp` tmpfs。真实验收已确认 trace、generation、固定评测 score 和 `user-feedback` 可查询；停止 Langfuse Web 时模型调用仍完成，反馈仍被本地接受且明确返回观测未同步。
 
-固定评测集采用 22 个纯合成用例和确定性 grader，覆盖四类结构化草稿、grounding、无上下文事实边界、Prompt Injection、写操作诱导和系统提示/密钥提取。Offline replay 与低价真实模型 live gate 均需满足：critical、安全、Schema 和禁止模式 100%，结构化字段准确率不低于 95%，普通场景通过率不低于 90%。只有覆盖当前 mode 全部用例的报告具备 `release_gate_eligible=true`；`--case` / `--tag` 子集报告只用于诊断，缺失指标返回 `null`，未知 case ID 直接作为配置错误拒绝。报告默认只保留输出哈希、长度、失败原因、Prompt/DataSet 版本、延迟和 Token。当前受控业务查询 Prompt registry 的有效版本为 `erp-readonly-v7`，四类草稿分别为 `sales-order-draft-v2`、`purchase-order-draft-v2`、`inventory-adjustment-draft-v2`、`product-setup-draft-v1`，Frappe 审计和 Orchestrator/Langfuse 必须保持同值。v7 在 v6 权限和写操作边界基础上增加“结构化结果不重复复述”约束：界面已经展示业务明细时，模型只概括范围、数量、空结果和异常。调用方显式提供不一致或空白 Prompt 版本时，Orchestrator 返回 HTTP `409`；`/health` 返回完整 `prompt_versions`，不得静默覆盖版本漂移。
+固定评测集采用 22 个纯合成用例和确定性 grader，覆盖四类结构化草稿、grounding、无上下文事实边界、Prompt Injection、写操作诱导和系统提示/密钥提取。Offline replay 与低价真实模型 live gate 均需满足：critical、安全、Schema 和禁止模式 100%，结构化字段准确率不低于 95%，普通场景通过率不低于 90%。只有覆盖当前 mode 全部用例的报告具备 `release_gate_eligible=true`；`--case` / `--tag` 子集报告只用于诊断，缺失指标返回 `null`，未知 case ID 直接作为配置错误拒绝。报告默认只保留输出哈希、长度、失败原因、Prompt/DataSet 版本、延迟和 Token。当前受控业务查询 Prompt registry 的有效版本为 `erp-readonly-v7`，四类草稿分别为 `sales-order-draft-v2`、`purchase-order-draft-v2`、`inventory-adjustment-draft-v2`、`product-setup-draft-v2`，Frappe 审计和 Orchestrator/Langfuse 必须保持同值。v7 在 v6 权限和写操作边界基础上增加“结构化结果不重复复述”约束：界面已经展示业务明细时，模型只概括范围、数量、空结果和异常。调用方显式提供不一致或空白 Prompt 版本时，Orchestrator 返回 HTTP `409`；`/health` 返回完整 `prompt_versions`，不得静默覆盖版本漂移。
 
 generation/trace 已迁移到 Langfuse OTLP HTTP `/api/public/otel/v1/traces`；用户反馈和固定评测 score 继续使用 score ingestion，并保留 HTTP 207 全事件成功校验。父仓库已完成 Qdrant snapshot、Langfuse PostgreSQL/ClickHouse/Redis/MinIO clean-stop 联合备份、隔离恢复和 AI 内部服务 Token 轮换演练。生产剩余缺口是正式 Secret Manager 下的 Langfuse Project Key/恢复根密钥轮换、SSO/访问治理、成本看板和定时异地备份。
 
