@@ -76,6 +76,7 @@ from myapp.api.gateway import (
 	list_ai_model_policies_v1,
 	list_stock_ledger_entries_v1,
 	reconcile_inventory_stock_v1,
+	refresh_ai_business_result_v1,
 	resolve_ai_scenario_v1,
 	restore_ai_draft_version_v1,
 	execute_ai_data_task_v1,
@@ -372,6 +373,15 @@ class TestGatewayWrappers(TestCase):
 			company="rgc (Demo)",
 			model_alias="opencode-glm-5.2",
 		)
+
+	@patch("myapp.api.gateway.refresh_ai_business_result_v1_service")
+	def test_refresh_ai_business_result_v1_forwards_snapshot(self, mock_service):
+		snapshot = {"result_type": "business_documents", "groups": []}
+		mock_service.return_value = {"status": "success", "data": {"result_set": snapshot}}
+
+		refresh_ai_business_result_v1(result_set=snapshot)
+
+		mock_service.assert_called_once_with(result_set=snapshot)
 
 	@patch("myapp.api.gateway.list_ai_selectable_models_v1_service")
 	def test_list_ai_selectable_models_v1_uses_public_model_service(self, mock_model_service):

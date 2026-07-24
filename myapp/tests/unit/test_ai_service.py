@@ -14,6 +14,7 @@ from myapp.services.ai_service import (
 	_build_product_setup_draft,
 	_execute_ai_draft_payload,
 	_build_report_query_dsl,
+	_normalize_ai_business_result_refresh,
 	_update_ai_draft_once,
 	_hybrid_rerank_product_rows,
 	_extract_product_search_terms,
@@ -32,6 +33,7 @@ from myapp.services.ai_service import (
 	generate_ai_purchase_order_draft_v1,
 	generate_ai_sales_order_draft_v1,
 	list_ai_drafts_v1,
+	refresh_ai_business_result_v1,
 	stream_ai_message_v1,
 	submit_ai_feedback_v1,
 	update_ai_draft_v1,
@@ -743,15 +745,16 @@ class TestAiService(TestCase):
 	@patch("myapp.services.ai_service._resolve_company_scope", return_value="rgc (Demo)")
 	def test_build_order_query_context_groups_mixed_documents(self, _company, mock_query):
 		mock_query.side_effect = [
-			([{"document_type": "sales_order", "name": "SO-1", "party": "客户A"}], {"total": 1}),
+			([{"document_type": "sales_order", "name": "SO-1", "party": "客户A"}], {"visible_count": 4}),
 			([{"document_type": "sales_invoice", "name": "SI-1", "party": "客户A"}], {"total": 1}),
-			([{"document_type": "purchase_order", "name": "PO-1", "party": "供应商A"}], {"total": 1}),
+			([{"document_type": "purchase_order", "name": "PO-1", "party": "供应商A"}], {"visible_count": 1}),
 		]
 
-		context, citations, tool_calls = _build_order_query_context(
-			query="查询最新的5条销售订单和销售发票，以及采购订单",
-			company="rgc (Demo)",
-		)
+		with patch("myapp.services.ai_service.now_datetime", return_value="2026-07-24 11:30:00"):
+			context, citations, tool_calls = _build_order_query_context(
+				query="查询最新的5条销售订单和销售发票，以及采购订单",
+				company="rgc (Demo)",
+			)
 
 		self.assertEqual([group["entity"] for group in context["document_groups"]], [
 			"sales_order", "sales_invoice", "purchase_order",
@@ -764,14 +767,66 @@ class TestAiService(TestCase):
 		])
 		self.assertEqual(citations[0]["data"]["schema_version"], "business-result-set-v1")
 		self.assertEqual(citations[0]["data"]["status_semantics"], "result_coverage_only")
+		self.assertTrue(citations[0]["data"]["queried_at"])
+		self.assertTrue(citations[0]["data"]["permission_filtered"])
 		self.assertEqual(citations[0]["data"]["scope"]["limit_per_group"], 5)
 		self.assertEqual(
 			[group["status"] for group in citations[0]["data"]["groups"]],
 			["partial", "partial", "partial"],
 		)
+		self.assertEqual(citations[0]["data"]["groups"][0]["available_count"], 4)
+		self.assertTrue(citations[0]["data"]["groups"][0]["truncated"])
+		self.assertIsNone(citations[0]["data"]["groups"][1]["available_count"])
+		self.assertIsNone(citations[0]["data"]["groups"][1]["truncated"])
+		self.assertEqual(citations[0]["data"]["groups"][2]["module_href"], "/purchase/orders")
 		self.assertEqual([call["tool"] for call in tool_calls], [
 			"search_sales_orders", "list_sales_invoices", "search_purchase_orders",
 		])
+
+	@patch("myapp.services.ai_service._resolve_company_scope", return_value="rgc (Demo)")
+	def test_normalize_business_result_refresh_reuses_snapshot_scope(self, _company):
+		dsl = _normalize_ai_business_result_refresh({
+			"result_type": "business_documents",
+			"scope": {
+				"company": "rgc (Demo)", "date_range": "this_month",
+				"date_from": "2026-07-01", "date_to": "2026-07-24",
+				"status_filter": "unfinished", "sort_by": "amount_desc",
+				"min_amount": 1000, "limit_per_group": 5,
+			},
+			"groups": [
+				{"entity": "sales_order", "requested_count": 5},
+				{"entity": "purchase_order", "requested_count": 5},
+			],
+		})
+
+		self.assertEqual(dsl["entities"], ["sales_order", "purchase_order"])
+		self.assertEqual(dsl["company"], "rgc (Demo)")
+		self.assertEqual(dsl["status_filter"], "unfinished")
+		self.assertEqual(dsl["sort_by"], "amount_desc")
+		self.assertEqual(dsl["limit"], 5)
+		self.assertTrue(dsl["limit_explicit"])
+
+	@patch("myapp.services.ai_service._build_order_query_result")
+	@patch("myapp.services.ai_service._normalize_ai_business_result_refresh")
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_refresh_business_result_is_read_only_and_does_not_call_model(
+		self, _user, mock_normalize, mock_build,
+	):
+		mock_normalize.return_value = {"entities": ["sales_order"], "company": "rgc (Demo)"}
+		mock_build.return_value = (
+			{"result_type": "business_documents", "queried_at": "2026-07-24 11:30:00"},
+			[{"type": "business_result_set", "data": {}}],
+			[{"tool": "search_sales_orders"}],
+		)
+
+		result = refresh_ai_business_result_v1({"result_type": "business_documents"})
+
+		self.assertEqual(result["data"]["result_set"]["queried_at"], "2026-07-24 11:30:00")
+		self.assertEqual(result["data"]["citations"][0]["type"], "business_result_set")
+		mock_build.assert_called_once_with(
+			dsl=mock_normalize.return_value,
+			snapshot_source="refresh",
+		)
 
 	@patch("myapp.services.ai_service.list_business_documents_v1")
 	@patch("myapp.services.ai_service.frappe")
@@ -1100,7 +1155,9 @@ class TestAiService(TestCase):
 			"warnings": ["只读模式"],
 		}
 
-		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+		with patch("myapp.services.ai_service.frappe") as mock_frappe, patch(
+			"myapp.services.ai_service.now_datetime", return_value="2026-07-24 11:30:00",
+		):
 			mock_frappe.session.user = "user@example.com"
 			mock_frappe.local.lang = "zh-CN"
 			mock_frappe.has_permission.return_value = True

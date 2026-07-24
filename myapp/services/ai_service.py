@@ -503,13 +503,18 @@ def _build_product_search_context(*, query: str, company: str | None) -> tuple[d
 				"semantic_score": row.get("semantic_score"),
 			}
 		)
+	queried_at = str(now_datetime())
 	citations = [
 		{
 			"type": "product",
 			"id": row.get("item_code"),
 			"label": row.get("item_name") or row.get("item_code"),
 			"href": f"/products/{row.get('item_code')}",
-			"data": row,
+			"data": {
+				**row,
+				"company": resolved_company,
+				"queried_at": queried_at,
+			},
 		}
 		for row in products
 	]
@@ -816,6 +821,54 @@ def _query_business_document_entity(*, entity: str, dsl: dict) -> tuple[list[dic
 def _build_order_query_context(*, query: str, company: str | None) -> tuple[dict, list[dict], list[dict]]:
 	resolved_company = _resolve_company_scope(company, required=True)
 	dsl = _build_order_query_dsl(query, company=resolved_company)
+	result_set, citations, tool_calls = _build_order_query_result(dsl=dsl)
+	context = {
+		"tool": "query_business_documents",
+		"query": query,
+		"dsl": dsl,
+		"result_set": result_set,
+		"document_groups": result_set["groups"],
+		"instructions": (
+			"业务单据来自当前账号权限和公司范围内的受控业务查询。"
+			"界面会直接展示按单据类型分组的结构化明细、查询范围和数量不足提示。"
+			"回答不要逐条复述单据号、往来单位、日期、状态、金额或未结金额，也不要重复生成明细清单。"
+			"分组 status 只表示结果数量覆盖情况，不表示单据业务健康或没有异常。"
+			"只用最多三个简短要点概括查询范围、各类型返回数量和空结果；未提供明确异常字段时不得声称结果正常、无异常或无需关注。"
+			"不得编造未返回的记录。"
+		),
+	}
+	return context, citations, tool_calls
+
+
+def _serialize_business_result_group(*, group: dict, dsl: dict) -> dict:
+	returned_count = len(group["items"])
+	summary = group.get("summary") or {}
+	available_count = None
+	if (
+		group["entity"] in {"sales_order", "purchase_order"}
+		and dsl.get("min_amount") is None
+		and summary.get("visible_count") is not None
+	):
+		available_count = max(returned_count, cint(summary.get("visible_count")))
+	return {
+		"entity": group["entity"],
+		"label": group["label"],
+		"module_href": BUSINESS_DOCUMENT_QUERY_CONFIG[group["entity"]]["href_prefix"],
+		"requested_count": dsl["limit"] if dsl["limit_explicit"] else None,
+		"returned_count": returned_count,
+		"available_count": available_count,
+		"truncated": available_count > returned_count if available_count is not None else None,
+		"status": (
+			"empty"
+			if not group["items"]
+			else "partial"
+			if dsl["limit_explicit"] and returned_count < dsl["limit"]
+			else "success"
+		),
+	}
+
+
+def _build_order_query_result(*, dsl: dict, snapshot_source: str = "answer") -> tuple[dict, list[dict], list[dict]]:
 	groups = []
 	citations = []
 	tool_calls = []
@@ -847,40 +900,30 @@ def _build_order_query_context(*, query: str, company: str | None) -> tuple[dict
 				"dsl_hash": hashlib.sha256(
 					json.dumps({**dsl, "entity": entity}, sort_keys=True).encode("utf-8")
 				).hexdigest(),
-				"company": resolved_company,
+				"company": dsl["company"],
 				"result_count": len(items),
 			}
 		)
+	queried_at = str(now_datetime())
 	result_set = {
 		"schema_version": "business-result-set-v1",
 		"result_type": "business_documents",
 		"status_semantics": "result_coverage_only",
+		"queried_at": queried_at,
+		"snapshot_source": snapshot_source,
+		"permission_filtered": True,
 		"scope": {
-			"company": resolved_company,
+			"company": dsl["company"],
 			"date_range": dsl["date_range"],
 			"date_from": dsl["date_from"],
 			"date_to": dsl["date_to"],
 			"status_filter": dsl["status_filter"],
+			"exclude_cancelled": dsl["exclude_cancelled"],
 			"sort_by": dsl["sort_by"],
 			"min_amount": dsl["min_amount"],
 			"limit_per_group": dsl["limit"],
 		},
-		"groups": [
-			{
-				"entity": group["entity"],
-				"label": group["label"],
-				"requested_count": dsl["limit"] if dsl["limit_explicit"] else None,
-				"returned_count": len(group["items"]),
-				"status": (
-					"empty"
-					if not group["items"]
-					else "partial"
-					if dsl["limit_explicit"] and len(group["items"]) < dsl["limit"]
-					else "success"
-				),
-			}
-			for group in groups
-		],
+		"groups": [_serialize_business_result_group(group=group, dsl=dsl) for group in groups],
 	}
 	result_set_id = hashlib.sha256(
 		json.dumps(result_set, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -895,22 +938,75 @@ def _build_order_query_context(*, query: str, company: str | None) -> tuple[dict
 			"data": result_set,
 		},
 	)
-	context = {
-		"tool": "query_business_documents",
-		"query": query,
-		"dsl": dsl,
-		"result_set": result_set,
-		"document_groups": result_set["groups"],
-		"instructions": (
-			"业务单据来自当前账号权限和公司范围内的受控业务查询。"
-			"界面会直接展示按单据类型分组的结构化明细、查询范围和数量不足提示。"
-			"回答不要逐条复述单据号、往来单位、日期、状态、金额或未结金额，也不要重复生成明细清单。"
-			"分组 status 只表示结果数量覆盖情况，不表示单据业务健康或没有异常。"
-			"只用最多三个简短要点概括查询范围、各类型返回数量和空结果；未提供明确异常字段时不得声称结果正常、无异常或无需关注。"
-			"不得编造未返回的记录。"
-		),
+	return result_set, citations, tool_calls
+
+
+def _normalize_ai_business_result_refresh(result_set) -> dict:
+	if isinstance(result_set, str):
+		result_set = frappe.parse_json(result_set)
+	if not isinstance(result_set, dict):
+		frappe.throw(_("业务查询快照格式不正确。"))
+	if result_set.get("result_type") != "business_documents":
+		frappe.throw(_("只支持刷新业务单据查询结果。"))
+	scope = result_set.get("scope") or {}
+	if not isinstance(scope, dict):
+		frappe.throw(_("业务查询范围格式不正确。"))
+	groups = result_set.get("groups") or []
+	if not isinstance(groups, list):
+		frappe.throw(_("业务查询分组格式不正确。"))
+	entities = []
+	for group in groups:
+		entity = str((group or {}).get("entity") or "").strip()
+		if entity in BUSINESS_DOCUMENT_QUERY_CONFIG and entity not in entities:
+			entities.append(entity)
+	if not entities:
+		frappe.throw(_("业务查询快照不包含可刷新的单据类型。"))
+	company = _resolve_company_scope(scope.get("company"), required=True)
+	status_filter = str(scope.get("status_filter") or "all").strip().lower()
+	if status_filter not in {"all", "cancelled", "completed", "delivering", "paying", "receiving", "unfinished"}:
+		frappe.throw(_("业务查询状态筛选不受支持。"))
+	sort_by = str(scope.get("sort_by") or "latest").strip().lower()
+	if sort_by not in {"amount_asc", "amount_desc", "latest", "oldest"}:
+		frappe.throw(_("业务查询排序方式不受支持。"))
+	limit = max(1, min(20, cint(scope.get("limit_per_group") or 10)))
+	min_amount = scope.get("min_amount")
+	if min_amount is not None:
+		min_amount = max(0, flt(min_amount))
+	limit_explicit = any(
+		isinstance(group, dict) and group.get("requested_count") is not None
+		for group in groups
+	)
+	return {
+		"entity": entities[0],
+		"entities": entities,
+		"company": company,
+		"date_range": str(scope.get("date_range") or "all"),
+		"date_from": str(scope.get("date_from") or "") or None,
+		"date_to": str(scope.get("date_to") or "") or None,
+		"status_filter": status_filter,
+		"exclude_cancelled": status_filter != "cancelled",
+		"sort_by": sort_by,
+		"min_amount": min_amount,
+		"limit": limit,
+		"limit_explicit": limit_explicit,
 	}
-	return context, citations, tool_calls
+
+
+def refresh_ai_business_result_v1(result_set) -> dict:
+	_current_user()
+	dsl = _normalize_ai_business_result_refresh(result_set)
+	refreshed_result_set, citations, _tool_calls = _build_order_query_result(
+		dsl=dsl,
+		snapshot_source="refresh",
+	)
+	return {
+		"status": "success",
+		"data": {
+			"result_set": refreshed_result_set,
+			"citations": citations,
+		},
+		"message": _("业务查询结果已按当前权限刷新。"),
+	}
 
 
 def _build_report_query_dsl(query: str, *, company: str, as_of: date | None = None) -> dict:

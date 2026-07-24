@@ -16,6 +16,7 @@ from myapp.services.ai_service import (
 	stream_ai_message_v1 as stream_ai_message_v1_service,
 	submit_ai_feedback_v1 as submit_ai_feedback_v1_service,
 	prepare_ai_draft_handoff_v1 as prepare_ai_draft_handoff_v1_service,
+	refresh_ai_business_result_v1 as refresh_ai_business_result_v1_service,
 	restore_ai_draft_version_v1 as restore_ai_draft_version_v1_service,
 	resolve_ai_scenario_v1 as resolve_ai_scenario_v1_service,
 	update_ai_draft_v1 as update_ai_draft_v1_service,
@@ -115,6 +116,10 @@ def stream_ai_message_v1(
 
 def resolve_ai_scenario_v1(content: str):
 	return resolve_ai_scenario_v1_service(content=content)
+
+
+def refresh_ai_business_result_v1(result_set):
+	return refresh_ai_business_result_v1_service(result_set=result_set)
 
 
 def submit_ai_feedback_v1(

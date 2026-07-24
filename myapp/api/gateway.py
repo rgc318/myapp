@@ -22,6 +22,7 @@ from .ai_api import list_ai_draft_versions_v1 as list_ai_draft_versions_v1_servi
 from .ai_api import stream_ai_message_v1 as stream_ai_message_v1_service
 from .ai_api import submit_ai_feedback_v1 as submit_ai_feedback_v1_service
 from .ai_api import prepare_ai_draft_handoff_v1 as prepare_ai_draft_handoff_v1_service
+from .ai_api import refresh_ai_business_result_v1 as refresh_ai_business_result_v1_service
 from .ai_api import restore_ai_draft_version_v1 as restore_ai_draft_version_v1_service
 from .ai_api import resolve_ai_scenario_v1 as resolve_ai_scenario_v1_service
 from .ai_api import rebuild_ai_product_vector_index_v1 as rebuild_ai_product_vector_index_v1_service
@@ -356,6 +357,14 @@ def resolve_ai_scenario_v1(content: str):
 	return _handle_gateway_call(
 		lambda: resolve_ai_scenario_v1_service(content=content),
 		success_code="AI_SCENARIO_RESOLVED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def refresh_ai_business_result_v1(result_set):
+	return _handle_gateway_call(
+		lambda: refresh_ai_business_result_v1_service(result_set=result_set),
+		success_code="AI_BUSINESS_RESULT_REFRESHED",
 	)
 
 

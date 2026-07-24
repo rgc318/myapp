@@ -66,6 +66,7 @@
 - `myapp.api.gateway.chat_ai_v1`
 - `myapp.api.gateway.stream_ai_message_v1`
 - `myapp.api.gateway.resolve_ai_scenario_v1`
+- `myapp.api.gateway.refresh_ai_business_result_v1`
 - `myapp.api.gateway.submit_ai_feedback_v1`
 - `myapp.api.gateway.generate_ai_sales_order_draft_v1`
 - `myapp.api.gateway.generate_ai_purchase_order_draft_v1`
@@ -103,7 +104,7 @@
 - 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`、`list_stock_ledger_entries_v1`
 - 库存：`list_inventory_stock_summary_v1`、`list_stock_ledger_entries_v1`、`transfer_inventory_stock_v1`、`reconcile_inventory_stock_v1`、`submit_inventory_stock_count_v1`
 - 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
-- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`list_ai_selectable_models_v1`、`resolve_ai_scenario_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1`、`get_ai_draft_v1`、`list_ai_drafts_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`execute_ai_draft_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
+- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`list_ai_selectable_models_v1`、`resolve_ai_scenario_v1`、`refresh_ai_business_result_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1`、`get_ai_draft_v1`、`list_ai_drafts_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`execute_ai_draft_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
 - AI 模型管理：`get_ai_model_governance_overview_v1`、`list_ai_audit_events_v1`、`sync_ai_model_registry_v1`、`check_ai_model_availability_v1`、`list_ai_models_v1`、`update_ai_model_registry_v1`、`list_ai_model_policies_v1`、`get_ai_model_policy_v1`、`save_ai_model_policy_draft_v1`、`validate_ai_model_policy_v1`、`approve_ai_model_policy_v1`、`publish_ai_model_policy_v1`、`rollback_ai_model_policy_v1`、`get_ai_model_usage_summary_v1`
   - `update_ai_model_registry_v1` 只维护治理字段：状态、数据区域、留存策略、敏感数据许可、输入/输出成本和币种；供应商能力字段由同步维护。请求必须包含 `reason` 和幂等键，响应返回递增后的 `registry_version` 与受影响的已发布策略。
   - `get_ai_model_usage_summary_v1` 支持 `date_from`、`date_to`、`environment`、`company`，返回延迟/首 Token 平均值与 p50/p95、反馈计数和正向率。
@@ -133,7 +134,7 @@
 
 `model_alias` 可省略。省略时继续使用已发布模型策略；显式提供时，Frappe 只接受注册表中状态为 `active / validated` 且能力为 `fast_chat / reasoning / structured` 的模型。`list_ai_selectable_models_v1` 为所有已登录 AI 用户返回这一受控列表，不返回 Embedding、停用、退役、缺失或未验证模型。浏览器不能自行提交注册表外别名，也不能直连 Orchestrator 或 LiteLLM。显式选择会传给同步 Chat、SSE 和四类草稿，并禁用该次请求的静默模型 fallback，最终响应中的 `model_alias` 用于核对实际执行模型。
 
-当前聊天场景支持 `auto`、`general`、`product_search`、`order_query`、`report_summary`。省略场景或传 `auto` 时，Frappe 根据当前用户问题确定实际场景，并把解析后的场景写入 Message、Run、Prompt 和 Orchestrator 请求。商品工具复用 `search_product_v2`；单据工具支持销售订单、销售发票、采购订单和采购发票的单类型或混合查询，订单复用销售/采购工作台服务，发票复用 `list_business_documents_v1`；报表工具复用既有经营报表服务。所有工具都强制 DocType、公司和记录级读取权限。单据查询 citation 首项为版本化 `business_result_set`，包含查询范围、每类请求/返回数量和 `success / partial / empty` 覆盖状态；`status_semantics=result_coverage_only` 明确这些状态不代表单据业务健康或异常判断。后续 citation 保留逐单据详情与受控跳转，供 Web 聚合表格和历史会话恢复。
+当前聊天场景支持 `auto`、`general`、`product_search`、`order_query`、`report_summary`。省略场景或传 `auto` 时，Frappe 根据当前用户问题确定实际场景，并把解析后的场景写入 Message、Run、Prompt 和 Orchestrator 请求。商品工具复用 `search_product_v2`；单据工具支持销售订单、销售发票、采购订单和采购发票的单类型或混合查询，订单复用销售/采购工作台服务，发票复用 `list_business_documents_v1`；报表工具复用既有经营报表服务。所有工具都强制 DocType、公司和记录级读取权限。商品 citation 记录 `company` 和 `queried_at`，作为库存、价格等“回答时数据”的快照范围。单据查询 citation 首项为版本化 `business_result_set`，包含 `queried_at`、`snapshot_source`、`permission_filtered`、查询范围，以及每类请求数、返回数、权限安全的可见总量、截断状态和业务模块入口；`status_semantics=result_coverage_only` 明确 `success / partial / empty` 只表示结果覆盖，不代表单据业务健康或异常判断。后续 citation 保留逐单据详情与受控跳转，供 Web 聚合表格和历史会话恢复。
 
 未明确日期的“最新/最近”单据查询默认覆盖全部日期并按最新排序，不再隐式限制最近 30 天；用户明确说今天、本周、本月、上月或近 N 天时才应用对应日期范围。混合查询按每种单据类型分别应用数量上限和权限过滤，例如“最新 5 条销售订单、销售发票和采购订单”最多返回 5 + 5 + 5 条结构化引用。结构化明细只通过 citation 交给 Web；发送给模型的上下文只包含查询范围和各组请求/返回数量，不包含逐单据字段。当前 `erp-readonly-v7` 模型摘要只概括查询范围、数量不足和空结果。
 
@@ -142,6 +143,46 @@
 AI 流式失败事件和持久化 Run 必须保留稳定 `error_code`。运行时限流、预算、并发、模型熔断、配置版本、内部认证和服务不可用等错误不得统一折叠为 Python 异常类名或通用文案；SSE `error.code` 与 Run `error_code` 应保持一致，供 Web 区分“稍后重试、修改输入、权限拒绝和系统/治理故障”。未知异常统一记录为 `AI_RUN_FAILED`，不得把堆栈或供应商原始错误正文暴露给普通用户。
 
 已有会话的公司范围以会话持久化字段为准。调用方省略 `company` 时，Chat/SSE 会自动恢复会话公司；调用方显式传入与会话不同的公司时仍失败关闭并要求新建会话，避免同一上下文混入跨公司业务数据。工作偏好中的默认公司只用于创建新会话或无公司会话的首次业务上下文。
+
+### AI Copilot 业务结果刷新
+
+`refresh_ai_business_result_v1` 使用已有 `business-result-set-v1` 快照中的受控查询范围，重新读取销售订单、销售发票、采购订单或采购发票。该接口虽然使用 POST 传递结构化筛选，但业务语义为纯只读：不创建会话、消息或 Run，不调用 AI Orchestrator 或模型，也不产生模型费用。
+
+请求：
+
+```json
+{
+  "result_set": {
+    "schema_version": "business-result-set-v1",
+    "result_type": "business_documents",
+    "scope": {
+      "company": "rgc (Demo)",
+      "date_range": "this_month",
+      "date_from": "2026-07-01",
+      "date_to": "2026-07-24",
+      "status_filter": "unfinished",
+      "sort_by": "amount_desc",
+      "min_amount": null,
+      "limit_per_group": 5
+    },
+    "groups": [
+      { "entity": "sales_order", "requested_count": 5 }
+    ]
+  }
+}
+```
+
+响应 code 为 `AI_BUSINESS_RESULT_REFRESHED`，`data` 包含新的 `result_set` 和完整 `citations[]`。服务端不信任客户端旧结果：每次刷新都会重新确认当前登录用户、公司范围、DocType 读取权限和记录级权限，并返回 `snapshot_source=refresh` 与新的 `queried_at`。
+
+分组新鲜度字段：
+
+- `returned_count`：本次实际返回数量。
+- `available_count`：当前账号权限和筛选范围内可安全确定的可见总量。
+- `truncated=true / false`：可安全确定是否存在未返回记录。
+- `available_count=null` 且 `truncated=null`：当前查询不能在不泄露未授权数量的前提下计算精确总量，客户端必须显示“未知”，不能推断为没有更多记录。
+- `module_href`：进入对应业务模块查看完整列表的次级入口。
+
+订单类且未使用金额二次过滤时，可使用正式订单查询服务返回的权限安全 `visible_count`。发票或带 `min_amount` 的查询如果无法安全计算精确总量，则保持 `null`。
 
 ### AI Copilot 结构化草稿
 
