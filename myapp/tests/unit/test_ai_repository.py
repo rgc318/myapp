@@ -8,8 +8,10 @@ from myapp.services.ai_repository import (
 	_nearest_rank_percentile,
 	fail_run,
 	get_conversation,
+	list_conversations,
 	list_drafts,
 	mark_draft_executed,
+	rename_conversation,
 	submit_feedback,
 	update_draft,
 )
@@ -17,6 +19,68 @@ from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
 
 
 class TestAiRepository(TestCase):
+	def test_list_conversations_searches_owned_titles_and_messages_with_draft_counts(self):
+		row = frappe._dict({
+			"name": "AI-CONV-1", "title": "采购跟进", "status": "active",
+			"company_scope": "Demo Company", "message_count": 4,
+			"pending_draft_count": 2, "last_message_at": "2026-07-24 12:00:00",
+			"creation": "2026-07-24 09:00:00", "modified": "2026-07-24 12:00:00",
+		})
+		with patch.object(ai_repository, "frappe") as mock_frappe:
+			mock_frappe.db.table_exists.return_value = True
+			mock_frappe.db.sql.side_effect = [
+				[frappe._dict({"total": 1})],
+				[frappe._dict({"total": 3})],
+				[row],
+			]
+			result = list_conversations(
+				user="user@example.com", status="active", search="  采购   跟进  ",
+				start=0, limit=20,
+			)
+
+		self.assertEqual(result["items"][0]["pending_draft_count"], 2)
+		self.assertEqual(result["pending_draft_total"], 3)
+		count_query = mock_frappe.db.sql.call_args_list[0].args[0]
+		self.assertIn("EXISTS", count_query)
+		self.assertIn("LOCATE", count_query)
+		self.assertEqual(
+			mock_frappe.db.sql.call_args_list[0].args[1],
+			("user@example.com", "active", "采购 跟进", "采购 跟进"),
+		)
+		rows_query = mock_frappe.db.sql.call_args_list[2].args[0]
+		self.assertIn("pending_draft_count", rows_query)
+		self.assertEqual(
+			mock_frappe.db.sql.call_args_list[2].args[1],
+			(
+				"user@example.com", "user@example.com", "active",
+				"采购 跟进", "采购 跟进", 20, 0,
+			),
+		)
+
+	def test_rename_conversation_normalizes_title_and_preserves_owner_scope(self):
+		conversation = frappe._dict({
+			"name": "AI-CONV-1", "title": "旧名称", "status": "archived",
+			"company_scope": "Demo Company", "message_count": 4,
+			"last_message_at": "2026-07-24 12:00:00",
+			"creation": "2026-07-24 09:00:00", "modified": "2026-07-24 12:00:00",
+		})
+		updated = frappe._dict({**conversation, "title": "采购 跟进"})
+		with patch.object(ai_repository, "_get_owned_conversation", side_effect=[conversation, updated]) as mock_get, patch.object(
+			ai_repository, "frappe",
+		) as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value="2026-07-24 13:00:00",
+		):
+			result = rename_conversation(
+				conversation_id="AI-CONV-1", user="user@example.com", title="  采购   跟进  ",
+			)
+
+		self.assertEqual(result["title"], "采购 跟进")
+		self.assertTrue(mock_get.call_args_list[0].kwargs["for_update"])
+		self.assertEqual(
+			mock_frappe.db.sql.call_args.args[1],
+			("采购 跟进", "2026-07-24 13:00:00", "user@example.com", "AI-CONV-1"),
+		)
+
 	def test_fail_run_persists_stable_ai_error_code(self):
 		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
 			"myapp.services.ai_repository.now_datetime", return_value="2026-07-23 23:30:00",

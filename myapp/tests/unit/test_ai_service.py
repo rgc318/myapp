@@ -33,7 +33,9 @@ from myapp.services.ai_service import (
 	generate_ai_purchase_order_draft_v1,
 	generate_ai_sales_order_draft_v1,
 	get_ai_conversation_v1,
+	list_ai_conversations_v1,
 	list_ai_drafts_v1,
+	rename_ai_conversation_v1,
 	refresh_ai_business_result_v1,
 	stream_ai_message_v1,
 	submit_ai_feedback_v1,
@@ -44,6 +46,28 @@ from myapp.utils.api_response import UpstreamServiceUnavailableError, map_except
 
 
 class TestAiService(TestCase):
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service.ai_repository.list_conversations")
+	def test_list_ai_conversations_forwards_search(self, mock_list, _current_user):
+		mock_list.return_value = {"items": [], "pagination": {"total": 0}}
+
+		list_ai_conversations_v1(status="archived", search="采购", start=20, limit=10)
+
+		mock_list.assert_called_once_with(
+			user="user@example.com", status="archived", search="采购", start=20, limit=10,
+		)
+
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service.ai_repository.rename_conversation")
+	def test_rename_ai_conversation_uses_current_user_scope(self, mock_rename, _current_user):
+		mock_rename.return_value = {"name": "AI-CONV-1", "title": "采购跟进"}
+
+		rename_ai_conversation_v1(conversation_id="AI-CONV-1", title="采购跟进")
+
+		mock_rename.assert_called_once_with(
+			conversation_id="AI-CONV-1", user="user@example.com", title="采购跟进",
+		)
+
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	@patch("myapp.services.ai_service.ai_repository.get_conversation")
 	def test_get_ai_conversation_forwards_message_cursor(

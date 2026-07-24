@@ -1153,12 +1153,28 @@ def create_ai_conversation_v1(title: str | None = None, company: str | None = No
 	}
 
 
-def list_ai_conversations_v1(status: str = "active", start: int = 0, limit: int = 20):
+def list_ai_conversations_v1(
+	status: str = "active", search: str | None = None,
+	start: int = 0, limit: int = 20,
+):
 	user = _current_user()
 	return {
 		"status": "success",
 		"message": _("已获取 AI 会话列表。"),
-		"data": ai_repository.list_conversations(user=user, status=status, start=start, limit=limit),
+		"data": ai_repository.list_conversations(
+			user=user, status=status, search=search, start=start, limit=limit,
+		),
+	}
+
+
+def rename_ai_conversation_v1(conversation_id: str, title: str):
+	user = _current_user()
+	return {
+		"status": "success",
+		"message": _("AI 会话名称已更新。"),
+		"data": ai_repository.rename_conversation(
+			conversation_id=conversation_id, user=user, title=title,
+		),
 	}
 
 

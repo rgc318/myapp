@@ -77,6 +77,7 @@ from myapp.api.gateway import (
 	list_stock_ledger_entries_v1,
 	reconcile_inventory_stock_v1,
 	refresh_ai_business_result_v1,
+	rename_ai_conversation_v1,
 	resolve_ai_scenario_v1,
 	restore_ai_draft_version_v1,
 	execute_ai_data_task_v1,
@@ -244,6 +245,7 @@ class TestGatewayWrappers(TestCase):
 			approve_ai_model_policy_v1,
 			save_ai_model_policy_draft_v1,
 			list_ai_conversations_v1,
+			rename_ai_conversation_v1,
 			list_ai_data_tasks_v1,
 			review_ai_data_task_v1,
 			rollback_ai_data_task_v1,
@@ -384,6 +386,26 @@ class TestGatewayWrappers(TestCase):
 
 		mock_service.assert_called_once_with(
 			conversation_id="AI-CONV-1", before_sequence=81, limit=40,
+		)
+
+	@patch("myapp.api.gateway.list_ai_conversations_v1_service")
+	def test_list_ai_conversations_v1_forwards_search(self, mock_service):
+		mock_service.return_value = {"status": "success", "data": {"items": []}}
+
+		list_ai_conversations_v1(status="active", search="采购", start=0, limit=20)
+
+		mock_service.assert_called_once_with(
+			status="active", search="采购", start=0, limit=20,
+		)
+
+	@patch("myapp.api.gateway.rename_ai_conversation_v1_service")
+	def test_rename_ai_conversation_v1_forwards_title(self, mock_service):
+		mock_service.return_value = {"status": "success", "data": {"title": "采购跟进"}}
+
+		rename_ai_conversation_v1(conversation_id="AI-CONV-1", title="采购跟进")
+
+		mock_service.assert_called_once_with(
+			conversation_id="AI-CONV-1", title="采购跟进",
 		)
 
 	@patch("myapp.api.gateway.refresh_ai_business_result_v1_service")

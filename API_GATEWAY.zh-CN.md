@@ -61,6 +61,7 @@
 - AI Copilot（受控业务查询与人工复核草稿）：
 - `myapp.api.gateway.create_ai_conversation_v1`
 - `myapp.api.gateway.list_ai_conversations_v1`
+- `myapp.api.gateway.rename_ai_conversation_v1`
 - `myapp.api.gateway.get_ai_conversation_v1`
 - `myapp.api.gateway.archive_ai_conversation_v1`
 - `myapp.api.gateway.chat_ai_v1`
@@ -104,7 +105,7 @@
 - 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`、`list_stock_ledger_entries_v1`
 - 库存：`list_inventory_stock_summary_v1`、`list_stock_ledger_entries_v1`、`transfer_inventory_stock_v1`、`reconcile_inventory_stock_v1`、`submit_inventory_stock_count_v1`
 - 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
-- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`list_ai_selectable_models_v1`、`resolve_ai_scenario_v1`、`refresh_ai_business_result_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1`、`get_ai_draft_v1`、`list_ai_drafts_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`execute_ai_draft_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
+- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`rename_ai_conversation_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`list_ai_selectable_models_v1`、`resolve_ai_scenario_v1`、`refresh_ai_business_result_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1`、`get_ai_draft_v1`、`list_ai_drafts_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`execute_ai_draft_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
 - AI 模型管理：`get_ai_model_governance_overview_v1`、`list_ai_audit_events_v1`、`sync_ai_model_registry_v1`、`check_ai_model_availability_v1`、`list_ai_models_v1`、`update_ai_model_registry_v1`、`list_ai_model_policies_v1`、`get_ai_model_policy_v1`、`save_ai_model_policy_draft_v1`、`validate_ai_model_policy_v1`、`approve_ai_model_policy_v1`、`publish_ai_model_policy_v1`、`rollback_ai_model_policy_v1`、`get_ai_model_usage_summary_v1`
   - `update_ai_model_registry_v1` 只维护治理字段：状态、数据区域、留存策略、敏感数据许可、输入/输出成本和币种；供应商能力字段由同步维护。请求必须包含 `reason` 和幂等键，响应返回递增后的 `registry_version` 与受影响的已发布策略。
   - `get_ai_model_usage_summary_v1` 支持 `date_from`、`date_to`、`environment`、`company`，返回延迟/首 Token 平均值与 p50/p95、反馈计数和正向率。
@@ -118,7 +119,7 @@
 
 ### AI Copilot 只读聊天
 
-会话接口只返回当前登录用户自己的会话；归档后的会话不能继续追加消息。`chat_ai_v1` 是 Web/Mobile 访问 AI Orchestrator 的受控入口。客户端不得直接访问 LiteLLM，也不能传入 `system` / `tool` 消息。
+会话接口只返回当前登录用户自己的会话；归档后的会话不能继续追加消息。`list_ai_conversations_v1` 支持 `status`、`search`、`start` 和 `limit`，其中 `search` 最多规范化为 100 个字符，并在当前用户范围内匹配会话标题或消息正文；返回每个会话的 `pending_draft_count` 和当前用户全局 `pending_draft_total`，两者只统计 `draft` 状态。`rename_ai_conversation_v1` 只允许当前用户重命名自己的会话，名称规范化空白后必须为 1～120 个字符，活跃和归档会话均可修改名称，但不改变消息、公司、状态或排序时间。`chat_ai_v1` 是 Web/Mobile 访问 AI Orchestrator 的受控入口。客户端不得直接访问 LiteLLM，也不能传入 `system` / `tool` 消息。
 
 请求：
 

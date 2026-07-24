@@ -13,6 +13,7 @@ from myapp.services.ai_service import (
 	list_ai_conversations_v1 as list_ai_conversations_v1_service,
 	list_ai_drafts_v1 as list_ai_drafts_v1_service,
 	list_ai_draft_versions_v1 as list_ai_draft_versions_v1_service,
+	rename_ai_conversation_v1 as rename_ai_conversation_v1_service,
 	stream_ai_message_v1 as stream_ai_message_v1_service,
 	submit_ai_feedback_v1 as submit_ai_feedback_v1_service,
 	prepare_ai_draft_handoff_v1 as prepare_ai_draft_handoff_v1_service,
@@ -68,8 +69,17 @@ def create_ai_conversation_v1(title: str | None = None, company: str | None = No
 	return create_ai_conversation_v1_service(title=title, company=company)
 
 
-def list_ai_conversations_v1(status: str = "active", start: int = 0, limit: int = 20):
-	return list_ai_conversations_v1_service(status=status, start=start, limit=limit)
+def list_ai_conversations_v1(
+	status: str = "active", search: str | None = None,
+	start: int = 0, limit: int = 20,
+):
+	return list_ai_conversations_v1_service(
+		status=status, search=search, start=start, limit=limit,
+	)
+
+
+def rename_ai_conversation_v1(conversation_id: str, title: str):
+	return rename_ai_conversation_v1_service(conversation_id=conversation_id, title=title)
 
 
 def get_ai_conversation_v1(

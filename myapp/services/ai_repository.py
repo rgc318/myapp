@@ -59,6 +59,7 @@ def _serialize_conversation(row) -> dict:
 		"status": row.status,
 		"company": row.company_scope,
 		"message_count": cint(row.message_count),
+		"pending_draft_count": cint(getattr(row, "pending_draft_count", 0)),
 		"last_message_at": str(row.last_message_at or "") or None,
 		"creation": str(row.creation or "") or None,
 		"modified": str(row.modified or "") or None,
@@ -109,37 +110,77 @@ def create_conversation(*, user: str, title: str | None = None, company: str | N
 	return _serialize_conversation(_get_owned_conversation(conversation_id, user))
 
 
-def list_conversations(*, user: str, status: str = "active", start: int = 0, limit: int = 20) -> dict:
+def list_conversations(
+	*, user: str, status: str = "active", search: str | None = None,
+	start: int = 0, limit: int = 20,
+) -> dict:
 	_ensure_tables()
 	resolved_status = (status or "active").strip().lower()
 	if resolved_status not in {"active", "archived", "all"}:
 		frappe.throw(_("AI 会话状态筛选不正确。"))
+	resolved_search = " ".join(str(search or "").split())[:100]
 	start = max(0, cint(start))
 	limit = max(1, min(MAX_CONVERSATION_PAGE_SIZE, cint(limit) or 20))
-	status_sql = "" if resolved_status == "all" else " AND status = %s"
-	params = [user]
+	conditions = ["c.owner = %s"]
+	params: list = [user]
 	if resolved_status != "all":
+		conditions.append("c.status = %s")
 		params.append(resolved_status)
+	if resolved_search:
+		conditions.append(
+			f"(LOCATE(%s, c.title) > 0 OR EXISTS ("
+			f"SELECT 1 FROM `{MESSAGE_TABLE}` m "
+			"WHERE m.conversation = c.name AND LOCATE(%s, m.content) > 0))"
+		)
+		params.extend([resolved_search, resolved_search])
+	where_sql = " AND ".join(conditions)
 	count_rows = frappe.db.sql(
-		f"SELECT COUNT(*) AS total FROM `{CONVERSATION_TABLE}` WHERE owner = %s{status_sql}",
+		f"SELECT COUNT(*) AS total FROM `{CONVERSATION_TABLE}` c WHERE {where_sql}",
 		tuple(params),
 		as_dict=True,
 	)
+	pending_rows = frappe.db.sql(
+		f"SELECT COUNT(*) AS total FROM `{DRAFT_TABLE}` WHERE owner = %s AND status = 'draft'",
+		(user,), as_dict=True,
+	)
 	rows = frappe.db.sql(
 		f"""
-		SELECT name, title, status, company_scope, message_count, last_message_at, creation, modified
-		FROM `{CONVERSATION_TABLE}`
-		WHERE owner = %s{status_sql}
-		ORDER BY last_message_at DESC, creation DESC
+		SELECT c.name, c.title, c.status, c.company_scope, c.message_count,
+			c.last_message_at, c.creation, c.modified,
+			COALESCE(d.pending_draft_count, 0) AS pending_draft_count
+		FROM `{CONVERSATION_TABLE}` c
+		LEFT JOIN (
+			SELECT conversation, COUNT(*) AS pending_draft_count
+			FROM `{DRAFT_TABLE}`
+			WHERE owner = %s AND status = 'draft'
+			GROUP BY conversation
+		) d ON d.conversation = c.name
+		WHERE {where_sql}
+		ORDER BY c.last_message_at DESC, c.creation DESC
 		LIMIT %s OFFSET %s
 		""",
-		(*params, limit, start),
+		(user, *params, limit, start),
 		as_dict=True,
 	)
 	return {
 		"items": [_serialize_conversation(row) for row in rows],
 		"pagination": {"start": start, "limit": limit, "total": cint(count_rows[0].total if count_rows else 0)},
+		"pending_draft_total": cint(pending_rows[0].total if pending_rows else 0),
 	}
+
+
+def rename_conversation(*, conversation_id: str, user: str, title: str) -> dict:
+	conversation = _get_owned_conversation((conversation_id or "").strip(), user, for_update=True)
+	resolved_title = " ".join(str(title or "").split())
+	if not resolved_title:
+		frappe.throw(_("AI 会话名称不能为空。"))
+	if len(resolved_title) > 120:
+		frappe.throw(_("AI 会话名称不能超过 120 个字符。"))
+	frappe.db.sql(
+		f"UPDATE `{CONVERSATION_TABLE}` SET title = %s, modified = %s, modified_by = %s WHERE name = %s",
+		(resolved_title, now_datetime(), user, conversation.name),
+	)
+	return _serialize_conversation(_get_owned_conversation(conversation.name, user))
 
 
 def get_conversation(

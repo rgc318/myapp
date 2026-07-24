@@ -239,6 +239,7 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 
 - `create_ai_conversation_v1`（已实现）
 - `list_ai_conversations_v1`（已实现）
+- `rename_ai_conversation_v1`（已实现，本人会话名称治理）
 - `get_ai_conversation_v1`（已实现，使用 `before_sequence` + `limit` 稳定向前分页，默认返回最近 40 条消息）
 - `archive_ai_conversation_v1`（已实现）
 - `chat_ai_v1`（已实现同步事件契约）
