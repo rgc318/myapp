@@ -97,6 +97,7 @@ class TestAiModelGovernanceService(TestCase):
 			),
 		]
 		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+			mock_frappe.get_roles.return_value = ["AI Model Manager"]
 			mock_frappe.db.sql.return_value = rows
 			result = list_ai_selectable_models_v1()
 
@@ -104,13 +105,49 @@ class TestAiModelGovernanceService(TestCase):
 			[item["model_alias"] for item in result["data"]["items"]],
 			["gpt-5.5", "opencode-glm-5.2"],
 		)
+		self.assertTrue(result["data"]["capabilities"]["can_select_fixed_model"])
+		self.assertTrue(result["data"]["capabilities"]["can_view_advanced_diagnostics"])
 		self.assertIn("status IN ('active', 'validated')", mock_frappe.db.sql.call_args.args[0])
 		self.assertIn("capability IN ('fast_chat', 'reasoning', 'structured')", mock_frappe.db.sql.call_args.args[0])
 
 	@patch("myapp.services.ai_model_governance_service._ensure_tables")
 	@patch("myapp.services.ai_model_governance_service._current_user", return_value="user@example.com")
+	def test_selectable_models_hide_fixed_model_inventory_from_business_users(self, _user, _tables):
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+			mock_frappe.get_roles.return_value = ["Sales User"]
+			result = list_ai_selectable_models_v1()
+
+		self.assertEqual(result["data"]["items"], [])
+		self.assertEqual(result["data"]["capabilities"], {
+			"can_select_fixed_model": False,
+			"can_view_advanced_diagnostics": False,
+		})
+		mock_frappe.db.sql.assert_not_called()
+
+	@patch("myapp.services.ai_model_governance_service._ensure_tables")
+	@patch("myapp.services.ai_model_governance_service._current_user", return_value="user@example.com")
+	def test_approvers_and_auditors_can_view_diagnostics_without_fixed_model_inventory(
+		self, _user, _tables,
+	):
+		for role in ("AI Model Approver", "AI Auditor"):
+			with self.subTest(role=role), patch.object(
+				ai_model_governance_service, "frappe",
+			) as mock_frappe:
+				mock_frappe.get_roles.return_value = [role]
+				result = list_ai_selectable_models_v1()
+
+				self.assertEqual(result["data"]["items"], [])
+				self.assertEqual(result["data"]["capabilities"], {
+					"can_select_fixed_model": False,
+					"can_view_advanced_diagnostics": True,
+				})
+				mock_frappe.db.sql.assert_not_called()
+
+	@patch("myapp.services.ai_model_governance_service._ensure_tables")
+	@patch("myapp.services.ai_model_governance_service._current_user", return_value="user@example.com")
 	def test_selected_model_rejects_unavailable_or_embedding_alias(self, _user, _tables):
 		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+			mock_frappe.get_roles.return_value = ["AI Model Manager"]
 			mock_frappe.db.sql.return_value = []
 			mock_frappe.throw.side_effect = frappe.ValidationError
 			with self.assertRaises(frappe.ValidationError):
@@ -120,10 +157,21 @@ class TestAiModelGovernanceService(TestCase):
 	@patch("myapp.services.ai_model_governance_service._current_user", return_value="user@example.com")
 	def test_selected_model_returns_registered_active_alias(self, _user, _tables):
 		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+			mock_frappe.get_roles.return_value = ["AI Model Manager"]
 			mock_frappe.db.sql.return_value = [frappe._dict(model_alias="opencode-glm-5.2")]
 			result = resolve_ai_selected_model_alias("opencode-glm-5.2")
 
 		self.assertEqual(result, "opencode-glm-5.2")
+
+	@patch("myapp.services.ai_model_governance_service._current_user", return_value="user@example.com")
+	def test_selected_model_rejects_business_user_override(self, _user):
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+			mock_frappe.get_roles.return_value = ["Sales User"]
+			mock_frappe.PermissionError = frappe.PermissionError
+			with self.assertRaises(frappe.PermissionError):
+				resolve_ai_selected_model_alias("opencode-glm-5.2")
+
+		mock_frappe.db.sql.assert_not_called()
 
 	@patch("myapp.services.ai_model_governance_service._call_orchestrator")
 	@patch("myapp.services.ai_model_governance_service._require_viewer")

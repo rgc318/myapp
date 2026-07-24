@@ -69,9 +69,10 @@ class TestAiService(TestCase):
 		)
 
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service._can_view_advanced_diagnostics", return_value=False)
 	@patch("myapp.services.ai_service.ai_repository.get_conversation")
 	def test_get_ai_conversation_forwards_message_cursor(
-		self, mock_get_conversation, _current_user,
+		self, mock_get_conversation, _diagnostics, _current_user,
 	):
 		mock_get_conversation.return_value = {
 			"conversation": {"name": "AI-CONV-1"},
@@ -88,6 +89,7 @@ class TestAiService(TestCase):
 			user="user@example.com",
 			before_sequence=81,
 			limit=40,
+			include_advanced_diagnostics=False,
 		)
 
 	@patch("myapp.services.ai_service._get_ai_orchestrator_settings", return_value=("http://ai", "token"))
@@ -1019,6 +1021,7 @@ class TestAiService(TestCase):
 	):
 		mock_prepare.return_value = {
 			"user": "user@example.com",
+			"can_view_advanced_diagnostics": True,
 			"scenario": "general",
 			"conversation_id": "AI-CONV-1",
 			"run_id": "AI-RUN-1",
@@ -1061,9 +1064,53 @@ class TestAiService(TestCase):
 		self.assertIn('"first_token_ms":120', body)
 		self.assertIn('"delta_count":2', body)
 		self.assertIn('"streamed_chars":2', body)
+		self.assertIn('"model_alias":"opencode-deepseek-v4-flash"', body)
 		mock_complete.assert_called_once()
 		self.assertEqual(mock_complete.call_args.args[2], "你好")
 		self.assertGreaterEqual(mock_complete.call_args.kwargs["first_token_ms"], 0)
+
+	@patch("myapp.services.ai_service._complete_chat_run")
+	@patch("myapp.services.ai_service._stream_ai_orchestrator")
+	@patch("myapp.services.ai_service._prepare_chat_run")
+	def test_stream_ai_message_v1_redacts_advanced_diagnostics_for_business_user(
+		self, mock_prepare, mock_stream, mock_complete,
+	):
+		mock_prepare.return_value = {
+			"user": "user@example.com",
+			"can_view_advanced_diagnostics": False,
+			"scenario": "general",
+			"conversation_id": "AI-CONV-1",
+			"run_id": "AI-RUN-1",
+			"started": 1,
+			"citations": [],
+			"tool_calls": [],
+			"payload": {"messages": [{"role": "user", "content": "你好"}]},
+		}
+		mock_stream.return_value = iter([
+			{"type": "started", "model_alias": "internal-alias"},
+			{"type": "message_delta", "delta": "你好"},
+			{
+				"type": "completed",
+				"message": {"role": "assistant", "content": "你好"},
+				"model": "provider-model", "model_alias": "internal-alias",
+				"trace_id": "trace-secret", "usage": {"total_tokens": 10},
+				"warnings": [],
+			},
+		])
+		mock_complete.return_value = {
+			"status": "completed", "latency_ms": 900, "first_token_ms": 120,
+		}
+
+		response = stream_ai_message_v1(content="你好")
+		body = b"".join(response.iter_encoded()).decode()
+
+		self.assertIn('"type":"completed"', body)
+		self.assertIn('"latency_ms":900', body)
+		self.assertNotIn("internal-alias", body)
+		self.assertNotIn("provider-model", body)
+		self.assertNotIn("trace-secret", body)
+		self.assertNotIn('"total_tokens":10', body)
+		self.assertNotIn('"first_token_ms":120', body)
 
 	@patch("myapp.services.ai_service._fail_chat_run")
 	@patch("myapp.services.ai_service._stream_ai_orchestrator")
@@ -1143,6 +1190,10 @@ class TestAiService(TestCase):
 		self.assertEqual(result["data"]["message"]["content"], "你好")
 		self.assertEqual(result["data"]["run"]["status"], "completed")
 		self.assertGreaterEqual(result["data"]["run"]["latency_ms"], 0)
+		self.assertNotIn("model", result["data"])
+		self.assertNotIn("model_alias", result["data"])
+		self.assertNotIn("trace_id", result["data"])
+		self.assertNotIn("usage", result["data"])
 		self.assertEqual(result["data"]["events"][-1], {"type": "completed"})
 		self.assertEqual(mock_append_message.call_count, 2)
 		mock_complete_run.assert_called_once()

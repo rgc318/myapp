@@ -20,7 +20,10 @@ from myapp.services.ai_vector_service import search_products_semantic
 from myapp.services.customer_service import list_customers_v2
 from myapp.services.document_list_service import list_business_documents_v1
 from myapp.services.inventory_service import reconcile_inventory_stock_v1
-from myapp.services.ai_model_governance_service import resolve_ai_selected_model_alias
+from myapp.services.ai_model_governance_service import (
+	ADVANCED_DIAGNOSTIC_ROLES,
+	resolve_ai_selected_model_alias,
+)
 from myapp.services.order_service import create_order_v2, search_sales_orders_v2
 from myapp.services.purchase_service import create_purchase_order, list_suppliers_v2, search_purchase_orders_v2
 from myapp.services.report_service import (
@@ -67,6 +70,51 @@ def _current_user() -> str:
 	if not user or user == "Guest":
 		frappe.throw(_("请先登录后再使用 AI 助手。"), frappe.AuthenticationError)
 	return user
+
+
+def _can_view_advanced_diagnostics(user: str) -> bool:
+	roles = set(frappe.get_roles(user) or [])
+	return user == "Administrator" or bool(roles & ADVANCED_DIAGNOSTIC_ROLES)
+
+
+def _public_run_summary(run: dict, *, include_advanced_diagnostics: bool) -> dict:
+	public = {
+		"status": run.get("status"),
+		"latency_ms": cint(run.get("latency_ms")),
+	}
+	if run.get("error_code"):
+		public["error_code"] = run.get("error_code")
+	if run.get("error"):
+		public["error"] = run.get("error")
+	if include_advanced_diagnostics:
+		public["first_token_ms"] = run.get("first_token_ms")
+	return public
+
+
+def _public_ai_result_details(
+	*, result: dict, run: dict, include_advanced_diagnostics: bool,
+	stream: dict | None = None,
+) -> dict:
+	public = {
+		"run": _public_run_summary(
+			run,
+			include_advanced_diagnostics=include_advanced_diagnostics,
+		),
+		"warnings": result.get("warnings") or [],
+	}
+	if include_advanced_diagnostics:
+		public.update({
+			"model": result.get("model"),
+			"model_alias": result.get("model_alias"),
+			"policy_code": result.get("policy_code"),
+			"policy_version": result.get("policy_version"),
+			"fallback_reason": result.get("fallback_reason"),
+			"trace_id": result.get("trace_id"),
+			"usage": result.get("usage") or {},
+		})
+		if stream is not None:
+			public["stream"] = stream
+	return public
 
 
 def _normalize_content(content) -> str:
@@ -1192,6 +1240,7 @@ def get_ai_conversation_v1(
 			user=user,
 			before_sequence=before_sequence,
 			limit=limit,
+			include_advanced_diagnostics=_can_view_advanced_diagnostics(user),
 		),
 	}
 
@@ -1784,9 +1833,11 @@ def generate_ai_sales_order_draft_v1(
 			"status": "success", "message": assistant_content,
 			"data": {"conversation": conversation_id, "run_id": run_id, "draft": draft,
 				"message": {"role": "assistant", "content": assistant_content, "citations": [citation]},
-				"model": result.get("model"), "model_alias": result.get("model_alias"),
-				"run": {"status": "completed", "latency_ms": latency_ms, "first_token_ms": None},
-				"trace_id": result.get("trace_id"), "usage": result.get("usage") or {}, "warnings": result.get("warnings") or []},
+				**_public_ai_result_details(
+					result=result,
+					run={"status": "completed", "latency_ms": latency_ms, "first_token_ms": None},
+					include_advanced_diagnostics=_can_view_advanced_diagnostics(user),
+				)},
 		}
 	except Exception as error:
 		frappe.db.rollback()
@@ -1893,9 +1944,11 @@ def generate_ai_purchase_order_draft_v1(
 			"status": "success", "message": assistant_content,
 			"data": {"conversation": conversation_id, "run_id": run_id, "draft": draft,
 				"message": {"role": "assistant", "content": assistant_content, "citations": [citation]},
-				"model": result.get("model"), "model_alias": result.get("model_alias"),
-				"run": {"status": "completed", "latency_ms": latency_ms, "first_token_ms": None},
-				"trace_id": result.get("trace_id"), "usage": result.get("usage") or {}, "warnings": result.get("warnings") or []},
+				**_public_ai_result_details(
+					result=result,
+					run={"status": "completed", "latency_ms": latency_ms, "first_token_ms": None},
+					include_advanced_diagnostics=_can_view_advanced_diagnostics(user),
+				)},
 		}
 	except Exception as error:
 		frappe.db.rollback()
@@ -2015,12 +2068,11 @@ def generate_ai_inventory_adjustment_draft_v1(
 				"run_id": run_id,
 				"draft": draft,
 				"message": {"role": "assistant", "content": assistant_content, "citations": [citation]},
-				"model": result.get("model"),
-				"model_alias": result.get("model_alias"),
-				"run": {"status": "completed", "latency_ms": latency_ms, "first_token_ms": None},
-				"trace_id": result.get("trace_id"),
-				"usage": result.get("usage") or {},
-				"warnings": result.get("warnings") or [],
+				**_public_ai_result_details(
+					result=result,
+					run={"status": "completed", "latency_ms": latency_ms, "first_token_ms": None},
+					include_advanced_diagnostics=_can_view_advanced_diagnostics(user),
+				),
 			},
 		}
 	except Exception as error:
@@ -2277,10 +2329,11 @@ def generate_ai_product_setup_draft_v1(
 			"data": {
 				"conversation": conversation_id, "run_id": run_id, "draft": draft,
 				"message": {"role": "assistant", "content": assistant_content, "citations": [citation]},
-				"model": result.get("model"), "model_alias": result.get("model_alias"),
-				"run": {"status": "completed", "latency_ms": latency_ms, "first_token_ms": None},
-				"trace_id": result.get("trace_id"), "usage": result.get("usage") or {},
-				"warnings": result.get("warnings") or [],
+				**_public_ai_result_details(
+					result=result,
+					run={"status": "completed", "latency_ms": latency_ms, "first_token_ms": None},
+					include_advanced_diagnostics=_can_view_advanced_diagnostics(user),
+				),
 			},
 		}
 	except Exception as error:
@@ -2950,6 +3003,7 @@ def _prepare_chat_run(
 		raise
 	return {
 		"user": user,
+		"can_view_advanced_diagnostics": _can_view_advanced_diagnostics(user),
 		"scenario": resolved_scenario,
 		"company": resolved_company,
 		"conversation_id": conversation_id,
@@ -3056,15 +3110,11 @@ def chat_ai_v1(
 				"content": assistant_content,
 				"citations": prepared["citations"],
 			},
-			"model": result.get("model"),
-			"model_alias": result.get("model_alias"),
-			"policy_code": result.get("policy_code"),
-			"policy_version": result.get("policy_version"),
-			"fallback_reason": result.get("fallback_reason"),
-			"trace_id": result.get("trace_id"),
-			"run": run_summary,
-			"usage": result.get("usage") or {},
-			"warnings": warnings,
+			**_public_ai_result_details(
+				result=result,
+				run=run_summary,
+				include_advanced_diagnostics=prepared["can_view_advanced_diagnostics"],
+			),
 			"events": _build_events(
 				content=assistant_content,
 				citations=prepared["citations"],
@@ -3093,6 +3143,7 @@ def stream_ai_message_v1(
 		content=content,
 		model_alias=model_alias,
 	)
+	include_advanced_diagnostics = bool(prepared.get("can_view_advanced_diagnostics", False))
 
 	def event_stream():
 		content_parts = []
@@ -3142,7 +3193,10 @@ def stream_ai_message_v1(
 							"type": "run_progress",
 							"phase": "model_started",
 							"message": _("模型已接收请求，等待首个 Token"),
-							"model_alias": event.get("model_alias"),
+							**(
+								{"model_alias": event.get("model_alias")}
+								if include_advanced_diagnostics else {}
+							),
 						}
 					)
 				elif event_type == "message_delta":
@@ -3179,20 +3233,25 @@ def stream_ai_message_v1(
 			run_summary = _complete_chat_run(
 				prepared, completed_result, assistant_content, first_token_ms=first_token_ms,
 			)
-			yield _encode_sse(
-				{
-					**completed_result,
-					"type": "completed",
-					"conversation": prepared["conversation_id"],
-					"run_id": prepared["run_id"],
-					"run": run_summary,
-					"stream": {
-						"delta_count": delta_count,
-						"streamed_chars": streamed_chars,
-					},
-					"citations": prepared["citations"],
-				}
-			)
+			stream_summary = {
+				"delta_count": delta_count,
+				"streamed_chars": streamed_chars,
+			}
+			yield _encode_sse({
+				"type": "completed",
+				"conversation": prepared["conversation_id"],
+				"run_id": prepared["run_id"],
+				"message": completed_result.get("message") or {
+					"role": "assistant", "content": assistant_content,
+				},
+				"citations": prepared["citations"],
+				**_public_ai_result_details(
+					result=completed_result,
+					run=run_summary,
+					include_advanced_diagnostics=include_advanced_diagnostics,
+					stream=stream_summary,
+				),
+			})
 		except GeneratorExit as error:
 			_fail_chat_run(prepared, RuntimeError("AI stream client disconnected"))
 			raise error

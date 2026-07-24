@@ -66,6 +66,31 @@ def _serialize_conversation(row) -> dict:
 	}
 
 
+def _serialize_message_run(row, *, include_advanced_diagnostics: bool) -> dict | None:
+	if not row.run_id:
+		return None
+	run = {
+		"status": row.run_status,
+		"latency_ms": cint(row.latency_ms),
+		"error_code": row.error_code,
+		"error": row.error,
+	}
+	if include_advanced_diagnostics:
+		run.update({
+			"model_alias": row.model_alias,
+			"model": row.model,
+			"trace_id": row.trace_id,
+			"usage": {
+				"prompt_tokens": cint(row.prompt_tokens),
+				"completion_tokens": cint(row.completion_tokens),
+				"total_tokens": cint(row.total_tokens),
+				"reasoning_tokens": cint(row.reasoning_tokens),
+			},
+			"first_token_ms": cint(row.first_token_ms) if row.first_token_ms is not None else None,
+		})
+	return run
+
+
 def _get_owned_conversation(conversation_id: str, user: str, *, for_update: bool = False):
 	lock_sql = " FOR UPDATE" if for_update else ""
 	rows = frappe.db.sql(
@@ -189,6 +214,7 @@ def get_conversation(
 	user: str,
 	before_sequence: int | None = None,
 	limit: int = DEFAULT_MESSAGE_PAGE_SIZE,
+	include_advanced_diagnostics: bool = False,
 ) -> dict:
 	_ensure_tables()
 	conversation = _get_owned_conversation((conversation_id or "").strip(), user)
@@ -238,22 +264,10 @@ def get_conversation(
 				"citations": _safe_json_loads(row.citations_json, []),
 				"prompt_version": row.prompt_version,
 				"creation": str(row.creation or "") or None,
-				"run": {
-					"status": row.run_status,
-					"model_alias": row.model_alias,
-					"model": row.model,
-					"trace_id": row.trace_id,
-					"usage": {
-						"prompt_tokens": cint(row.prompt_tokens),
-						"completion_tokens": cint(row.completion_tokens),
-						"total_tokens": cint(row.total_tokens),
-						"reasoning_tokens": cint(row.reasoning_tokens),
-					},
-					"latency_ms": cint(row.latency_ms),
-					"first_token_ms": cint(row.first_token_ms) if row.first_token_ms is not None else None,
-					"error_code": row.error_code,
-					"error": row.error,
-				} if row.run_id else None,
+				"run": _serialize_message_run(
+					row,
+					include_advanced_diagnostics=include_advanced_diagnostics,
+				),
 				"feedback": {
 					"rating": row.feedback_rating,
 					"category": row.feedback_category,

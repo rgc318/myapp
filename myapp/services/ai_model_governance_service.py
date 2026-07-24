@@ -25,6 +25,8 @@ AUDIT_TABLE = "tabMyApp AI Audit Event"
 VIEW_ROLES = {"System Manager", "AI Model Manager", "AI Model Approver", "AI Auditor"}
 MANAGE_ROLES = {"System Manager", "AI Model Manager"}
 APPROVE_ROLES = {"System Manager", "AI Model Approver"}
+FIXED_MODEL_ROLES = MANAGE_ROLES
+ADVANCED_DIAGNOSTIC_ROLES = VIEW_ROLES
 CAPABILITIES = {"fast_chat", "reasoning", "structured", "vision", "embedding", "rerank"}
 MODEL_STATUSES = {"discovered", "validated", "active", "degraded", "disabled", "retired"}
 MANAGED_MODEL_STATUSES = {"validated", "active", "degraded", "disabled", "retired"}
@@ -77,6 +79,17 @@ def _require_approver() -> str:
 
 def _require_system_manager() -> str:
 	return _require_roles({"System Manager"}, _("只有系统管理员可以发布或回滚 AI 模型策略。"))
+
+
+def get_ai_workspace_capabilities(user: str | None = None) -> dict:
+	resolved_user = user or _current_user()
+	roles = set(frappe.get_roles(resolved_user) or [])
+	if resolved_user == "Administrator":
+		roles.add("System Manager")
+	return {
+		"can_select_fixed_model": bool(roles & FIXED_MODEL_ROLES),
+		"can_view_advanced_diagnostics": bool(roles & ADVANCED_DIAGNOSTIC_ROLES),
+	}
 
 
 def _ensure_tables() -> None:
@@ -792,22 +805,26 @@ def list_ai_models_v1(
 
 
 def list_ai_selectable_models_v1() -> dict:
-	_current_user()
+	user = _current_user()
 	_ensure_tables()
-	rows = frappe.db.sql(
-		f"""
-		SELECT model_alias, capability, provider_model_display, supports_streaming,
-			supports_json_schema, status
-		FROM `{REGISTRY_TABLE}`
-		WHERE status IN ('active', 'validated')
-			AND capability IN ('fast_chat', 'reasoning', 'structured')
-		ORDER BY model_alias
-		""",
-		as_dict=True,
-	)
+	capabilities = get_ai_workspace_capabilities(user)
+	rows = []
+	if capabilities["can_select_fixed_model"]:
+		rows = frappe.db.sql(
+			f"""
+			SELECT model_alias, capability, provider_model_display, supports_streaming,
+				supports_json_schema, status
+			FROM `{REGISTRY_TABLE}`
+			WHERE status IN ('active', 'validated')
+				AND capability IN ('fast_chat', 'reasoning', 'structured')
+			ORDER BY model_alias
+			""",
+			as_dict=True,
+		)
 	return {
 		"status": "success",
 		"data": {
+			"capabilities": capabilities,
 			"items": [
 				{
 					"model_alias": row.model_alias,
@@ -827,7 +844,9 @@ def resolve_ai_selected_model_alias(model_alias: str | None) -> str | None:
 	resolved = _normalize_text(model_alias, max_length=140)
 	if not resolved:
 		return None
-	_current_user()
+	user = _current_user()
+	if not get_ai_workspace_capabilities(user)["can_select_fixed_model"]:
+		raise frappe.PermissionError(_("当前账号不能固定 AI 模型，请使用已发布策略自动选择。"))
 	_ensure_tables()
 	row = frappe.db.sql(
 		f"""

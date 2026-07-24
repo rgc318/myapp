@@ -244,7 +244,7 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 - `archive_ai_conversation_v1`（已实现）
 - `chat_ai_v1`（已实现同步事件契约）
 - `stream_ai_message_v1`（已实现真正 SSE）
-- `list_ai_selectable_models_v1`（已实现登录用户可选模型列表）
+- `list_ai_selectable_models_v1`（已实现工作台能力位与授权用户可选模型列表）
 - `get_ai_draft_v1`
 - `update_ai_draft_v1`
 - `validate_ai_draft_v1`
@@ -262,7 +262,9 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 
 `chat_ai_v1` 保留同步兼容契约；Web 默认使用 `stream_ai_message_v1`，通过 POST、JWT Bearer 和 `ReadableStream` 增量消费 SSE。浏览器不使用无法携带 POST body / Authorization 的原生 `EventSource`。流中断会把 Run 标为失败，不会生成半条成功消息。
 
-模型选择同时支持“自动选择（策略）”和用户显式固定模型。Frappe 注册表从 Orchestrator 同步当前 LiteLLM Key 可见的全部模型，普通用户只能通过 `list_ai_selectable_models_v1` 选择 `active / validated` 的聊天能力模型；Embedding、停用、退役或缺失模型不会暴露。显式 `model_alias` 在进入 Orchestrator 前再次由 Frappe 校验，并应用于同步 Chat、SSE 及四类草稿；该次请求不允许静默切换到其他模型，便于用户确认、成本归属和运行审计。浏览器始终不能直接访问 LiteLLM。
+模型选择默认使用“自动选择（已发布策略）”。只有 `System Manager` 和 `AI Model Manager` 可以显式固定模型；`list_ai_selectable_models_v1` 对所有已登录用户返回 `capabilities.can_select_fixed_model` 与 `capabilities.can_view_advanced_diagnostics`，但只向具备固定模型权限的账号返回 `active / validated` 的聊天能力模型清单。Embedding、停用、退役、缺失模型以及完整治理库存不会暴露给普通业务账号。即使客户端绕过界面提交 `model_alias`，Frappe 仍会先校验角色、注册状态与能力，再应用于同步 Chat、SSE 及四类草稿；该次请求不允许静默切换到其他模型。浏览器始终不能直接访问 LiteLLM。
+
+高级运行诊断只向 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 返回。Frappe 内部仍完整持久化模型 alias、Provider 模型、策略、trace、Token、首 Token 与流式统计，但普通业务账号的同步 Chat、SSE、四类草稿和历史会话响应只保留 Run ID、状态、总耗时、稳定错误码/消息、业务警告与恢复所需信息；脱敏必须在服务端完成，不能只依赖 Web 隐藏字段。
 
 `prepare_ai_draft_handoff_v1` 保留为复杂场景进入完整业务编辑器的次级路径。默认闭环使用 `execute_ai_draft_v1`：当前用户明确确认并提交所见草稿版本后，Frappe 再次检查 owner、状态、版本和 `ready_for_handoff`，调用既有商品、销售、采购或库存领域服务，并把正式业务对象回执保存到草稿。模型仍不能自行执行正式写操作。
 

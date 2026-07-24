@@ -256,6 +256,7 @@ class TestAiRepository(TestCase):
 			mock_frappe.db.sql.return_value = [message]
 			result = get_conversation(
 				conversation_id="AI-CONV-1", user="user@example.com", limit=40,
+				include_advanced_diagnostics=True,
 			)
 
 		self.assertEqual(result["messages"][0]["run"]["usage"]["total_tokens"], 12)
@@ -274,6 +275,42 @@ class TestAiRepository(TestCase):
 			query_parameters,
 			("user@example.com", "user@example.com", "AI-CONV-1", 41),
 		)
+
+	def test_get_conversation_redacts_advanced_run_diagnostics(self):
+		conversation = frappe._dict({
+			"name": "AI-CONV-1", "title": "测试会话", "status": "active",
+			"company_scope": "Demo Company", "message_count": 1,
+			"last_message_at": "2026-07-24 10:00:00", "creation": "2026-07-24 09:00:00",
+			"modified": "2026-07-24 10:00:00",
+		})
+		message = frappe._dict({
+			"name": "AI-MSG-1", "sequence_no": 1, "role": "assistant", "content": "完成",
+			"scenario": "general", "run_id": "AI-RUN-1", "citations_json": "[]",
+			"prompt_version": "erp-readonly-v7", "creation": "2026-07-24 10:00:00",
+			"run_status": "completed", "model_alias": "internal-alias", "model": "provider-model",
+			"trace_id": "trace-secret", "prompt_tokens": 10, "completion_tokens": 2,
+			"total_tokens": 12, "reasoning_tokens": 0, "latency_ms": 900,
+			"first_token_ms": 240, "error_code": None, "error": None,
+			"feedback_rating": None, "feedback_category": None, "feedback_comment": None,
+		})
+		with patch.object(ai_repository, "frappe") as mock_frappe, patch.object(
+			ai_repository, "_get_owned_conversation", return_value=conversation,
+		):
+			mock_frappe.db.table_exists.return_value = True
+			mock_frappe.db.sql.return_value = [message]
+			result = get_conversation(
+				conversation_id="AI-CONV-1", user="user@example.com", limit=40,
+				include_advanced_diagnostics=False,
+			)
+
+		run = result["messages"][0]["run"]
+		self.assertEqual(run["status"], "completed")
+		self.assertEqual(run["latency_ms"], 900)
+		self.assertNotIn("model_alias", run)
+		self.assertNotIn("model", run)
+		self.assertNotIn("trace_id", run)
+		self.assertNotIn("usage", run)
+		self.assertNotIn("first_token_ms", run)
 
 	def test_get_conversation_pages_backwards_with_a_stable_sequence_cursor(self):
 		conversation = frappe._dict({
