@@ -1162,12 +1162,21 @@ def list_ai_conversations_v1(status: str = "active", start: int = 0, limit: int 
 	}
 
 
-def get_ai_conversation_v1(conversation_id: str):
+def get_ai_conversation_v1(
+	conversation_id: str,
+	before_sequence: int | None = None,
+	limit: int = 40,
+):
 	user = _current_user()
 	return {
 		"status": "success",
 		"message": _("已获取 AI 会话。"),
-		"data": ai_repository.get_conversation(conversation_id=conversation_id, user=user),
+		"data": ai_repository.get_conversation(
+			conversation_id=conversation_id,
+			user=user,
+			before_sequence=before_sequence,
+			limit=limit,
+		),
 	}
 
 

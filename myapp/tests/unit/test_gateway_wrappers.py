@@ -374,6 +374,18 @@ class TestGatewayWrappers(TestCase):
 			model_alias="opencode-glm-5.2",
 		)
 
+	@patch("myapp.api.gateway.get_ai_conversation_v1_service")
+	def test_get_ai_conversation_v1_forwards_message_cursor(self, mock_service):
+		mock_service.return_value = {"status": "success", "data": {"messages": []}}
+
+		get_ai_conversation_v1(
+			conversation_id="AI-CONV-1", before_sequence=81, limit=40,
+		)
+
+		mock_service.assert_called_once_with(
+			conversation_id="AI-CONV-1", before_sequence=81, limit=40,
+		)
+
 	@patch("myapp.api.gateway.refresh_ai_business_result_v1_service")
 	def test_refresh_ai_business_result_v1_forwards_snapshot(self, mock_service):
 		snapshot = {"result_type": "business_documents", "groups": []}

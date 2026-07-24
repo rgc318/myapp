@@ -32,6 +32,7 @@ from myapp.services.ai_service import (
 	generate_ai_inventory_adjustment_draft_v1,
 	generate_ai_purchase_order_draft_v1,
 	generate_ai_sales_order_draft_v1,
+	get_ai_conversation_v1,
 	list_ai_drafts_v1,
 	refresh_ai_business_result_v1,
 	stream_ai_message_v1,
@@ -43,6 +44,28 @@ from myapp.utils.api_response import UpstreamServiceUnavailableError, map_except
 
 
 class TestAiService(TestCase):
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service.ai_repository.get_conversation")
+	def test_get_ai_conversation_forwards_message_cursor(
+		self, mock_get_conversation, _current_user,
+	):
+		mock_get_conversation.return_value = {
+			"conversation": {"name": "AI-CONV-1"},
+			"messages": [],
+			"pagination": {"has_more": False},
+		}
+
+		get_ai_conversation_v1(
+			conversation_id="AI-CONV-1", before_sequence=81, limit=40,
+		)
+
+		mock_get_conversation.assert_called_once_with(
+			conversation_id="AI-CONV-1",
+			user="user@example.com",
+			before_sequence=81,
+			limit=40,
+		)
+
 	@patch("myapp.services.ai_service._get_ai_orchestrator_settings", return_value=("http://ai", "token"))
 	@patch("myapp.services.ai_service.urllib.request.urlopen")
 	def test_stream_orchestrator_preserves_runtime_limit_code(self, mock_urlopen, _settings):

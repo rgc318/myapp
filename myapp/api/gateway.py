@@ -272,9 +272,17 @@ def list_ai_conversations_v1(status: str = "active", start: int = 0, limit: int 
 
 
 @frappe.whitelist()
-def get_ai_conversation_v1(conversation_id: str):
+def get_ai_conversation_v1(
+	conversation_id: str,
+	before_sequence: int | None = None,
+	limit: int = 40,
+):
 	return _handle_gateway_call(
-		lambda: get_ai_conversation_v1_service(conversation_id=conversation_id),
+		lambda: get_ai_conversation_v1_service(
+			conversation_id=conversation_id,
+			before_sequence=before_sequence,
+			limit=limit,
+		),
 		success_code="AI_CONVERSATION_FETCHED",
 	)
 

@@ -72,8 +72,16 @@ def list_ai_conversations_v1(status: str = "active", start: int = 0, limit: int 
 	return list_ai_conversations_v1_service(status=status, start=start, limit=limit)
 
 
-def get_ai_conversation_v1(conversation_id: str):
-	return get_ai_conversation_v1_service(conversation_id=conversation_id)
+def get_ai_conversation_v1(
+	conversation_id: str,
+	before_sequence: int | None = None,
+	limit: int = 40,
+):
+	return get_ai_conversation_v1_service(
+		conversation_id=conversation_id,
+		before_sequence=before_sequence,
+		limit=limit,
+	)
 
 
 def archive_ai_conversation_v1(conversation_id: str):

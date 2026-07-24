@@ -190,10 +190,65 @@ class TestAiRepository(TestCase):
 		):
 			mock_frappe.db.table_exists.return_value = True
 			mock_frappe.db.sql.return_value = [message]
-			result = get_conversation(conversation_id="AI-CONV-1", user="user@example.com")
+			result = get_conversation(
+				conversation_id="AI-CONV-1", user="user@example.com", limit=40,
+			)
 
 		self.assertEqual(result["messages"][0]["run"]["usage"]["total_tokens"], 12)
 		self.assertEqual(result["messages"][0]["run"]["first_token_ms"], 240)
 		self.assertEqual(result["messages"][0]["feedback"]["rating"], "positive")
+		self.assertEqual(result["pagination"], {
+			"before_sequence": None,
+			"limit": 40,
+			"total": 1,
+			"returned_count": 1,
+			"has_more": False,
+			"next_before_sequence": None,
+		})
 		query_parameters = mock_frappe.db.sql.call_args.args[1]
-		self.assertEqual(query_parameters, ("user@example.com", "user@example.com", "AI-CONV-1"))
+		self.assertEqual(
+			query_parameters,
+			("user@example.com", "user@example.com", "AI-CONV-1", 41),
+		)
+
+	def test_get_conversation_pages_backwards_with_a_stable_sequence_cursor(self):
+		conversation = frappe._dict({
+			"name": "AI-CONV-1", "title": "长会话", "status": "active",
+			"company_scope": "Demo Company", "message_count": 84,
+			"last_message_at": "2026-07-24 10:00:00", "creation": "2026-07-20 09:00:00",
+			"modified": "2026-07-24 10:00:00",
+		})
+		rows = [
+			frappe._dict({
+				"name": f"AI-MSG-{sequence}", "sequence_no": sequence,
+				"role": "assistant" if sequence % 2 == 0 else "user",
+				"content": f"消息 {sequence}", "scenario": "general", "run_id": None,
+				"citations_json": "[]", "prompt_version": None,
+				"creation": "2026-07-24 10:00:00",
+			})
+			for sequence in range(44, 2, -1)
+		]
+		with patch.object(ai_repository, "frappe") as mock_frappe, patch.object(
+			ai_repository, "_get_owned_conversation", return_value=conversation,
+		):
+			mock_frappe.db.table_exists.return_value = True
+			mock_frappe.db.sql.return_value = rows
+			result = get_conversation(
+				conversation_id="AI-CONV-1",
+				user="user@example.com",
+				before_sequence=45,
+				limit=40,
+			)
+
+		self.assertEqual(result["messages"][0]["sequence"], 5)
+		self.assertEqual(result["messages"][-1]["sequence"], 44)
+		self.assertEqual(result["pagination"]["returned_count"], 40)
+		self.assertTrue(result["pagination"]["has_more"])
+		self.assertEqual(result["pagination"]["next_before_sequence"], 5)
+		query = mock_frappe.db.sql.call_args.args[0]
+		self.assertIn("m.sequence_no < %s", query)
+		self.assertIn("ORDER BY m.sequence_no DESC", query)
+		self.assertEqual(
+			mock_frappe.db.sql.call_args.args[1],
+			("user@example.com", "user@example.com", "AI-CONV-1", 45, 41),
+		)

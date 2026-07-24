@@ -21,6 +21,8 @@ DRAFT_LINE_TABLE = "tabMyApp AI Draft Line"
 DRAFT_VERSION_TABLE = "tabMyApp AI Draft Version"
 DEFAULT_RETENTION_DAYS = 30
 MAX_CONVERSATION_PAGE_SIZE = 50
+DEFAULT_MESSAGE_PAGE_SIZE = 40
+MAX_MESSAGE_PAGE_SIZE = 100
 MAX_DRAFT_PAGE_SIZE = 100
 
 
@@ -140,10 +142,27 @@ def list_conversations(*, user: str, status: str = "active", start: int = 0, lim
 	}
 
 
-def get_conversation(*, conversation_id: str, user: str) -> dict:
+def get_conversation(
+	*,
+	conversation_id: str,
+	user: str,
+	before_sequence: int | None = None,
+	limit: int = DEFAULT_MESSAGE_PAGE_SIZE,
+) -> dict:
 	_ensure_tables()
 	conversation = _get_owned_conversation((conversation_id or "").strip(), user)
-	messages = frappe.db.sql(
+	resolved_limit = max(1, min(MAX_MESSAGE_PAGE_SIZE, cint(limit) or DEFAULT_MESSAGE_PAGE_SIZE))
+	resolved_before = None
+	if before_sequence not in (None, ""):
+		resolved_before = cint(before_sequence)
+		if resolved_before <= 0:
+			frappe.throw(_("AI 消息分页游标不正确。"))
+	sequence_sql = ""
+	params = [user, user, conversation.name]
+	if resolved_before is not None:
+		sequence_sql = " AND m.sequence_no < %s"
+		params.append(resolved_before)
+	rows = frappe.db.sql(
 		f"""
 		SELECT m.name, m.sequence_no, m.role, m.content, m.scenario, m.run_id,
 			m.citations_json, m.prompt_version, m.creation,
@@ -155,13 +174,16 @@ def get_conversation(*, conversation_id: str, user: str) -> dict:
 		FROM `{MESSAGE_TABLE}` m
 		LEFT JOIN `{RUN_TABLE}` r ON r.name = m.run_id AND r.requested_by = %s
 		LEFT JOIN `{FEEDBACK_TABLE}` f ON f.run_id = m.run_id AND f.owner = %s
-		WHERE m.conversation = %s
-		ORDER BY m.sequence_no ASC
-		LIMIT 200
+		WHERE m.conversation = %s{sequence_sql}
+		ORDER BY m.sequence_no DESC
+		LIMIT %s
 		""",
-		(user, user, conversation.name),
+		(*params, resolved_limit + 1),
 		as_dict=True,
 	)
+	has_more = len(rows) > resolved_limit
+	messages = list(reversed(rows[:resolved_limit]))
+	next_before_sequence = cint(messages[0].sequence_no) if has_more and messages else None
 	return {
 		"conversation": _serialize_conversation(conversation),
 		"messages": [
@@ -199,6 +221,14 @@ def get_conversation(*, conversation_id: str, user: str) -> dict:
 			}
 			for row in messages
 		],
+		"pagination": {
+			"before_sequence": resolved_before,
+			"limit": resolved_limit,
+			"total": cint(conversation.message_count),
+			"returned_count": len(messages),
+			"has_more": has_more,
+			"next_before_sequence": next_before_sequence,
+		},
 	}
 
 
