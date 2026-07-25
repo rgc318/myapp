@@ -60,7 +60,7 @@ PRODUCT_SEARCH_PREFIX_PATTERN = re.compile(
 	r"^(?:请|麻烦|可以|能否|帮我|给我|我想|我要)*(?:查询|查看|查找|搜索|检索|找一下|找一找|找找|找)?(?:一下|下)?"
 )
 PRODUCT_SEARCH_STATUS_SUFFIX_PATTERN = re.compile(
-	r"(?:现在|目前)?(?:是否|有没有|有无)?(?:已经)?(?:正常)?(?:有)?(?:入库|到货|有货|现货|库存)"
+	r"(?:现在|目前)?(?:是否|有没有|有无)?(?:已|已经)?(?:正常)?(?:有)?(?:入库|到货|有货|现货|库存)"
 	r"(?:情况|状态|数量)?(?:了)?(?:吗)?$"
 )
 
@@ -422,6 +422,9 @@ def _extract_product_search_terms(query: str) -> list[str]:
 
 	def add_term(value: str):
 		value = PRODUCT_SEARCH_PREFIX_PATTERN.sub("", value).strip(" ：:")
+		# “商品” is request language in queries such as “查询某商品是否入库”.
+		if len(value) > 2 and value.endswith("商品"):
+			value = value[:-2].rstrip(" ：:")
 		if 2 <= len(value) <= 40 and value not in terms:
 			terms.append(value)
 

@@ -716,6 +716,7 @@ class TestAiService(TestCase):
 			"product_search",
 		)
 		self.assertEqual(_extract_product_search_terms("查询一下煌星是否已经正常入库"), ["煌星"])
+		self.assertEqual(_extract_product_search_terms("查询迪莫商品是否已正常入库"), ["迪莫"])
 		self.assertEqual(_extract_product_search_terms("煌星现在有现货吗"), ["煌星"])
 
 	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - TC")

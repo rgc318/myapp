@@ -8,6 +8,7 @@ from myapp.services.ai_repository import (
 	_nearest_rank_percentile,
 	fail_run,
 	get_conversation,
+	_refresh_conversation_citations,
 	list_conversations,
 	list_drafts,
 	mark_draft_executed,
@@ -19,6 +20,29 @@ from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
 
 
 class TestAiRepository(TestCase):
+	def test_refresh_conversation_citations_uses_latest_draft_state(self):
+		with patch.object(
+			ai_repository,
+			"get_draft",
+			return_value={
+				"name": "AI-DRAFT-1",
+				"title": "新增商品，迪莫",
+				"status": "executed",
+				"validation": {"ready_for_handoff": True, "errors": [], "warnings": []},
+			},
+		):
+			result = _refresh_conversation_citations(
+				[{
+					"type": "ai_draft",
+					"id": "AI-DRAFT-1",
+					"label": "新增商品，迪莫",
+					"data": {"status": "draft"},
+				}],
+				user="user@example.com",
+			)
+
+		self.assertEqual(result[0]["data"]["status"], "executed")
+
 	def test_list_conversations_searches_owned_titles_and_messages_with_draft_counts(self):
 		row = frappe._dict({
 			"name": "AI-CONV-1", "title": "采购跟进", "status": "active",

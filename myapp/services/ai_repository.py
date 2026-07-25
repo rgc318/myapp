@@ -261,7 +261,9 @@ def get_conversation(
 				"content": row.content or "",
 				"scenario": row.scenario,
 				"run_id": row.run_id,
-				"citations": _safe_json_loads(row.citations_json, []),
+				"citations": _refresh_conversation_citations(
+					_safe_json_loads(row.citations_json, []), user=user,
+				),
 				"prompt_version": row.prompt_version,
 				"creation": str(row.creation or "") or None,
 				"run": _serialize_message_run(
@@ -717,6 +719,31 @@ def _serialize_draft(row, lines=None) -> dict:
 		"creation": str(row.creation or "") or None,
 		"modified": str(row.modified or "") or None,
 	}
+
+
+def _refresh_conversation_citations(citations: list[dict], *, user: str) -> list[dict]:
+	"""Refresh actionable draft citations while keeping read-only result snapshots."""
+	refreshed = []
+	for citation in citations or []:
+		if not isinstance(citation, dict) or citation.get("type") != "ai_draft":
+			refreshed.append(citation)
+			continue
+		draft_id = str(citation.get("id") or "").strip()
+		if not draft_id:
+			refreshed.append(citation)
+			continue
+		try:
+			draft = get_draft(draft_id=draft_id, user=user)
+		except Exception:
+			# Preserve the historical citation if the draft expired or is no longer visible.
+			refreshed.append(citation)
+			continue
+		refreshed.append({
+			**citation,
+			"label": draft.get("title") or citation.get("label"),
+			"data": draft,
+		})
+	return refreshed
 
 
 def create_draft(
