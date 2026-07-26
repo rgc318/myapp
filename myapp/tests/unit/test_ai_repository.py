@@ -6,7 +6,9 @@ import frappe
 from myapp.services import ai_repository
 from myapp.services.ai_repository import (
 	_nearest_rank_percentile,
+	_normalize_conversation_state,
 	fail_run,
+	get_conversation_state,
 	get_conversation,
 	_refresh_conversation_citations,
 	list_conversations,
@@ -15,11 +17,73 @@ from myapp.services.ai_repository import (
 	rename_conversation,
 	submit_feedback,
 	update_draft,
+	update_conversation_state,
 )
 from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
 
 
 class TestAiRepository(TestCase):
+	def test_normalize_conversation_state_whitelists_and_bounds_working_fields(self):
+		state = _normalize_conversation_state({
+			"active_scenario": "order_query",
+			"order": {
+				"entities": ["sales_order", "invalid"], "date_preset": "last_month",
+				"status": "unfinished", "sort": "amount_desc", "limit": 99,
+			},
+			"last_result_set": {"type": "business_documents", "id": "RESULT-1", "entity_ids": ["SO-1"],
+				"scope": {"company": "Demo Company", "secret": "discarded"}},
+		})
+
+		self.assertEqual(state["schema_version"], "conversation-state-v1")
+		self.assertEqual(state["order"]["entities"], ["sales_order"])
+		self.assertEqual(state["order"]["limit"], 20)
+		self.assertNotIn("secret", state["last_result_set"]["scope"])
+
+	def test_get_conversation_state_is_owner_scoped_and_recovers_default_shape(self):
+		conversation = frappe._dict({
+			"name": "AI-CONV-1", "state_version": 3,
+			"working_state_json": '{"active_scenario":"product_search","product":{"query":"Camera"}}',
+			"state_updated_at": "2026-07-26 12:00:00",
+		})
+		with patch.object(ai_repository, "_get_owned_conversation", return_value=conversation) as mock_get:
+			result = get_conversation_state(conversation_id="AI-CONV-1", user="user@example.com")
+
+		self.assertEqual(result["version"], 3)
+		self.assertEqual(result["state"]["product"]["query"], "Camera")
+		mock_get.assert_called_once_with("AI-CONV-1", "user@example.com")
+
+	def test_update_conversation_state_does_not_overwrite_stale_version(self):
+		conversation = frappe._dict({"name": "AI-CONV-1", "state_version": 4})
+		with patch.object(ai_repository, "_get_owned_conversation", return_value=conversation) as mock_get, patch.object(
+			ai_repository, "frappe",
+		) as mock_frappe:
+			result = update_conversation_state(
+				conversation_id="AI-CONV-1", user="user@example.com",
+				state={"active_scenario": "order_query"}, expected_version=3,
+			)
+
+		self.assertFalse(result["updated"])
+		self.assertEqual(result["reason"], "version_conflict")
+		mock_get.assert_called_once_with("AI-CONV-1", "user@example.com", for_update=True)
+		mock_frappe.db.sql.assert_not_called()
+
+	def test_update_conversation_state_advances_version_with_owner_and_compare_guard(self):
+		conversation = frappe._dict({"name": "AI-CONV-1", "state_version": 4})
+		with patch.object(ai_repository, "_get_owned_conversation", return_value=conversation), patch.object(
+			ai_repository, "frappe",
+		) as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value="2026-07-26 12:00:00",
+		):
+			result = update_conversation_state(
+				conversation_id="AI-CONV-1", user="user@example.com",
+				state={"active_scenario": "order_query"}, expected_version=4,
+			)
+
+		self.assertTrue(result["updated"])
+		self.assertEqual(result["version"], 5)
+		query = mock_frappe.db.sql.call_args.args[0]
+		self.assertIn("state_version = %s", query)
+		self.assertEqual(mock_frappe.db.sql.call_args.args[1][-1], 4)
 	def test_refresh_conversation_citations_uses_latest_draft_state(self):
 		with patch.object(
 			ai_repository,

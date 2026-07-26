@@ -5,6 +5,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from datetime import date, timedelta
@@ -44,6 +45,8 @@ from myapp.utils.standard_uoms import STANDARD_UOMS
 MAX_AI_MESSAGES = 20
 MAX_AI_MESSAGE_CHARS = 8000
 MAX_AI_PRODUCT_RESULTS = 8
+CONVERSATION_STATE_SCHEMA_VERSION = "conversation-state-v1"
+CONVERSATION_STATE_BUSINESS_SCENARIOS = {"product_search", "order_query", "report_summary"}
 ALLOWED_AI_ROLES = {"user", "assistant"}
 ALLOWED_AI_SCENARIOS = {"auto", "general", "product_search", "order_query", "report_summary"}
 PROMPT_VERSION_BY_SCENARIO = {
@@ -161,10 +164,129 @@ def _infer_ai_scenario(content: str) -> str:
 	if any(word in text for word in ("报表", "分析", "趋势", "表现", "销售额", "采购额", "应收", "应付", "现金流")):
 		return "report_summary"
 	if any(word in text for word in ("商品", "产品", "SKU", "库存", "入库", "到货", "现货", "价格")) and any(
-		word in text for word in ("查询", "查找", "查看", "搜索", "找", "有没有", "哪些", "是否", "状态", "吗")
+		word in text for word in (
+			"查询", "查找", "查看", "看看", "搜索", "找", "告诉我", "确认", "有没有", "哪些", "是否", "状态", "吗",
+		)
 	):
 		return "product_search"
 	return "general"
+
+
+def _should_parse_structured_intent(
+	content: str, local_scenario: str, conversation_state: dict | None = None,
+) -> bool:
+	if local_scenario in {"product_search", "order_query", "report_summary"}:
+		return True
+	state = conversation_state if isinstance(conversation_state, dict) else {}
+	if str(state.get("active_scenario") or "") in CONVERSATION_STATE_BUSINESS_SCENARIOS:
+		# The model decides whether a short follow-up is still about the previous
+		# business task.  Local rules only decide whether structured parsing is
+		# worth attempting; they never select the business tool or its filters.
+		return True
+	return any(word in (content or "") for word in (
+		"商品", "产品", "SKU", "库存", "价格", "订单", "发票", "销售额", "采购额", "应收", "应付", "现金流",
+	))
+
+
+def _conversation_state_for_intent(state: dict | None) -> dict:
+	"""Return only the bounded, non-sensitive working state sent to the parser."""
+	if not isinstance(state, dict):
+		return {"schema_version": CONVERSATION_STATE_SCHEMA_VERSION, "active_scenario": "general"}
+	allowed = {"schema_version", "active_scenario", "product", "order", "report", "last_result_set"}
+	result = {key: state[key] for key in allowed if key in state}
+	result["schema_version"] = CONVERSATION_STATE_SCHEMA_VERSION
+	result.setdefault("active_scenario", "general")
+	return result
+
+
+def _state_intent_defaults(state: dict | None) -> dict:
+	state = _conversation_state_for_intent(state)
+	active = str(state.get("active_scenario") or "general")
+	if active == "product_search" and isinstance(state.get("product"), dict):
+		product = state["product"]
+		return {
+			"intent": "product_search", "confidence": 0.9,
+			"product_query": product.get("query"), "entities": [], "report_type": None,
+			"date_preset": "all", "date_from": None, "date_to": None,
+			"status": "all", "sort": "latest", "min_amount": None, "limit": 10,
+		}
+	if active == "order_query" and isinstance(state.get("order"), dict):
+		order = state["order"]
+		return {
+			"intent": "order_query", "confidence": 0.9,
+			"product_query": None, "entities": order.get("entities") or [], "report_type": None,
+			"date_preset": order.get("date_preset") or "all", "date_from": order.get("date_from"),
+			"date_to": order.get("date_to"), "status": order.get("status") or "all",
+			"sort": order.get("sort") or "latest", "min_amount": order.get("min_amount"),
+			"limit": order.get("limit") or 10,
+		}
+	if active == "report_summary" and isinstance(state.get("report"), dict):
+		report = state["report"]
+		return {
+			"intent": "report_summary", "confidence": 0.9,
+			"product_query": None, "entities": [], "report_type": report.get("report_type") or "overview",
+			"date_preset": report.get("date_preset") or "all", "date_from": report.get("date_from"),
+			"date_to": report.get("date_to"), "status": "all", "sort": "latest",
+			"min_amount": None, "limit": 10,
+		}
+	return {}
+
+
+def _query_explicitly_mentions(content: str, *terms: str) -> bool:
+	text = " ".join(str(content or "").split())
+	return any(term in text for term in terms)
+
+
+def _merge_intent_with_conversation_state(
+	content: str, candidate: dict, conversation_state: dict | None,
+) -> dict:
+	"""Merge only omitted/default parser fields from state; explicit current text wins."""
+	if not isinstance(candidate, dict) or not _structured_intent_is_confident(candidate):
+		return candidate if isinstance(candidate, dict) else {}
+	base = _state_intent_defaults(conversation_state)
+	if not base or candidate.get("intent") != base.get("intent"):
+		return candidate
+	merged = dict(candidate)
+	if candidate.get("intent") == "product_search":
+		if not str(candidate.get("product_query") or "").strip() and base.get("product_query"):
+			merged["product_query"] = base["product_query"]
+		return merged
+	if candidate.get("intent") == "order_query":
+		if not candidate.get("entities") and not _query_explicitly_mentions(content, "订单", "发票", "销售", "采购"):
+			merged["entities"] = base.get("entities") or []
+		if candidate.get("date_preset") in (None, "all") and not _query_explicitly_mentions(
+			content, "今天", "本周", "这周", "上月", "上个月", "本月", "这个月", "最近一个月", "近",
+		):
+			for key in ("date_preset", "date_from", "date_to"):
+				merged[key] = base.get(key)
+		if candidate.get("status") in (None, "all") and not _query_explicitly_mentions(
+			content, "未完成", "完成", "取消", "作废", "待发货", "待收货", "付款", "收款",
+		):
+			merged["status"] = base.get("status") or "all"
+		if candidate.get("sort") in (None, "latest") and not _query_explicitly_mentions(
+			content, "最高", "最低", "最大", "最小", "大额", "最早", "从高", "从低",
+		):
+			merged["sort"] = base.get("sort") or "latest"
+		if candidate.get("min_amount") is None and not _query_explicitly_mentions(
+			content, "超过", "大于", "高于", "不少于", "至少",
+		):
+			merged["min_amount"] = base.get("min_amount")
+		if cint(candidate.get("limit")) == 10 and not _query_explicitly_mentions(
+			content, "前", "后", "条", "笔", "张", "个",
+		):
+			merged["limit"] = base.get("limit") or 10
+		return merged
+	if candidate.get("intent") == "report_summary":
+		if candidate.get("report_type") in (None, "overview") and not _query_explicitly_mentions(
+			content, "销售", "采购", "现金流", "资金", "应收", "应付", "经营总览",
+		):
+			merged["report_type"] = base.get("report_type") or "overview"
+		if candidate.get("date_preset") in (None, "all") and not _query_explicitly_mentions(
+			content, "今天", "本周", "这周", "上月", "上个月", "本月", "这个月", "最近一个月", "近",
+		):
+			for key in ("date_preset", "date_from", "date_to"):
+				merged[key] = base.get(key)
+	return merged
 
 
 def _infer_ai_action_scenario(content: str) -> str:
@@ -225,6 +347,42 @@ def _call_ai_orchestrator(payload: dict) -> dict:
 	if not isinstance(message, dict) or not str(message.get("content") or "").strip():
 		raise UpstreamServiceUnavailableError(_("AI 服务返回了无效响应。"))
 	return result
+
+
+def _call_ai_intent_orchestrator(
+	*, content: str, user: str, company: str | None, conversation_state: dict | None = None,
+) -> dict:
+	base_url, service_token = _get_ai_orchestrator_settings()
+	payload = {
+		"messages": [{"role": "user", "content": content}],
+		"scenario": "intent_parse",
+		"user": user,
+		"company": company,
+		"locale": getattr(frappe.local, "lang", None) or "zh-CN",
+		"prompt_version": "erp-intent-v3",
+		"context": {"conversation_state": _conversation_state_for_intent(conversation_state)},
+	}
+	request = urllib.request.Request(
+		f"{base_url}/internal/v1/intent/parse",
+		data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+		headers={
+			"Authorization": f"Bearer {service_token}",
+			"Content-Type": "application/json",
+			"Accept": "application/json",
+		},
+		method="POST",
+	)
+	try:
+		# Intent parsing is a separate model call.  Keep its timeout below the
+		# normal chat budget, but long enough for reasoning models on a cold route;
+		# a 20s ceiling caused valid contextual follow-ups to silently fall back.
+		with urllib.request.urlopen(request, timeout=45) as response:
+			result = json.loads(response.read().decode("utf-8") or "{}")
+	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+		frappe.log_error(frappe.get_traceback(), _("AI 意图解析调用失败，已回退本地规则"))
+		return {}
+	intent = result.get("intent") if isinstance(result, dict) else None
+	return intent if isinstance(intent, dict) else {}
 
 
 def _sync_ai_feedback_to_orchestrator(payload: dict) -> bool:
@@ -422,7 +580,8 @@ def _extract_product_search_terms(query: str) -> list[str]:
 
 	def add_term(value: str):
 		value = PRODUCT_SEARCH_PREFIX_PATTERN.sub("", value).strip(" ：:")
-		# “商品” is request language in queries such as “查询某商品是否入库”.
+		# “商品/产品” is request language in both “商品迪莫” and “查询迪莫商品”.
+		value = re.sub(r"^(?:商品|产品)\s*[:：]?\s*", "", value).strip()
 		if len(value) > 2 and value.endswith("商品"):
 			value = value[:-2].rstrip(" ：:")
 		if 2 <= len(value) <= 40 and value not in terms:
@@ -437,6 +596,139 @@ def _extract_product_search_terms(query: str) -> list[str]:
 		if len(terms) >= 5:
 			break
 	return terms[:5] or [text[:40]]
+
+
+def _normalize_product_entity_text(value: str) -> str:
+	"""Normalize user-entered product identifiers without losing the raw query."""
+	text = unicodedata.normalize("NFKC", str(value or ""))
+	text = " ".join(text.strip().split())
+	return text.casefold()
+
+
+def _product_row_matches_exact(row: dict, query: str) -> tuple[bool, bool]:
+	"""Return (raw_exact, normalized_exact) for code/name/nickname/barcode fields."""
+	query_text = str(query or "").strip()
+	query_normalized = _normalize_product_entity_text(query_text)
+	values = [
+		row.get("item_code"), row.get("item_name"), row.get("nickname"), row.get("barcode"),
+	]
+	for value in values:
+		resolved = str(value or "").strip()
+		if not resolved:
+			continue
+		if resolved == query_text:
+			return True, True
+		if _normalize_product_entity_text(resolved) == query_normalized:
+			return False, True
+	return False, False
+
+
+def _resolve_item_candidates(
+	query: str,
+	*,
+	company: str | None,
+	context: str = "sales",
+	warehouse: str | None = None,
+	limit: int = 8,
+	entity_query: str | None = None,
+) -> dict:
+	"""Resolve an ERP Item through one shared, permission-safe retrieval boundary."""
+	raw_query = " ".join(str(query or "").strip().split())
+	resolved_entity_query = " ".join(str(entity_query or "").strip().split())
+	terms = _extract_product_search_terms(resolved_entity_query or raw_query)
+	terms = [term for term in terms if str(term or "").strip()]
+	lexical_rows = []
+	seen_codes = set()
+	for term in terms[:5]:
+		rows = (search_product_v2(
+			search_key=term,
+			company=company,
+			warehouse=warehouse,
+			limit=max(1, min(int(limit or 8) * 2, MAX_AI_PRODUCT_RESULTS * 2)),
+			disabled=0,
+			search_fields=["barcode", "item_code", "item_name", "nickname", "specification"],
+			item_context=context,
+		) or {}).get("data") or []
+		for row in rows:
+			code = str(row.get("item_code") or "").strip()
+			if code and code not in seen_codes:
+				seen_codes.add(code)
+				lexical_rows.append(dict(row))
+			if len(lexical_rows) >= max(1, int(limit or 8) * 2):
+				break
+		if len(lexical_rows) >= max(1, int(limit or 8) * 2):
+			break
+
+	entity_queries = [raw_query, resolved_entity_query] + [term for term in terms if term not in {raw_query, resolved_entity_query}]
+	entity_queries = [value for value in entity_queries if value]
+	raw_matches = [
+		row for row in lexical_rows
+		if any(_product_row_matches_exact(row, value)[0] for value in entity_queries)
+	]
+	normalized_matches = [
+		row for row in lexical_rows
+		if any(_product_row_matches_exact(row, value)[1] for value in entity_queries)
+	]
+	# Duplicate names/nicknames remain ambiguous; only a unique exact entity can auto-select.
+	raw_exact = raw_matches[0] if len(raw_matches) == 1 else None
+	normalized_exact = normalized_matches[0] if len(normalized_matches) == 1 else None
+	# Descriptive expressions and zero/multiple lexical hits benefit from semantic recall;
+	# exact identifiers never depend on the vector service.
+	descriptive = len(terms) > 1 or any(word in raw_query for word in ("适合", "用于", "可以", "能够", "规格", "颜色", "包装"))
+	semantic_result = {"available": False, "rows": [], "reason": "not_needed"}
+	if not raw_exact and not normalized_exact and (not lexical_rows or len(lexical_rows) > 1 or descriptive):
+		semantic_result = search_products_semantic(
+			raw_query,
+			company=company,
+			limit=max(1, min(int(limit or 8) * 2, MAX_AI_PRODUCT_RESULTS * 2)),
+			item_context=context,
+		)
+	semantic_rows = semantic_result.get("rows") or []
+	rows = _hybrid_rerank_product_rows(
+		query=raw_query,
+		lexical_rows=lexical_rows,
+		semantic_rows=semantic_rows,
+		limit=max(1, int(limit or 8)),
+	)
+	if raw_exact:
+		selected = raw_exact
+		match_method, confidence = "exact", 1.0
+	elif normalized_exact:
+		selected = normalized_exact
+		match_method, confidence = "normalized", 0.99
+	elif len(rows) == 1:
+		selected = rows[0]
+		match_method = "hybrid" if semantic_rows else "lexical"
+		confidence = 0.9 if semantic_rows else 0.8
+	else:
+		selected = None
+		match_method, confidence = ("hybrid" if semantic_rows and lexical_rows else "semantic" if semantic_rows else "lexical"), 0.0
+	# Re-apply current Item record permissions after both lexical and vector retrieval.
+	codes = [row.get("item_code") for row in rows if row.get("item_code")]
+	allowed = set(
+		frappe.get_list(
+			"Item", filters={"name": ["in", codes]}, pluck="name", limit_page_length=max(1, len(codes)),
+		) if codes else []
+	)
+	rows = [row for row in rows if row.get("item_code") in allowed]
+	if selected and selected.get("item_code") not in allowed:
+		selected = None
+	if selected:
+		status = "resolved"
+	elif rows:
+		status = "ambiguous"
+	else:
+		status = "not_found"
+	return {
+		"status": status,
+		"selected": selected,
+		"candidates": rows[: max(1, int(limit or 8))],
+		"match_method": match_method,
+		"confidence": confidence,
+		"semantic_available": bool(semantic_result.get("available")),
+		"semantic_result": semantic_result,
+		"search_terms": terms,
+	}
 
 
 def _hybrid_rerank_product_rows(
@@ -483,54 +775,24 @@ def _hybrid_rerank_product_rows(
 	]
 
 
-def _build_product_search_context(*, query: str, company: str | None) -> tuple[dict, list[dict], list[dict]]:
+def _build_product_search_context(
+	*, query: str, company: str | None, structured_intent: dict | None = None,
+) -> tuple[dict, list[dict], list[dict]]:
 	if not frappe.has_permission("Item", ptype="read"):
 		raise frappe.PermissionError(_("无权读取商品资料。"))
 	resolved_company = _resolve_company_scope(company, required=True)
-	search_terms = _extract_product_search_terms(query)
-	lexical_rows = []
-	seen_codes = set()
-	for search_term in search_terms:
-		search_result = search_product_v2(
-			search_key=search_term,
-			company=resolved_company,
-			limit=MAX_AI_PRODUCT_RESULTS * 2,
-			disabled=0,
-			search_fields=["barcode", "item_code", "item_name", "nickname", "specification"],
-			item_context="sales",
-		)
-		for row in (search_result or {}).get("data") or []:
-			item_code = row.get("item_code")
-			if item_code and item_code not in seen_codes:
-				seen_codes.add(item_code)
-				lexical_rows.append(row)
-				if len(lexical_rows) >= MAX_AI_PRODUCT_RESULTS * 2:
-					break
-		if len(lexical_rows) >= MAX_AI_PRODUCT_RESULTS * 2:
-			break
-	semantic_result = search_products_semantic(
+	resolution = _resolve_item_candidates(
 		query,
 		company=resolved_company,
-		limit=MAX_AI_PRODUCT_RESULTS * 2,
-		item_context="sales",
-	)
-	result_rows = _hybrid_rerank_product_rows(
-		query=query,
-		lexical_rows=lexical_rows,
-		semantic_rows=semantic_result.get("rows") or [],
+		context="sales",
 		limit=MAX_AI_PRODUCT_RESULTS,
+		entity_query=(structured_intent or {}).get("product_query"),
 	)
+	search_terms = resolution["search_terms"]
+	semantic_result = resolution["semantic_result"]
+	result_rows = resolution["candidates"]
 	candidate_codes = [row.get("item_code") for row in result_rows if row.get("item_code")]
-	allowed_codes = set(
-		frappe.get_list(
-			"Item",
-			filters={"name": ["in", candidate_codes]},
-			pluck="name",
-			limit_page_length=max(1, len(candidate_codes)),
-		)
-		if candidate_codes
-		else []
-	)
+	allowed_codes = set(candidate_codes)
 	products = []
 	for row in result_rows:
 		if row.get("item_code") not in allowed_codes:
@@ -589,9 +851,19 @@ def _build_product_search_context(*, query: str, company: str | None) -> tuple[d
 		"search_terms": search_terms,
 		"company": resolved_company,
 		"products": products,
+		"resolved_product": (
+			{
+				"item_code": resolution["selected"].get("item_code"),
+				"item_name": resolution["selected"].get("item_name"),
+			}
+			if resolution.get("selected") else None
+		),
 		"retrieval": {
 			"mode": "hybrid" if semantic_result.get("available") else "lexical_fallback",
 			"semantic_available": bool(semantic_result.get("available")),
+			"match_method": resolution["match_method"],
+			"status": resolution["status"],
+			"confidence": resolution["confidence"],
 		},
 		"instructions": "商品数据是只读工具结果。只能基于这些候选解释匹配原因；不得编造商品、价格或库存。",
 	}
@@ -631,6 +903,11 @@ def _resolve_natural_date_range(
 		date_from = today.replace(day=1)
 		date_to = today
 		date_range = "this_month"
+	elif "最近一个月" in text or "最近1个月" in text or "最近一月" in text:
+		days = 30
+		date_from = today - timedelta(days=days - 1)
+		date_to = today
+		date_range = "last_30_days"
 	elif match := re.search(r"近\s*(\d{1,3})\s*天", text):
 		days = max(1, min(366, int(match.group(1))))
 		date_from = today - timedelta(days=days - 1)
@@ -643,7 +920,51 @@ def _resolve_natural_date_range(
 	}
 
 
-def _build_order_query_dsl(query: str, *, company: str, as_of: date | None = None) -> dict:
+def _resolve_structured_intent_date_range(
+	preset: str | None,
+	*,
+	date_from: str | None = None,
+	date_to: str | None = None,
+	as_of: date | None = None,
+) -> dict | None:
+	resolved = str(preset or "").strip()
+	if resolved == "custom":
+		try:
+			resolved_from = date.fromisoformat(str(date_from or "").strip())
+			resolved_to = date.fromisoformat(str(date_to or "").strip())
+		except ValueError:
+			return None
+		if resolved_from > resolved_to:
+			return None
+		return {
+			"date_range": "custom",
+			"date_from": str(resolved_from),
+			"date_to": str(resolved_to),
+		}
+	if resolved == "all":
+		return {"date_range": "all", "date_from": None, "date_to": None}
+	prompt_by_preset = {
+		"today": "今天",
+		"this_week": "本周",
+		"last_month": "上月",
+		"this_month": "本月",
+		"last_30_days": "近30天",
+	}
+	prompt = prompt_by_preset.get(resolved)
+	return _resolve_natural_date_range(prompt, as_of=as_of, default_days=None) if prompt else None
+
+
+def _structured_intent_is_confident(intent: dict) -> bool:
+	"""Treat the Orchestrator response as untrusted input at the execution boundary."""
+	try:
+		return 0.6 <= min(1.0, max(0.0, float(intent.get("confidence") or 0)))
+	except (TypeError, ValueError):
+		return False
+
+
+def _build_order_query_dsl(
+	query: str, *, company: str, as_of: date | None = None, structured_intent: dict | None = None,
+) -> dict:
 	text = " ".join((query or "").strip().split())
 	mentions_sales = any(word in text for word in ("销售", "客户", "收款", "发货"))
 	mentions_purchase = any(word in text for word in ("采购", "供应商", "付款", "收货"))
@@ -686,7 +1007,7 @@ def _build_order_query_dsl(query: str, *, company: str, as_of: date | None = Non
 	date_filter = _resolve_natural_date_range(text, as_of=as_of, default_days=None)
 
 	status_filter = "all"
-	if "未完成" in text or "进行中" in text:
+	if any(phrase in text for phrase in ("未完成", "还没完成", "尚未完成", "没有完成", "进行中")):
 		status_filter = "unfinished"
 	elif "已完成" in text or "完成的" in text:
 		status_filter = "completed"
@@ -712,9 +1033,54 @@ def _build_order_query_dsl(query: str, *, company: str, as_of: date | None = Non
 		min_amount = _parse_amount_value(match.group(1), match.group(2))
 	limit = 10
 	limit_explicit = False
-	if match := re.search(r"(?:前\s*)?(\d{1,2})\s*(?:条|个|笔)", text):
+	if match := re.search(r"(?:前\s*)?(\d{1,2})\s*(?:条|个|笔|张)", text):
 		limit = max(1, min(20, int(match.group(1))))
 		limit_explicit = True
+	elif match := re.search(r"前\s*([一二两三四五六七八九十百]+)(?:条|个|笔|张)", text):
+		chinese_numbers = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+		value = chinese_numbers.get(match.group(1))
+		if value:
+			limit = value
+			limit_explicit = True
+
+	structured_intent = structured_intent if isinstance(structured_intent, dict) else {}
+	if structured_intent.get("intent") == "order_query" and _structured_intent_is_confident(structured_intent):
+		candidate_entities = structured_intent.get("entities")
+		if isinstance(candidate_entities, list):
+			allowed_entities = {"sales_order", "sales_invoice", "purchase_order", "purchase_invoice"}
+			resolved_entities = [
+				candidate
+				for candidate in ("sales_order", "sales_invoice", "purchase_order", "purchase_invoice")
+				if candidate in candidate_entities and candidate in allowed_entities
+			]
+			if resolved_entities:
+				entities = resolved_entities
+				entity = entities[0]
+		structured_date = _resolve_structured_intent_date_range(
+			structured_intent.get("date_preset"),
+			date_from=structured_intent.get("date_from"),
+			date_to=structured_intent.get("date_to"),
+			as_of=as_of,
+		)
+		if structured_date and (structured_intent.get("date_preset") != "all" or date_filter["date_range"] == "all"):
+			date_filter = structured_date
+		candidate_status = str(structured_intent.get("status") or "").strip()
+		if candidate_status in {"all", "cancelled", "completed", "delivering", "paying", "receiving", "unfinished"} and (
+			candidate_status != "all" or status_filter == "all"
+		):
+			status_filter = candidate_status
+		candidate_sort = str(structured_intent.get("sort") or "").strip()
+		if candidate_sort in {"amount_asc", "amount_desc", "latest", "oldest"} and (
+			candidate_sort != "latest" or sort_by == "latest"
+		):
+			sort_by = candidate_sort
+		candidate_limit = cint(structured_intent.get("limit"))
+		if candidate_limit and (candidate_limit != 10 or not limit_explicit):
+			limit = max(1, min(20, candidate_limit))
+			limit_explicit = limit != 10 or bool(re.search(r"(?:前|列|返回|给我)", text))
+		candidate_min_amount = structured_intent.get("min_amount")
+		if min_amount is None and isinstance(candidate_min_amount, (int, float)) and not isinstance(candidate_min_amount, bool):
+			min_amount = max(0, min(float(candidate_min_amount), 1000000000000000))
 
 	return {
 		"entity": entity,
@@ -869,9 +1235,11 @@ def _query_business_document_entity(*, entity: str, dsl: dict) -> tuple[list[dic
 	return items, data.get("summary") or {}
 
 
-def _build_order_query_context(*, query: str, company: str | None) -> tuple[dict, list[dict], list[dict]]:
+def _build_order_query_context(
+	*, query: str, company: str | None, structured_intent: dict | None = None,
+) -> tuple[dict, list[dict], list[dict]]:
 	resolved_company = _resolve_company_scope(company, required=True)
-	dsl = _build_order_query_dsl(query, company=resolved_company)
+	dsl = _build_order_query_dsl(query, company=resolved_company, structured_intent=structured_intent)
 	result_set, citations, tool_calls = _build_order_query_result(dsl=dsl)
 	context = {
 		"tool": "query_business_documents",
@@ -1060,7 +1428,9 @@ def refresh_ai_business_result_v1(result_set) -> dict:
 	}
 
 
-def _build_report_query_dsl(query: str, *, company: str, as_of: date | None = None) -> dict:
+def _build_report_query_dsl(
+	query: str, *, company: str, as_of: date | None = None, structured_intent: dict | None = None,
+) -> dict:
 	text = " ".join((query or "").strip().split())
 	mentions_sales = any(word in text for word in ("销售", "营收", "客户"))
 	mentions_purchase = any(word in text for word in ("采购", "供应商"))
@@ -1087,10 +1457,27 @@ def _build_report_query_dsl(query: str, *, company: str, as_of: date | None = No
 	else:
 		report_type = "overview"
 
+	date_filter = _resolve_natural_date_range(text, as_of=as_of)
+	structured_intent = structured_intent if isinstance(structured_intent, dict) else {}
+	if structured_intent.get("intent") == "report_summary" and _structured_intent_is_confident(structured_intent):
+		candidate_report_type = str(structured_intent.get("report_type") or "").strip()
+		if candidate_report_type in {"overview", "sales", "purchase", "cashflow", "receivable_payable"} and (
+			candidate_report_type != "overview" or report_type == "overview"
+		):
+			report_type = candidate_report_type
+		structured_date = _resolve_structured_intent_date_range(
+			structured_intent.get("date_preset"),
+			date_from=structured_intent.get("date_from"),
+			date_to=structured_intent.get("date_to"),
+			as_of=as_of,
+		)
+		if structured_date and (structured_intent.get("date_preset") != "all" or date_filter["date_range"] == "all"):
+			date_filter = structured_date
+
 	return {
 		"report_type": report_type,
 		"company": company,
-		**_resolve_natural_date_range(text, as_of=as_of),
+		**date_filter,
 		"limit": 10,
 	}
 
@@ -1108,9 +1495,11 @@ def _require_report_permissions(report_type: str):
 			raise frappe.PermissionError(_("无权读取报表所需的 {0} 数据。").format(doctype))
 
 
-def _build_report_query_context(*, query: str, company: str | None) -> tuple[dict, list[dict], list[dict]]:
+def _build_report_query_context(
+	*, query: str, company: str | None, structured_intent: dict | None = None,
+) -> tuple[dict, list[dict], list[dict]]:
 	resolved_company = _resolve_company_scope(company, required=True)
-	dsl = _build_report_query_dsl(query, company=resolved_company)
+	dsl = _build_report_query_dsl(query, company=resolved_company, structured_intent=structured_intent)
 	report_type = dsl["report_type"]
 	_require_report_permissions(report_type)
 	params = {
@@ -1366,21 +1755,9 @@ def _resolve_purchase_draft_item(
 ) -> dict:
 	query = str(candidate.get("item_query") or "").strip()
 	qty = float(candidate.get("qty") or 0)
-	rows = (search_product_v2(
-		search_key=query, company=company, limit=5, disabled=0, item_context="purchase",
-	) or {}).get("data") or []
-	allowed = set(
-		frappe.get_list(
-			"Item", filters={"name": ["in", [row.get("item_code") for row in rows if row.get("item_code")]]},
-			pluck="name", limit_page_length=max(1, len(rows)),
-		) if rows else []
-	)
-	rows = [row for row in rows if row.get("item_code") in allowed]
-	exact = next((row for row in rows if query.lower() in {
-		str(row.get("item_code") or "").lower(), str(row.get("item_name") or "").lower(),
-		str(row.get("nickname") or "").lower(),
-	}), None)
-	selected = exact or (rows[0] if len(rows) == 1 else None)
+	resolution = _resolve_item_candidates(query, company=company, context="purchase", limit=5)
+	rows = resolution["candidates"]
+	selected = resolution["selected"]
 	warnings = []
 	warehouse = _resolve_sales_draft_warehouse(candidate.get("warehouse_query"), company) or default_warehouse
 	if qty <= 0:
@@ -1469,42 +1846,11 @@ def _resolve_inventory_draft_item(
 	quantity_value = candidate.get("quantity")
 	input_qty = None if quantity_value in (None, "") else flt(quantity_value)
 	warnings = []
-	rows = []
-	if query:
-		rows = (
-			search_product_v2(
-				search_key=query,
-				company=company,
-				warehouse=warehouse,
-				limit=5,
-				disabled=0,
-				item_context="inventory",
-			)
-			or {}
-		).get("data") or []
-	allowed = set(
-		frappe.get_list(
-			"Item",
-			filters={"name": ["in", [row.get("item_code") for row in rows if row.get("item_code")]]},
-			pluck="name",
-			limit_page_length=max(1, len(rows)),
-		)
-		if rows
-		else []
-	)
-	rows = [row for row in rows if row.get("item_code") in allowed]
-	exact = next(
-		(
-			row for row in rows
-			if query.lower() in {
-				str(row.get("item_code") or "").lower(),
-				str(row.get("item_name") or "").lower(),
-				str(row.get("nickname") or "").lower(),
-			}
-		),
-		None,
-	)
-	selected = exact or (rows[0] if len(rows) == 1 else None)
+	resolution = _resolve_item_candidates(
+		query, company=company, context="inventory", warehouse=warehouse, limit=5,
+	) if query else {"candidates": [], "selected": None}
+	rows = resolution["candidates"]
+	selected = resolution["selected"]
 	if not selected:
 		warnings.append(_("商品“{0}”无法唯一匹配，请人工选择。").format(query or _("未填写")))
 		return {
@@ -1660,33 +2006,9 @@ def _resolve_sales_draft_item(
 ) -> dict:
 	query = str(candidate.get("item_query") or "").strip()
 	qty = float(candidate.get("qty") or 0)
-	rows = (
-		(search_product_v2(search_key=query, company=company, limit=5, disabled=0, item_context="sales") or {}).get("data")
-		or []
-	)
-	allowed = set(
-		frappe.get_list(
-			"Item",
-			filters={"name": ["in", [row.get("item_code") for row in rows if row.get("item_code")]]},
-			pluck="name",
-			limit_page_length=max(1, len(rows)),
-		)
-		if rows
-		else []
-	)
-	rows = [row for row in rows if row.get("item_code") in allowed]
-	exact = next(
-		(
-			row for row in rows
-			if query.lower() in {
-				str(row.get("item_code") or "").lower(),
-				str(row.get("item_name") or "").lower(),
-				str(row.get("nickname") or "").lower(),
-			}
-		),
-		None,
-	)
-	selected = exact or (rows[0] if len(rows) == 1 else None)
+	resolution = _resolve_item_candidates(query, company=company, context="sales", limit=5)
+	rows = resolution["candidates"]
+	selected = resolution["selected"]
 	warnings = []
 	if qty <= 0:
 		warnings.append(_("数量必须大于 0。"))
@@ -2899,6 +3221,117 @@ def execute_ai_draft_v1(
 	)
 
 
+def _working_state_date_fields(dsl: dict) -> dict:
+	date_range = str(dsl.get("date_range") or "all")
+	allowed_presets = {"all", "today", "this_week", "last_month", "this_month", "last_30_days"}
+	date_preset = date_range if date_range in allowed_presets else "custom" if dsl.get("date_from") and dsl.get("date_to") else "all"
+	return {
+		"date_preset": date_preset,
+		"date_from": dsl.get("date_from") if date_preset == "custom" else None,
+		"date_to": dsl.get("date_to") if date_preset == "custom" else None,
+	}
+
+
+def _compact_last_result_set(tool_context: dict | None, citations: list[dict]) -> dict | None:
+	if not isinstance(tool_context, dict):
+		return None
+	tool = str(tool_context.get("tool") or "")
+	if tool == "query_business_documents":
+		result_set = tool_context.get("result_set") or {}
+		result_citation = next(
+			(citation for citation in citations if citation.get("type") == "business_result_set"),
+			{},
+		)
+		entity_ids = [
+			str(citation.get("id") or "")
+			for citation in citations
+			if citation.get("type") in {"sales_order", "sales_invoice", "purchase_order", "purchase_invoice"}
+			and citation.get("id")
+		]
+		return {
+			"type": "business_documents",
+			"id": result_citation.get("id"),
+			"entity_ids": entity_ids[:20],
+			"scope": dict(result_set.get("scope") or {}),
+		}
+	if tool == "search_products":
+		products = tool_context.get("products") or []
+		return {
+			"type": "products",
+			"id": hashlib.sha256(
+				json.dumps(
+					[row.get("item_code") for row in products if row.get("item_code")],
+					sort_keys=True,
+				).encode("utf-8")
+			).hexdigest()[:24],
+			"entity_ids": [row.get("item_code") for row in products if row.get("item_code")][:20],
+			"scope": {"company": tool_context.get("company")},
+		}
+	if tool == "get_business_report":
+		dsl = tool_context.get("dsl") or {}
+		report_citation = next(
+			(citation for citation in citations if citation.get("type") == "business_report"),
+			{},
+		)
+		return {
+			"type": "business_report",
+			"id": report_citation.get("id"),
+			"entity_ids": [],
+			"scope": {
+				"company": dsl.get("company"), "report_type": dsl.get("report_type"),
+				"date_range": dsl.get("date_range"), "date_from": dsl.get("date_from"),
+				"date_to": dsl.get("date_to"),
+			},
+		}
+	return None
+
+
+def _build_next_conversation_state(
+	*, previous_state: dict | None, scenario: str, structured_intent: dict | None,
+	tool_context: dict | None, citations: list[dict],
+) -> dict:
+	previous = _conversation_state_for_intent(previous_state)
+	next_state = {
+		key: value for key, value in previous.items()
+		if key in {"product", "order", "report", "last_result_set"}
+	}
+	next_state.update({
+		"schema_version": CONVERSATION_STATE_SCHEMA_VERSION,
+		"active_scenario": scenario if scenario in ALLOWED_AI_SCENARIOS else "general",
+	})
+	context = tool_context if isinstance(tool_context, dict) else {}
+	intent = structured_intent if isinstance(structured_intent, dict) else {}
+	if scenario == "product_search":
+		resolved_product = context.get("resolved_product") or {}
+		retrieval = context.get("retrieval") or {}
+		next_state["product"] = {
+			"query": str(intent.get("product_query") or "").strip() or str(context.get("query") or "").strip()[:200],
+			"item_code": resolved_product.get("item_code"),
+			"item_name": resolved_product.get("item_name"),
+			"resolution_status": retrieval.get("status"),
+		}
+	elif scenario == "order_query":
+		dsl = context.get("dsl") or {}
+		next_state["order"] = {
+			"entities": list(dsl.get("entities") or []),
+			**_working_state_date_fields(dsl),
+			"status": dsl.get("status_filter") or "all",
+			"sort": dsl.get("sort_by") or "latest",
+			"min_amount": dsl.get("min_amount"),
+			"limit": dsl.get("limit") or 10,
+		}
+	elif scenario == "report_summary":
+		dsl = context.get("dsl") or {}
+		next_state["report"] = {
+			"report_type": dsl.get("report_type") or "overview",
+			**_working_state_date_fields(dsl),
+		}
+	last_result_set = _compact_last_result_set(context, citations)
+	if last_result_set:
+		next_state["last_result_set"] = last_result_set
+	return next_state
+
+
 def _prepare_chat_run(
 	messages=None,
 	scenario: str | None = None,
@@ -2919,17 +3352,58 @@ def _prepare_chat_run(
 		if not user_messages:
 			frappe.throw(_("请提供用户消息。"))
 		current_content = user_messages[-1]
-	resolved_scenario = (
-		_infer_ai_scenario(current_content) if requested_scenario == "auto" else requested_scenario
-	)
-	prompt_version = _resolve_prompt_version(resolved_scenario)
 
 	is_new_conversation = not conversation_id
 	conversation = None
+	conversation_state_record = {
+		"version": 0,
+		"state": {"schema_version": CONVERSATION_STATE_SCHEMA_VERSION, "active_scenario": "general"},
+	}
 	if conversation_id:
-		conversation = ai_repository.get_conversation(conversation_id=conversation_id, user=user)["conversation"]
+		conversation = ai_repository.get_conversation(
+			conversation_id=conversation_id, user=user,
+		)["conversation"]
+		conversation_state_record = ai_repository.get_conversation_state(
+			conversation_id=conversation_id, user=user,
+		)
+	conversation_state = conversation_state_record.get("state") or {}
 	conversation_company = str((conversation or {}).get("company") or "").strip() or None
 	requested_company = str(company or "").strip() or None
+	intent_company = requested_company or conversation_company
+
+	resolved_scenario = requested_scenario
+	intent_resolution = None
+	structured_intent = None
+	if requested_scenario == "auto":
+		resolved_scenario = _infer_ai_scenario(current_content)
+		intent_resolution = {"mode": "local_rules", "resolved_scenario": resolved_scenario}
+		if _should_parse_structured_intent(current_content, resolved_scenario, conversation_state):
+			intent = _call_ai_intent_orchestrator(
+				content=current_content,
+				user=user,
+				company=intent_company,
+				conversation_state=conversation_state,
+			)
+			intent = _merge_intent_with_conversation_state(
+				current_content, intent, conversation_state,
+			)
+			candidate = str(intent.get("intent") or "").strip()
+			try:
+				confidence = min(1.0, max(0.0, float(intent.get("confidence") or 0)))
+			except (TypeError, ValueError):
+				confidence = 0
+			if candidate in {"general", "product_search", "order_query", "report_summary"} and confidence >= 0.6:
+				resolved_scenario = candidate
+				structured_intent = intent
+				intent_resolution = {
+					"mode": "structured_intent", "resolved_scenario": resolved_scenario,
+					"confidence": confidence,
+					"structured_filters_used": candidate in {"product_search", "order_query", "report_summary"},
+				}
+			else:
+				intent_resolution = {"mode": "structured_intent_fallback", "resolved_scenario": resolved_scenario}
+	prompt_version = _resolve_prompt_version(resolved_scenario)
+
 	resolved_company = _resolve_company_scope(
 		requested_company or conversation_company,
 		required=resolved_scenario in {"product_search", "order_query", "report_summary"},
@@ -2982,21 +3456,38 @@ def _prepare_chat_run(
 			tool_context, citations, tool_calls = _build_product_search_context(
 				query=current_content,
 				company=resolved_company,
+				structured_intent=structured_intent,
 			)
 		elif resolved_scenario == "order_query":
 			tool_context, citations, tool_calls = _build_order_query_context(
 				query=current_content,
 				company=resolved_company,
+				structured_intent=structured_intent,
 			)
 		elif resolved_scenario == "report_summary":
 			tool_context, citations, tool_calls = _build_report_query_context(
 				query=current_content,
 				company=resolved_company,
+				structured_intent=structured_intent,
 			)
+		if intent_resolution:
+			tool_calls.insert(0, {
+				"tool": "parse_ai_intent",
+				"risk_level": "L0_ROUTING",
+				"query_hash": hashlib.sha256(current_content.encode("utf-8")).hexdigest(),
+				**intent_resolution,
+			})
 		model_messages = ai_repository.load_model_messages(
 			conversation_id=conversation_id,
 			user=user,
 			limit=MAX_AI_MESSAGES,
+		)
+		next_conversation_state = _build_next_conversation_state(
+			previous_state=conversation_state,
+			scenario=resolved_scenario,
+			structured_intent=structured_intent,
+			tool_context=tool_context,
+			citations=citations,
 		)
 	except Exception as error:
 		latency_ms = int((time.perf_counter() - started) * 1000)
@@ -3015,6 +3506,8 @@ def _prepare_chat_run(
 		"prompt_version": prompt_version,
 		"citations": citations,
 		"tool_calls": tool_calls,
+		"conversation_state_version": cint(conversation_state_record.get("version")),
+		"next_conversation_state": next_conversation_state,
 		"payload": {
 			"messages": model_messages,
 			"scenario": resolved_scenario,
@@ -3048,6 +3541,29 @@ def _complete_chat_run(
 		citations=prepared["citations"],
 		prompt_version=prepared["prompt_version"],
 	)
+	try:
+		state_result = ai_repository.update_conversation_state(
+			conversation_id=prepared["conversation_id"],
+			user=prepared["user"],
+			state=prepared.get("next_conversation_state") or {},
+			expected_version=cint(prepared.get("conversation_state_version")),
+		)
+		prepared["tool_calls"].append({
+			"tool": "update_conversation_state",
+			"risk_level": "L0_SESSION_STATE",
+			"mode": "patched" if state_result.get("updated") else "state_update_skipped",
+			"state_version": state_result.get("version"),
+		})
+	except Exception:
+		# Conversation state is an optimization for continuity; a failed state
+		# write must never turn a successful read-only business answer into a run
+		# failure.  The next turn will rebuild from durable messages.
+		frappe.log_error(frappe.get_traceback(), _("AI 会话状态更新失败"))
+		prepared["tool_calls"].append({
+			"tool": "update_conversation_state",
+			"risk_level": "L0_SESSION_STATE",
+			"mode": "state_update_skipped",
+		})
 	ai_repository.complete_run(
 		run_id=prepared["run_id"],
 		user=prepared["user"],

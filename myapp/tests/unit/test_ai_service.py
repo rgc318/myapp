@@ -1,6 +1,7 @@
 import io
 import urllib.error
 from contextlib import nullcontext
+from datetime import date
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
@@ -11,6 +12,7 @@ from myapp.services.ai_service import (
 	_build_inventory_adjustment_draft,
 	_build_order_query_context,
 	_build_order_query_dsl,
+	_build_next_conversation_state,
 	_build_product_setup_draft,
 	_execute_ai_draft_payload,
 	_build_report_query_dsl,
@@ -18,6 +20,9 @@ from myapp.services.ai_service import (
 	_update_ai_draft_once,
 	_hybrid_rerank_product_rows,
 	_extract_product_search_terms,
+	_normalize_product_entity_text,
+	_merge_intent_with_conversation_state,
+	_resolve_item_candidates,
 	_infer_ai_scenario,
 	_infer_ai_action_scenario,
 	_prepare_chat_run,
@@ -26,6 +31,8 @@ from myapp.services.ai_service import (
 	_resolve_purchase_draft_item,
 	_resolve_prompt_version,
 	_resolve_sales_draft_item,
+	_should_parse_structured_intent,
+	_complete_chat_run,
 	_stream_ai_orchestrator,
 	chat_ai_v1,
 	execute_ai_draft_v1,
@@ -385,6 +392,9 @@ class TestAiService(TestCase):
 		self, _current_user, mock_resolve_company,
 	):
 		with patch("myapp.services.ai_service.ai_repository.get_conversation") as mock_get, patch(
+			"myapp.services.ai_service.ai_repository.get_conversation_state",
+			return_value={"version": 0, "state": {"active_scenario": "general"}},
+		), patch(
 			"myapp.services.ai_service.ai_repository.append_message",
 		), patch(
 			"myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-1",
@@ -686,7 +696,188 @@ class TestAiService(TestCase):
 		)
 		self.assertEqual(_infer_ai_scenario("解释本月销售表现"), "report_summary")
 		self.assertEqual(_infer_ai_scenario("帮我找蓝色包装商品"), "product_search")
+		self.assertEqual(_infer_ai_scenario("我记得有个叫Camera的商品，帮我看看库存和售价"), "product_search")
+		self.assertEqual(_infer_ai_scenario("商品 Camera，告诉我真实匹配"), "product_search")
 		self.assertEqual(_infer_ai_scenario("你可以做什么"), "general")
+		self.assertTrue(_should_parse_structured_intent("商品Camera", "general"))
+		self.assertTrue(_should_parse_structured_intent("最近订单", "order_query"))
+		self.assertFalse(_should_parse_structured_intent("你好", "general"))
+		self.assertTrue(_should_parse_structured_intent(
+			"那就按刚才的继续",
+			"general",
+			{"active_scenario": "order_query"},
+		))
+
+	def test_context_merge_inherits_order_filters_and_applies_current_status(self):
+		state = {
+			"active_scenario": "order_query",
+			"order": {
+				"entities": ["sales_order"], "date_preset": "last_month",
+				"date_from": None, "date_to": None, "status": "all",
+				"sort": "amount_desc", "min_amount": 20000, "limit": 5,
+			},
+		}
+		merged = _merge_intent_with_conversation_state(
+			"只看未完成的",
+			{
+				"intent": "order_query", "confidence": 0.96, "product_query": None,
+				"entities": [], "report_type": None, "date_preset": "all",
+				"date_from": None, "date_to": None, "status": "unfinished",
+				"sort": "latest", "min_amount": None, "limit": 10,
+			},
+			state,
+		)
+
+		self.assertEqual(merged["entities"], ["sales_order"])
+		self.assertEqual(merged["date_preset"], "last_month")
+		self.assertEqual(merged["status"], "unfinished")
+		self.assertEqual(merged["sort"], "amount_desc")
+		self.assertEqual(merged["min_amount"], 20000)
+		self.assertEqual(merged["limit"], 5)
+
+	def test_context_merge_resolves_product_pronoun_from_unique_state(self):
+		merged = _merge_intent_with_conversation_state(
+			"那它的售价呢",
+			{
+				"intent": "product_search", "confidence": 0.93, "product_query": None,
+				"entities": [], "report_type": None, "date_preset": "all",
+				"date_from": None, "date_to": None, "status": "all", "sort": "latest",
+				"min_amount": None, "limit": 10,
+			},
+			{
+				"active_scenario": "product_search",
+				"product": {"query": "SKU010", "item_code": "SKU010", "resolution_status": "resolved"},
+			},
+		)
+
+		self.assertEqual(merged["product_query"], "SKU010")
+
+	def test_next_conversation_state_keeps_only_compact_product_and_result_references(self):
+		state = _build_next_conversation_state(
+			previous_state={"active_scenario": "general"},
+			scenario="product_search",
+			structured_intent={"product_query": "Camera"},
+			tool_context={
+				"tool": "search_products", "query": "查询 Camera 的库存", "company": "Demo Company",
+				"resolved_product": {"item_code": "SKU010", "item_name": "Camera"},
+				"retrieval": {"status": "resolved"},
+				"products": [{"item_code": "SKU010", "item_name": "Camera", "price": 999, "qty": 4}],
+			},
+			citations=[],
+		)
+
+		self.assertEqual(state["product"]["item_code"], "SKU010")
+		self.assertEqual(state["last_result_set"]["entity_ids"], ["SKU010"])
+		self.assertNotIn("price", state["product"])
+		self.assertNotIn("qty", state["product"])
+
+	@patch("myapp.services.ai_service.ai_repository.complete_run")
+	@patch("myapp.services.ai_service.ai_repository.update_conversation_state")
+	@patch("myapp.services.ai_service.ai_repository.append_message")
+	def test_complete_run_audits_state_version_conflict_without_failing_answer(
+		self, _append, mock_update_state, mock_complete,
+	):
+		mock_update_state.return_value = {"updated": False, "version": 4, "reason": "version_conflict"}
+		prepared = {
+			"started": 0, "conversation_id": "AI-CONV-1", "user": "user@example.com",
+			"scenario": "order_query", "run_id": "AI-RUN-1", "citations": [],
+			"prompt_version": "erp-readonly-v7", "tool_calls": [],
+			"conversation_state_version": 3,
+			"next_conversation_state": {"active_scenario": "order_query"},
+		}
+		with patch("myapp.services.ai_service.time.perf_counter", return_value=0), patch(
+			"myapp.services.ai_service.frappe",
+		):
+			_complete_chat_run(prepared, {"usage": {}}, "已完成")
+
+		self.assertEqual(prepared["tool_calls"][-1]["mode"], "state_update_skipped")
+		mock_complete.assert_called_once()
+
+	def test_order_dsl_understands_negative_status_recent_month_and_chinese_count(self):
+		dsl = _build_order_query_dsl(
+			"最近一个月还没完成的销售订单，按金额最高列前三张",
+			company="rgc (Demo)",
+			as_of=date(2026, 7, 26),
+		)
+
+		self.assertEqual(dsl["date_range"], "last_30_days")
+		self.assertEqual(dsl["status_filter"], "unfinished")
+		self.assertEqual(dsl["sort_by"], "amount_desc")
+		self.assertEqual(dsl["limit"], 3)
+
+	def test_order_dsl_applies_structured_entities_amount_and_custom_dates(self):
+		dsl = _build_order_query_dsl(
+			"帮我看看这些业务单据",
+			company="rgc (Demo)",
+			structured_intent={
+				"intent": "order_query", "confidence": 0.97,
+				"entities": ["purchase_invoice", "purchase_order"],
+				"date_preset": "custom", "date_from": "2026-07-01", "date_to": "2026-07-20",
+				"min_amount": 20000, "status": "all", "sort": "amount_desc", "limit": 5,
+			},
+		)
+
+		self.assertEqual(dsl["entities"], ["purchase_order", "purchase_invoice"])
+		self.assertEqual(dsl["date_range"], "custom")
+		self.assertEqual(dsl["date_from"], "2026-07-01")
+		self.assertEqual(dsl["date_to"], "2026-07-20")
+		self.assertEqual(dsl["min_amount"], 20000)
+
+	def test_order_dsl_ignores_invalid_structured_custom_dates(self):
+		dsl = _build_order_query_dsl(
+			"查询最新销售订单",
+			company="rgc (Demo)",
+			structured_intent={
+				"intent": "order_query", "confidence": 0.97,
+				"date_preset": "custom", "date_from": "2026-07-20", "date_to": "2026-07-01",
+			},
+		)
+
+		self.assertEqual(dsl["date_range"], "all")
+		self.assertIsNone(dsl["date_from"])
+
+	def test_order_dsl_applies_valid_high_confidence_structured_filters(self):
+		dsl = _build_order_query_dsl(
+			"帮我处理一下这些单据",
+			company="rgc (Demo)",
+			as_of=date(2026, 7, 26),
+			structured_intent={
+				"intent": "order_query", "confidence": 0.96,
+				"date_preset": "last_30_days", "status": "unfinished",
+				"sort": "amount_desc", "limit": 3,
+			},
+		)
+
+		self.assertEqual(dsl["date_from"], "2026-06-27")
+		self.assertEqual(dsl["date_to"], "2026-07-26")
+		self.assertEqual(dsl["status_filter"], "unfinished")
+		self.assertEqual(dsl["sort_by"], "amount_desc")
+		self.assertEqual(dsl["limit"], 3)
+
+	def test_report_dsl_applies_structured_date_without_changing_report_type(self):
+		dsl = _build_report_query_dsl(
+			"看看销售表现",
+			company="rgc (Demo)",
+			as_of=date(2026, 7, 26),
+			structured_intent={
+				"intent": "report_summary", "confidence": 0.9, "date_preset": "last_30_days",
+			},
+		)
+
+		self.assertEqual(dsl["report_type"], "sales")
+		self.assertEqual(dsl["date_range"], "last_30_days")
+
+	def test_report_dsl_applies_structured_report_type_when_local_text_is_ambiguous(self):
+		dsl = _build_report_query_dsl(
+			"帮我看一下这段经营数据",
+			company="rgc (Demo)",
+			structured_intent={
+				"intent": "report_summary", "confidence": 0.94,
+				"report_type": "cashflow", "date_preset": "all",
+			},
+		)
+
+		self.assertEqual(dsl["report_type"], "cashflow")
 
 	def test_action_scenario_routes_product_creation_to_draft(self):
 		self.assertEqual(
@@ -940,6 +1131,53 @@ class TestAiService(TestCase):
 			["数码相机"],
 		)
 		self.assertIn("饮料", _extract_product_search_terms("帮我找蓝色包装、适合整箱销售的饮料"))
+		self.assertEqual(_extract_product_search_terms("商品迪莫"), ["迪莫"])
+		self.assertEqual(_extract_product_search_terms("迪莫商品"), ["迪莫"])
+
+	def test_product_entity_normalization_handles_full_width_and_whitespace(self):
+		self.assertEqual(_normalize_product_entity_text(" 商品：Ｃａｍｅｒａ  "), "商品:camera")
+
+	@patch("myapp.services.ai_service.search_products_semantic")
+	@patch("myapp.services.ai_service.search_product_v2")
+	def test_shared_item_resolver_prefers_exact_match_without_semantic_dependency(
+		self, mock_search, mock_semantic,
+	):
+		mock_search.return_value = {"data": [{"item_code": "SKU-1", "item_name": "Camera", "barcode": "69001"}]}
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.get_list.return_value = ["SKU-1"]
+			result = _resolve_item_candidates("商品：Camera", company="Demo Company")
+
+		self.assertEqual(result["status"], "resolved")
+		self.assertEqual(result["match_method"], "exact")
+		self.assertEqual(result["selected"]["item_code"], "SKU-1")
+		mock_semantic.assert_not_called()
+
+	@patch("myapp.services.ai_service.search_products_semantic", return_value={"available": True, "rows": []})
+	@patch("myapp.services.ai_service.search_product_v2", return_value={"data": []})
+	def test_shared_item_resolver_reports_not_found_and_semantic_availability(
+		self, _mock_search, mock_semantic,
+	):
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			result = _resolve_item_candidates("适合拍照的相机", company="Demo Company")
+
+		self.assertEqual(result["status"], "not_found")
+		self.assertTrue(result["semantic_available"])
+		mock_semantic.assert_called_once()
+
+	@patch("myapp.services.ai_service.search_products_semantic", return_value={"available": False, "rows": []})
+	@patch("myapp.services.ai_service.search_product_v2")
+	def test_shared_item_resolver_keeps_duplicate_names_ambiguous(self, mock_search, _mock_semantic):
+		mock_search.return_value = {"data": [
+			{"item_code": "SKU-1", "item_name": "相同名称"},
+			{"item_code": "SKU-2", "item_name": "相同名称"},
+		]}
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.get_list.return_value = ["SKU-1", "SKU-2"]
+			result = _resolve_item_candidates("相同名称", company="Demo Company")
+
+		self.assertEqual(result["status"], "ambiguous")
+		self.assertIsNone(result["selected"])
+		self.assertEqual(len(result["candidates"]), 2)
 
 	def test_hybrid_product_rerank_merges_lexical_and_semantic_candidates(self):
 		rows = _hybrid_rerank_product_rows(

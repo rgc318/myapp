@@ -32,6 +32,7 @@ MODEL_STATUSES = {"discovered", "validated", "active", "degraded", "disabled", "
 MANAGED_MODEL_STATUSES = {"validated", "active", "degraded", "disabled", "retired"}
 POLICY_SCENARIOS = {
 	"general",
+	"intent_parse",
 	"product_search",
 	"order_query",
 	"report_summary",

@@ -24,6 +24,14 @@ MAX_CONVERSATION_PAGE_SIZE = 50
 DEFAULT_MESSAGE_PAGE_SIZE = 40
 MAX_MESSAGE_PAGE_SIZE = 100
 MAX_DRAFT_PAGE_SIZE = 100
+MAX_CONVERSATION_STATE_BYTES = 12000
+CONVERSATION_STATE_SCHEMA_VERSION = "conversation-state-v1"
+ALLOWED_CONTEXT_SCENARIOS = {"general", "product_search", "order_query", "report_summary"}
+ALLOWED_ORDER_ENTITIES = {"sales_order", "sales_invoice", "purchase_order", "purchase_invoice"}
+ALLOWED_ORDER_STATUSES = {"all", "unfinished", "completed", "cancelled", "delivering", "receiving", "paying"}
+ALLOWED_ORDER_SORTS = {"latest", "oldest", "amount_desc", "amount_asc"}
+ALLOWED_DATE_PRESETS = {"all", "today", "this_week", "last_month", "this_month", "last_30_days", "custom"}
+ALLOWED_REPORT_TYPES = {"overview", "sales", "purchase", "cashflow", "receivable_payable"}
 
 
 def _name(prefix: str) -> str:
@@ -50,6 +58,115 @@ def _safe_json_loads(value, default):
 		return json.loads(value)
 	except (TypeError, ValueError):
 		return default
+
+
+def _bounded_text(value, *, limit: int = 200) -> str | None:
+	resolved = " ".join(str(value or "").strip().split())
+	return resolved[:limit] or None
+
+
+def _normalize_conversation_state(state) -> dict:
+	"""Validate the small, server-owned working state persisted between turns."""
+	if state in (None, ""):
+		state = {}
+	if isinstance(state, str):
+		try:
+			state = json.loads(state)
+		except (TypeError, ValueError):
+			frappe.throw(_("AI 会话状态格式不正确。"))
+	if not isinstance(state, dict):
+		frappe.throw(_("AI 会话状态格式不正确。"))
+	allowed_top_level = {
+		"schema_version", "active_scenario", "product", "order", "report", "last_result_set",
+	}
+	if set(state) - allowed_top_level:
+		frappe.throw(_("AI 会话状态包含不受支持的字段。"))
+
+	active_scenario = str(state.get("active_scenario") or "general").strip()
+	if active_scenario not in ALLOWED_CONTEXT_SCENARIOS:
+		active_scenario = "general"
+	result = {
+		"schema_version": CONVERSATION_STATE_SCHEMA_VERSION,
+		"active_scenario": active_scenario,
+	}
+
+	product = state.get("product")
+	if isinstance(product, dict):
+		allowed_product = {"query", "item_code", "item_name", "resolution_status"}
+		if set(product) - allowed_product:
+			frappe.throw(_("AI 商品上下文包含不受支持的字段。"))
+		resolution_status = str(product.get("resolution_status") or "").strip()
+		result["product"] = {
+			"query": _bounded_text(product.get("query")),
+			"item_code": _bounded_text(product.get("item_code"), limit=140),
+			"item_name": _bounded_text(product.get("item_name"), limit=140),
+			"resolution_status": resolution_status if resolution_status in {"resolved", "ambiguous", "not_found"} else None,
+		}
+
+	order = state.get("order")
+	if isinstance(order, dict):
+		allowed_order = {
+			"entities", "date_preset", "date_from", "date_to", "status", "sort", "min_amount", "limit",
+		}
+		if set(order) - allowed_order:
+			frappe.throw(_("AI 单据上下文包含不受支持的字段。"))
+		entities = order.get("entities") if isinstance(order.get("entities"), list) else []
+		entities = [entity for entity in entities if entity in ALLOWED_ORDER_ENTITIES][:4]
+		date_preset = str(order.get("date_preset") or "all").strip()
+		status = str(order.get("status") or "all").strip()
+		sort = str(order.get("sort") or "latest").strip()
+		min_amount = order.get("min_amount")
+		if not isinstance(min_amount, (int, float)) or isinstance(min_amount, bool):
+			min_amount = None
+		else:
+			min_amount = max(0, min(float(min_amount), 1000000000000000))
+		result["order"] = {
+			"entities": entities,
+			"date_preset": date_preset if date_preset in ALLOWED_DATE_PRESETS else "all",
+			"date_from": _bounded_text(order.get("date_from"), limit=10),
+			"date_to": _bounded_text(order.get("date_to"), limit=10),
+			"status": status if status in ALLOWED_ORDER_STATUSES else "all",
+			"sort": sort if sort in ALLOWED_ORDER_SORTS else "latest",
+			"min_amount": min_amount,
+			"limit": max(1, min(20, cint(order.get("limit")) or 10)),
+		}
+
+	report = state.get("report")
+	if isinstance(report, dict):
+		allowed_report = {"report_type", "date_preset", "date_from", "date_to"}
+		if set(report) - allowed_report:
+			frappe.throw(_("AI 报表上下文包含不受支持的字段。"))
+		report_type = str(report.get("report_type") or "overview").strip()
+		date_preset = str(report.get("date_preset") or "all").strip()
+		result["report"] = {
+			"report_type": report_type if report_type in ALLOWED_REPORT_TYPES else "overview",
+			"date_preset": date_preset if date_preset in ALLOWED_DATE_PRESETS else "all",
+			"date_from": _bounded_text(report.get("date_from"), limit=10),
+			"date_to": _bounded_text(report.get("date_to"), limit=10),
+		}
+
+	last_result_set = state.get("last_result_set")
+	if isinstance(last_result_set, dict):
+		allowed_result = {"type", "id", "entity_ids", "scope"}
+		if set(last_result_set) - allowed_result:
+			frappe.throw(_("AI 结果集上下文包含不受支持的字段。"))
+		entity_ids = last_result_set.get("entity_ids") if isinstance(last_result_set.get("entity_ids"), list) else []
+		scope = last_result_set.get("scope") if isinstance(last_result_set.get("scope"), dict) else {}
+		allowed_scope = {
+			"company", "report_type", "date_range", "date_from", "date_to", "status_filter",
+			"exclude_cancelled", "sort_by", "min_amount", "limit_per_group",
+		}
+		result["last_result_set"] = {
+			"type": _bounded_text(last_result_set.get("type"), limit=40),
+			"id": _bounded_text(last_result_set.get("id"), limit=140),
+			"entity_ids": [_bounded_text(value, limit=140) for value in entity_ids[:20] if _bounded_text(value, limit=140)],
+			"scope": {key: scope[key] for key in allowed_scope if key in scope},
+		}
+
+	encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+	if len(encoded.encode("utf-8")) > MAX_CONVERSATION_STATE_BYTES:
+		frappe.throw(_("AI 会话状态超过允许大小。"))
+	return result
 
 
 def _serialize_conversation(row) -> dict:
@@ -95,7 +212,8 @@ def _get_owned_conversation(conversation_id: str, user: str, *, for_update: bool
 	lock_sql = " FOR UPDATE" if for_update else ""
 	rows = frappe.db.sql(
 		f"""
-		SELECT name, title, status, company_scope, message_count, last_message_at, creation, modified
+		SELECT name, title, status, company_scope, message_count, last_message_at, creation, modified,
+			state_version, working_state_json, state_updated_at
 		FROM `{CONVERSATION_TABLE}`
 		WHERE name = %s AND owner = %s
 		LIMIT 1{lock_sql}
@@ -117,8 +235,9 @@ def create_conversation(*, user: str, title: str | None = None, company: str | N
 		f"""
 		INSERT INTO `{CONVERSATION_TABLE}`
 			(name, creation, modified, modified_by, owner, docstatus, idx,
-			 status, title, company_scope, message_count, last_message_at, retention_until)
-		VALUES (%s, %s, %s, %s, %s, 0, 0, 'active', %s, %s, 0, %s, %s)
+			 status, title, company_scope, message_count, last_message_at, retention_until,
+			 state_version, working_state_json, state_updated_at)
+		VALUES (%s, %s, %s, %s, %s, 0, 0, 'active', %s, %s, 0, %s, %s, 0, NULL, NULL)
 		""",
 		(
 			conversation_id,
@@ -133,6 +252,45 @@ def create_conversation(*, user: str, title: str | None = None, company: str | N
 		),
 	)
 	return _serialize_conversation(_get_owned_conversation(conversation_id, user))
+
+
+def get_conversation_state(*, conversation_id: str, user: str) -> dict:
+	conversation = _get_owned_conversation((conversation_id or "").strip(), user)
+	state = _safe_json_loads(getattr(conversation, "working_state_json", None), {})
+	try:
+		state = _normalize_conversation_state(state)
+	except Exception:
+		state = _normalize_conversation_state({})
+	return {
+		"version": max(0, cint(getattr(conversation, "state_version", 0))),
+		"state": state,
+		"updated_at": str(getattr(conversation, "state_updated_at", None) or "") or None,
+	}
+
+
+def update_conversation_state(
+	*, conversation_id: str, user: str, state: dict, expected_version: int,
+) -> dict:
+	normalized = _normalize_conversation_state(state)
+	conversation = _get_owned_conversation((conversation_id or "").strip(), user, for_update=True)
+	current_version = max(0, cint(getattr(conversation, "state_version", 0)))
+	if current_version != max(0, cint(expected_version)):
+		return {"updated": False, "version": current_version, "reason": "version_conflict"}
+	next_version = current_version + 1
+	now = now_datetime()
+	frappe.db.sql(
+		f"""
+		UPDATE `{CONVERSATION_TABLE}`
+		SET working_state_json = %s, state_version = %s, state_updated_at = %s,
+			modified = %s, modified_by = %s
+		WHERE name = %s AND owner = %s AND state_version = %s
+		""",
+		(
+			frappe.as_json(normalized), next_version, now, now, user,
+			conversation.name, user, current_version,
+		),
+	)
+	return {"updated": True, "version": next_version, "state": normalized, "updated_at": str(now)}
 
 
 def list_conversations(

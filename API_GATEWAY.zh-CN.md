@@ -143,6 +143,10 @@
 
 同步接口对所有账号返回 `conversation`、`run_id`、带 `citations` 的 `message`、安全警告、`events[]` 和持久 Run 摘要；基础 Run 摘要只包含 `status`、后端 `latency_ms` 与稳定错误信息。具备高级诊断权限时，响应才额外包含实际模型、模型 alias、策略信息、trace、Token 和 `first_token_ms`。`stream_ai_message_v1` 返回真正 `text/event-stream`，事件包含 `run_started`、`run_progress`、`tool_started`、`tool_completed`、`citation`、`message_delta`、`warning`、`completed` 和 `error`；普通业务账号的 `model_started` 与 `completed` 事件不返回模型 alias、Provider 模型、trace、Token、首 Token 或流式统计。`get_ai_conversation_v1` 使用同一服务端权限规则恢复历史 Run；普通账号只得到状态、总耗时、稳定错误和反馈，治理角色才能得到模型、trace、Token 与首 Token。接口仍支持 `before_sequence` + `limit` 向前游标分页；未传游标时返回最近一页，响应 `pagination` 包含 `total`、`returned_count`、`has_more` 和 `next_before_sequence`。客户端加载更早消息时必须传上一页的 `next_before_sequence`，避免会话末尾新增消息导致 offset 重复或跳页。`submit_ai_feedback_v1` 对本人已完成 Run 记录 `positive` / `negative` 反馈。正式单据创建、提交、取消、收付款和库存变更不属于这些接口能力。
 
+会话现在同时维护短期消息历史和受控的 `conversation-state-v1` 工作状态。状态只保存当前业务场景、唯一商品实体、订单/报表筛选、结果集 ID 及少量权限过滤后的实体摘要，不保存完整业务结果、模型原文或凭据；状态由服务端 owner 校验、字段白名单、大小限制和 `state_version` 乐观并发控制保护。每轮业务工具调用前重新读取状态，当前用户明确表达优先于历史状态；业务工具仍必须按当前请求重新执行公司范围、DocType 和记录权限校验。回答成功后才写回状态，版本冲突时跳过写回并审计，不影响当前只读回答。
+
+`auto` 场景在已有业务状态时会继续调用结构化意图解析器，因此“它”“刚才那个”“只看未完成的”“换成上个月”等自然语言省略表达可以继承上一轮实体和筛选。Orchestrator 的意图 Prompt 版本为 `erp-intent-v3`；它只输出完整的当前有效意图，不能把历史业务事实当作实时事实。状态只是解析辅助，不能替代本轮 Frappe 查询。
+
 AI 流式失败事件和持久化 Run 必须保留稳定 `error_code`。运行时限流、预算、并发、模型熔断、配置版本、内部认证和服务不可用等错误不得统一折叠为 Python 异常类名或通用文案；SSE `error.code` 与 Run `error_code` 应保持一致，供 Web 区分“稍后重试、修改输入、权限拒绝和系统/治理故障”。未知异常统一记录为 `AI_RUN_FAILED`，不得把堆栈或供应商原始错误正文暴露给普通用户。
 
 已有会话的公司范围以会话持久化字段为准。调用方省略 `company` 时，Chat/SSE 会自动恢复会话公司；调用方显式传入与会话不同的公司时仍失败关闭并要求新建会话，避免同一上下文混入跨公司业务数据。工作偏好中的默认公司只用于创建新会话或无公司会话的首次业务上下文。

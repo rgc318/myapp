@@ -86,14 +86,16 @@ class AiGatewayHttpTestCase(unittest.TestCase):
 		message = self._post_gateway(
 			"chat_ai_v1",
 			{
-				"content": "只回复：网关链路正常",
+				"content": "没有提供业务上下文时，你能确认真实订单或库存事实吗？",
 				"scenario": "general",
 				"company": "rgc (Demo)",
 			},
 		)
 		self.assertTrue(message["ok"])
 		self.assertEqual(message["code"], "AI_CHAT_COMPLETED")
-		self.assertIn("网关链路正常", message["data"]["message"]["content"])
+		content = message["data"]["message"]["content"]
+		self.assertTrue(any(term in content for term in ("不能", "无法")))
+		self.assertTrue(any(term in content for term in ("上下文", "数据", "事实")))
 		self.assertEqual(message["data"]["model"], self.expected_model)
 		self.assertGreaterEqual(message["data"]["usage"]["reasoning_tokens"], 0)
 		self.assertTrue(message["data"]["warnings"])
@@ -113,7 +115,7 @@ class AiGatewayHttpTestCase(unittest.TestCase):
 			"chat_ai_v1",
 			{
 				"content": "帮我找数码相机，只说明真实候选商品。",
-				"scenario": "product_search",
+				"scenario": "auto",
 				"company": "rgc (Demo)",
 			},
 		)
@@ -126,6 +128,59 @@ class AiGatewayHttpTestCase(unittest.TestCase):
 		self.assertIn("tool_started", [event["type"] for event in message["data"]["events"]])
 		self.assertIn("tool_completed", [event["type"] for event in message["data"]["events"]])
 		self._archive_conversation(message["data"]["conversation"])
+
+	def test_ai_multi_turn_context_inherits_product_and_order_filters(self):
+		product_first = self._post_gateway(
+			"chat_ai_v1",
+			{
+				"content": "查询 Camera 的库存和售价。",
+				"scenario": "auto",
+				"company": "rgc (Demo)",
+			},
+		)
+		product_conversation = product_first["data"]["conversation"]
+		try:
+			product_follow_up = self._post_gateway(
+				"chat_ai_v1",
+				{
+					"content": "那它的售价呢？",
+					"scenario": "auto",
+					"conversation_id": product_conversation,
+				},
+			)
+			citations = product_follow_up["data"]["message"]["citations"]
+			self.assertTrue(citations)
+			self.assertEqual(citations[0]["type"], "product")
+			self.assertEqual(citations[0]["id"], "SKU010")
+		finally:
+			self._archive_conversation(product_conversation)
+
+		order_first = self._post_gateway(
+			"chat_ai_v1",
+			{
+				"content": "查询最近一个月的销售订单，前五条。",
+				"scenario": "auto",
+				"company": "rgc (Demo)",
+			},
+		)
+		order_conversation = order_first["data"]["conversation"]
+		try:
+			order_follow_up = self._post_gateway(
+				"chat_ai_v1",
+				{
+					"content": "只看未完成的，换成上个月。",
+					"scenario": "auto",
+					"conversation_id": order_conversation,
+				},
+			)
+			result_set = order_follow_up["data"]["message"]["citations"][0]
+			self.assertEqual(result_set["type"], "business_result_set")
+			self.assertEqual(result_set["data"]["groups"][0]["entity"], "sales_order")
+			self.assertEqual(result_set["data"]["scope"]["status_filter"], "unfinished")
+			self.assertEqual(result_set["data"]["scope"]["date_range"], "last_month")
+			self.assertEqual(result_set["data"]["scope"]["limit_per_group"], 5)
+		finally:
+			self._archive_conversation(order_conversation)
 
 	def test_ai_inventory_adjustment_draft_handoff_is_draft_only(self):
 		message = self._post_gateway(
@@ -166,7 +221,7 @@ class AiGatewayHttpTestCase(unittest.TestCase):
 		events = self._stream_gateway(
 			{
 				"content": "查询近30天采购订单，按金额从高到低返回前5条。",
-				"scenario": "order_query",
+				"scenario": "auto",
 				"company": "rgc (Demo)",
 			}
 		)
@@ -201,7 +256,7 @@ class AiGatewayHttpTestCase(unittest.TestCase):
 		events = self._stream_gateway(
 			{
 				"content": "解释本月销售表现和主要客户，区分销售额、实收和应收未结。",
-				"scenario": "report_summary",
+				"scenario": "auto",
 				"company": "rgc (Demo)",
 			}
 		)

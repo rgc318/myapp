@@ -2020,7 +2020,16 @@ MYAPP_HTTP_ENABLE_AI_TESTS=1 python3 -m unittest \
 
 第一条真实回归历史结果：1 项通过；实际模型为 `gpt-5.5`，`reasoning_tokens = 0`。
 
-Phase A 当前真实用例默认使用 `.env.ai.local` 配置的低价模型，当前为 `opencode-deepseek-v4-flash`；只有显式 OpenAI 专项测试才允许切换 `gpt-5.5`。用例覆盖同步聊天审计、描述式商品查询、真正 SSE、自然语言采购订单 DSL 和 Run 反馈。可通过 `MYAPP_HTTP_AI_MODEL` 指定期望模型名称，但不得在普通回归中默认使用高价模型。
+Phase A 当前真实用例默认使用 `.env.ai.local` 配置的低价模型，当前为 `opencode-deepseek-v4-flash`；只有显式 OpenAI 专项测试才允许切换 `gpt-5.5`。用例覆盖同步聊天审计、`scenario=auto` 商品/订单/报表路由、描述式商品查询、真正 SSE、自然语言采购订单 DSL、Run 反馈，以及同一 `conversation_id` 下的商品代词和订单筛选继承。可通过 `MYAPP_HTTP_AI_MODEL` 指定期望模型名称，但不得在普通回归中默认使用高价模型。
+
+多轮上下文目标回归可单独执行：
+
+```bash
+MYAPP_HTTP_ENABLE_AI_TESTS=1 MYAPP_HTTP_BASE_URL=http://localhost:8000 python3 -m unittest \
+  apps.myapp.myapp.tests.http.test_ai_gateway_http.AiGatewayHttpTestCase.test_ai_multi_turn_context_inherits_product_and_order_filters
+```
+
+该用例先验证“查询 Camera 的库存和售价 → 那它的售价呢”继续命中 `SKU010`，再验证“最近一个月销售订单 → 只看未完成并换成上个月”继承销售订单实体和 5 条限制，同时更新日期与状态。它会产生真实模型调用和少量费用，默认测试仍保持关闭。
 
 Phase B 库存调整草稿可单独执行：
 
