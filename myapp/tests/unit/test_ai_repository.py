@@ -13,8 +13,10 @@ from myapp.services.ai_repository import (
 	_refresh_conversation_citations,
 	list_conversations,
 	list_drafts,
+	load_model_messages,
 	mark_draft_executed,
 	rename_conversation,
+	reset_conversation_state,
 	submit_feedback,
 	update_draft,
 	update_conversation_state,
@@ -84,6 +86,69 @@ class TestAiRepository(TestCase):
 		query = mock_frappe.db.sql.call_args.args[0]
 		self.assertIn("state_version = %s", query)
 		self.assertEqual(mock_frappe.db.sql.call_args.args[1][-1], 4)
+
+	def test_get_conversation_state_reports_expiry_without_mutating(self):
+		conversation = frappe._dict({
+			"name": "AI-CONV-1", "state_version": 3,
+			"working_state_json": '{"active_scenario":"product_search","product":{"query":"Camera"}}',
+			"state_updated_at": "2026-07-01 12:00:00", "context_start_sequence": 1,
+		})
+		with patch.object(ai_repository, "_get_owned_conversation", return_value=conversation), patch(
+			"myapp.services.ai_repository.now_datetime", return_value="2026-07-26 12:00:00",
+		), patch("myapp.services.ai_repository.frappe") as mock_frappe:
+			result = get_conversation_state(conversation_id="AI-CONV-1", user="user@example.com")
+
+		self.assertEqual(result["status"], "expired")
+		self.assertEqual(result["reset_reason"], "expired")
+		self.assertEqual(result["state"]["active_scenario"], "general")
+		mock_frappe.db.sql.assert_not_called()
+
+	def test_expired_context_is_reset_before_chat_and_starts_new_message_window(self):
+		conversation = frappe._dict({
+			"name": "AI-CONV-1", "state_version": 3, "message_count": 8,
+			"working_state_json": '{"active_scenario":"order_query"}',
+			"state_updated_at": "2026-07-01 12:00:00", "context_start_sequence": 1,
+		})
+		with patch.object(ai_repository, "_get_owned_conversation", return_value=conversation), patch(
+			"myapp.services.ai_repository.now_datetime", return_value="2026-07-26 12:00:00",
+		), patch("myapp.services.ai_repository.frappe") as mock_frappe:
+			result = get_conversation_state(
+				conversation_id="AI-CONV-1", user="user@example.com", expire_if_needed=True,
+			)
+
+		self.assertEqual(result["status"], "empty")
+		self.assertEqual(result["reset_reason"], "expired")
+		self.assertEqual(result["context_start_sequence"], 9)
+		self.assertEqual(result["version"], 4)
+		self.assertIn("context_start_sequence", mock_frappe.db.sql.call_args.args[0])
+
+	def test_reset_context_keeps_messages_but_advances_context_boundary(self):
+		conversation = frappe._dict({
+			"name": "AI-CONV-1", "state_version": 4, "message_count": 6,
+		})
+		with patch.object(ai_repository, "_get_owned_conversation", return_value=conversation), patch(
+			"myapp.services.ai_repository.now_datetime", return_value="2026-07-26 12:00:00",
+		), patch("myapp.services.ai_repository.frappe") as mock_frappe:
+			result = reset_conversation_state(conversation_id="AI-CONV-1", user="user@example.com")
+
+		self.assertEqual(result["reset_reason"], "user_reset")
+		self.assertEqual(result["context_start_sequence"], 7)
+		self.assertEqual(result["version"], 5)
+		self.assertIn('state_version = %s', mock_frappe.db.sql.call_args.args[0])
+
+	def test_load_model_messages_only_reads_after_context_boundary(self):
+		conversation = frappe._dict({"name": "AI-CONV-1", "context_start_sequence": 7})
+		with patch.object(ai_repository, "_get_owned_conversation", return_value=conversation), patch.object(
+			ai_repository, "frappe",
+		) as mock_frappe:
+			mock_frappe.db.sql.return_value = [frappe._dict({"role": "user", "content": "新问题"})]
+			result = load_model_messages(
+				conversation_id="AI-CONV-1", user="user@example.com", limit=20,
+			)
+
+		self.assertEqual(result, [{"role": "user", "content": "新问题"}])
+		self.assertIn("sequence_no >= %s", mock_frappe.db.sql.call_args.args[0])
+		self.assertEqual(mock_frappe.db.sql.call_args.args[1], ("AI-CONV-1", 7, 20))
 	def test_refresh_conversation_citations_uses_latest_draft_state(self):
 		with patch.object(
 			ai_repository,

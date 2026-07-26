@@ -14,6 +14,7 @@ from myapp.services.ai_service import (
 	list_ai_drafts_v1 as list_ai_drafts_v1_service,
 	list_ai_draft_versions_v1 as list_ai_draft_versions_v1_service,
 	rename_ai_conversation_v1 as rename_ai_conversation_v1_service,
+	reset_ai_conversation_context_v1 as reset_ai_conversation_context_v1_service,
 	stream_ai_message_v1 as stream_ai_message_v1_service,
 	submit_ai_feedback_v1 as submit_ai_feedback_v1_service,
 	prepare_ai_draft_handoff_v1 as prepare_ai_draft_handoff_v1_service,
@@ -96,6 +97,10 @@ def get_ai_conversation_v1(
 
 def archive_ai_conversation_v1(conversation_id: str):
 	return archive_ai_conversation_v1_service(conversation_id=conversation_id)
+
+
+def reset_ai_conversation_context_v1(conversation_id: str):
+	return reset_ai_conversation_context_v1_service(conversation_id=conversation_id)
 
 
 def chat_ai_v1(

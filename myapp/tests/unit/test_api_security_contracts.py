@@ -163,6 +163,7 @@ class TestApiSecurityContracts(TestCase):
 			gateway.test_remote_debug,
 			gateway.create_ai_conversation_v1,
 			gateway.archive_ai_conversation_v1,
+			gateway.reset_ai_conversation_context_v1,
 			gateway.chat_ai_v1,
 			gateway.create_print_batch_v1,
 			gateway.set_print_default_template_v1,

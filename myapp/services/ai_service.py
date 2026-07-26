@@ -1566,6 +1566,8 @@ def _build_report_query_context(
 def _build_events(*, content: str, citations: list[dict], warnings: list[str], tool_calls: list[dict]) -> list[dict]:
 	events = []
 	for tool_call in tool_calls:
+		if tool_call.get("event_visible") is False:
+			continue
 		events.extend(
 			[
 				{"type": "tool_started", "tool": tool_call.get("tool")},
@@ -1643,6 +1645,17 @@ def archive_ai_conversation_v1(conversation_id: str):
 		"status": "success",
 		"message": _("AI 会话已归档。"),
 		"data": ai_repository.archive_conversation(conversation_id=conversation_id, user=user),
+	}
+
+
+def reset_ai_conversation_context_v1(conversation_id: str):
+	user = _current_user()
+	return {
+		"status": "success",
+		"message": _("AI 会话工作上下文已清除，历史消息仍然保留。"),
+		"data": ai_repository.reset_conversation_state(
+			conversation_id=conversation_id, user=user,
+		),
 	}
 
 
@@ -3364,7 +3377,9 @@ def _prepare_chat_run(
 			conversation_id=conversation_id, user=user,
 		)["conversation"]
 		conversation_state_record = ai_repository.get_conversation_state(
-			conversation_id=conversation_id, user=user,
+			conversation_id=conversation_id,
+			user=user,
+			expire_if_needed=conversation.get("status") == "active",
 		)
 	conversation_state = conversation_state_record.get("state") or {}
 	conversation_company = str((conversation or {}).get("company") or "").strip() or None
@@ -3450,6 +3465,14 @@ def _prepare_chat_run(
 	started = time.perf_counter()
 	tool_context = None
 	citations = []
+	context_audit = {
+		"tool": "load_conversation_context",
+		"risk_level": "L0_SESSION_STATE",
+		"mode": conversation_state_record.get("status") or "empty",
+		"reset_reason": conversation_state_record.get("reset_reason"),
+		"state_version": cint(conversation_state_record.get("version")),
+		"event_visible": False,
+	}
 	tool_calls = []
 	try:
 		if resolved_scenario == "product_search":
@@ -3470,6 +3493,7 @@ def _prepare_chat_run(
 				company=resolved_company,
 				structured_intent=structured_intent,
 			)
+		tool_calls.append(context_audit)
 		if intent_resolution:
 			tool_calls.insert(0, {
 				"tool": "parse_ai_intent",
@@ -3686,6 +3710,8 @@ def stream_ai_message_v1(
 				}
 			)
 			for tool_call in prepared["tool_calls"]:
+				if tool_call.get("event_visible") is False:
+					continue
 				yield _encode_sse({"type": "tool_started", "tool": tool_call.get("tool")})
 				yield _encode_sse(
 					{

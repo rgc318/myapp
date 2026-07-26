@@ -21,6 +21,7 @@ def execute():
 			`state_version` int(11) NOT NULL DEFAULT 0,
 			`working_state_json` longtext DEFAULT NULL,
 			`state_updated_at` datetime(6) DEFAULT NULL,
+			`context_start_sequence` int(11) NOT NULL DEFAULT 1,
 			PRIMARY KEY (`name`),
 			KEY `idx_myapp_ai_conversation_owner_status` (`owner`, `status`, `last_message_at`),
 			KEY `idx_myapp_ai_conversation_retention` (`retention_until`)

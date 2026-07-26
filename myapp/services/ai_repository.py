@@ -4,10 +4,11 @@ import hashlib
 import json
 import os
 import uuid
+from datetime import datetime, timedelta
 
 import frappe
 from frappe import _
-from frappe.utils import add_days, cint, now_datetime
+from frappe.utils import add_days, cint, get_datetime, now_datetime
 
 from myapp.utils.ai_errors import AiDraftVersionConflictError
 
@@ -20,6 +21,7 @@ DRAFT_TABLE = "tabMyApp AI Draft"
 DRAFT_LINE_TABLE = "tabMyApp AI Draft Line"
 DRAFT_VERSION_TABLE = "tabMyApp AI Draft Version"
 DEFAULT_RETENTION_DAYS = 30
+DEFAULT_CONVERSATION_STATE_TTL_HOURS = 168
 MAX_CONVERSATION_PAGE_SIZE = 50
 DEFAULT_MESSAGE_PAGE_SIZE = 40
 MAX_MESSAGE_PAGE_SIZE = 100
@@ -44,6 +46,48 @@ def _retention_days() -> int:
 	except (TypeError, ValueError):
 		value = DEFAULT_RETENTION_DAYS
 	return max(1, min(value, 365))
+
+
+def _conversation_state_ttl_hours() -> int:
+	try:
+		value = int(os.environ.get(
+			"MYAPP_AI_CONVERSATION_STATE_TTL_HOURS",
+			DEFAULT_CONVERSATION_STATE_TTL_HOURS,
+		))
+	except (TypeError, ValueError):
+		value = DEFAULT_CONVERSATION_STATE_TTL_HOURS
+	return max(1, min(value, 720))
+
+
+def _default_conversation_state() -> dict:
+	return {
+		"schema_version": CONVERSATION_STATE_SCHEMA_VERSION,
+		"active_scenario": "general",
+	}
+
+
+def _conversation_state_has_context(state: dict) -> bool:
+	return bool(
+		state.get("active_scenario") != "general"
+		or any(state.get(key) for key in ("product", "order", "report", "last_result_set"))
+	)
+
+
+def _conversation_state_expires_at(updated_at):
+	if not updated_at:
+		return None
+	try:
+		return get_datetime(updated_at) + timedelta(hours=_conversation_state_ttl_hours())
+	except (TypeError, ValueError):
+		return None
+
+
+def _conversation_state_is_expired(updated_at, *, now=None) -> bool:
+	expires_at = _conversation_state_expires_at(updated_at)
+	if not expires_at:
+		return False
+	current_time = get_datetime(now) if now is not None else datetime.now()
+	return expires_at <= current_time
 
 
 def _ensure_tables():
@@ -213,7 +257,7 @@ def _get_owned_conversation(conversation_id: str, user: str, *, for_update: bool
 	rows = frappe.db.sql(
 		f"""
 		SELECT name, title, status, company_scope, message_count, last_message_at, creation, modified,
-			state_version, working_state_json, state_updated_at
+			state_version, working_state_json, state_updated_at, context_start_sequence
 		FROM `{CONVERSATION_TABLE}`
 		WHERE name = %s AND owner = %s
 		LIMIT 1{lock_sql}
@@ -236,8 +280,8 @@ def create_conversation(*, user: str, title: str | None = None, company: str | N
 		INSERT INTO `{CONVERSATION_TABLE}`
 			(name, creation, modified, modified_by, owner, docstatus, idx,
 			 status, title, company_scope, message_count, last_message_at, retention_until,
-			 state_version, working_state_json, state_updated_at)
-		VALUES (%s, %s, %s, %s, %s, 0, 0, 'active', %s, %s, 0, %s, %s, 0, NULL, NULL)
+			 state_version, working_state_json, state_updated_at, context_start_sequence)
+		VALUES (%s, %s, %s, %s, %s, 0, 0, 'active', %s, %s, 0, %s, %s, 0, NULL, NULL, 1)
 		""",
 		(
 			conversation_id,
@@ -254,18 +298,88 @@ def create_conversation(*, user: str, title: str | None = None, company: str | N
 	return _serialize_conversation(_get_owned_conversation(conversation_id, user))
 
 
-def get_conversation_state(*, conversation_id: str, user: str) -> dict:
-	conversation = _get_owned_conversation((conversation_id or "").strip(), user)
-	state = _safe_json_loads(getattr(conversation, "working_state_json", None), {})
+def _reset_conversation_state_row(*, conversation, user: str, reason: str) -> dict:
+	current_version = max(0, cint(getattr(conversation, "state_version", 0)))
+	next_version = current_version + 1
+	now = now_datetime()
+	context_start_sequence = max(1, cint(getattr(conversation, "message_count", 0)) + 1)
+	state = _default_conversation_state()
+	frappe.db.sql(
+		f"""
+		UPDATE `{CONVERSATION_TABLE}`
+		SET working_state_json = %s, state_version = %s, state_updated_at = %s,
+			context_start_sequence = %s, modified = %s, modified_by = %s
+		WHERE name = %s AND owner = %s AND state_version = %s
+		""",
+		(
+			frappe.as_json(state), next_version, now, context_start_sequence, now, user,
+			conversation.name, user, current_version,
+		),
+	)
+	return {
+		"version": next_version,
+		"state": state,
+		"status": "empty",
+		"reset_reason": reason,
+		"updated_at": str(now),
+		"expires_at": str(_conversation_state_expires_at(now)),
+		"context_start_sequence": context_start_sequence,
+	}
+
+
+def get_conversation_state(
+	*, conversation_id: str, user: str, expire_if_needed: bool = False,
+) -> dict:
+	resolved_conversation_id = (conversation_id or "").strip()
+	conversation = (
+		_get_owned_conversation(resolved_conversation_id, user, for_update=True)
+		if expire_if_needed
+		else _get_owned_conversation(resolved_conversation_id, user)
+	)
+	raw_state = getattr(conversation, "working_state_json", None)
+	state = {}
+	status = "empty"
+	reset_reason = None
 	try:
+		if raw_state:
+			state = json.loads(raw_state) if isinstance(raw_state, str) else raw_state
 		state = _normalize_conversation_state(state)
 	except Exception:
-		state = _normalize_conversation_state({})
+		state = _default_conversation_state()
+		status = "invalid"
+		reset_reason = "invalid_state"
+	else:
+		status = "active" if _conversation_state_has_context(state) else "empty"
+	updated_at = getattr(conversation, "state_updated_at", None)
+	if status == "active" and _conversation_state_is_expired(updated_at):
+		state = _default_conversation_state()
+		status = "expired"
+		reset_reason = "expired"
+	if expire_if_needed and reset_reason:
+		return _reset_conversation_state_row(
+			conversation=conversation, user=user, reason=reset_reason,
+		)
+	expires_at = _conversation_state_expires_at(updated_at) if status == "active" else None
 	return {
 		"version": max(0, cint(getattr(conversation, "state_version", 0))),
 		"state": state,
-		"updated_at": str(getattr(conversation, "state_updated_at", None) or "") or None,
+		"status": status,
+		"reset_reason": reset_reason,
+		"updated_at": str(updated_at or "") or None,
+		"expires_at": str(expires_at) if expires_at else None,
+		"context_start_sequence": max(1, cint(getattr(conversation, "context_start_sequence", 1)) or 1),
 	}
+
+
+def reset_conversation_state(*, conversation_id: str, user: str) -> dict:
+	conversation = _get_owned_conversation(
+		(conversation_id or "").strip(), user, for_update=True,
+	)
+	if getattr(conversation, "status", "active") != "active":
+		frappe.throw(_("已归档的 AI 会话不能修改工作上下文。"))
+	return _reset_conversation_state_row(
+		conversation=conversation, user=user, reason="user_reset",
+	)
 
 
 def update_conversation_state(
@@ -411,6 +525,10 @@ def get_conversation(
 	next_before_sequence = cint(messages[0].sequence_no) if has_more and messages else None
 	return {
 		"conversation": _serialize_conversation(conversation),
+		"context": get_conversation_state(
+			conversation_id=conversation.name,
+			user=user,
+		),
 		"messages": [
 			{
 				"name": row.name,
@@ -512,16 +630,17 @@ def append_message(
 
 
 def load_model_messages(*, conversation_id: str, user: str, limit: int = 20) -> list[dict]:
-	_get_owned_conversation(conversation_id, user)
+	conversation = _get_owned_conversation(conversation_id, user)
+	context_start_sequence = max(1, cint(getattr(conversation, "context_start_sequence", 1)) or 1)
 	rows = frappe.db.sql(
 		f"""
 		SELECT role, content
 		FROM `{MESSAGE_TABLE}`
-		WHERE conversation = %s
+		WHERE conversation = %s AND sequence_no >= %s
 		ORDER BY sequence_no DESC
 		LIMIT %s
 		""",
-		(conversation_id, max(1, min(20, cint(limit) or 20))),
+		(conversation_id, context_start_sequence, max(1, min(20, cint(limit) or 20))),
 		as_dict=True,
 	)
 	return [{"role": row.role, "content": row.content or ""} for row in reversed(rows)]

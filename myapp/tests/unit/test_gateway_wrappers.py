@@ -78,6 +78,7 @@ from myapp.api.gateway import (
 	reconcile_inventory_stock_v1,
 	refresh_ai_business_result_v1,
 	rename_ai_conversation_v1,
+	reset_ai_conversation_context_v1,
 	resolve_ai_scenario_v1,
 	restore_ai_draft_version_v1,
 	execute_ai_data_task_v1,
@@ -407,6 +408,14 @@ class TestGatewayWrappers(TestCase):
 		mock_service.assert_called_once_with(
 			conversation_id="AI-CONV-1", title="采购跟进",
 		)
+
+	@patch("myapp.api.gateway.reset_ai_conversation_context_v1_service")
+	def test_reset_ai_conversation_context_v1_forwards_conversation(self, mock_service):
+		mock_service.return_value = {"status": "success", "data": {"status": "empty"}}
+
+		reset_ai_conversation_context_v1(conversation_id="AI-CONV-1")
+
+		mock_service.assert_called_once_with(conversation_id="AI-CONV-1")
 
 	@patch("myapp.api.gateway.refresh_ai_business_result_v1_service")
 	def test_refresh_ai_business_result_v1_forwards_snapshot(self, mock_service):

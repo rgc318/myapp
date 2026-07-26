@@ -64,6 +64,7 @@
 - `myapp.api.gateway.rename_ai_conversation_v1`
 - `myapp.api.gateway.get_ai_conversation_v1`
 - `myapp.api.gateway.archive_ai_conversation_v1`
+- `myapp.api.gateway.reset_ai_conversation_context_v1`
 - `myapp.api.gateway.chat_ai_v1`
 - `myapp.api.gateway.stream_ai_message_v1`
 - `myapp.api.gateway.resolve_ai_scenario_v1`
@@ -119,7 +120,7 @@
 
 ### AI Copilot 只读聊天
 
-会话接口只返回当前登录用户自己的会话；归档后的会话不能继续追加消息。`list_ai_conversations_v1` 支持 `status`、`search`、`start` 和 `limit`，其中 `search` 最多规范化为 100 个字符，并在当前用户范围内匹配会话标题或消息正文；返回每个会话的 `pending_draft_count` 和当前用户全局 `pending_draft_total`，两者只统计 `draft` 状态。`rename_ai_conversation_v1` 只允许当前用户重命名自己的会话，名称规范化空白后必须为 1～120 个字符，活跃和归档会话均可修改名称，但不改变消息、公司、状态或排序时间。`chat_ai_v1` 是 Web/Mobile 访问 AI Orchestrator 的受控入口。客户端不得直接访问 LiteLLM，也不能传入 `system` / `tool` 消息。
+会话接口只返回当前登录用户自己的会话；归档后的会话不能继续追加消息。`list_ai_conversations_v1` 支持 `status`、`search`、`start` 和 `limit`，其中 `search` 最多规范化为 100 个字符，并在当前用户范围内匹配会话标题或消息正文；返回每个会话的 `pending_draft_count` 和当前用户全局 `pending_draft_total`，两者只统计 `draft` 状态。`rename_ai_conversation_v1` 只允许当前用户重命名自己的会话，名称规范化空白后必须为 1～120 个字符，活跃和归档会话均可修改名称，但不改变消息、公司、状态或排序时间。`get_ai_conversation_v1` 额外返回当前用户可见的受控上下文元数据，包括状态、版本、更新时间、过期时间和上下文起始消息序号；不会返回模型原文或完整业务结果。`reset_ai_conversation_context_v1` 只清除工作状态并把后续模型消息窗口切到当前会话末尾，历史消息和审计记录仍保留。工作状态默认 168 小时未更新后在下一次 Chat/SSE 前自动过期；可通过 `MYAPP_AI_CONVERSATION_STATE_TTL_HOURS` 配置 1～720 小时范围。`chat_ai_v1` 是 Web/Mobile 访问 AI Orchestrator 的受控入口。客户端不得直接访问 LiteLLM，也不能传入 `system` / `tool` 消息。
 
 请求：
 
@@ -143,7 +144,7 @@
 
 同步接口对所有账号返回 `conversation`、`run_id`、带 `citations` 的 `message`、安全警告、`events[]` 和持久 Run 摘要；基础 Run 摘要只包含 `status`、后端 `latency_ms` 与稳定错误信息。具备高级诊断权限时，响应才额外包含实际模型、模型 alias、策略信息、trace、Token 和 `first_token_ms`。`stream_ai_message_v1` 返回真正 `text/event-stream`，事件包含 `run_started`、`run_progress`、`tool_started`、`tool_completed`、`citation`、`message_delta`、`warning`、`completed` 和 `error`；普通业务账号的 `model_started` 与 `completed` 事件不返回模型 alias、Provider 模型、trace、Token、首 Token 或流式统计。`get_ai_conversation_v1` 使用同一服务端权限规则恢复历史 Run；普通账号只得到状态、总耗时、稳定错误和反馈，治理角色才能得到模型、trace、Token 与首 Token。接口仍支持 `before_sequence` + `limit` 向前游标分页；未传游标时返回最近一页，响应 `pagination` 包含 `total`、`returned_count`、`has_more` 和 `next_before_sequence`。客户端加载更早消息时必须传上一页的 `next_before_sequence`，避免会话末尾新增消息导致 offset 重复或跳页。`submit_ai_feedback_v1` 对本人已完成 Run 记录 `positive` / `negative` 反馈。正式单据创建、提交、取消、收付款和库存变更不属于这些接口能力。
 
-会话现在同时维护短期消息历史和受控的 `conversation-state-v1` 工作状态。状态只保存当前业务场景、唯一商品实体、订单/报表筛选、结果集 ID 及少量权限过滤后的实体摘要，不保存完整业务结果、模型原文或凭据；状态由服务端 owner 校验、字段白名单、大小限制和 `state_version` 乐观并发控制保护。每轮业务工具调用前重新读取状态，当前用户明确表达优先于历史状态；业务工具仍必须按当前请求重新执行公司范围、DocType 和记录权限校验。回答成功后才写回状态，版本冲突时跳过写回并审计，不影响当前只读回答。
+会话现在同时维护短期消息历史和受控的 `conversation-state-v1` 工作状态。状态只保存当前业务场景、唯一商品实体、订单/报表筛选、结果集 ID 及少量权限过滤后的实体摘要，不保存完整业务结果、模型原文或凭据；状态由服务端 owner 校验、字段白名单、大小限制和 `state_version` 乐观并发控制保护。每轮业务工具调用前重新读取状态，当前用户明确表达优先于历史状态；业务工具仍必须按当前请求重新执行公司范围、DocType 和记录权限校验。回答成功后才写回状态，版本冲突时跳过写回并审计，不影响当前只读回答。用户清除上下文或状态自动过期时，服务端同时更新 `context_start_sequence`，旧消息仍可在历史中查看但不会继续发送给模型；状态损坏会在下一次发送前恢复为空上下文并记录审计原因。
 
 `auto` 场景在已有业务状态时会继续调用结构化意图解析器，因此“它”“刚才那个”“只看未完成的”“换成上个月”等自然语言省略表达可以继承上一轮实体和筛选。Orchestrator 的意图 Prompt 版本为 `erp-intent-v3`；它只输出完整的当前有效意图，不能把历史业务事实当作实时事实。状态只是解析辅助，不能替代本轮 Frappe 查询。
 

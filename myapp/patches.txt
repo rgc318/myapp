@@ -22,6 +22,7 @@ myapp.patches.create_print_setting_table
 myapp.patches.add_print_batch_request_id
 myapp.patches.create_ai_copilot_tables
 myapp.patches.extend_ai_conversation_state
+myapp.patches.extend_ai_conversation_context_lifecycle
 myapp.patches.create_ai_feedback_table
 myapp.patches.create_ai_draft_tables
 myapp.patches.create_ai_draft_version_table

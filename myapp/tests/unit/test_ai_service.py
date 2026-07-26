@@ -43,6 +43,7 @@ from myapp.services.ai_service import (
 	list_ai_conversations_v1,
 	list_ai_drafts_v1,
 	rename_ai_conversation_v1,
+	reset_ai_conversation_context_v1,
 	refresh_ai_business_result_v1,
 	stream_ai_message_v1,
 	submit_ai_feedback_v1,
@@ -412,6 +413,22 @@ class TestAiService(TestCase):
 		self.assertEqual(prepared["company"], "Original Company")
 		self.assertEqual(prepared["payload"]["company"], "Original Company")
 		mock_resolve_company.assert_called_once_with("Original Company", required=False)
+		self.assertEqual(prepared["tool_calls"][-1]["tool"], "load_conversation_context")
+		self.assertFalse(prepared["tool_calls"][-1]["event_visible"])
+
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service.ai_repository.reset_conversation_state")
+	def test_reset_conversation_context_keeps_owner_scope(self, mock_reset, _current_user):
+		mock_reset.return_value = {
+			"version": 4, "status": "empty", "reset_reason": "user_reset",
+		}
+
+		result = reset_ai_conversation_context_v1("AI-CONV-1")
+
+		self.assertEqual(result["data"]["reset_reason"], "user_reset")
+		mock_reset.assert_called_once_with(
+			conversation_id="AI-CONV-1", user="user@example.com",
+		)
 
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	@patch("myapp.services.ai_service.ai_repository.list_drafts")
