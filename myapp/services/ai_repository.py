@@ -920,8 +920,8 @@ def request_agent_tool_approval(
 	checkpoint: dict, capability_token: str, ttl_seconds: int = 900,
 ) -> dict:
 	"""Atomically persist the safe checkpoint and pause one approval-bound call."""
-	capability = validate_agent_run_capability(
-		run_id=run_id, capability_token=capability_token,
+	capability = validate_agent_capability(
+		run_id=run_id, capability_token=capability_token, tool=tool,
 	)
 	checkpoint = _normalize_agent_checkpoint(checkpoint, run_id=run_id)
 	call, checkpoint_arguments = _agent_checkpoint_pending_call(checkpoint)
@@ -1502,18 +1502,33 @@ def cancel_agent_run(*, run_id: str, user: str) -> dict:
 	return {"run_id": run_id, "status": "cancelled", "cancelled": True}
 
 
-def get_agent_tool_result(*, run_id: str, call_id: str) -> dict | None:
+def _validate_agent_tool_step_binding(row, *, tool: str, arguments: dict) -> None:
+	stored_arguments = _safe_json_loads(row.arguments_json, None)
+	if not isinstance(stored_arguments, dict):
+		raise frappe.PermissionError(_("Agent 工具调用缺少可验证的原始参数。"))
+	_stored, _stored_encoded, stored_hash = _canonical_agent_arguments(stored_arguments)
+	_current, _current_encoded, current_hash = _canonical_agent_arguments(arguments)
+	if str(row.tool_name or "") != str(tool or "") or stored_hash != current_hash:
+		raise frappe.PermissionError(_("Agent call_id 已绑定其他工具或参数。"))
+
+
+def get_agent_tool_result(
+	*, run_id: str, call_id: str, tool: str, arguments: dict,
+) -> dict | None:
 	if not frappe.db.table_exists("MyApp AI Agent Step"):
 		return None
 	rows = frappe.db.sql(
 		f"""
-		SELECT result_json FROM `{AGENT_STEP_TABLE}`
+		SELECT tool_name, arguments_json, result_json FROM `{AGENT_STEP_TABLE}`
 		WHERE run_id = %s AND call_id = %s AND status = 'completed'
 		LIMIT 1
 		""",
 		(run_id, call_id), as_dict=True,
 	)
-	return _safe_json_loads(rows[0].result_json, None) if rows else None
+	if not rows:
+		return None
+	_validate_agent_tool_step_binding(rows[0], tool=tool, arguments=arguments)
+	return _safe_json_loads(rows[0].result_json, None)
 
 
 def start_agent_tool_step(
@@ -1530,7 +1545,7 @@ def start_agent_tool_step(
 		raise frappe.PermissionError(_("Agent Run 已停止，不能继续执行工具。"))
 	existing = frappe.db.sql(
 		f"""
-		SELECT name, status, result_json
+			SELECT name, status, tool_name, arguments_json, result_json
 		FROM `{AGENT_STEP_TABLE}`
 		WHERE run_id = %s AND call_id = %s
 		LIMIT 1
@@ -1540,6 +1555,7 @@ def start_agent_tool_step(
 	)
 	if existing:
 		row = existing[0]
+		_validate_agent_tool_step_binding(row, tool=tool, arguments=arguments)
 		return {
 			"status": str(row.status or "running"),
 			"step_id": row.name,

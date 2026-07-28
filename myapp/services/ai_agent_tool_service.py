@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 import frappe
@@ -22,6 +23,60 @@ TOOL_POLICIES = {
 }
 PRODUCT_SEARCH_FIELDS = {
 	"barcode", "item_code", "item_name", "nickname", "specification", "brand", "item_group",
+}
+TOOL_ARGUMENT_SCHEMAS = {
+	"search_products": {
+		"type": "object",
+		"properties": {
+			"query": {"type": "string", "minLength": 1, "maxLength": 500},
+			"match_mode": {"type": "string", "enum": ["auto", "exact", "contains", "semantic"]},
+			"search_fields": {
+				"type": "array",
+				"items": {"type": "string", "enum": sorted(PRODUCT_SEARCH_FIELDS)},
+				"maxItems": 7,
+			},
+			"limit": {"type": "integer", "minimum": 1, "maximum": 8},
+		},
+		"required": ["query", "match_mode", "search_fields", "limit"],
+		"additionalProperties": False,
+	},
+	"query_business_documents": {
+		"type": "object",
+		"properties": {
+			"entities": {
+				"type": "array",
+				"items": {
+					"type": "string",
+					"enum": ["sales_order", "sales_invoice", "purchase_order", "purchase_invoice"],
+				},
+				"maxItems": 4,
+			},
+			"date_from": {"type": ["string", "null"], "pattern": r"^\d{4}-\d{2}-\d{2}$"},
+			"date_to": {"type": ["string", "null"], "pattern": r"^\d{4}-\d{2}-\d{2}$"},
+			"status": {
+				"type": "string",
+				"enum": ["all", "unfinished", "completed", "cancelled", "delivering", "receiving", "paying"],
+			},
+			"sort": {"type": "string", "enum": ["latest", "oldest", "amount_desc", "amount_asc"]},
+			"min_amount": {"type": ["number", "null"], "minimum": 0},
+			"limit": {"type": "integer", "minimum": 1, "maximum": 20},
+		},
+		"required": ["entities", "date_from", "date_to", "status", "sort", "min_amount", "limit"],
+		"additionalProperties": False,
+	},
+	"get_business_report": {
+		"type": "object",
+		"properties": {
+			"report_type": {
+				"type": "string",
+				"enum": ["overview", "sales", "purchase", "cashflow", "receivable_payable"],
+			},
+			"date_from": {"type": ["string", "null"], "pattern": r"^\d{4}-\d{2}-\d{2}$"},
+			"date_to": {"type": ["string", "null"], "pattern": r"^\d{4}-\d{2}-\d{2}$"},
+		},
+		"required": ["report_type", "date_from", "date_to"],
+		"additionalProperties": False,
+	},
 }
 
 
@@ -49,6 +104,66 @@ def _payload(value) -> dict:
 	if not isinstance(value, dict):
 		frappe.throw(_("Agent 工具参数必须是对象。"))
 	return value
+
+
+def _matches_type(value, expected) -> bool:
+	types = expected if isinstance(expected, list) else [expected]
+	return any(
+		(value_type == "null" and value is None)
+		or (value_type == "string" and isinstance(value, str))
+		or (value_type == "array" and isinstance(value, list))
+		or (value_type == "object" and isinstance(value, dict))
+		or (value_type == "integer" and isinstance(value, int) and not isinstance(value, bool))
+		or (value_type == "number" and isinstance(value, (int, float)) and not isinstance(value, bool))
+		for value_type in types
+	)
+
+
+def _validate_schema(value, schema: dict, *, path: str) -> None:
+	if not _matches_type(value, schema.get("type")):
+		frappe.throw(_("工具参数 {0} 类型不正确。").format(path))
+	if value is None:
+		return
+	if "enum" in schema and value not in schema["enum"]:
+		frappe.throw(_("工具参数 {0} 不在允许范围内。").format(path))
+	if isinstance(value, str):
+		if len(value) < int(schema.get("minLength") or 0):
+			frappe.throw(_("工具参数 {0} 不能为空。").format(path))
+		if schema.get("maxLength") is not None and len(value) > int(schema["maxLength"]):
+			frappe.throw(_("工具参数 {0} 超出长度限制。").format(path))
+		if schema.get("pattern") and not re.fullmatch(str(schema["pattern"]), value):
+			frappe.throw(_("工具参数 {0} 格式不正确。").format(path))
+	if isinstance(value, (int, float)) and not isinstance(value, bool):
+		if schema.get("minimum") is not None and value < schema["minimum"]:
+			frappe.throw(_("工具参数 {0} 小于允许值。").format(path))
+		if schema.get("maximum") is not None and value > schema["maximum"]:
+			frappe.throw(_("工具参数 {0} 大于允许值。").format(path))
+	if isinstance(value, list):
+		if schema.get("maxItems") is not None and len(value) > int(schema["maxItems"]):
+			frappe.throw(_("工具参数 {0} 项目过多。").format(path))
+		for index, child in enumerate(value):
+			_validate_schema(child, schema.get("items") or {}, path=f"{path}[{index}]")
+	if isinstance(value, dict):
+		properties = schema.get("properties") or {}
+		missing = [name for name in schema.get("required") or [] if name not in value]
+		if missing:
+			frappe.throw(_("工具参数缺少必填字段：{0}。").format(", ".join(missing)))
+		if schema.get("additionalProperties") is False:
+			extra = sorted(set(value) - set(properties))
+			if extra:
+				frappe.throw(_("工具参数包含未授权字段：{0}。").format(", ".join(extra)))
+		for name, child in value.items():
+			if name in properties:
+				_validate_schema(child, properties[name], path=f"{path}.{name}")
+
+
+def _validate_tool_arguments(tool: str, arguments) -> dict:
+	resolved = _payload(arguments)
+	schema = TOOL_ARGUMENT_SCHEMAS.get(tool)
+	if not schema:
+		raise frappe.PermissionError(_("Agent 工具参数 Schema 不存在。"))
+	_validate_schema(resolved, schema, path=tool)
+	return resolved
 
 
 def _bounded_text(value, *, limit: int = 200) -> str | None:
@@ -152,7 +267,7 @@ def request_ai_agent_tool_approval_v1(
 		run_id=str(run_id or "").strip(),
 		call_id=str(call_id or "").strip()[:140],
 		tool=resolved_tool,
-		arguments=_payload(arguments),
+		arguments=_validate_tool_arguments(resolved_tool, arguments),
 		risk_level=policy["risk_level"],
 		checkpoint=checkpoint,
 		capability_token=str(capability_token or ""),
@@ -169,14 +284,17 @@ def execute_ai_agent_tool_v1(
 	resolved_tool = str(tool or "").strip()
 	if not resolved_run_id or not resolved_call_id or resolved_tool not in ALLOWED_TOOLS:
 		raise frappe.PermissionError(_("Agent 工具调用不受支持。"))
-	args = _payload(arguments)
+	args = _validate_tool_arguments(resolved_tool, arguments)
 	policy = _tool_policy(resolved_tool)
 	capability = ai_repository.validate_agent_capability(
 		run_id=resolved_run_id,
 		capability_token=capability_token,
 		tool=resolved_tool,
 	)
-	cached = ai_repository.get_agent_tool_result(run_id=resolved_run_id, call_id=resolved_call_id)
+	cached = ai_repository.get_agent_tool_result(
+		run_id=resolved_run_id, call_id=resolved_call_id,
+		tool=resolved_tool, arguments=args,
+	)
 	if cached:
 		return cached
 	approval = None

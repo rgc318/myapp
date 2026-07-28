@@ -22,7 +22,10 @@ class TestAiAgentToolService(TestCase):
 		) as request_approval, patch("myapp.services.ai_agent_tool_service.frappe") as mock_frappe:
 			result = request_ai_agent_tool_approval_v1(
 				run_id="AI-RUN-1", call_id="call-1", tool="search_products",
-				arguments={"query": "莫"}, risk_level="L3_SENSITIVE",
+				arguments={
+					"query": "莫", "match_mode": "contains",
+					"search_fields": ["item_name"], "limit": 8,
+				}, risk_level="L3_SENSITIVE",
 				checkpoint={"schema_version": "agent-state-v1"}, capability_token="token",
 			)
 
@@ -62,7 +65,10 @@ class TestAiAgentToolService(TestCase):
 		):
 			result = execute_ai_agent_tool_v1(
 				run_id="AI-RUN-1", call_id="call-1", tool="search_products",
-				arguments={"query": "莫"}, capability_token="token",
+				arguments={
+					"query": "莫", "match_mode": "contains",
+					"search_fields": ["item_name"], "limit": 8,
+				}, capability_token="token",
 			)
 
 		self.assertEqual(result["status"], "denied")
@@ -95,7 +101,10 @@ class TestAiAgentToolService(TestCase):
 
 		result = execute_ai_agent_tool_v1(
 			run_id="AI-RUN-1", call_id="call-1", tool="search_products",
-			arguments={"query": "莫"}, capability_token="token",
+			arguments={
+				"query": "莫", "match_mode": "contains",
+				"search_fields": ["item_name"], "limit": 8,
+			}, capability_token="token",
 		)
 
 		self.assertEqual(result["status"], "resolved")
@@ -122,7 +131,10 @@ class TestAiAgentToolService(TestCase):
 
 		result = execute_ai_agent_tool_v1(
 			run_id="AI-RUN-1", call_id="call-1", tool="search_products",
-			arguments={"query": "莫"}, capability_token="token",
+			arguments={
+				"query": "莫", "match_mode": "contains",
+				"search_fields": ["item_name"], "limit": 8,
+			}, capability_token="token",
 		)
 
 		self.assertEqual(result, cached.return_value)
@@ -150,9 +162,26 @@ class TestAiAgentToolService(TestCase):
 
 		result = execute_ai_agent_tool_v1(
 			run_id="AI-RUN-1", call_id="call-1", tool="search_products",
-			arguments={"query": "莫"}, capability_token="token",
+			arguments={
+				"query": "莫", "match_mode": "contains",
+				"search_fields": ["item_name"], "limit": 8,
+			}, capability_token="token",
 		)
 
 		self.assertEqual(result, persisted)
 		execute_search.assert_not_called()
 		commit.assert_called_once_with()
+
+	def test_rejects_invalid_tool_argument_types_at_frappe_boundary(self):
+		with patch(
+			"myapp.services.ai_agent_tool_service.ai_repository.validate_agent_capability",
+			return_value={"run_id": "AI-RUN-1", "user": "user@example.com", "company": "Demo Company"},
+		), patch("myapp.services.ai_agent_tool_service.frappe.throw", side_effect=ValueError("invalid")):
+			with self.assertRaises(ValueError):
+				execute_ai_agent_tool_v1(
+					run_id="AI-RUN-1", call_id="call-1", tool="search_products",
+					arguments={
+						"query": ["SKU001"], "match_mode": "auto",
+						"search_fields": [], "limit": 8,
+					}, capability_token="token",
+				)
