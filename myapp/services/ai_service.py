@@ -324,10 +324,14 @@ def _get_ai_orchestrator_settings():
 	return base_url, service_token
 
 
-def _call_ai_orchestrator(payload: dict) -> dict:
+def _call_ai_orchestrator(payload: dict, *, resume: bool = False) -> dict:
 	base_url, service_token = _get_ai_orchestrator_settings()
+	endpoint = (
+		"/internal/v1/agent/run/resume"
+		if resume else "/internal/v1/agent/run"
+	) if payload.get("capability_token") else "/internal/v1/chat"
 	request = urllib.request.Request(
-		f"{base_url}/internal/v1/chat",
+		f"{base_url}{endpoint}",
 		data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
 		headers={
 			"Authorization": f"Bearer {service_token}",
@@ -488,10 +492,14 @@ def _call_ai_orchestrator_product_setup_draft(payload: dict) -> dict:
 	return result
 
 
-def _stream_ai_orchestrator(payload: dict):
+def _stream_ai_orchestrator(payload: dict, *, resume: bool = False):
 	base_url, service_token = _get_ai_orchestrator_settings()
+	endpoint = (
+		"/internal/v1/agent/run/resume/stream"
+		if resume else "/internal/v1/agent/run/stream"
+	) if payload.get("capability_token") else "/internal/v1/chat/stream"
 	request = urllib.request.Request(
-		f"{base_url}/internal/v1/chat/stream",
+		f"{base_url}{endpoint}",
 		data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
 		headers={
 			"Authorization": f"Bearer {service_token}",
@@ -3385,14 +3393,43 @@ def _prepare_chat_run(
 	conversation_company = str((conversation or {}).get("company") or "").strip() or None
 	requested_company = str(company or "").strip() or None
 	intent_company = requested_company or conversation_company
+	# Keep the established draft workflow outside the read-only Agent Runtime.
+	# The Agent tool registry deliberately contains no write tools, so routing a
+	# write intent into it would silently turn a structured draft request into a
+	# generic "I cannot do that" answer.  Deterministic action classification is
+	# a safety boundary here, not a replacement for model tool selection.
+	requested_action_scenario = (
+		_infer_ai_action_scenario(current_content)
+		if requested_scenario == "auto"
+		else requested_scenario
+	)
+	agent_runtime_requested = os.environ.get("MYAPP_AI_AGENT_RUNTIME_ENABLED", "1").strip().lower() in {
+		"1", "true", "yes",
+	}
+	agent_mode = bool(
+		agent_runtime_requested
+		and intent_company
+		and requested_action_scenario not in {
+			"sales_order_draft", "purchase_order_draft", "inventory_adjustment_draft", "product_setup_draft",
+		}
+	)
 
 	resolved_scenario = requested_scenario
 	intent_resolution = None
 	structured_intent = None
-	if requested_scenario == "auto":
-		resolved_scenario = _infer_ai_scenario(current_content)
+	if agent_mode:
+		# The model selects a typed tool. Local routing remains available only as
+		# a compatibility fallback when Agent Runtime cannot be used.
+		resolved_scenario = "general" if requested_scenario == "auto" else requested_scenario
+	elif requested_scenario == "auto":
+		resolved_scenario = requested_action_scenario
 		intent_resolution = {"mode": "local_rules", "resolved_scenario": resolved_scenario}
-		if _should_parse_structured_intent(current_content, resolved_scenario, conversation_state):
+		if (
+			resolved_scenario not in {
+				"sales_order_draft", "purchase_order_draft", "inventory_adjustment_draft", "product_setup_draft",
+			}
+			and _should_parse_structured_intent(current_content, resolved_scenario, conversation_state)
+		):
 			intent = _call_ai_intent_orchestrator(
 				content=current_content,
 				user=user,
@@ -3458,7 +3495,17 @@ def _prepare_chat_run(
 		conversation_id=conversation_id,
 		user=user,
 		scenario=resolved_scenario,
+		model_alias=model_alias,
 	)
+	allowed_agent_tools = []
+	capability_token = None
+	if agent_mode:
+		if frappe.has_permission("Item", ptype="read"):
+			allowed_agent_tools.append("search_products")
+		allowed_agent_tools.extend(["query_business_documents", "get_business_report"])
+		capability_token = ai_repository.issue_agent_capability(
+			run_id=run_id, user=user, allowed_tools=allowed_agent_tools,
+		)
 	# AI audit records intentionally form their own durable boundary before the external model call.
 	frappe.db.commit()
 
@@ -3475,7 +3522,9 @@ def _prepare_chat_run(
 	}
 	tool_calls = []
 	try:
-		if resolved_scenario == "product_search":
+		if agent_mode:
+			tool_context = None
+		elif resolved_scenario == "product_search":
 			tool_context, citations, tool_calls = _build_product_search_context(
 				query=current_content,
 				company=resolved_company,
@@ -3506,12 +3555,16 @@ def _prepare_chat_run(
 			user=user,
 			limit=MAX_AI_MESSAGES,
 		)
-		next_conversation_state = _build_next_conversation_state(
-			previous_state=conversation_state,
-			scenario=resolved_scenario,
-			structured_intent=structured_intent,
-			tool_context=tool_context,
-			citations=citations,
+		next_conversation_state = (
+			conversation_state
+			if agent_mode
+			else _build_next_conversation_state(
+				previous_state=conversation_state,
+				scenario=resolved_scenario,
+				structured_intent=structured_intent,
+				tool_context=tool_context,
+				citations=citations,
+			)
 		)
 	except Exception as error:
 		latency_ms = int((time.perf_counter() - started) * 1000)
@@ -3532,6 +3585,7 @@ def _prepare_chat_run(
 		"tool_calls": tool_calls,
 		"conversation_state_version": cint(conversation_state_record.get("version")),
 		"next_conversation_state": next_conversation_state,
+		"agent_mode": agent_mode,
 		"payload": {
 			"messages": model_messages,
 			"scenario": resolved_scenario,
@@ -3547,13 +3601,177 @@ def _prepare_chat_run(
 				"environment": os.environ.get("MYAPP_AI_ENVIRONMENT", "development").strip() or "development",
 			},
 			"model_alias": model_alias,
+			**(
+				{
+					"capability_token": capability_token,
+					"allowed_tools": allowed_agent_tools,
+				}
+				if agent_mode else {}
+			),
 		},
 	}
+
+
+def _prepare_agent_resume(run_id: str) -> dict:
+	user = _current_user()
+	resolved_run_id = str(run_id or "").strip()
+	if not resolved_run_id:
+		frappe.throw(_("AI Run 编号不能为空。"))
+	try:
+		resume_context = ai_repository.prepare_agent_run_resume(
+			run_id=resolved_run_id, user=user,
+		)
+		conversation_id = resume_context["conversation_id"]
+		conversation = ai_repository.get_conversation(
+			conversation_id=conversation_id, user=user,
+		)["conversation"]
+		conversation_state_record = ai_repository.get_conversation_state(
+			conversation_id=conversation_id, user=user,
+		)
+		scenario = str(resume_context.get("scenario") or "general")
+		prompt_version = str(resume_context.get("prompt_version") or "").strip()
+		if prompt_version != _resolve_prompt_version(scenario):
+			frappe.throw(_("AI Run 使用的 Prompt 版本已不可用，不能安全恢复。"))
+		model_alias = resolve_ai_selected_model_alias(resume_context.get("model_alias"))
+		company = _resolve_company_scope(resume_context.get("company"), required=True)
+		model_messages = ai_repository.load_model_messages(
+			conversation_id=conversation_id, user=user, limit=MAX_AI_MESSAGES,
+		)
+		if not model_messages:
+			frappe.throw(_("AI Run 所属会话没有可恢复的消息。"))
+		frappe.db.commit()
+	except Exception:
+		frappe.db.rollback()
+		raise
+
+	allowed_tools = list(resume_context["allowed_tools"])
+	return {
+		"user": user,
+		"can_view_advanced_diagnostics": _can_view_advanced_diagnostics(user),
+		"scenario": scenario,
+		"company": company,
+		"conversation_id": conversation_id,
+		"run_id": resolved_run_id,
+		"started": time.perf_counter(),
+		"prompt_version": prompt_version,
+		"citations": [],
+		"tool_calls": [{
+			"tool": "resume_agent_run", "risk_level": "L0_RUNTIME_CONTROL",
+			"mode": "same_run_checkpoint", "checkpoint_stage": resume_context.get("checkpoint_stage"),
+		}],
+		"conversation_state_version": cint(conversation_state_record.get("version")),
+		"next_conversation_state": conversation_state_record.get("state") or {},
+		"agent_mode": True,
+		"payload": {
+			"messages": model_messages,
+			"scenario": scenario,
+			"user": user,
+			"company": company,
+			"locale": getattr(frappe.local, "lang", None) or "zh-CN",
+			"context": None,
+			"prompt_version": prompt_version,
+			"conversation_id": conversation_id,
+			"run_id": resolved_run_id,
+			"policy_context": {
+				"roles": sorted(set(frappe.get_roles(user) or [])),
+				"environment": os.environ.get("MYAPP_AI_ENVIRONMENT", "development").strip() or "development",
+			},
+			"model_alias": model_alias,
+			"capability_token": resume_context["capability_token"],
+			"allowed_tools": allowed_tools,
+			**({"approval": resume_context["approval"]} if resume_context.get("approval") else {}),
+		},
+	}
+
+
+def _prepare_agent_approval_resume(approval_id: str) -> dict:
+	user = _current_user()
+	resolved_approval_id = str(approval_id or "").strip()
+	if not resolved_approval_id:
+		frappe.throw(_("Agent 审批编号不能为空。"))
+	try:
+		resume_context = ai_repository.prepare_reviewed_agent_approval_resume(
+			approval_id=resolved_approval_id, user=user,
+		)
+		conversation_id = resume_context["conversation_id"]
+		conversation_state_record = ai_repository.get_conversation_state(
+			conversation_id=conversation_id, user=user,
+		)
+		scenario = str(resume_context.get("scenario") or "general")
+		prompt_version = str(resume_context.get("prompt_version") or "").strip()
+		if prompt_version != _resolve_prompt_version(scenario):
+			frappe.throw(_("AI Run 使用的 Prompt 版本已不可用，不能安全恢复。"))
+		model_alias = resolve_ai_selected_model_alias(resume_context.get("model_alias"))
+		company = _resolve_company_scope(resume_context.get("company"), required=True)
+		model_messages = ai_repository.load_model_messages(
+			conversation_id=conversation_id, user=user, limit=MAX_AI_MESSAGES,
+		)
+		if not model_messages:
+			frappe.throw(_("AI Run 所属会话没有可恢复的消息。"))
+		frappe.db.commit()
+	except Exception:
+		frappe.db.rollback()
+		raise
+	approval = resume_context["approval"]
+	return {
+		"user": user,
+		"can_view_advanced_diagnostics": _can_view_advanced_diagnostics(user),
+		"scenario": scenario, "company": company,
+		"conversation_id": conversation_id, "run_id": resume_context["run_id"],
+		"started": time.perf_counter(), "prompt_version": prompt_version,
+		"citations": [],
+		"tool_calls": [{
+			"tool": "resume_agent_after_approval", "risk_level": "L0_RUNTIME_CONTROL",
+			"mode": approval["status"], "approval_id": approval["approval_id"],
+			"checkpoint_stage": resume_context.get("checkpoint_stage"),
+		}],
+		"conversation_state_version": cint(conversation_state_record.get("version")),
+		"next_conversation_state": conversation_state_record.get("state") or {},
+		"agent_mode": True,
+		"payload": {
+			"messages": model_messages, "scenario": scenario, "user": user,
+			"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
+			"context": None, "prompt_version": prompt_version,
+			"conversation_id": conversation_id, "run_id": resume_context["run_id"],
+			"policy_context": {
+				"roles": sorted(set(frappe.get_roles(user) or [])),
+				"environment": os.environ.get("MYAPP_AI_ENVIRONMENT", "development").strip() or "development",
+			},
+			"model_alias": model_alias, "capability_token": resume_context["capability_token"],
+			"allowed_tools": list(resume_context["allowed_tools"]), "approval": approval,
+		},
+	}
+
+
+def _apply_agent_result(prepared: dict, result: dict) -> None:
+	if not prepared.get("agent_mode"):
+		return
+	prepared["citations"] = list(result.get("citations") or [])
+	prepared["tool_calls"] = list(result.get("tool_calls") or [])
+	tool_results = result.get("tool_results") or []
+	if not tool_results:
+		return
+	last = tool_results[-1] if isinstance(tool_results[-1], dict) else {}
+	tool_context = last.get("model_context") if isinstance(last.get("model_context"), dict) else None
+	tool = str(last.get("tool") or "")
+	scenario = {
+		"search_products": "product_search",
+		"query_business_documents": "order_query",
+		"get_business_report": "report_summary",
+	}.get(tool, prepared["scenario"])
+	prepared["next_conversation_state"] = _build_next_conversation_state(
+		previous_state=prepared.get("next_conversation_state") or {},
+		scenario=scenario,
+		structured_intent=None,
+		tool_context=tool_context,
+		citations=prepared["citations"],
+	)
 
 
 def _complete_chat_run(
 	prepared: dict, result: dict, assistant_content: str, *, first_token_ms: int | None = None,
 ):
+	_apply_agent_result(prepared, result)
 	latency_ms = int((time.perf_counter() - prepared["started"]) * 1000)
 	ai_repository.append_message(
 		conversation_id=prepared["conversation_id"],
@@ -3596,11 +3814,26 @@ def _complete_chat_run(
 		first_token_ms=first_token_ms,
 		tool_calls=prepared["tool_calls"],
 	)
+	if prepared.get("agent_mode"):
+		ai_repository.revoke_agent_capability(run_id=prepared["run_id"], user=prepared["user"])
 	frappe.db.commit()
 	return {
 		"status": "completed",
 		"latency_ms": latency_ms,
 		"first_token_ms": first_token_ms,
+	}
+
+
+def _pause_chat_run(prepared: dict, result: dict) -> dict:
+	approval = result.get("approval") or {}
+	if not approval or str(approval.get("run_id") or "") != prepared["run_id"]:
+		raise UpstreamServiceUnavailableError(_("AI 审批暂停响应无效。"))
+	ai_repository.revoke_agent_capability(run_id=prepared["run_id"], user=prepared["user"])
+	frappe.db.commit()
+	return {
+		"status": "waiting_approval",
+		"latency_ms": int((time.perf_counter() - prepared["started"]) * 1000),
+		"approval": approval,
 	}
 
 
@@ -3613,6 +3846,8 @@ def _fail_chat_run(prepared: dict, error: Exception):
 		error=error,
 		latency_ms=latency_ms,
 	)
+	if prepared.get("agent_mode"):
+		ai_repository.revoke_agent_capability(run_id=prepared["run_id"], user=prepared["user"])
 	frappe.db.commit()
 
 
@@ -3634,6 +3869,16 @@ def chat_ai_v1(
 	)
 	try:
 		result = _call_ai_orchestrator(prepared["payload"])
+		if result.get("status") == "waiting_approval":
+			pause = _pause_chat_run(prepared, result)
+			return {
+				"status": "success", "message": _("AI Run 正在等待人工审批。"),
+				"data": {
+					"conversation": prepared["conversation_id"], "run_id": prepared["run_id"],
+					"run_status": "waiting_approval", "approval": pause["approval"],
+					"latency_ms": pause["latency_ms"],
+				},
+			}
 		message = result.get("message") or {}
 		assistant_content = str(message.get("content") or "").strip()
 		run_summary = _complete_chat_run(prepared, result, assistant_content)
@@ -3672,6 +3917,153 @@ def _encode_sse(event: dict) -> str:
 	return f"data: {json.dumps(event, ensure_ascii=False, separators=(',', ':'))}\n\n"
 
 
+def cancel_ai_run_v1(run_id: str):
+	user = _current_user()
+	resolved_run_id = str(run_id or "").strip()
+	if not resolved_run_id:
+		frappe.throw(_("AI Run 编号不能为空。"))
+	result = ai_repository.cancel_agent_run(run_id=resolved_run_id, user=user)
+	frappe.db.commit()
+	return {
+		"status": "success",
+		"message": _("AI Run 已取消。") if result["cancelled"] else _("AI Run 已结束。"),
+		"data": result,
+	}
+
+
+def get_ai_agent_approval_v1(approval_id: str):
+	return {
+		"status": "success", "message": _("Agent 审批读取成功。"),
+		"data": ai_repository.get_agent_approval(
+			approval_id=str(approval_id or "").strip(), user=_current_user(),
+		),
+	}
+
+
+def list_ai_agent_approvals_v1(
+	run_id: str | None = None, status: str | None = None, start: int = 0, limit: int = 20,
+):
+	return {
+		"status": "success", "message": _("Agent 审批列表读取成功。"),
+		"data": ai_repository.list_agent_approvals(
+			user=_current_user(), run_id=run_id, status=status, start=start, limit=limit,
+		),
+	}
+
+
+def _resume_reviewed_agent_approval(approval_id: str):
+	prepared = _prepare_agent_approval_resume(approval_id)
+	try:
+		result = _call_ai_orchestrator(prepared["payload"], resume=True)
+		if result.get("status") == "waiting_approval":
+			pause = _pause_chat_run(prepared, result)
+			return {
+				"status": "success", "message": _("AI Run 正在等待下一项人工审批。"),
+				"data": {
+					"conversation": prepared["conversation_id"], "run_id": prepared["run_id"],
+					"run_status": "waiting_approval", "approval": pause["approval"],
+					"resumed": True, "latency_ms": pause["latency_ms"],
+				},
+			}
+		message = result.get("message") or {}
+		assistant_content = str(message.get("content") or "").strip()
+		if not assistant_content:
+			raise UpstreamServiceUnavailableError(_("AI 审批恢复服务返回了无效响应。"))
+		run_summary = _complete_chat_run(prepared, result, assistant_content)
+	except Exception as error:
+		_fail_chat_run(prepared, error)
+		raise
+	return {
+		"status": "success", "message": _("Agent 审批决定已应用，AI Run 已恢复。"),
+		"data": {
+			"conversation": prepared["conversation_id"], "run_id": prepared["run_id"],
+			"run_status": "completed", "resumed": True,
+			"message": {
+				"role": "assistant", "content": assistant_content,
+				"citations": prepared["citations"],
+			},
+			**_public_ai_result_details(
+				result=result, run=run_summary,
+				include_advanced_diagnostics=prepared["can_view_advanced_diagnostics"],
+			),
+		},
+	}
+
+
+def review_ai_agent_approval_v1(
+	approval_id: str, decision: str, expected_version: int, reason: str | None = None,
+):
+	user = _current_user()
+	approval = ai_repository.review_agent_approval(
+		approval_id=str(approval_id or "").strip(), user=user,
+		decision=decision, expected_version=expected_version, reason=reason,
+	)
+	frappe.db.commit()
+	if approval["status"] == "expired":
+		return {
+			"status": "success", "message": _("Agent 审批已过期，Run 未执行。"),
+			"data": {"approval": approval, "run_status": "expired"},
+		}
+	if approval.get("replayed") and approval.get("run_status") != "waiting_approval":
+		return {
+			"status": "success", "message": _("Agent 审批决定已记录。"),
+			"data": {"approval": approval, "run_status": approval.get("run_status")},
+		}
+	return _resume_reviewed_agent_approval(approval["approval_id"])
+
+
+def resume_ai_agent_approval_v1(approval_id: str):
+	"""Recover after a reviewed approval was committed but the resume call was interrupted."""
+	return _resume_reviewed_agent_approval(str(approval_id or "").strip())
+
+
+def resume_ai_run_v1(run_id: str):
+	prepared = _prepare_agent_resume(run_id)
+	try:
+		result = _call_ai_orchestrator(prepared["payload"], resume=True)
+		if result.get("status") == "waiting_approval":
+			pause = _pause_chat_run(prepared, result)
+			return {
+				"status": "success", "message": _("AI Run 再次等待人工审批。"),
+				"data": {
+					"conversation": prepared["conversation_id"], "run_id": prepared["run_id"],
+					"run_status": "waiting_approval", "approval": pause["approval"],
+					"resumed": True, "latency_ms": pause["latency_ms"],
+				},
+			}
+		message = result.get("message") or {}
+		assistant_content = str(message.get("content") or "").strip()
+		if not assistant_content:
+			raise UpstreamServiceUnavailableError(_("AI 恢复服务返回了无效响应。"))
+		run_summary = _complete_chat_run(prepared, result, assistant_content)
+	except Exception as error:
+		_fail_chat_run(prepared, error)
+		raise
+
+	warnings = result.get("warnings") or []
+	return {
+		"status": "success",
+		"message": _("AI Run 恢复成功。"),
+		"data": {
+			"conversation": prepared["conversation_id"],
+			"run_id": prepared["run_id"],
+			"resumed": True,
+			"message": {
+				"role": "assistant", "content": assistant_content,
+				"citations": prepared["citations"],
+			},
+			**_public_ai_result_details(
+				result=result, run=run_summary,
+				include_advanced_diagnostics=prepared["can_view_advanced_diagnostics"],
+			),
+			"events": _build_events(
+				content=assistant_content, citations=prepared["citations"],
+				warnings=warnings, tool_calls=prepared["tool_calls"],
+			),
+		},
+	}
+
+
 def stream_ai_message_v1(
 	content: str,
 	scenario: str | None = None,
@@ -3686,11 +4078,20 @@ def stream_ai_message_v1(
 		content=content,
 		model_alias=model_alias,
 	)
+	return _stream_prepared_ai_run(prepared)
+
+
+def stream_ai_run_resume_v1(run_id: str):
+	return _stream_prepared_ai_run(_prepare_agent_resume(run_id), resume=True)
+
+
+def _stream_prepared_ai_run(prepared: dict, *, resume: bool = False):
 	include_advanced_diagnostics = bool(prepared.get("can_view_advanced_diagnostics", False))
 
 	def event_stream():
 		content_parts = []
 		completed_result = None
+		paused_result = None
 		first_token_ms = None
 		delta_count = 0
 		streamed_chars = 0
@@ -3730,7 +4131,7 @@ def stream_ai_message_v1(
 					"message": _("正在请求模型，等待首个 Token"),
 				}
 			)
-			for event in _stream_ai_orchestrator(prepared["payload"]):
+			for event in _stream_ai_orchestrator(prepared["payload"], resume=resume):
 				event_type = event.get("type")
 				if event_type == "started":
 					yield _encode_sse(
@@ -3744,6 +4145,10 @@ def stream_ai_message_v1(
 							),
 						}
 					)
+				elif event_type in {"model_started", "tool_started", "tool_completed", "approval_required"}:
+					yield _encode_sse(event)
+				elif event_type == "paused":
+					paused_result = event
 				elif event_type == "message_delta":
 					delta = str(event.get("delta") or "")
 					if delta and first_token_ms is None:
@@ -3770,6 +4175,14 @@ def stream_ai_message_v1(
 				elif event_type == "completed":
 					completed_result = event
 
+			if paused_result:
+				pause = _pause_chat_run(prepared, paused_result)
+				yield _encode_sse({
+					"type": "waiting_approval", "conversation": prepared["conversation_id"],
+					"run_id": prepared["run_id"], "run_status": "waiting_approval",
+					"approval": pause["approval"], "latency_ms": pause["latency_ms"],
+				})
+				return
 			assistant_content = "".join(content_parts).strip()
 			if not assistant_content and completed_result:
 				assistant_content = str((completed_result.get("message") or {}).get("content") or "").strip()

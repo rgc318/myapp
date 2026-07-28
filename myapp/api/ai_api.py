@@ -1,6 +1,7 @@
 from myapp.services.ai_service import (
 	archive_ai_conversation_v1 as archive_ai_conversation_v1_service,
 	chat_ai_v1 as chat_ai_v1_service,
+	cancel_ai_run_v1 as cancel_ai_run_v1_service,
 	create_ai_conversation_v1 as create_ai_conversation_v1_service,
 	discard_ai_draft_v1 as discard_ai_draft_v1_service,
 	execute_ai_draft_v1 as execute_ai_draft_v1_service,
@@ -9,12 +10,18 @@ from myapp.services.ai_service import (
 	generate_ai_purchase_order_draft_v1 as generate_ai_purchase_order_draft_v1_service,
 	generate_ai_product_setup_draft_v1 as generate_ai_product_setup_draft_v1_service,
 	get_ai_draft_v1 as get_ai_draft_v1_service,
+	get_ai_agent_approval_v1 as get_ai_agent_approval_v1_service,
 	get_ai_conversation_v1 as get_ai_conversation_v1_service,
 	list_ai_conversations_v1 as list_ai_conversations_v1_service,
 	list_ai_drafts_v1 as list_ai_drafts_v1_service,
+	list_ai_agent_approvals_v1 as list_ai_agent_approvals_v1_service,
 	list_ai_draft_versions_v1 as list_ai_draft_versions_v1_service,
 	rename_ai_conversation_v1 as rename_ai_conversation_v1_service,
 	reset_ai_conversation_context_v1 as reset_ai_conversation_context_v1_service,
+	resume_ai_run_v1 as resume_ai_run_v1_service,
+	resume_ai_agent_approval_v1 as resume_ai_agent_approval_v1_service,
+	review_ai_agent_approval_v1 as review_ai_agent_approval_v1_service,
+	stream_ai_run_resume_v1 as stream_ai_run_resume_v1_service,
 	stream_ai_message_v1 as stream_ai_message_v1_service,
 	submit_ai_feedback_v1 as submit_ai_feedback_v1_service,
 	prepare_ai_draft_handoff_v1 as prepare_ai_draft_handoff_v1_service,
@@ -135,6 +142,43 @@ def stream_ai_message_v1(
 		conversation_id=conversation_id,
 		model_alias=model_alias,
 	)
+
+
+def cancel_ai_run_v1(run_id: str):
+	return cancel_ai_run_v1_service(run_id=run_id)
+
+
+def resume_ai_run_v1(run_id: str):
+	return resume_ai_run_v1_service(run_id=run_id)
+
+
+def get_ai_agent_approval_v1(approval_id: str):
+	return get_ai_agent_approval_v1_service(approval_id=approval_id)
+
+
+def list_ai_agent_approvals_v1(
+	run_id: str | None = None, status: str | None = None, start: int = 0, limit: int = 20,
+):
+	return list_ai_agent_approvals_v1_service(
+		run_id=run_id, status=status, start=start, limit=limit,
+	)
+
+
+def review_ai_agent_approval_v1(
+	approval_id: str, decision: str, expected_version: int, reason: str | None = None,
+):
+	return review_ai_agent_approval_v1_service(
+		approval_id=approval_id, decision=decision,
+		expected_version=expected_version, reason=reason,
+	)
+
+
+def resume_ai_agent_approval_v1(approval_id: str):
+	return resume_ai_agent_approval_v1_service(approval_id=approval_id)
+
+
+def stream_ai_run_resume_v1(run_id: str):
+	return stream_ai_run_resume_v1_service(run_id=run_id)
 
 
 def resolve_ai_scenario_v1(content: str):

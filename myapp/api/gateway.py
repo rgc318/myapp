@@ -5,6 +5,7 @@ import frappe
 
 from .ai_api import archive_ai_conversation_v1 as archive_ai_conversation_v1_service
 from .ai_api import chat_ai_v1 as chat_ai_v1_service
+from .ai_api import cancel_ai_run_v1 as cancel_ai_run_v1_service
 from .ai_api import cleanup_excluded_ai_product_vectors_v1 as cleanup_excluded_ai_product_vectors_v1_service
 from .ai_api import create_ai_conversation_v1 as create_ai_conversation_v1_service
 from .ai_api import discard_ai_draft_v1 as discard_ai_draft_v1_service
@@ -14,13 +15,19 @@ from .ai_api import generate_ai_purchase_order_draft_v1 as generate_ai_purchase_
 from .ai_api import generate_ai_product_setup_draft_v1 as generate_ai_product_setup_draft_v1_service
 from .ai_api import generate_ai_sales_order_draft_v1 as generate_ai_sales_order_draft_v1_service
 from .ai_api import get_ai_draft_v1 as get_ai_draft_v1_service
+from .ai_api import get_ai_agent_approval_v1 as get_ai_agent_approval_v1_service
 from .ai_api import get_ai_product_vector_status_v1 as get_ai_product_vector_status_v1_service
 from .ai_api import get_ai_conversation_v1 as get_ai_conversation_v1_service
 from .ai_api import list_ai_conversations_v1 as list_ai_conversations_v1_service
 from .ai_api import list_ai_drafts_v1 as list_ai_drafts_v1_service
+from .ai_api import list_ai_agent_approvals_v1 as list_ai_agent_approvals_v1_service
 from .ai_api import list_ai_draft_versions_v1 as list_ai_draft_versions_v1_service
 from .ai_api import rename_ai_conversation_v1 as rename_ai_conversation_v1_service
 from .ai_api import reset_ai_conversation_context_v1 as reset_ai_conversation_context_v1_service
+from .ai_api import resume_ai_run_v1 as resume_ai_run_v1_service
+from .ai_api import resume_ai_agent_approval_v1 as resume_ai_agent_approval_v1_service
+from .ai_api import review_ai_agent_approval_v1 as review_ai_agent_approval_v1_service
+from .ai_api import stream_ai_run_resume_v1 as stream_ai_run_resume_v1_service
 from .ai_api import stream_ai_message_v1 as stream_ai_message_v1_service
 from .ai_api import submit_ai_feedback_v1 as submit_ai_feedback_v1_service
 from .ai_api import prepare_ai_draft_handoff_v1 as prepare_ai_draft_handoff_v1_service
@@ -60,6 +67,11 @@ from .ai_api import list_ai_data_tasks_v1 as list_ai_data_tasks_v1_service
 from .ai_api import review_ai_data_task_v1 as review_ai_data_task_v1_service
 from .ai_api import rollback_ai_data_task_v1 as rollback_ai_data_task_v1_service
 from myapp.services.ai_model_governance_service import get_published_ai_model_policies_for_runtime
+from myapp.services.ai_agent_tool_service import execute_ai_agent_tool_v1 as execute_ai_agent_tool_v1_service
+from myapp.services.ai_agent_tool_service import request_ai_agent_tool_approval_v1 as request_ai_agent_tool_approval_v1_service
+from myapp.services.ai_repository import get_agent_checkpoint as get_agent_checkpoint_service
+from myapp.services.ai_repository import get_agent_run_control as get_agent_run_control_service
+from myapp.services.ai_repository import record_agent_runtime_event as record_agent_runtime_event_service
 
 from .media_api import delete_item_image as delete_item_image_service
 from .media_api import upload_item_image as upload_item_image_service
@@ -357,6 +369,19 @@ def stream_ai_message_v1(
 		conversation_id=conversation_id,
 		model_alias=model_alias,
 	)
+
+
+@frappe.whitelist(methods=["POST"])
+def resume_ai_run_v1(run_id: str):
+	return _handle_gateway_call(
+		lambda: resume_ai_run_v1_service(run_id=run_id),
+		success_code="AI_RUN_RESUMED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def stream_ai_run_resume_v1(run_id: str):
+	return stream_ai_run_resume_v1_service(run_id=run_id)
 
 
 @frappe.whitelist()
@@ -919,6 +944,141 @@ def get_ai_runtime_policy_snapshot_v1():
 		frappe.local.response["http_status_code"] = 401
 		return error_response(message=frappe._("AI 服务认证失败。"), code="AI_SERVICE_UNAUTHORIZED")
 	return get_published_ai_model_policies_for_runtime()
+
+
+@frappe.whitelist(methods=["POST"])
+def cancel_ai_run_v1(run_id: str):
+	return _handle_gateway_call(
+		lambda: cancel_ai_run_v1_service(run_id=run_id),
+		success_code="AI_RUN_CANCELLED",
+	)
+
+
+@frappe.whitelist()
+def get_ai_agent_approval_v1(approval_id: str):
+	return _handle_gateway_call(
+		lambda: get_ai_agent_approval_v1_service(approval_id=approval_id),
+		success_code="AI_AGENT_APPROVAL_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def list_ai_agent_approvals_v1(
+	run_id: str | None = None, status: str | None = None, start: int = 0, limit: int = 20,
+):
+	return _handle_gateway_call(
+		lambda: list_ai_agent_approvals_v1_service(
+			run_id=run_id, status=status, start=start, limit=limit,
+		),
+		success_code="AI_AGENT_APPROVALS_FETCHED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def review_ai_agent_approval_v1(
+	approval_id: str, decision: str, expected_version: int, reason: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: review_ai_agent_approval_v1_service(
+			approval_id=approval_id, decision=decision,
+			expected_version=expected_version, reason=reason,
+		),
+		success_code="AI_AGENT_APPROVAL_REVIEWED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def resume_ai_agent_approval_v1(approval_id: str):
+	return _handle_gateway_call(
+		lambda: resume_ai_agent_approval_v1_service(approval_id=approval_id),
+		success_code="AI_AGENT_APPROVAL_RESUMED",
+	)
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def execute_ai_agent_tool_v1(
+	run_id: str, call_id: str, tool: str, arguments=None, capability_token: str | None = None,
+):
+	"""Internal capability-scoped Agent tool executor; never exposed to Web/Mobile."""
+	expected_token = os.environ.get("MYAPP_AI_SERVICE_TOKEN", "").strip()
+	provided_token = str(frappe.get_request_header("X-MyApp-AI-Service-Token") or "")
+	if not expected_token or not hmac.compare_digest(provided_token, expected_token):
+		frappe.local.response["http_status_code"] = 401
+		return error_response(message=frappe._("AI 服务认证失败。"), code="AI_SERVICE_UNAUTHORIZED")
+	return execute_ai_agent_tool_v1_service(
+		run_id=run_id,
+		call_id=call_id,
+		tool=tool,
+		arguments=arguments or {},
+		capability_token=str(capability_token or ""),
+	)
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def request_ai_agent_tool_approval_v1(
+	run_id: str, call_id: str, tool: str, arguments=None, risk_level: str | None = None,
+	checkpoint=None, capability_token: str | None = None,
+):
+	"""Internal atomic approval request and waiting-approval transition."""
+	expected_token = os.environ.get("MYAPP_AI_SERVICE_TOKEN", "").strip()
+	provided_token = str(frappe.get_request_header("X-MyApp-AI-Service-Token") or "")
+	if not expected_token or not hmac.compare_digest(provided_token, expected_token):
+		frappe.local.response["http_status_code"] = 401
+		return error_response(message=frappe._("AI 服务认证失败。"), code="AI_SERVICE_UNAUTHORIZED")
+	return request_ai_agent_tool_approval_v1_service(
+		run_id=run_id, call_id=call_id, tool=tool, arguments=arguments or {},
+		risk_level=str(risk_level or ""), checkpoint=checkpoint or {},
+		capability_token=str(capability_token or ""),
+	)
+
+
+@frappe.whitelist(allow_guest=True, methods=["GET"])
+def get_ai_agent_run_control_v1(run_id: str):
+	"""Internal minimal run state used to abort in-flight model requests."""
+	expected_token = os.environ.get("MYAPP_AI_SERVICE_TOKEN", "").strip()
+	provided_token = str(frappe.get_request_header("X-MyApp-AI-Service-Token") or "")
+	if not expected_token or not hmac.compare_digest(provided_token, expected_token):
+		frappe.local.response["http_status_code"] = 401
+		return error_response(message=frappe._("AI 服务认证失败。"), code="AI_SERVICE_UNAUTHORIZED")
+	return get_agent_run_control_service(run_id=str(run_id or "").strip())
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def record_ai_agent_runtime_event_v1(
+	run_id: str, event_id: str, step_type: str, status: str,
+	data=None, checkpoint=None, span_id: str | None = None, error_code: str | None = None,
+	capability_token: str | None = None,
+):
+	"""Internal durable Agent event/checkpoint writer."""
+	expected_token = os.environ.get("MYAPP_AI_SERVICE_TOKEN", "").strip()
+	provided_token = str(frappe.get_request_header("X-MyApp-AI-Service-Token") or "")
+	if not expected_token or not hmac.compare_digest(provided_token, expected_token):
+		frappe.local.response["http_status_code"] = 401
+		return error_response(message=frappe._("AI 服务认证失败。"), code="AI_SERVICE_UNAUTHORIZED")
+	result = record_agent_runtime_event_service(
+		run_id=str(run_id or "").strip(),
+		event_id=str(event_id or "").strip(),
+		step_type=str(step_type or "").strip(),
+		status=str(status or "").strip(),
+		data=data or {}, checkpoint=checkpoint,
+		span_id=span_id, error_code=error_code,
+		capability_token=str(capability_token or ""),
+	)
+	frappe.db.commit()
+	return result
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def get_ai_agent_checkpoint_v1(run_id: str, capability_token: str | None = None):
+	"""Internal durable checkpoint reader for same-Run recovery."""
+	expected_token = os.environ.get("MYAPP_AI_SERVICE_TOKEN", "").strip()
+	provided_token = str(frappe.get_request_header("X-MyApp-AI-Service-Token") or "")
+	if not expected_token or not hmac.compare_digest(provided_token, expected_token):
+		frappe.local.response["http_status_code"] = 401
+		return error_response(message=frappe._("AI 服务认证失败。"), code="AI_SERVICE_UNAUTHORIZED")
+	return get_agent_checkpoint_service(
+		run_id=str(run_id or "").strip(), capability_token=str(capability_token or ""),
+	)
 
 
 @frappe.whitelist(methods=["POST"])

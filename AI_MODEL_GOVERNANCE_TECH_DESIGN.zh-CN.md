@@ -63,7 +63,7 @@ Frappe 只保存 LiteLLM 别名和治理元数据。LiteLLM 管理 Key 不得进
 - `capability`：`fast_chat / reasoning / structured / vision / embedding / rerank`。
 - `status`：`discovered / validated / active / degraded / disabled / retired`。
 - `provider_family`、`provider_model_display`：只用于治理展示，不作为业务调用参数。
-- `supports_streaming`、`supports_json_schema`、`supports_vision`。
+- `supports_streaming`、`supports_tools`、`supports_json_schema`、`supports_vision`。
 - `embedding_dimensions`、`embedding_space_version`：仅向量模型使用。
 - `data_region`、`retention_policy`、`sensitive_data_allowed`。
 - `input_cost`、`output_cost`、`currency`：来自受控同步或人工复核。
@@ -73,6 +73,8 @@ LiteLLM 同步只负责供应商发现、能力和健康信息。已经人工复
 - `registry_version`、`source_hash`。
 
 模型同步只能新增或更新发现状态，不能自动发布到业务策略。
+
+`supports_tools` 不能根据模型名称或供应商宣传静态猜测。可用性检查必须强制模型返回合成 Function Call；只有实际返回合法 `tool_calls` 才置为真。生产 Agent 策略和运行时都失败关闭，禁止未验证模型进入工具循环。
 
 ### 4.2 `MyApp AI Model Policy`
 

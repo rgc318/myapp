@@ -1,3 +1,5 @@
+import hashlib
+from datetime import datetime, timedelta
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -6,17 +8,29 @@ import frappe
 from myapp.services import ai_repository
 from myapp.services.ai_repository import (
 	_nearest_rank_percentile,
+	_normalize_agent_checkpoint,
 	_normalize_conversation_state,
+	cancel_agent_run,
 	fail_run,
+	get_agent_run_control,
+	get_agent_checkpoint,
 	get_conversation_state,
 	get_conversation,
 	_refresh_conversation_citations,
 	list_conversations,
 	list_drafts,
 	load_model_messages,
+	record_agent_runtime_event,
+	prepare_agent_run_resume,
+	prepare_reviewed_agent_approval_resume,
+	request_agent_tool_approval,
+	get_agent_tool_approval_decision,
+	review_agent_approval,
+	issue_agent_capability,
 	mark_draft_executed,
 	rename_conversation,
 	reset_conversation_state,
+	start_agent_tool_step,
 	submit_feedback,
 	update_draft,
 	update_conversation_state,
@@ -25,6 +39,326 @@ from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
 
 
 class TestAiRepository(TestCase):
+	@staticmethod
+	def _agent_capability_row(token: str, now: datetime):
+		return frappe._dict({
+			"name": "AI-RUN-1", "requested_by": "user@example.com", "status": "running",
+			"allowed_tools_json": '["search_products"]',
+			"capability_token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+			"capability_expires_at": now + timedelta(minutes=5),
+			"cancellation_requested": 0, "company_scope": "Demo Company",
+		})
+
+	@staticmethod
+	def _waiting_approval_checkpoint():
+		arguments = {"query": "莫", "limit": 8}
+		return {
+			"schema_version": "agent-state-v1", "run_id": "AI-RUN-1",
+			"stage": "waiting_approval", "next_model_step": 2, "tool_count": 0,
+			"runtime_messages": [], "agent_steps": [], "tool_calls": [],
+			"pending_tool_calls": [{
+				"id": "call-1", "type": "function",
+				"function": {"name": "search_products", "arguments": '{"query":"莫","limit":8}'},
+				"arguments": arguments,
+			}],
+			"pending_approval": {
+				"approval_id": "AI-APPROVAL-1", "call_id": "call-1",
+				"tool": "search_products", "risk_level": "L3_SENSITIVE",
+			},
+			"tool_results": [], "citations": [], "usage": {}, "model": "model",
+			"model_alias": "erp-fast-chat", "prompt_version": "erp-readonly-v7",
+			"trace_id": "trace", "agent_span_id": "span", "final_content": None,
+		}
+
+	def test_record_agent_runtime_event_updates_checkpoint_atomically(self):
+		now = datetime(2026, 7, 27, 12, 0, 0)
+		token = "capability-token-value"
+		checkpoint = {
+			"schema_version": "agent-state-v1", "run_id": "AI-RUN-1",
+			"stage": "input_guardrail", "next_model_step": 1, "tool_count": 0,
+			"runtime_messages": [], "agent_steps": [], "tool_calls": [],
+			"pending_tool_calls": [], "tool_results": [], "citations": [],
+			"usage": {}, "model": "model", "trace_id": "trace", "agent_span_id": "span",
+			"final_content": None,
+		}
+		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value=now,
+		):
+			mock_frappe.PermissionError = frappe.PermissionError
+			mock_frappe.as_json.side_effect = frappe.as_json
+			mock_frappe.db.sql.side_effect = [
+				[self._agent_capability_row(token, now)],
+				[frappe._dict({"requested_by": "user@example.com", "status": "running", "last_step_no": 2})],
+				[], None, None,
+			]
+			result = record_agent_runtime_event(
+				run_id="AI-RUN-1", event_id="runtime:input_guardrail:1",
+				step_type="input_guardrail", status="completed", data={"status": "passed"},
+				checkpoint=checkpoint, capability_token=token,
+			)
+
+		self.assertFalse(result["replayed"])
+		self.assertEqual(result["sequence_no"], 3)
+		update_call = mock_frappe.db.sql.call_args_list[-1]
+		self.assertIn("agent_state_json = COALESCE", update_call.args[0])
+		self.assertIn('"schema_version": "agent-state-v1"', update_call.args[1][1])
+
+	def test_record_agent_runtime_event_replays_same_event_id(self):
+		now = datetime(2026, 7, 27, 12, 0, 0)
+		token = "capability-token-value"
+		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value=now,
+		):
+			mock_frappe.PermissionError = frappe.PermissionError
+			mock_frappe.as_json.side_effect = frappe.as_json
+			mock_frappe.db.sql.side_effect = [
+				[self._agent_capability_row(token, now)],
+				[frappe._dict({"requested_by": "user@example.com", "status": "running", "last_step_no": 2})],
+				[frappe._dict({"name": "AI-STEP-1", "sequence_no": 2})],
+			]
+			result = record_agent_runtime_event(
+				run_id="AI-RUN-1", event_id="runtime:model_decision:1",
+				step_type="model_decision", status="completed", data={},
+				capability_token=token,
+			)
+
+		self.assertTrue(result["replayed"])
+		self.assertEqual(mock_frappe.db.sql.call_count, 3)
+
+	def test_get_agent_checkpoint_requires_capability_and_returns_state(self):
+		now = datetime(2026, 7, 27, 12, 0, 0)
+		token = "capability-token-value"
+		checkpoint = {"schema_version": "agent-state-v1", "run_id": "AI-RUN-1", "stage": "input_guardrail"}
+		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value=now,
+		):
+			mock_frappe.PermissionError = frappe.PermissionError
+			mock_frappe.db.sql.side_effect = [
+				[self._agent_capability_row(token, now)],
+				[frappe._dict({"status": "running", "agent_state_json": frappe.as_json(checkpoint), "last_step_no": 4})],
+			]
+			result = get_agent_checkpoint(run_id="AI-RUN-1", capability_token=token)
+
+		self.assertEqual(result["checkpoint"], checkpoint)
+		self.assertEqual(result["last_step_no"], 4)
+
+	def test_agent_checkpoint_rejects_sensitive_fields(self):
+		with patch.object(ai_repository, "frappe") as mock_frappe:
+			mock_frappe.throw.side_effect = ValueError("invalid checkpoint")
+			with self.assertRaises(ValueError):
+				_normalize_agent_checkpoint({
+					"schema_version": "agent-state-v1", "run_id": "AI-RUN-1",
+					"stage": "input_guardrail", "capability_token": "secret",
+				}, run_id="AI-RUN-1")
+
+	def test_cancel_agent_run_revokes_capability_and_is_idempotent(self):
+		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value="2026-07-27 12:00:00",
+		):
+			mock_frappe.db.sql.side_effect = [
+				[frappe._dict({"status": "running"})],
+				None,
+				None,
+			]
+			result = cancel_agent_run(run_id="AI-RUN-1", user="user@example.com")
+
+		self.assertEqual(result, {"run_id": "AI-RUN-1", "status": "cancelled", "cancelled": True})
+		self.assertIn("capability_token_hash = NULL", mock_frappe.db.sql.call_args_list[1].args[0])
+
+	def test_request_agent_tool_approval_atomically_binds_checkpoint_and_revokes_capability(self):
+		now = datetime(2026, 7, 27, 12, 0, 0)
+		token = "capability-token-value"
+		arguments = {"query": "莫", "limit": 8}
+		checkpoint = {
+			"schema_version": "agent-state-v1", "run_id": "AI-RUN-1",
+			"stage": "waiting_approval", "next_model_step": 2, "tool_count": 0,
+			"runtime_messages": [], "agent_steps": [], "tool_calls": [],
+			"pending_tool_calls": [{
+				"id": "call-1", "type": "function",
+				"function": {"name": "search_products", "arguments": '{"query":"莫","limit":8}'},
+				"arguments": arguments,
+			}],
+			"pending_approval": {
+				"call_id": "call-1", "tool": "search_products", "risk_level": "L3_SENSITIVE",
+			},
+			"tool_results": [], "citations": [], "usage": {}, "model": "model",
+			"model_alias": "erp-fast-chat", "prompt_version": "erp-readonly-v7",
+			"trace_id": "trace", "agent_span_id": "span", "final_content": None,
+		}
+		approval_row = frappe._dict({
+			"name": "AI-APPROVAL-1", "run_id": "AI-RUN-1", "call_id": "call-1",
+			"tool_name": "search_products", "risk_level": "L3_SENSITIVE",
+			"arguments_summary_json": frappe.as_json(arguments), "status": "pending",
+			"requested_by": "user@example.com", "requested_at": now,
+			"reviewed_by": None, "reviewed_at": None, "decision_reason": None,
+			"expires_at": now + timedelta(minutes=15), "executed_at": None, "version": 1,
+		})
+		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value=now,
+		), patch("myapp.services.ai_repository._name", side_effect=["AI-APPROVAL-1", "AI-STEP-1"]):
+			mock_frappe.PermissionError = frappe.PermissionError
+			mock_frappe.as_json.side_effect = frappe.as_json
+			mock_frappe.db.sql.side_effect = [
+				[self._agent_capability_row(token, now)],
+				[frappe._dict({"requested_by": "user@example.com", "status": "running", "last_step_no": 2})],
+				[], None, None, None, [approval_row],
+			]
+			result = request_agent_tool_approval(
+				run_id="AI-RUN-1", call_id="call-1", tool="search_products",
+				arguments=arguments, risk_level="L3_SENSITIVE", checkpoint=checkpoint,
+				capability_token=token,
+			)
+
+		self.assertEqual(result["status"], "pending")
+		self.assertEqual(result["approval_id"], "AI-APPROVAL-1")
+		pause_update = mock_frappe.db.sql.call_args_list[5]
+		self.assertIn("status = 'waiting_approval'", pause_update.args[0])
+		self.assertIn("capability_token_hash = NULL", pause_update.args[0])
+		self.assertIn('"approval_id": "AI-APPROVAL-1"', pause_update.args[1][0])
+
+	def test_agent_approval_rejects_argument_substitution(self):
+		now = datetime(2026, 7, 27, 12, 0, 0)
+		original = '{"limit":8,"query":"莫"}'
+		row = frappe._dict({
+			"name": "AI-APPROVAL-1", "run_id": "AI-RUN-1", "call_id": "call-1",
+			"tool_name": "search_products", "risk_level": "L3_SENSITIVE",
+			"arguments_hash": hashlib.sha256(original.encode()).hexdigest(),
+			"arguments_summary_json": "{}", "status": "approved",
+			"requested_by": "user@example.com", "requested_at": now,
+			"reviewed_by": "user@example.com", "reviewed_at": now,
+			"decision_reason": None, "expires_at": now + timedelta(minutes=10),
+			"executed_at": None, "version": 2,
+		})
+		with patch.object(ai_repository, "frappe") as mock_frappe:
+			mock_frappe.PermissionError = frappe.PermissionError
+			mock_frappe.db.sql.return_value = [row]
+			with self.assertRaises(frappe.PermissionError):
+				get_agent_tool_approval_decision(
+					run_id="AI-RUN-1", call_id="call-1", tool="search_products",
+					arguments={"query": "另一个商品", "limit": 8},
+				)
+
+	def test_reviewed_approval_reissues_capability_for_same_run(self):
+		now = datetime(2026, 7, 27, 12, 0, 0)
+		checkpoint = self._waiting_approval_checkpoint()
+		arguments_hash = hashlib.sha256('{"limit":8,"query":"莫"}'.encode()).hexdigest()
+		approval_row = frappe._dict({
+			"name": "AI-APPROVAL-1", "run_id": "AI-RUN-1", "call_id": "call-1",
+			"tool_name": "search_products", "risk_level": "L3_SENSITIVE",
+			"arguments_hash": arguments_hash, "arguments_summary_json": "{}",
+			"status": "approved", "requested_by": "user@example.com", "requested_at": now,
+			"reviewed_by": "user@example.com", "reviewed_at": now,
+			"decision_reason": None, "expires_at": now + timedelta(minutes=10),
+			"executed_at": None, "version": 2, "conversation": "AI-CONV-1",
+			"scenario": "general", "run_status": "waiting_approval", "model_alias": "erp-fast-chat",
+			"allowed_tools_json": '["search_products"]',
+			"agent_state_json": frappe.as_json(checkpoint), "company_scope": "Demo Company",
+			"conversation_status": "active",
+		})
+		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value=now,
+		), patch("myapp.services.ai_repository.secrets.token_urlsafe", return_value="new-token"):
+			mock_frappe.PermissionError = frappe.PermissionError
+			mock_frappe.as_json.side_effect = frappe.as_json
+			mock_frappe.db.sql.side_effect = [
+				[approval_row], None, [frappe._dict({"status": "running"})], None,
+			]
+			result = prepare_reviewed_agent_approval_resume(
+				approval_id="AI-APPROVAL-1", user="user@example.com",
+			)
+
+		self.assertEqual(result["run_id"], "AI-RUN-1")
+		self.assertEqual(result["capability_token"], "new-token")
+		self.assertEqual(result["approval"]["status"], "approved")
+		self.assertIn("status = 'running'", mock_frappe.db.sql.call_args_list[1].args[0])
+
+	def test_rejected_approval_requires_a_reason(self):
+		with patch.object(ai_repository, "frappe") as mock_frappe:
+			mock_frappe.throw.side_effect = frappe.ValidationError("reason required")
+			with self.assertRaises(frappe.ValidationError):
+				review_agent_approval(
+					approval_id="AI-APPROVAL-1", user="user@example.com",
+					decision="rejected", expected_version=1, reason="",
+				)
+		mock_frappe.db.sql.assert_not_called()
+
+	def test_agent_run_control_exposes_only_status_and_cancellation(self):
+		with patch.object(ai_repository, "frappe") as mock_frappe:
+			mock_frappe.db.sql.return_value = [frappe._dict({
+				"status": "cancelled", "cancellation_requested": 1,
+			})]
+			result = get_agent_run_control(run_id="AI-RUN-1")
+
+		self.assertEqual(result, {
+			"run_id": "AI-RUN-1", "status": "cancelled", "cancelled": True,
+				})
+
+	def test_prepare_agent_run_resume_reopens_owned_failed_run_and_reissues_capability(self):
+		now = datetime(2026, 7, 27, 12, 0, 0)
+		checkpoint = {
+			"schema_version": "agent-state-v1", "run_id": "AI-RUN-1",
+			"stage": "tool_completed", "next_model_step": 2, "tool_count": 1,
+			"runtime_messages": [], "agent_steps": [], "tool_calls": [],
+			"pending_tool_calls": [], "tool_results": [], "citations": [],
+			"usage": {}, "model": "provider-model", "model_alias": "erp-fast-chat",
+			"prompt_version": "erp-readonly-v7", "trace_id": "trace", "agent_span_id": "span",
+			"final_content": None,
+		}
+		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value=now,
+		), patch("myapp.services.ai_repository.secrets.token_urlsafe", return_value="new-capability-token"):
+			mock_frappe.PermissionError = frappe.PermissionError
+			mock_frappe.as_json.side_effect = frappe.as_json
+			mock_frappe.db.sql.side_effect = [
+				[frappe._dict({
+					"name": "AI-RUN-1", "conversation": "AI-CONV-1", "requested_by": "user@example.com",
+					"scenario": "general", "status": "failed", "model_alias": "erp-fast-chat",
+					"allowed_tools_json": '["search_products"]',
+					"agent_state_json": frappe.as_json(checkpoint), "company_scope": "Demo Company",
+					"conversation_status": "active",
+				})],
+				None,
+				[frappe._dict({"status": "running"})],
+				None,
+			]
+			result = prepare_agent_run_resume(run_id="AI-RUN-1", user="user@example.com")
+
+		self.assertEqual(result["capability_token"], "new-capability-token")
+		self.assertEqual(result["checkpoint_stage"], "tool_completed")
+		self.assertEqual(mock_frappe.db.sql.call_count, 4)
+		self.assertIn("status = 'running'", mock_frappe.db.sql.call_args_list[1].args[0])
+
+	def test_issue_agent_capability_fails_when_run_is_not_running(self):
+		with patch.object(ai_repository, "frappe") as mock_frappe:
+			mock_frappe.db.sql.return_value = [frappe._dict({"status": "cancelled"})]
+			mock_frappe.PermissionError = frappe.PermissionError
+			with self.assertRaises(frappe.PermissionError):
+				issue_agent_capability(
+					run_id="AI-RUN-1", user="user@example.com", allowed_tools=["search_products"],
+				)
+		self.assertEqual(mock_frappe.db.sql.call_count, 1)
+
+	def test_start_agent_tool_step_reuses_completed_call_inside_run_lock(self):
+		cached_result = {"call_id": "call-1", "tool": "search_products", "status": "ok"}
+		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value="2026-07-27 12:00:00",
+		):
+			mock_frappe.db.sql.side_effect = [
+				[frappe._dict({"last_step_no": 2, "status": "running"})],
+				[frappe._dict({
+					"name": "AI-STEP-1", "status": "completed",
+					"result_json": frappe.as_json(cached_result),
+				})],
+			]
+			claim = start_agent_tool_step(
+				run_id="AI-RUN-1", user="user@example.com", call_id="call-1",
+				tool="search_products", arguments={"query": "莫"},
+			)
+
+		self.assertEqual(claim["status"], "completed")
+		self.assertEqual(claim["result"], cached_result)
+		self.assertEqual(mock_frappe.db.sql.call_count, 2)
+
 	def test_normalize_conversation_state_whitelists_and_bounds_working_fields(self):
 		state = _normalize_conversation_state({
 			"active_scenario": "order_query",

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
+import secrets
 import uuid
 from datetime import datetime, timedelta
 
@@ -16,6 +18,8 @@ from myapp.utils.ai_errors import AiDraftVersionConflictError
 CONVERSATION_TABLE = "tabMyApp AI Conversation"
 MESSAGE_TABLE = "tabMyApp AI Message"
 RUN_TABLE = "tabMyApp AI Run"
+AGENT_STEP_TABLE = "tabMyApp AI Agent Step"
+AGENT_APPROVAL_TABLE = "tabMyApp AI Agent Approval"
 FEEDBACK_TABLE = "tabMyApp AI Feedback"
 DRAFT_TABLE = "tabMyApp AI Draft"
 DRAFT_LINE_TABLE = "tabMyApp AI Draft Line"
@@ -27,6 +31,9 @@ DEFAULT_MESSAGE_PAGE_SIZE = 40
 MAX_MESSAGE_PAGE_SIZE = 100
 MAX_DRAFT_PAGE_SIZE = 100
 MAX_CONVERSATION_STATE_BYTES = 12000
+MAX_AGENT_STATE_BYTES = 200000
+MAX_AGENT_EVENT_BYTES = 30000
+MAX_AGENT_APPROVAL_ARGUMENT_BYTES = 30000
 CONVERSATION_STATE_SCHEMA_VERSION = "conversation-state-v1"
 ALLOWED_CONTEXT_SCENARIOS = {"general", "product_search", "order_query", "report_summary"}
 ALLOWED_ORDER_ENTITIES = {"sales_order", "sales_invoice", "purchase_order", "purchase_invoice"}
@@ -646,7 +653,10 @@ def load_model_messages(*, conversation_id: str, user: str, limit: int = 20) -> 
 	return [{"role": row.role, "content": row.content or ""} for row in reversed(rows)]
 
 
-def create_run(*, conversation_id: str, user: str, scenario: str, tool_calls: list[dict] | None = None) -> str:
+def create_run(
+	*, conversation_id: str, user: str, scenario: str,
+	tool_calls: list[dict] | None = None, model_alias: str | None = None,
+) -> str:
 	_get_owned_conversation(conversation_id, user)
 	now = now_datetime()
 	run_id = _name("AI-RUN")
@@ -654,16 +664,924 @@ def create_run(*, conversation_id: str, user: str, scenario: str, tool_calls: li
 		f"""
 		INSERT INTO `{RUN_TABLE}`
 			(name, creation, modified, modified_by, owner, docstatus, idx,
-			 conversation, requested_by, scenario, environment, status, tool_calls_json, started_at)
-		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, 'running', %s, %s)
+			 conversation, requested_by, scenario, environment, status, model_alias, tool_calls_json, started_at)
+		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, 'running', %s, %s, %s)
 		""",
 		(
 			run_id, now, now, user, user, conversation_id, user, scenario,
 			os.environ.get("MYAPP_AI_ENVIRONMENT", "development").strip() or "development",
-			frappe.as_json(tool_calls or []), now,
+			model_alias, frappe.as_json(tool_calls or []), now,
 		),
 	)
 	return run_id
+
+
+def issue_agent_capability(
+	*, run_id: str, user: str, allowed_tools: list[str], ttl_seconds: int = 300,
+) -> str:
+	"""Issue one opaque, short-lived capability for a single owned Agent Run."""
+	resolved_tools = sorted({str(tool or "").strip() for tool in allowed_tools if str(tool or "").strip()})
+	if not resolved_tools:
+		frappe.throw(_("Agent Run 没有可用工具。"))
+	run_rows = frappe.db.sql(
+		f"""
+		SELECT status
+		FROM `{RUN_TABLE}`
+		WHERE name = %s AND requested_by = %s
+		LIMIT 1
+		FOR UPDATE
+		""",
+		(run_id, user),
+		as_dict=True,
+	)
+	if not run_rows or str(run_rows[0].status or "") != "running":
+		raise frappe.PermissionError(_("Agent Run 不存在或已结束，不能签发能力令牌。"))
+	token = secrets.token_urlsafe(32)
+	token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+	now = now_datetime()
+	expires_at = now + timedelta(seconds=max(30, min(int(ttl_seconds or 300), 900)))
+	frappe.db.sql(
+		f"""
+		UPDATE `{RUN_TABLE}`
+		SET allowed_tools_json = %s, capability_token_hash = %s,
+			capability_expires_at = %s, modified = %s, modified_by = %s
+		WHERE name = %s AND requested_by = %s AND status = 'running'
+		""",
+		(frappe.as_json(resolved_tools), token_hash, expires_at, now, user, run_id, user),
+	)
+	return token
+
+
+def validate_agent_run_capability(*, run_id: str, capability_token: str) -> dict:
+	rows = frappe.db.sql(
+		f"""
+		SELECT r.name, r.requested_by, r.status, r.allowed_tools_json,
+			r.capability_token_hash, r.capability_expires_at, r.cancellation_requested,
+			c.company_scope
+		FROM `{RUN_TABLE}` r
+		JOIN `{CONVERSATION_TABLE}` c ON c.name = r.conversation
+		WHERE r.name = %s
+		LIMIT 1
+		""",
+		(run_id,), as_dict=True,
+	)
+	if not rows:
+		raise frappe.PermissionError(_("Agent Run 不存在。"))
+	row = rows[0]
+	if row.status != "running" or cint(row.cancellation_requested):
+		raise frappe.PermissionError(_("Agent Run 已停止，不能继续执行工具。"))
+	if not row.capability_expires_at or get_datetime(row.capability_expires_at) <= now_datetime():
+		raise frappe.PermissionError(_("Agent 能力令牌已过期。"))
+	provided_hash = hashlib.sha256(str(capability_token or "").encode("utf-8")).hexdigest()
+	if not row.capability_token_hash or not hmac.compare_digest(provided_hash, row.capability_token_hash):
+		raise frappe.PermissionError(_("Agent 能力令牌无效。"))
+	allowed_tools = _safe_json_loads(row.allowed_tools_json, [])
+	return {
+		"run_id": row.name,
+		"user": row.requested_by,
+		"company": row.company_scope,
+		"allowed_tools": allowed_tools,
+	}
+
+
+def validate_agent_capability(*, run_id: str, capability_token: str, tool: str) -> dict:
+	capability = validate_agent_run_capability(
+		run_id=run_id, capability_token=capability_token,
+	)
+	allowed_tools = capability["allowed_tools"]
+	if tool not in allowed_tools:
+		raise frappe.PermissionError(_("当前 Agent Run 无权调用该工具。"))
+	return capability
+
+
+def get_agent_run_control(*, run_id: str) -> dict:
+	"""Return the minimum internal control state needed for cancellation propagation."""
+	rows = frappe.db.sql(
+		f"""
+		SELECT status, cancellation_requested
+		FROM `{RUN_TABLE}`
+		WHERE name = %s
+		LIMIT 1
+		""",
+		(run_id,),
+		as_dict=True,
+	)
+	if not rows:
+		return {"run_id": run_id, "status": "missing", "cancelled": True}
+	status = str(rows[0].status or "")
+	return {
+		"run_id": run_id,
+		"status": status,
+		"cancelled": bool(cint(rows[0].cancellation_requested) or status == "cancelled"),
+	}
+
+
+def _normalize_agent_checkpoint(checkpoint, *, run_id: str | None = None) -> dict | None:
+	if checkpoint in (None, ""):
+		return None
+	if isinstance(checkpoint, str):
+		checkpoint = _safe_json_loads(checkpoint, None)
+	allowed_keys = {
+		"schema_version", "run_id", "stage", "next_model_step", "tool_count",
+		"runtime_messages", "agent_steps", "tool_calls", "pending_tool_calls",
+		"tool_results", "citations",
+		"usage", "model", "trace_id", "agent_span_id", "final_content",
+		"model_alias", "prompt_version",
+		"pending_approval",
+	}
+	if (
+		not isinstance(checkpoint, dict)
+		or checkpoint.get("schema_version") != "agent-state-v1"
+		or set(checkpoint) - allowed_keys
+		or (run_id and str(checkpoint.get("run_id") or "") != run_id)
+	):
+		frappe.throw(_("Agent 检查点格式不正确。"))
+	if checkpoint.get("stage") not in {
+		"input_guardrail", "model_decision", "tool_completed", "waiting_approval", "output_guardrail",
+	}:
+		frappe.throw(_("Agent 检查点阶段不正确。"))
+	if checkpoint.get("stage") == "waiting_approval":
+		pending_approval = checkpoint.get("pending_approval")
+		if not isinstance(pending_approval, dict):
+			frappe.throw(_("Agent 待审批检查点缺少审批上下文。"))
+		if set(pending_approval) - {"approval_id", "call_id", "tool", "risk_level"}:
+			frappe.throw(_("Agent 待审批上下文字段不正确。"))
+	if not isinstance(checkpoint.get("runtime_messages") or [], list) or len(checkpoint.get("runtime_messages") or []) > 40:
+		frappe.throw(_("Agent 检查点消息数量超出限制。"))
+	if not isinstance(checkpoint.get("agent_steps") or [], list) or len(checkpoint.get("agent_steps") or []) > 40:
+		frappe.throw(_("Agent 检查点步骤数量超出限制。"))
+	if not isinstance(checkpoint.get("tool_calls") or [], list) or len(checkpoint.get("tool_calls") or []) > 6:
+		frappe.throw(_("Agent 检查点工具调用数量超出限制。"))
+	if not isinstance(checkpoint.get("pending_tool_calls") or [], list) or len(checkpoint.get("pending_tool_calls") or []) > 3:
+		frappe.throw(_("Agent 检查点待执行工具数量超出限制。"))
+	if not isinstance(checkpoint.get("tool_results") or [], list) or len(checkpoint.get("tool_results") or []) > 6:
+		frappe.throw(_("Agent 检查点工具结果数量超出限制。"))
+	if not isinstance(checkpoint.get("citations") or [], list) or len(checkpoint.get("citations") or []) > 100:
+		frappe.throw(_("Agent 检查点引用数量超出限制。"))
+	if _contains_agent_secret_key(checkpoint):
+		frappe.throw(_("Agent 检查点包含不允许持久化的敏感字段。"))
+	encoded = frappe.as_json(checkpoint).encode("utf-8")
+	if len(encoded) > MAX_AGENT_STATE_BYTES:
+		frappe.throw(_("Agent 检查点超过持久化大小限制。"))
+	return checkpoint
+
+
+def _canonical_agent_arguments(arguments) -> tuple[dict, str, str]:
+	if not isinstance(arguments, dict):
+		frappe.throw(_("Agent 工具参数必须是对象。"))
+	if _contains_agent_secret_key(arguments):
+		frappe.throw(_("Agent 工具参数包含不允许进入审批记录的敏感字段。"))
+	encoded = json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+	if len(encoded.encode("utf-8")) > MAX_AGENT_APPROVAL_ARGUMENT_BYTES:
+		frappe.throw(_("Agent 工具参数超过审批大小限制。"))
+	return arguments, encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _summarize_agent_arguments(value, *, depth: int = 0):
+	if depth >= 3:
+		return "[truncated]"
+	if isinstance(value, dict):
+		result = {}
+		for index, (key, child) in enumerate(sorted(value.items())):
+			if index >= 20:
+				result["_truncated"] = True
+				break
+			resolved_key = str(key)[:80]
+			if resolved_key.strip().lower() in {
+				"authorization", "api_key", "apikey", "capability_token", "cookie",
+				"password", "service_token",
+			}:
+				result[resolved_key] = "[redacted]"
+			else:
+				result[resolved_key] = _summarize_agent_arguments(child, depth=depth + 1)
+		return result
+	if isinstance(value, list):
+		result = [_summarize_agent_arguments(child, depth=depth + 1) for child in value[:20]]
+		if len(value) > 20:
+			result.append("[truncated]")
+		return result
+	if isinstance(value, str):
+		return value[:300]
+	if value is None or isinstance(value, (bool, int, float)):
+		return value
+	return str(value)[:300]
+
+
+def _agent_checkpoint_pending_call(checkpoint: dict) -> tuple[dict, dict]:
+	pending_calls = checkpoint.get("pending_tool_calls") or []
+	pending_approval = checkpoint.get("pending_approval") or {}
+	if checkpoint.get("stage") != "waiting_approval" or not pending_calls:
+		frappe.throw(_("Agent 待审批检查点没有待执行工具调用。"))
+	call = pending_calls[0]
+	if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
+		frappe.throw(_("Agent 待审批工具调用格式不正确。"))
+	arguments = call.get("arguments")
+	if arguments is None:
+		arguments = _safe_json_loads(call["function"].get("arguments"), None)
+	if not isinstance(arguments, dict):
+		frappe.throw(_("Agent 待审批工具参数格式不正确。"))
+	call_id = str(call.get("id") or "").strip()
+	tool = str(call["function"].get("name") or "").strip()
+	if (
+		not call_id or not tool
+		or str(pending_approval.get("call_id") or "") != call_id
+		or str(pending_approval.get("tool") or "") != tool
+	):
+		frappe.throw(_("Agent 待审批上下文与工具调用不一致。"))
+	return call, arguments
+
+
+def _serialize_agent_approval(row, *, replayed: bool = False) -> dict:
+	result = {
+		"approval_id": row.name,
+		"run_id": row.run_id,
+		"call_id": row.call_id,
+		"tool": row.tool_name,
+		"risk_level": row.risk_level,
+		"arguments_summary": _safe_json_loads(row.arguments_summary_json, {}),
+		"status": row.status,
+		"requested_by": row.requested_by,
+		"requested_at": str(row.requested_at or ""),
+		"reviewed_by": row.reviewed_by or None,
+		"reviewed_at": str(row.reviewed_at or "") or None,
+		"decision_reason": row.decision_reason or None,
+		"expires_at": str(row.expires_at or ""),
+		"executed_at": str(row.executed_at or "") or None,
+		"version": cint(row.version),
+		"replayed": replayed,
+	}
+	if getattr(row, "conversation_id", None):
+		result["conversation_id"] = row.conversation_id
+	return result
+
+
+def request_agent_tool_approval(
+	*, run_id: str, call_id: str, tool: str, arguments: dict, risk_level: str,
+	checkpoint: dict, capability_token: str, ttl_seconds: int = 900,
+) -> dict:
+	"""Atomically persist the safe checkpoint and pause one approval-bound call."""
+	capability = validate_agent_run_capability(
+		run_id=run_id, capability_token=capability_token,
+	)
+	checkpoint = _normalize_agent_checkpoint(checkpoint, run_id=run_id)
+	call, checkpoint_arguments = _agent_checkpoint_pending_call(checkpoint)
+	arguments, _encoded, arguments_hash = _canonical_agent_arguments(arguments)
+	_checkpoint_args, _checkpoint_encoded, checkpoint_hash = _canonical_agent_arguments(checkpoint_arguments)
+	resolved_call_id = str(call_id or "").strip()[:140]
+	resolved_tool = str(tool or "").strip()[:140]
+	resolved_risk = str(risk_level or "").strip()[:30]
+	if (
+		call.get("id") != resolved_call_id
+		or str((call.get("function") or {}).get("name") or "") != resolved_tool
+		or checkpoint_hash != arguments_hash
+		or str((checkpoint.get("pending_approval") or {}).get("risk_level") or "") != resolved_risk
+	):
+		frappe.throw(_("Agent 审批请求与持久检查点不一致。"))
+	now = now_datetime()
+	run_rows = frappe.db.sql(
+		f"SELECT requested_by, status, last_step_no FROM `{RUN_TABLE}` WHERE name = %s FOR UPDATE",
+		(run_id,), as_dict=True,
+	)
+	if not run_rows or run_rows[0].requested_by != capability["user"]:
+		raise frappe.PermissionError(_("Agent Run 不存在或无权请求审批。"))
+	if str(run_rows[0].status or "") != "running":
+		raise frappe.PermissionError(_("Agent Run 已停止，不能请求审批。"))
+	existing = frappe.db.sql(
+		f"SELECT * FROM `{AGENT_APPROVAL_TABLE}` WHERE run_id = %s AND call_id = %s LIMIT 1",
+		(run_id, resolved_call_id), as_dict=True,
+	)
+	if existing:
+		row = existing[0]
+		if row.tool_name != resolved_tool or row.arguments_hash != arguments_hash:
+			raise frappe.PermissionError(_("Agent 审批绑定的工具或参数已发生变化。"))
+		if row.status == "pending" and get_datetime(row.expires_at) <= now:
+			frappe.db.sql(
+				f"UPDATE `{AGENT_APPROVAL_TABLE}` SET status = 'expired', modified = %s, modified_by = %s, version = version + 1 WHERE name = %s AND status = 'pending'",
+				(now, capability["user"], row.name),
+			)
+			row.status = "expired"
+			row.version = cint(row.version) + 1
+		if row.status in {"approved", "rejected", "expired"}:
+			return _serialize_agent_approval(row, replayed=True)
+		approval_id = row.name
+	else:
+		approval_id = _name("AI-APPROVAL")
+		expires_at = now + timedelta(seconds=max(60, min(int(ttl_seconds or 900), 86400)))
+		frappe.db.sql(
+			f"""
+			INSERT INTO `{AGENT_APPROVAL_TABLE}`
+				(name, creation, modified, modified_by, owner, docstatus, idx,
+				 run_id, call_id, tool_name, risk_level, arguments_hash,
+				 arguments_summary_json, status, requested_by, requested_at, expires_at, version)
+			VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, %s, %s,
+				'pending', %s, %s, %s, 1)
+			""",
+			(
+				approval_id, now, now, capability["user"], capability["user"],
+				run_id, resolved_call_id, resolved_tool, resolved_risk, arguments_hash,
+				frappe.as_json(_summarize_agent_arguments(arguments)),
+				capability["user"], now, expires_at,
+			),
+		)
+	checkpoint["pending_approval"] = {
+		"approval_id": approval_id, "call_id": resolved_call_id,
+		"tool": resolved_tool, "risk_level": resolved_risk,
+	}
+	sequence_no = cint(run_rows[0].last_step_no)
+	if not existing:
+		sequence_no += 1
+		step_id = _name("AI-STEP")
+		frappe.db.sql(
+			f"""
+			INSERT INTO `{AGENT_STEP_TABLE}`
+				(name, creation, modified, modified_by, owner, docstatus, idx,
+				 run_id, sequence_no, call_id, step_type, status, tool_name, result_json, started_at)
+			VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, 'approval', 'pending', %s, %s, %s)
+			""",
+			(
+				step_id, now, now, capability["user"], capability["user"], run_id,
+				sequence_no, f"approval:{resolved_call_id}"[:140], resolved_tool,
+				frappe.as_json({"approval_id": approval_id, "risk_level": resolved_risk}), now,
+			),
+		)
+	frappe.db.sql(
+		f"""
+		UPDATE `{RUN_TABLE}`
+		SET status = 'waiting_approval', agent_state_json = %s, last_step_no = %s,
+			capability_token_hash = NULL, capability_expires_at = NULL,
+			modified = %s, modified_by = %s
+		WHERE name = %s AND status = 'running'
+		""",
+		(frappe.as_json(checkpoint), sequence_no, now, capability["user"], run_id),
+	)
+	rows = frappe.db.sql(
+		f"SELECT * FROM `{AGENT_APPROVAL_TABLE}` WHERE name = %s LIMIT 1",
+		(approval_id,), as_dict=True,
+	)
+	return _serialize_agent_approval(rows[0], replayed=bool(existing))
+
+
+def get_agent_tool_approval_decision(
+	*, run_id: str, call_id: str, tool: str, arguments: dict,
+) -> dict:
+	"""Return the durable decision bound to the exact tool arguments."""
+	_arguments, _encoded, arguments_hash = _canonical_agent_arguments(arguments)
+	rows = frappe.db.sql(
+		f"SELECT * FROM `{AGENT_APPROVAL_TABLE}` WHERE run_id = %s AND call_id = %s LIMIT 1",
+		(run_id, call_id), as_dict=True,
+	)
+	if not rows:
+		raise frappe.PermissionError(_("Agent 工具缺少必需的审批记录。"))
+	row = rows[0]
+	if row.tool_name != tool or row.arguments_hash != arguments_hash:
+		raise frappe.PermissionError(_("Agent 审批绑定的工具或参数不一致。"))
+	if row.status in {"pending", "approved"} and get_datetime(row.expires_at) <= now_datetime():
+		now = now_datetime()
+		frappe.db.sql(
+			f"""
+			UPDATE `{AGENT_APPROVAL_TABLE}`
+			SET status = 'expired', modified = %s, modified_by = %s, version = version + 1
+			WHERE name = %s AND status IN ('pending', 'approved')
+			""",
+			(now, row.requested_by, row.name),
+		)
+		row.status = "expired"
+		row.version = cint(row.version) + 1
+	if row.status == "pending":
+		raise frappe.PermissionError(_("Agent 工具仍在等待审批。"))
+	return _serialize_agent_approval(row)
+
+
+def mark_agent_tool_approval_executed(
+	*, approval_id: str, result: dict, user: str,
+) -> None:
+	now = now_datetime()
+	encoded = json.dumps(result or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+	result_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+	frappe.db.sql(
+		f"""
+		UPDATE `{AGENT_APPROVAL_TABLE}`
+		SET executed_at = COALESCE(executed_at, %s), result_hash = COALESCE(result_hash, %s),
+			modified = %s, modified_by = %s
+		WHERE name = %s AND status = 'approved'
+		""",
+		(now, result_hash, now, user, approval_id),
+	)
+
+
+def get_agent_approval(*, approval_id: str, user: str) -> dict:
+	rows = frappe.db.sql(
+		f"""
+		SELECT a.*, r.status AS run_status, r.conversation AS conversation_id
+		FROM `{AGENT_APPROVAL_TABLE}` a
+		JOIN `{RUN_TABLE}` r ON r.name = a.run_id
+		WHERE a.name = %s AND a.requested_by = %s AND r.requested_by = %s
+		LIMIT 1
+		""",
+		(approval_id, user, user), as_dict=True,
+	)
+	if not rows:
+		raise frappe.PermissionError(_("Agent 审批不存在或无权访问。"))
+	result = _serialize_agent_approval(rows[0])
+	result["run_status"] = str(rows[0].run_status or "")
+	return result
+
+
+def list_agent_approvals(
+	*, user: str, run_id: str | None = None, status: str | None = None,
+	start: int = 0, limit: int = 20,
+) -> dict:
+	conditions = ["a.requested_by = %s", "r.requested_by = %s"]
+	params: list = [user, user]
+	if run_id:
+		conditions.append("a.run_id = %s")
+		params.append(str(run_id).strip())
+	if status:
+		resolved_status = str(status).strip()
+		if resolved_status not in {"pending", "approved", "rejected", "expired"}:
+			frappe.throw(_("Agent 审批状态不正确。"))
+		conditions.append("a.status = %s")
+		params.append(resolved_status)
+	resolved_start = max(0, cint(start))
+	resolved_limit = max(1, min(100, cint(limit) or 20))
+	rows = frappe.db.sql(
+		f"""
+		SELECT a.*, r.status AS run_status, r.conversation AS conversation_id
+		FROM `{AGENT_APPROVAL_TABLE}` a
+		JOIN `{RUN_TABLE}` r ON r.name = a.run_id
+		WHERE {' AND '.join(conditions)}
+		ORDER BY a.requested_at DESC
+		LIMIT %s OFFSET %s
+		""",
+		tuple([*params, resolved_limit + 1, resolved_start]), as_dict=True,
+	)
+	items = []
+	for row in rows[:resolved_limit]:
+		item = _serialize_agent_approval(row)
+		item["run_status"] = str(row.run_status or "")
+		items.append(item)
+	return {
+		"items": items, "start": resolved_start, "limit": resolved_limit,
+		"has_more": len(rows) > resolved_limit,
+	}
+
+
+def review_agent_approval(
+	*, approval_id: str, user: str, decision: str, expected_version: int,
+	reason: str | None = None,
+) -> dict:
+	resolved_decision = str(decision or "").strip()
+	if resolved_decision not in {"approved", "rejected"}:
+		frappe.throw(_("Agent 审批决定只允许 approved 或 rejected。"))
+	resolved_reason = " ".join(str(reason or "").strip().split())[:500] or None
+	if resolved_decision == "rejected" and not resolved_reason:
+		frappe.throw(_("拒绝 Agent 工具调用时必须填写原因。"))
+	rows = frappe.db.sql(
+		f"""
+		SELECT a.*, r.status AS run_status, r.requested_by AS run_owner, r.agent_state_json
+		FROM `{AGENT_APPROVAL_TABLE}` a
+		JOIN `{RUN_TABLE}` r ON r.name = a.run_id
+		WHERE a.name = %s AND a.requested_by = %s AND r.requested_by = %s
+		LIMIT 1
+		FOR UPDATE
+		""",
+		(approval_id, user, user), as_dict=True,
+	)
+	if not rows:
+		raise frappe.PermissionError(_("Agent 审批不存在或无权访问。"))
+	row = rows[0]
+	if cint(row.version) != cint(expected_version):
+		frappe.throw(_("Agent 审批版本已变化，请刷新后重试。"))
+	if row.status != "pending":
+		if row.status == resolved_decision:
+			result = _serialize_agent_approval(row, replayed=True)
+			result["run_status"] = str(row.run_status or "")
+			return result
+		frappe.throw(_("Agent 审批已经完成，不能重复修改决定。"))
+	if str(row.run_status or "") != "waiting_approval":
+		frappe.throw(_("Agent Run 当前不处于待审批状态。"))
+	checkpoint = _normalize_agent_checkpoint(row.agent_state_json, run_id=row.run_id)
+	call, arguments = _agent_checkpoint_pending_call(checkpoint)
+	_arguments, _encoded, arguments_hash = _canonical_agent_arguments(arguments)
+	if (
+		str(call.get("id") or "") != row.call_id
+		or str((call.get("function") or {}).get("name") or "") != row.tool_name
+		or arguments_hash != row.arguments_hash
+		or str((checkpoint.get("pending_approval") or {}).get("approval_id") or "") != row.name
+	):
+		raise frappe.PermissionError(_("Agent 审批记录与待执行检查点不一致。"))
+	now = now_datetime()
+	if get_datetime(row.expires_at) <= now:
+		frappe.db.sql(
+			f"UPDATE `{AGENT_APPROVAL_TABLE}` SET status = 'expired', modified = %s, modified_by = %s, version = version + 1 WHERE name = %s AND status = 'pending'",
+			(now, user, approval_id),
+		)
+		frappe.db.sql(
+			f"UPDATE `{RUN_TABLE}` SET status = 'expired', modified = %s, modified_by = %s WHERE name = %s AND status = 'waiting_approval'",
+			(now, user, row.run_id),
+		)
+		row.status = "expired"
+		row.version = cint(row.version) + 1
+		return _serialize_agent_approval(row)
+	frappe.db.sql(
+		f"""
+		UPDATE `{AGENT_APPROVAL_TABLE}`
+		SET status = %s, reviewed_by = %s, reviewed_at = %s, decision_reason = %s,
+			modified = %s, modified_by = %s, version = version + 1
+		WHERE name = %s AND status = 'pending' AND version = %s
+		""",
+		(resolved_decision, user, now, resolved_reason, now, user, approval_id, cint(expected_version)),
+	)
+	rows = frappe.db.sql(
+		f"SELECT * FROM `{AGENT_APPROVAL_TABLE}` WHERE name = %s LIMIT 1",
+		(approval_id,), as_dict=True,
+	)
+	result = _serialize_agent_approval(rows[0])
+	result["run_status"] = "waiting_approval"
+	return result
+
+
+def prepare_reviewed_agent_approval_resume(*, approval_id: str, user: str) -> dict:
+	rows = frappe.db.sql(
+		f"""
+		SELECT a.*, r.conversation, r.scenario, r.status AS run_status, r.model_alias,
+			r.allowed_tools_json, r.agent_state_json, c.company_scope,
+			c.status AS conversation_status
+		FROM `{AGENT_APPROVAL_TABLE}` a
+		JOIN `{RUN_TABLE}` r ON r.name = a.run_id
+		JOIN `{CONVERSATION_TABLE}` c ON c.name = r.conversation
+		WHERE a.name = %s AND a.requested_by = %s AND r.requested_by = %s AND c.owner = %s
+		LIMIT 1
+		FOR UPDATE
+		""",
+		(approval_id, user, user, user), as_dict=True,
+	)
+	if not rows:
+		raise frappe.PermissionError(_("Agent 审批不存在或无权恢复。"))
+	row = rows[0]
+	if row.status not in {"approved", "rejected"}:
+		frappe.throw(_("Agent 审批尚未形成可恢复的决定。"))
+	if str(row.run_status or "") != "waiting_approval":
+		frappe.throw(_("Agent Run 已被其他请求恢复或结束。"))
+	if str(row.conversation_status or "") != "active":
+		frappe.throw(_("归档会话中的 Agent Run 不能恢复。"))
+	checkpoint = _normalize_agent_checkpoint(row.agent_state_json, run_id=row.run_id)
+	call, arguments = _agent_checkpoint_pending_call(checkpoint)
+	_arguments, _encoded, arguments_hash = _canonical_agent_arguments(arguments)
+	if (
+		str(call.get("id") or "") != row.call_id
+		or str((call.get("function") or {}).get("name") or "") != row.tool_name
+		or arguments_hash != row.arguments_hash
+	):
+		raise frappe.PermissionError(_("Agent 审批恢复参数与原审批不一致。"))
+	allowed_tools = _safe_json_loads(row.allowed_tools_json, [])
+	if not isinstance(allowed_tools, list) or not allowed_tools:
+		frappe.throw(_("Agent Run 没有可恢复的工具授权范围。"))
+	now = now_datetime()
+	frappe.db.sql(
+		f"""
+		UPDATE `{RUN_TABLE}`
+		SET status = 'running', cancellation_requested = 0, error_code = NULL, error = NULL,
+			completed_at = NULL, capability_token_hash = NULL, capability_expires_at = NULL,
+			modified = %s, modified_by = %s
+		WHERE name = %s AND requested_by = %s AND status = 'waiting_approval'
+		""",
+		(now, user, row.run_id, user),
+	)
+	capability_token = issue_agent_capability(
+		run_id=row.run_id, user=user, allowed_tools=allowed_tools,
+	)
+	return {
+		"run_id": row.run_id, "conversation_id": row.conversation,
+		"scenario": row.scenario, "company": row.company_scope,
+		"model_alias": checkpoint.get("model_alias") or row.model_alias,
+		"prompt_version": checkpoint.get("prompt_version"),
+		"allowed_tools": allowed_tools, "capability_token": capability_token,
+		"checkpoint_stage": checkpoint.get("stage"),
+		"approval": _serialize_agent_approval(row),
+	}
+
+
+def _contains_agent_secret_key(value) -> bool:
+	secret_keys = {"authorization", "api_key", "apikey", "capability_token", "cookie", "password", "service_token"}
+	if isinstance(value, dict):
+		return any(
+			str(key).strip().lower() in secret_keys or _contains_agent_secret_key(child)
+			for key, child in value.items()
+		)
+	if isinstance(value, list):
+		return any(_contains_agent_secret_key(child) for child in value)
+	return False
+
+
+def record_agent_runtime_event(
+	*, run_id: str, event_id: str, step_type: str, status: str,
+	data: dict | None = None, checkpoint: dict | None = None,
+	span_id: str | None = None, error_code: str | None = None,
+	capability_token: str,
+) -> dict:
+	validate_agent_run_capability(run_id=run_id, capability_token=capability_token)
+	allowed_types = {
+		"input_guardrail", "model_decision", "tool_guardrail", "output_guardrail",
+		"checkpoint", "state_transition",
+	}
+	if step_type not in allowed_types or status not in {"completed", "failed"}:
+		frappe.throw(_("Agent 运行事件类型或状态不正确。"))
+	resolved_event_id = str(event_id or "").strip()[:140]
+	if not resolved_event_id:
+		frappe.throw(_("Agent 运行事件编号不能为空。"))
+	checkpoint = _normalize_agent_checkpoint(checkpoint, run_id=run_id)
+	encoded_data = frappe.as_json(data or {}).encode("utf-8")
+	if len(encoded_data) > MAX_AGENT_EVENT_BYTES or _contains_agent_secret_key(data or {}):
+		frappe.throw(_("Agent 运行事件包含超限或敏感数据。"))
+	now = now_datetime()
+	run_rows = frappe.db.sql(
+		f"""
+		SELECT requested_by, status, last_step_no
+		FROM `{RUN_TABLE}`
+		WHERE name = %s
+		LIMIT 1
+		FOR UPDATE
+		""",
+		(run_id,), as_dict=True,
+	)
+	if not run_rows:
+		raise frappe.PermissionError(_("Agent Run 不存在。"))
+	run = run_rows[0]
+	if str(run.status or "") not in {"running", "waiting_approval"}:
+		raise frappe.PermissionError(_("Agent Run 已结束，不能记录运行事件。"))
+	existing = frappe.db.sql(
+		f"""
+		SELECT name, sequence_no
+		FROM `{AGENT_STEP_TABLE}`
+		WHERE run_id = %s AND call_id = %s
+		LIMIT 1
+		""",
+		(run_id, resolved_event_id), as_dict=True,
+	)
+	if existing:
+		return {
+			"event_id": resolved_event_id, "step_id": existing[0].name,
+			"sequence_no": cint(existing[0].sequence_no), "replayed": True,
+		}
+	sequence_no = cint(run.last_step_no) + 1
+	step_id = _name("AI-STEP")
+	frappe.db.sql(
+		f"""
+		INSERT INTO `{AGENT_STEP_TABLE}`
+			(name, creation, modified, modified_by, owner, docstatus, idx,
+			 run_id, sequence_no, call_id, step_type, status, result_json,
+			 error_code, span_id, started_at, completed_at)
+		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+		""",
+		(
+			step_id, now, now, run.requested_by, run.requested_by,
+			run_id, sequence_no, resolved_event_id, step_type, status,
+			frappe.as_json(data or {}), str(error_code or "")[:140] or None,
+			str(span_id or "")[:64] or None, now, now,
+		),
+	)
+	frappe.db.sql(
+		f"""
+		UPDATE `{RUN_TABLE}`
+		SET last_step_no = %s, agent_state_json = COALESCE(%s, agent_state_json),
+			modified = %s, modified_by = %s
+		WHERE name = %s
+		""",
+		(
+			sequence_no,
+			frappe.as_json(checkpoint) if checkpoint is not None else None,
+			now, run.requested_by, run_id,
+		),
+	)
+	return {
+		"event_id": resolved_event_id, "step_id": step_id,
+		"sequence_no": sequence_no, "replayed": False,
+	}
+
+
+def get_agent_checkpoint(*, run_id: str, capability_token: str) -> dict:
+	validate_agent_run_capability(run_id=run_id, capability_token=capability_token)
+	rows = frappe.db.sql(
+		f"""
+		SELECT status, agent_state_json, last_step_no
+		FROM `{RUN_TABLE}`
+		WHERE name = %s
+		LIMIT 1
+		""",
+		(run_id,), as_dict=True,
+	)
+	if not rows:
+		raise frappe.PermissionError(_("Agent Run 不存在。"))
+	return {
+		"run_id": run_id,
+		"status": str(rows[0].status or ""),
+		"last_step_no": cint(rows[0].last_step_no),
+		"checkpoint": _safe_json_loads(rows[0].agent_state_json, None),
+	}
+
+
+def prepare_agent_run_resume(*, run_id: str, user: str) -> dict:
+	"""Reopen one owned failed Agent Run and return its durable resume context."""
+	rows = frappe.db.sql(
+		f"""
+		SELECT r.name, r.conversation, r.requested_by, r.scenario, r.status,
+			r.model_alias, r.allowed_tools_json, r.agent_state_json,
+			c.company_scope, c.status AS conversation_status
+		FROM `{RUN_TABLE}` r
+		JOIN `{CONVERSATION_TABLE}` c ON c.name = r.conversation
+		WHERE r.name = %s AND r.requested_by = %s AND c.owner = %s
+		LIMIT 1
+		FOR UPDATE
+		""",
+		(run_id, user, user),
+		as_dict=True,
+	)
+	if not rows:
+		raise frappe.PermissionError(_("AI Run 不存在或无权访问。"))
+	row = rows[0]
+	if str(row.conversation_status or "") != "active":
+		frappe.throw(_("归档会话中的 AI Run 不能恢复。"))
+	if str(row.status or "") not in {"failed", "expired"}:
+		frappe.throw(_("只有失败或过期的 Agent Run 可以恢复。"))
+	checkpoint = _normalize_agent_checkpoint(row.agent_state_json, run_id=run_id)
+	if checkpoint is None:
+		frappe.throw(_("AI Run 没有可恢复的安全检查点。"))
+	if not str(checkpoint.get("prompt_version") or "").strip():
+		frappe.throw(_("AI Run 检查点缺少 Prompt 版本，不能安全恢复。"))
+	if not str(checkpoint.get("model_alias") or row.model_alias or "").strip():
+		frappe.throw(_("AI Run 检查点缺少模型别名，不能安全恢复。"))
+	allowed_tools = _safe_json_loads(row.allowed_tools_json, [])
+	if not isinstance(allowed_tools, list) or not allowed_tools:
+		frappe.throw(_("AI Run 没有可恢复的工具授权范围。"))
+	approval = None
+	if checkpoint.get("stage") == "waiting_approval":
+		pending = checkpoint.get("pending_approval") or {}
+		approval_rows = frappe.db.sql(
+			f"SELECT * FROM `{AGENT_APPROVAL_TABLE}` WHERE run_id = %s AND call_id = %s LIMIT 1",
+			(run_id, str(pending.get("call_id") or "")), as_dict=True,
+		)
+		if not approval_rows or approval_rows[0].status not in {"approved", "rejected"}:
+			frappe.throw(_("AI Run 仍缺少可恢复的审批决定。"))
+		approval = _serialize_agent_approval(approval_rows[0])
+	now = now_datetime()
+	frappe.db.sql(
+		f"""
+		UPDATE `{RUN_TABLE}`
+		SET modified = %s, modified_by = %s, status = 'running',
+			cancellation_requested = 0, error_code = NULL, error = NULL,
+			completed_at = NULL, capability_token_hash = NULL,
+			capability_expires_at = NULL
+		WHERE name = %s AND requested_by = %s AND status IN ('failed', 'expired')
+		""",
+		(now, user, run_id, user),
+	)
+	capability_token = issue_agent_capability(
+		run_id=run_id, user=user, allowed_tools=allowed_tools,
+	)
+	return {
+		"run_id": run_id,
+		"conversation_id": row.conversation,
+		"scenario": row.scenario,
+		"company": row.company_scope,
+		"model_alias": checkpoint.get("model_alias") or row.model_alias,
+		"prompt_version": checkpoint.get("prompt_version"),
+		"allowed_tools": allowed_tools,
+		"capability_token": capability_token,
+		"checkpoint_stage": checkpoint.get("stage"),
+		"approval": approval,
+	}
+
+
+def revoke_agent_capability(*, run_id: str, user: str | None = None) -> None:
+	conditions = ["name = %s"]
+	params: list = [run_id]
+	if user:
+		conditions.append("requested_by = %s")
+		params.append(user)
+	frappe.db.sql(
+		f"""
+		UPDATE `{RUN_TABLE}`
+		SET capability_token_hash = NULL, capability_expires_at = NULL
+		WHERE {' AND '.join(conditions)}
+		""",
+		tuple(params),
+	)
+
+
+def cancel_agent_run(*, run_id: str, user: str) -> dict:
+	rows = frappe.db.sql(
+		f"SELECT status FROM `{RUN_TABLE}` WHERE name = %s AND requested_by = %s LIMIT 1",
+		(run_id, user), as_dict=True,
+	)
+	if not rows:
+		raise frappe.PermissionError(_("AI Run 不存在或无权访问。"))
+	status = str(rows[0].status or "")
+	if status not in {"running", "waiting_approval"}:
+		return {"run_id": run_id, "status": status, "cancelled": status == "cancelled"}
+	now = now_datetime()
+	frappe.db.sql(
+		f"""
+		UPDATE `{RUN_TABLE}`
+		SET modified = %s, modified_by = %s, status = 'cancelled',
+			cancellation_requested = 1, capability_token_hash = NULL,
+			capability_expires_at = NULL, completed_at = %s,
+			error_code = 'AI_RUN_CANCELLED', error = %s
+		WHERE name = %s AND requested_by = %s AND status IN ('running', 'waiting_approval')
+		""",
+		(now, user, now, _("用户已取消 AI Run。"), run_id, user),
+	)
+	frappe.db.sql(
+		f"""
+		UPDATE `{AGENT_APPROVAL_TABLE}`
+		SET status = 'expired', modified = %s, modified_by = %s, version = version + 1
+		WHERE run_id = %s AND status = 'pending'
+		""",
+		(now, user, run_id),
+	)
+	return {"run_id": run_id, "status": "cancelled", "cancelled": True}
+
+
+def get_agent_tool_result(*, run_id: str, call_id: str) -> dict | None:
+	if not frappe.db.table_exists("MyApp AI Agent Step"):
+		return None
+	rows = frappe.db.sql(
+		f"""
+		SELECT result_json FROM `{AGENT_STEP_TABLE}`
+		WHERE run_id = %s AND call_id = %s AND status = 'completed'
+		LIMIT 1
+		""",
+		(run_id, call_id), as_dict=True,
+	)
+	return _safe_json_loads(rows[0].result_json, None) if rows else None
+
+
+def start_agent_tool_step(
+	*, run_id: str, user: str, call_id: str, tool: str, arguments: dict,
+) -> dict:
+	now = now_datetime()
+	rows = frappe.db.sql(
+		f"SELECT last_step_no, status FROM `{RUN_TABLE}` WHERE name = %s FOR UPDATE",
+		(run_id,), as_dict=True,
+	)
+	if not rows:
+		raise frappe.PermissionError(_("Agent Run 不存在。"))
+	if str(rows[0].status or "") != "running":
+		raise frappe.PermissionError(_("Agent Run 已停止，不能继续执行工具。"))
+	existing = frappe.db.sql(
+		f"""
+		SELECT name, status, result_json
+		FROM `{AGENT_STEP_TABLE}`
+		WHERE run_id = %s AND call_id = %s
+		LIMIT 1
+		""",
+		(run_id, call_id),
+		as_dict=True,
+	)
+	if existing:
+		row = existing[0]
+		return {
+			"status": str(row.status or "running"),
+			"step_id": row.name,
+			"result": _safe_json_loads(row.result_json, None) if row.status == "completed" else None,
+		}
+	sequence_no = cint(rows[0].last_step_no) + 1
+	step_id = _name("AI-STEP")
+	frappe.db.sql(
+		f"""
+		INSERT INTO `{AGENT_STEP_TABLE}`
+			(name, creation, modified, modified_by, owner, docstatus, idx,
+			 run_id, sequence_no, call_id, step_type, status, tool_name,
+			 arguments_json, started_at)
+		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, 'tool', 'running', %s, %s, %s)
+		""",
+		(
+			step_id, now, now, user, user, run_id, sequence_no, call_id,
+			tool, frappe.as_json(arguments or {}), now,
+		),
+	)
+	frappe.db.sql(
+		f"UPDATE `{RUN_TABLE}` SET last_step_no = %s WHERE name = %s",
+		(sequence_no, run_id),
+	)
+	return {"status": "claimed", "step_id": step_id, "result": None}
+
+
+def complete_agent_tool_step(*, step_id: str, user: str, result: dict, latency_ms: int) -> None:
+	now = now_datetime()
+	frappe.db.sql(
+		f"""
+		UPDATE `{AGENT_STEP_TABLE}`
+		SET modified = %s, modified_by = %s, status = 'completed', result_json = %s,
+			error_code = %s, completed_at = %s, latency_ms = %s
+		WHERE name = %s
+		""",
+		(
+			now, user, frappe.as_json(result),
+			str((result.get("error") or {}).get("code") or "")[:140] or None,
+			now, max(0, cint(latency_ms)), step_id,
+		),
+	)
 
 
 def complete_run(
@@ -682,7 +1600,7 @@ def complete_run(
 			tool_calls_json = %s, policy_code = %s, policy_version = %s,
 			fallback_reason = %s, estimated_cost = %s, cost_currency = %s,
 			completed_at = %s, error_code = NULL, error = NULL
-		WHERE name = %s AND requested_by = %s
+		WHERE name = %s AND requested_by = %s AND status = 'running'
 		""",
 		(
 			now,
@@ -724,7 +1642,7 @@ def complete_run(
 				1, 1, 0, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s
 			FROM `tabMyApp AI Run` r
 			JOIN `tabMyApp AI Conversation` c ON c.name = r.conversation
-			WHERE r.name = %s AND r.requested_by = %s
+			WHERE r.name = %s AND r.requested_by = %s AND r.status = 'completed'
 			ON DUPLICATE KEY UPDATE
 				modified = VALUES(modified), modified_by = VALUES(modified_by),
 				request_count = `tabMyApp AI Model Usage Daily`.request_count + 1,
@@ -775,7 +1693,7 @@ def fail_run(*, run_id: str, user: str, error: Exception, latency_ms: int):
 		UPDATE `{RUN_TABLE}`
 		SET modified = %s, modified_by = %s, status = 'failed', latency_ms = %s,
 			error_code = %s, error = %s, completed_at = %s
-		WHERE name = %s AND requested_by = %s
+		WHERE name = %s AND requested_by = %s AND status = 'running'
 		""",
 		(
 			now,
@@ -802,7 +1720,7 @@ def fail_run(*, run_id: str, user: str, error: Exception, latency_ms: int):
 				1, 0, 1, %s, 1
 			FROM `tabMyApp AI Run` r
 			JOIN `tabMyApp AI Conversation` c ON c.name = r.conversation
-			WHERE r.name = %s AND r.requested_by = %s
+			WHERE r.name = %s AND r.requested_by = %s AND r.status = 'failed'
 			ON DUPLICATE KEY UPDATE
 				modified = VALUES(modified), modified_by = VALUES(modified_by),
 				request_count = `tabMyApp AI Model Usage Daily`.request_count + 1,

@@ -1,4 +1,5 @@
 import io
+import os
 import urllib.error
 from contextlib import nullcontext
 from datetime import date
@@ -26,6 +27,7 @@ from myapp.services.ai_service import (
 	_infer_ai_scenario,
 	_infer_ai_action_scenario,
 	_prepare_chat_run,
+	_prepare_agent_resume,
 	_query_business_document_entity,
 	_resolve_inventory_draft_item,
 	_resolve_purchase_draft_item,
@@ -45,7 +47,9 @@ from myapp.services.ai_service import (
 	rename_ai_conversation_v1,
 	reset_ai_conversation_context_v1,
 	refresh_ai_business_result_v1,
+	resume_ai_run_v1,
 	stream_ai_message_v1,
+	stream_ai_run_resume_v1,
 	submit_ai_feedback_v1,
 	update_ai_draft_v1,
 )
@@ -54,6 +58,17 @@ from myapp.utils.api_response import UpstreamServiceUnavailableError, map_except
 
 
 class TestAiService(TestCase):
+	def setUp(self):
+		# Existing tests exercise the compatibility chat path. Agent Runtime has
+		# dedicated contract tests and is enabled explicitly there.
+		self._agent_runtime_env = patch.dict(
+			os.environ, {"MYAPP_AI_AGENT_RUNTIME_ENABLED": "0"}, clear=False,
+		)
+		self._agent_runtime_env.start()
+
+	def tearDown(self):
+		self._agent_runtime_env.stop()
+
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	@patch("myapp.services.ai_service.ai_repository.list_conversations")
 	def test_list_ai_conversations_forwards_search(self, mock_list, _current_user):
@@ -415,6 +430,71 @@ class TestAiService(TestCase):
 		mock_resolve_company.assert_called_once_with("Original Company", required=False)
 		self.assertEqual(prepared["tool_calls"][-1]["tool"], "load_conversation_context")
 		self.assertFalse(prepared["tool_calls"][-1]["event_visible"])
+
+	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_readonly_agent_does_not_capture_existing_product_setup_draft_flow(
+		self, _current_user, _resolve_company,
+	):
+		with patch.dict(
+			os.environ, {"MYAPP_AI_AGENT_RUNTIME_ENABLED": "1"}, clear=False,
+		), patch(
+			"myapp.services.ai_service.ai_repository.create_conversation",
+			return_value={"name": "AI-CONV-1"},
+		), patch(
+			"myapp.services.ai_service.ai_repository.append_message",
+		), patch(
+			"myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-1",
+		), patch(
+			"myapp.services.ai_service.ai_repository.load_model_messages", return_value=[],
+		), patch(
+			"myapp.services.ai_service.ai_repository.issue_agent_capability",
+		) as issue_capability, patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.local.lang = "zh-CN"
+			prepared = _prepare_chat_run(
+				content="新增一个商品叫传承结晶，库存单位是件",
+				scenario="auto",
+				company="Demo Company",
+			)
+
+		self.assertFalse(prepared["agent_mode"])
+		self.assertEqual(prepared["scenario"], "product_setup_draft")
+		self.assertNotIn("capability_token", prepared["payload"])
+		issue_capability.assert_not_called()
+
+	@patch("myapp.services.ai_service._resolve_company_scope", return_value="Demo Company")
+	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_prepare_agent_resume_reuses_owned_run_checkpoint_contract(
+		self, _current_user, _resolve_model, _resolve_company,
+	):
+		with patch(
+			"myapp.services.ai_service.ai_repository.prepare_agent_run_resume",
+			return_value={
+				"run_id": "AI-RUN-1", "conversation_id": "AI-CONV-1", "scenario": "general",
+				"company": "Demo Company", "model_alias": "erp-fast-chat",
+				"prompt_version": "erp-readonly-v7", "allowed_tools": ["search_products"],
+				"capability_token": "new-capability-token", "checkpoint_stage": "tool_completed",
+			},
+		), patch(
+			"myapp.services.ai_service.ai_repository.get_conversation",
+			return_value={"conversation": {"name": "AI-CONV-1", "status": "active"}},
+		), patch(
+			"myapp.services.ai_service.ai_repository.get_conversation_state",
+			return_value={"version": 2, "state": {"schema_version": "conversation-state-v1"}},
+		), patch(
+			"myapp.services.ai_service.ai_repository.load_model_messages",
+			return_value=[{"role": "user", "content": "查询商品"}],
+		), patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.get_roles.return_value = ["Sales User"]
+			prepared = _prepare_agent_resume("AI-RUN-1")
+
+		self.assertEqual(prepared["run_id"], "AI-RUN-1")
+		self.assertEqual(prepared["payload"]["capability_token"], "new-capability-token")
+		self.assertEqual(prepared["payload"]["model_alias"], "erp-fast-chat")
+		self.assertEqual(prepared["payload"]["prompt_version"], "erp-readonly-v7")
+		mock_frappe.db.commit.assert_called_once()
 
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	@patch("myapp.services.ai_service.ai_repository.reset_conversation_state")
@@ -1400,6 +1480,38 @@ class TestAiService(TestCase):
 		self.assertIsInstance(mock_fail.call_args.args[1], AiServiceError)
 		self.assertEqual(mock_fail.call_args.args[1].code, "AI_REQUEST_RATE_LIMITED")
 
+	@patch("myapp.services.ai_service._prepare_agent_resume")
+	@patch("myapp.services.ai_service._complete_chat_run", return_value={"status": "completed"})
+	@patch("myapp.services.ai_service._call_ai_orchestrator")
+	def test_resume_ai_run_uses_resume_orchestrator_endpoint(
+		self, mock_call, mock_complete, mock_prepare,
+	):
+		prepared = {
+			"payload": {"run_id": "AI-RUN-1", "capability_token": "token"},
+			"conversation_id": "AI-CONV-1", "run_id": "AI-RUN-1", "user": "user@example.com",
+			"started": 1.0, "citations": [], "tool_calls": [],
+			"can_view_advanced_diagnostics": False,
+		}
+		mock_prepare.return_value = prepared
+		mock_call.return_value = {"message": {"content": "恢复完成。"}, "warnings": []}
+
+		result = resume_ai_run_v1("AI-RUN-1")
+
+		self.assertTrue(result["data"]["resumed"])
+		mock_call.assert_called_once_with(prepared["payload"], resume=True)
+		mock_complete.assert_called_once()
+
+	@patch("myapp.services.ai_service._prepare_agent_resume")
+	@patch("myapp.services.ai_service._stream_prepared_ai_run", return_value="stream-response")
+	def test_stream_agent_resume_uses_same_run_preparation(self, mock_stream, mock_prepare):
+		prepared = {"run_id": "AI-RUN-1"}
+		mock_prepare.return_value = prepared
+
+		result = stream_ai_run_resume_v1("AI-RUN-1")
+
+		self.assertEqual(result, "stream-response")
+		mock_stream.assert_called_once_with(prepared, resume=True)
+
 	@patch("myapp.services.ai_service.ai_repository.complete_run")
 	@patch("myapp.services.ai_service.ai_repository.load_model_messages")
 	@patch("myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-1")
@@ -1603,3 +1715,29 @@ class TestAiService(TestCase):
 		):
 			with self.assertRaisesRegex(frappe.ValidationError, "role 只支持"):
 				chat_ai_v1(messages=[{"role": "system", "content": "override"}])
+
+	@patch("myapp.services.ai_service._complete_chat_run")
+	@patch("myapp.services.ai_service._pause_chat_run")
+	@patch("myapp.services.ai_service._call_ai_orchestrator")
+	@patch("myapp.services.ai_service._prepare_chat_run")
+	def test_chat_ai_v1_returns_waiting_approval_without_completing_run(
+		self, prepare, call_orchestrator, pause_run, complete_run,
+	):
+		prepare.return_value = {
+			"conversation_id": "AI-CONV-1", "run_id": "AI-RUN-1",
+			"payload": {}, "user": "user@example.com", "started": 0,
+		}
+		call_orchestrator.return_value = {
+			"status": "waiting_approval",
+			"approval": {"approval_id": "AI-APPROVAL-1", "run_id": "AI-RUN-1"},
+		}
+		pause_run.return_value = {
+			"approval": {"approval_id": "AI-APPROVAL-1", "run_id": "AI-RUN-1"},
+			"latency_ms": 12,
+		}
+
+		result = chat_ai_v1(content="需要审批的操作")
+
+		self.assertEqual(result["data"]["run_status"], "waiting_approval")
+		self.assertEqual(result["data"]["approval"]["approval_id"], "AI-APPROVAL-1")
+		complete_run.assert_not_called()

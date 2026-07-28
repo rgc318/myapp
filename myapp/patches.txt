@@ -33,5 +33,8 @@ myapp.patches.extend_ai_model_usage_metrics
 myapp.patches.create_ai_vector_governance_tables
 myapp.patches.create_ai_data_task_table
 myapp.patches.extend_ai_draft_execution_fields
+myapp.patches.create_ai_agent_runtime_tables
+myapp.patches.create_ai_agent_approval_table
+myapp.patches.add_ai_model_supports_tools
 myapp.patches.create_test_dataset_tables
 myapp.patches.extend_test_dataset_runs_v2

@@ -47,6 +47,9 @@ from myapp.api.gateway import (
 	get_ai_product_vector_status_v1,
 	get_ai_vector_release_v1,
 	get_ai_runtime_policy_snapshot_v1,
+	get_ai_agent_checkpoint_v1,
+	request_ai_agent_tool_approval_v1,
+	review_ai_agent_approval_v1,
 	get_user_management_overview_v1,
 	get_user_permission_snapshot_v1,
 	get_user_security_v1,
@@ -79,6 +82,7 @@ from myapp.api.gateway import (
 	refresh_ai_business_result_v1,
 	rename_ai_conversation_v1,
 	reset_ai_conversation_context_v1,
+	resume_ai_run_v1,
 	resolve_ai_scenario_v1,
 	restore_ai_draft_version_v1,
 	execute_ai_data_task_v1,
@@ -139,6 +143,7 @@ from myapp.api.gateway import (
 	set_print_default_template_v1,
 	set_primary_product_barcode_v2,
 	stream_ai_message_v1,
+	stream_ai_run_resume_v1,
 	submit_ai_feedback_v1,
 	review_ai_data_task_v1,
 	test_remote_debug,
@@ -155,6 +160,7 @@ from myapp.api.gateway import (
 	update_order_items_v2,
 	update_order_v2,
 	record_supplier_payment,
+	record_ai_agent_runtime_event_v1,
 	submit_delivery,
 	confirm_pending_document,
 	record_print_job_v1,
@@ -185,6 +191,24 @@ class TestGatewayWrappers(TestCase):
 		self.assertNotIn("tabSecret", result["message"])
 		self.assertEqual(mock_frappe.local.response["http_status_code"], 500)
 		mock_frappe.log_error.assert_called_once()
+
+	@patch("myapp.api.gateway.resume_ai_run_v1_service")
+	def test_resume_ai_run_is_owner_scoped_service_wrapper(self, mock_resume):
+		mock_resume.return_value = {"status": "success", "data": {"run_id": "AI-RUN-1", "resumed": True}}
+
+		result = resume_ai_run_v1("AI-RUN-1")
+
+		self.assertTrue(result["data"]["resumed"])
+		mock_resume.assert_called_once_with(run_id="AI-RUN-1")
+
+	@patch("myapp.api.gateway.stream_ai_run_resume_v1_service")
+	def test_stream_ai_run_resume_forwards_run_id(self, mock_resume):
+		mock_resume.return_value = "stream-response"
+
+		result = stream_ai_run_resume_v1("AI-RUN-1")
+
+		self.assertEqual(result, "stream-response")
+		mock_resume.assert_called_once_with(run_id="AI-RUN-1")
 
 	def test_api_aggregator_exports_print_center_methods(self):
 		from myapp.api.api import download_print_file_v1 as aggregated_download
@@ -612,6 +636,92 @@ class TestGatewayWrappers(TestCase):
 			result = get_ai_runtime_policy_snapshot_v1()
 
 		self.assertEqual(result, {"policies": [{"policy_code": "general-prod"}]})
+
+	@patch.dict("myapp.api.gateway.os.environ", {"MYAPP_AI_SERVICE_TOKEN": "service-token"})
+	@patch("myapp.api.gateway.record_agent_runtime_event_service")
+	def test_record_agent_runtime_event_authenticates_and_forwards_capability(
+		self, mock_record,
+	):
+		mock_record.return_value = {"event_id": "runtime:input_guardrail:1", "replayed": False}
+		with patch.object(gateway_module, "frappe") as mock_frappe:
+			mock_frappe.get_request_header.return_value = "service-token"
+			result = record_ai_agent_runtime_event_v1(
+				run_id="AI-RUN-1", event_id="runtime:input_guardrail:1",
+				step_type="input_guardrail", status="completed", data={"status": "passed"},
+				checkpoint={"schema_version": "agent-state-v1"},
+				capability_token="capability-token",
+			)
+
+		self.assertEqual(result["event_id"], "runtime:input_guardrail:1")
+		mock_record.assert_called_once_with(
+			run_id="AI-RUN-1", event_id="runtime:input_guardrail:1",
+			step_type="input_guardrail", status="completed", data={"status": "passed"},
+			checkpoint={"schema_version": "agent-state-v1"}, span_id=None, error_code=None,
+			capability_token="capability-token",
+		)
+		mock_frappe.db.commit.assert_called_once()
+
+	@patch.dict("myapp.api.gateway.os.environ", {"MYAPP_AI_SERVICE_TOKEN": "service-token"})
+	@patch("myapp.api.gateway.get_agent_checkpoint_service")
+	def test_get_agent_checkpoint_authenticates_and_forwards_capability(self, mock_get):
+		mock_get.return_value = {"run_id": "AI-RUN-1", "checkpoint": {}}
+		with patch.object(gateway_module, "frappe") as mock_frappe:
+			mock_frappe.get_request_header.return_value = "service-token"
+			result = get_ai_agent_checkpoint_v1(
+				run_id="AI-RUN-1", capability_token="capability-token",
+			)
+
+		self.assertEqual(result["run_id"], "AI-RUN-1")
+		mock_get.assert_called_once_with(
+			run_id="AI-RUN-1", capability_token="capability-token",
+		)
+
+	@patch.dict("myapp.api.gateway.os.environ", {"MYAPP_AI_SERVICE_TOKEN": "service-token"})
+	def test_get_agent_checkpoint_rejects_invalid_service_token(self):
+		with patch.object(gateway_module, "frappe") as mock_frappe:
+			mock_frappe.get_request_header.return_value = "wrong-token"
+			mock_frappe.local.response = {}
+			result = get_ai_agent_checkpoint_v1(
+				run_id="AI-RUN-1", capability_token="capability-token",
+			)
+
+		self.assertEqual(result["code"], "AI_SERVICE_UNAUTHORIZED")
+		self.assertEqual(mock_frappe.local.response["http_status_code"], 401)
+
+	@patch.dict("myapp.api.gateway.os.environ", {"MYAPP_AI_SERVICE_TOKEN": "service-token"})
+	@patch("myapp.api.gateway.request_ai_agent_tool_approval_v1_service")
+	def test_request_agent_approval_authenticates_and_forwards_checkpoint(self, mock_request):
+		mock_request.return_value = {
+			"approval_id": "AI-APPROVAL-1", "run_id": "AI-RUN-1",
+			"call_id": "call-1", "status": "pending",
+		}
+		checkpoint = {"schema_version": "agent-state-v1", "stage": "waiting_approval"}
+		with patch.object(gateway_module, "frappe") as mock_frappe:
+			mock_frappe.get_request_header.return_value = "service-token"
+			result = request_ai_agent_tool_approval_v1(
+				run_id="AI-RUN-1", call_id="call-1", tool="search_products",
+				arguments={"query": "莫"}, risk_level="L3_SENSITIVE",
+				checkpoint=checkpoint, capability_token="capability-token",
+			)
+
+		self.assertEqual(result["status"], "pending")
+		mock_request.assert_called_once_with(
+			run_id="AI-RUN-1", call_id="call-1", tool="search_products",
+			arguments={"query": "莫"}, risk_level="L3_SENSITIVE",
+			checkpoint=checkpoint, capability_token="capability-token",
+		)
+
+	@patch("myapp.api.gateway.review_ai_agent_approval_v1_service")
+	def test_review_agent_approval_uses_gateway_envelope(self, mock_review):
+		mock_review.return_value = {"status": "success", "data": {"run_status": "completed"}}
+		result = review_ai_agent_approval_v1(
+			approval_id="AI-APPROVAL-1", decision="approved", expected_version=1,
+		)
+
+		self.assertEqual(result["code"], "AI_AGENT_APPROVAL_REVIEWED")
+		mock_review.assert_called_once_with(
+			approval_id="AI-APPROVAL-1", decision="approved", expected_version=1, reason=None,
+		)
 
 	@patch("myapp.api.gateway.get_current_user_workspace_preferences_v1_service")
 	def test_get_current_user_workspace_preferences_passes_through_service(

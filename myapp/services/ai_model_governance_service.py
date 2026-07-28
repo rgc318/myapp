@@ -223,6 +223,7 @@ def _serialize_registry(row) -> dict:
 		"provider_family": row.provider_family,
 		"provider_model_display": row.provider_model_display,
 		"supports_streaming": bool(cint(row.supports_streaming)),
+		"supports_tools": bool(cint(row.supports_tools)),
 		"supports_json_schema": bool(cint(row.supports_json_schema)),
 		"supports_vision": bool(cint(row.supports_vision)),
 		"embedding_dimensions": cint(row.embedding_dimensions) or None,
@@ -580,12 +581,12 @@ def sync_ai_model_registry_v1(*, request_id: str | None = None) -> dict:
 				INSERT INTO `{REGISTRY_TABLE}`
 					(name, creation, modified, modified_by, owner, docstatus, idx, model_alias,
 					 capability, status, provider_family, provider_model_display, supports_streaming,
-					 supports_json_schema, supports_vision, embedding_dimensions, embedding_space_version,
+					 supports_tools, supports_json_schema, supports_vision, embedding_dimensions, embedding_space_version,
 					 data_region, retention_policy, sensitive_data_allowed, input_cost, output_cost,
 					 currency, last_health_at, last_health_status, last_error_code, registry_version,
 					 source_hash, source_json)
 				VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, %s,
-					%s, %s, %s, %s, %s, %s, %s,
+					%s, %s, %s, %s, %s, %s, %s, %s,
 					%s, %s, %s, %s, %s, %s, %s, 1, %s, %s)
 				ON DUPLICATE KEY UPDATE
 					modified = VALUES(modified), modified_by = VALUES(modified_by), capability = VALUES(capability),
@@ -596,6 +597,11 @@ def sync_ai_model_registry_v1(*, request_id: str | None = None) -> dict:
 					END,
 					provider_family = VALUES(provider_family),
 					provider_model_display = VALUES(provider_model_display), supports_streaming = VALUES(supports_streaming),
+					supports_tools = CASE
+						WHEN last_health_status IN ('available', 'unavailable')
+							AND VALUES(last_health_status) = 'listed' THEN supports_tools
+						ELSE VALUES(supports_tools)
+					END,
 					supports_json_schema = VALUES(supports_json_schema), supports_vision = VALUES(supports_vision),
 					embedding_dimensions = VALUES(embedding_dimensions), embedding_space_version = VALUES(embedding_space_version),
 					last_health_at = CASE
@@ -620,7 +626,8 @@ def sync_ai_model_registry_v1(*, request_id: str | None = None) -> dict:
 					_name("AI-MODEL"), now, now, actor, actor, model_alias, capability, status,
 					_normalize_text(source.get("provider_family"), max_length=80) or None,
 					_normalize_text(source.get("provider_model_display"), max_length=255) or None,
-					cint(source.get("supports_streaming")), cint(source.get("supports_json_schema")),
+					cint(source.get("supports_streaming")), cint(source.get("supports_tools")),
+					cint(source.get("supports_json_schema")),
 					cint(source.get("supports_vision")), cint(source.get("embedding_dimensions")) or None,
 					_normalize_text(source.get("embedding_space_version"), max_length=140) or None,
 					_normalize_text(source.get("data_region"), max_length=80) or None,
@@ -708,26 +715,30 @@ def check_ai_model_availability_v1(*, request_id: str | None = None) -> dict:
 			if not model_alias or model_alias not in model_aliases:
 				continue
 			available = bool(item.get("available"))
-			error_code = _normalize_text(item.get("error_code"), max_length=140) or None
+			supports_tools = bool(item.get("supports_tools"))
+			error_code = _normalize_text(
+				item.get("error_code") or item.get("tool_error_code"), max_length=140,
+			) or None
 			provider_model = _normalize_text(item.get("provider_model"), max_length=255) or None
 			latency_ms = max(0, int(float(item.get("latency_ms") or 0)))
 			frappe.db.sql(
 				f"""
 				UPDATE `{REGISTRY_TABLE}`
 				SET last_health_at = %s, last_health_status = %s, last_error_code = %s,
-					provider_model_display = COALESCE(%s, provider_model_display),
+					provider_model_display = COALESCE(%s, provider_model_display), supports_tools = %s,
 					modified = %s, modified_by = %s
 				WHERE model_alias = %s
 				""",
 				(
 					now, "available" if available else "unavailable", error_code,
-					provider_model, now, actor, model_alias,
+					provider_model, cint(supports_tools), now, actor, model_alias,
 				),
 			)
 			normalized_items.append({
 				"model_alias": model_alias,
 				"capability": _normalize_text(item.get("capability"), max_length=30) or None,
 				"available": available,
+				"supports_tools": supports_tools,
 				"latency_ms": latency_ms,
 				"provider_model": provider_model,
 				"error_code": error_code,
@@ -813,7 +824,7 @@ def list_ai_selectable_models_v1() -> dict:
 	if capabilities["can_select_fixed_model"]:
 		rows = frappe.db.sql(
 			f"""
-			SELECT model_alias, capability, provider_model_display, supports_streaming,
+			SELECT model_alias, capability, provider_model_display, supports_streaming, supports_tools,
 				supports_json_schema, status
 			FROM `{REGISTRY_TABLE}`
 			WHERE status IN ('active', 'validated')
@@ -832,6 +843,7 @@ def list_ai_selectable_models_v1() -> dict:
 					"capability": row.capability,
 					"display_name": row.provider_model_display or row.model_alias,
 					"supports_streaming": bool(cint(row.supports_streaming)),
+					"supports_tools": bool(cint(row.supports_tools)),
 					"supports_json_schema": bool(cint(row.supports_json_schema)),
 					"status": row.status,
 				}
@@ -1065,7 +1077,7 @@ def _validate_registry_models(snapshot: dict) -> list[str]:
 	aliases = [snapshot["primary_model_alias"], *snapshot.get("fallback_model_aliases", [])]
 	placeholders = ", ".join(["%s"] * len(aliases))
 	rows = frappe.db.sql(
-		f"SELECT model_alias, capability, status, supports_json_schema, data_region, retention_policy FROM `{REGISTRY_TABLE}` WHERE model_alias IN ({placeholders})",
+		f"SELECT model_alias, capability, status, supports_tools, supports_json_schema, data_region, retention_policy FROM `{REGISTRY_TABLE}` WHERE model_alias IN ({placeholders})",
 		tuple(aliases), as_dict=True,
 	)
 	by_alias = {row.model_alias: row for row in rows}
@@ -1085,6 +1097,11 @@ def _validate_registry_models(snapshot: dict) -> list[str]:
 			errors.append(_("模型 {0} 尚未登记数据留存策略。").format(alias))
 		if snapshot["capability"] == "structured" and not cint(row.supports_json_schema):
 			errors.append(_("结构化模型 {0} 不支持 JSON Schema。").format(alias))
+		if (
+			snapshot.get("scenario") in {"general", "product_search", "order_query", "report_summary"}
+			and not cint(row.supports_tools)
+		):
+			errors.append(_("Agent 模型 {0} 尚未通过工具调用能力验证。").format(alias))
 	return errors
 
 
@@ -1494,7 +1511,7 @@ def get_published_ai_model_policies_for_runtime() -> dict:
 	})
 	model_rows = frappe.db.sql(
 		f"""
-		SELECT model_alias, capability, status, supports_json_schema, input_cost, output_cost, currency,
+		SELECT model_alias, capability, status, supports_tools, supports_json_schema, input_cost, output_cost, currency,
 			data_region, retention_policy, sensitive_data_allowed, registry_version
 		FROM `{REGISTRY_TABLE}`
 		WHERE status IN ('active', 'validated')
@@ -1504,7 +1521,7 @@ def get_published_ai_model_policies_for_runtime() -> dict:
 		as_dict=True,
 	) if policy_aliases else frappe.db.sql(
 		f"""
-		SELECT model_alias, capability, status, supports_json_schema, input_cost, output_cost, currency,
+		SELECT model_alias, capability, status, supports_tools, supports_json_schema, input_cost, output_cost, currency,
 			data_region, retention_policy, sensitive_data_allowed, registry_version
 		FROM `{REGISTRY_TABLE}` WHERE status IN ('active', 'validated')
 		""",
@@ -1517,6 +1534,7 @@ def get_published_ai_model_policies_for_runtime() -> dict:
 				"capability": row.capability,
 				"status": row.status,
 				"supports_json_schema": bool(cint(row.supports_json_schema)),
+				"supports_tools": bool(cint(row.supports_tools)),
 				"input_cost": str(row.input_cost or 0),
 				"output_cost": str(row.output_cost or 0),
 				"currency": row.currency,
