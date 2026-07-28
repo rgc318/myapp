@@ -23,6 +23,7 @@ from myapp.services.document_list_service import list_business_documents_v1
 from myapp.services.inventory_service import reconcile_inventory_stock_v1
 from myapp.services.ai_model_governance_service import (
 	ADVANCED_DIAGNOSTIC_ROLES,
+	resolve_ai_agent_runtime_readiness,
 	resolve_ai_selected_model_alias,
 )
 from myapp.services.order_service import create_order_v2, search_sales_orders_v2
@@ -118,6 +119,16 @@ def _public_ai_result_details(
 		if stream is not None:
 			public["stream"] = stream
 	return public
+
+
+def _merge_ai_warnings(*groups) -> list[str]:
+	result = []
+	for group in groups:
+		for warning in group or []:
+			resolved = str(warning or "").strip()
+			if resolved and resolved not in result:
+				result.append(resolved)
+	return result
 
 
 def _normalize_content(content) -> str:
@@ -3406,13 +3417,35 @@ def _prepare_chat_run(
 	agent_runtime_requested = os.environ.get("MYAPP_AI_AGENT_RUNTIME_ENABLED", "1").strip().lower() in {
 		"1", "true", "yes",
 	}
-	agent_mode = bool(
+	agent_runtime_candidate = bool(
 		agent_runtime_requested
 		and intent_company
 		and requested_action_scenario not in {
 			"sales_order_draft", "purchase_order_draft", "inventory_adjustment_draft", "product_setup_draft",
 		}
 	)
+	agent_runtime_readiness = None
+	compatibility_warnings = []
+	if agent_runtime_candidate:
+		agent_scenario = "general" if requested_scenario == "auto" else requested_scenario
+		try:
+			agent_runtime_readiness = resolve_ai_agent_runtime_readiness(
+				scenario=agent_scenario,
+				environment=os.environ.get("MYAPP_AI_ENVIRONMENT", "development").strip() or "development",
+				company=intent_company,
+				user=user,
+				model_alias=model_alias,
+			)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), _("AI Agent Runtime 就绪预检失败"))
+			agent_runtime_readiness = {
+				"ready": False, "reason": "policy_readiness_unavailable", "policy_code": None,
+			}
+	agent_mode = bool(agent_runtime_candidate and agent_runtime_readiness.get("ready"))
+	if agent_runtime_candidate and not agent_mode:
+		compatibility_warnings.append(
+			_("智能工具模式尚未就绪，本次已使用兼容查询模式，查询结果仍来自当前业务系统。")
+		)
 
 	resolved_scenario = requested_scenario
 	intent_resolution = None
@@ -3550,6 +3583,15 @@ def _prepare_chat_run(
 				"query_hash": hashlib.sha256(current_content.encode("utf-8")).hexdigest(),
 				**intent_resolution,
 			})
+		if agent_runtime_candidate and not agent_mode:
+			tool_calls.insert(0, {
+				"tool": "agent_runtime_readiness",
+				"risk_level": "L0_ROUTING",
+				"mode": "compatibility_fallback",
+				"reason": agent_runtime_readiness.get("reason"),
+				"policy_code": agent_runtime_readiness.get("policy_code"),
+				"event_visible": False,
+			})
 		model_messages = ai_repository.load_model_messages(
 			conversation_id=conversation_id,
 			user=user,
@@ -3586,6 +3628,7 @@ def _prepare_chat_run(
 		"conversation_state_version": cint(conversation_state_record.get("version")),
 		"next_conversation_state": next_conversation_state,
 		"agent_mode": agent_mode,
+		"warnings": compatibility_warnings,
 		"payload": {
 			"messages": model_messages,
 			"scenario": resolved_scenario,
@@ -3622,9 +3665,9 @@ def _prepare_agent_resume(run_id: str) -> dict:
 			run_id=resolved_run_id, user=user,
 		)
 		conversation_id = resume_context["conversation_id"]
-		conversation = ai_repository.get_conversation(
+		ai_repository.get_conversation(
 			conversation_id=conversation_id, user=user,
-		)["conversation"]
+		)
 		conversation_state_record = ai_repository.get_conversation_state(
 			conversation_id=conversation_id, user=user,
 		)
@@ -3869,6 +3912,10 @@ def chat_ai_v1(
 	)
 	try:
 		result = _call_ai_orchestrator(prepared["payload"])
+		result = {
+			**result,
+			"warnings": _merge_ai_warnings(prepared.get("warnings"), result.get("warnings")),
+		}
 		if result.get("status") == "waiting_approval":
 			pause = _pause_chat_run(prepared, result)
 			return {
@@ -4092,6 +4139,7 @@ def _stream_prepared_ai_run(prepared: dict, *, resume: bool = False):
 		content_parts = []
 		completed_result = None
 		paused_result = None
+		streamed_warnings = _merge_ai_warnings(prepared.get("warnings"))
 		first_token_ms = None
 		delta_count = 0
 		streamed_chars = 0
@@ -4123,6 +4171,8 @@ def _stream_prepared_ai_run(prepared: dict, *, resume: bool = False):
 				)
 			for citation in prepared["citations"]:
 				yield _encode_sse({"type": "citation", "citation": citation})
+			for warning in streamed_warnings:
+				yield _encode_sse({"type": "warning", "message": warning})
 
 			yield _encode_sse(
 				{
@@ -4166,6 +4216,9 @@ def _stream_prepared_ai_run(prepared: dict, *, resume: bool = False):
 					content_parts.append(delta)
 					yield _encode_sse(event)
 				elif event_type == "warning":
+					streamed_warnings = _merge_ai_warnings(
+						streamed_warnings, [event.get("message")],
+					)
 					yield _encode_sse(event)
 				elif event_type == "error":
 					raise AiServiceError(
@@ -4173,7 +4226,12 @@ def _stream_prepared_ai_run(prepared: dict, *, resume: bool = False):
 						code=str(event.get("code") or "AI_SERVICE_UNAVAILABLE"),
 					)
 				elif event_type == "completed":
-					completed_result = event
+					completed_result = {
+						**event,
+						"warnings": _merge_ai_warnings(
+							streamed_warnings, event.get("warnings"),
+						),
+					}
 
 			if paused_result:
 				pause = _pause_chat_run(prepared, paused_result)

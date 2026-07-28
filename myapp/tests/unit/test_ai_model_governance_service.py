@@ -16,6 +16,7 @@ from myapp.services.ai_model_governance_service import (
 	list_ai_selectable_models_v1,
 	list_ai_audit_events_v1,
 	publish_ai_model_policy_v1,
+	resolve_ai_agent_runtime_readiness,
 	resolve_ai_selected_model_alias,
 	validate_ai_model_policy_v1,
 	update_ai_model_registry_v1,
@@ -28,6 +29,116 @@ def _run_immediately(_namespace, _request_id, callback, **_kwargs):
 
 
 class TestAiModelGovernanceService(TestCase):
+	@patch("myapp.services.ai_model_governance_service._ensure_tables")
+	def test_runtime_readiness_is_safe_when_no_policy_is_published(self, _mock_tables):
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+			mock_frappe.db.sql.return_value = []
+			result = resolve_ai_agent_runtime_readiness(
+				scenario="product_search", environment="staging",
+				company="Demo Company", user="user@example.com",
+			)
+
+		self.assertEqual(result, {
+			"ready": False, "reason": "no_published_policy", "policy_code": None,
+		})
+
+	@patch("myapp.services.ai_model_governance_service._ensure_tables")
+	def test_runtime_readiness_matches_scope_and_requires_tools_on_all_models(self, _mock_tables):
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+			mock_frappe.get_roles.return_value = ["Sales User"]
+			mock_frappe.db.sql.side_effect = [
+				[SimpleNamespace(
+					policy_code="product-demo", published_version=3,
+					snapshot_json=frappe.as_json({
+						"scenario": "product_search", "environment": "staging",
+						"company_scope": ["Demo Company"], "role_scope": ["Sales User"],
+						"rollout_percentage": "100", "primary_model_alias": "erp-fast-chat",
+						"fallback_model_aliases": ["erp-fallback"],
+					}),
+				)],
+				[
+					SimpleNamespace(model_alias="erp-fast-chat", status="active", supports_tools=1),
+					SimpleNamespace(model_alias="erp-fallback", status="validated", supports_tools=0),
+				],
+			]
+			result = resolve_ai_agent_runtime_readiness(
+				scenario="product_search", environment="staging",
+				company="Demo Company", user="user@example.com",
+			)
+
+		self.assertFalse(result["ready"])
+		self.assertEqual(result["reason"], "model_tools_unverified")
+		self.assertEqual(result["policy_code"], "product-demo")
+		self.assertEqual(result["unverified_model_aliases"], ["erp-fallback"])
+
+	@patch("myapp.services.ai_model_governance_service._ensure_tables")
+	def test_runtime_readiness_rejects_ambiguous_highest_priority_policies(self, _mock_tables):
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+			mock_frappe.get_roles.return_value = []
+			policy = {
+				"scenario": "general", "environment": "staging", "rollout_percentage": "100",
+				"primary_model_alias": "erp-fast-chat", "fallback_model_aliases": [],
+			}
+			mock_frappe.db.sql.return_value = [
+				SimpleNamespace(policy_code="general-a", published_version=1, snapshot_json=frappe.as_json(policy)),
+				SimpleNamespace(policy_code="general-b", published_version=1, snapshot_json=frappe.as_json(policy)),
+			]
+			result = resolve_ai_agent_runtime_readiness(
+				scenario="general", environment="staging",
+				company="Demo Company", user="user@example.com",
+			)
+
+		self.assertEqual(result["reason"], "ambiguous_policy")
+		self.assertFalse(result["ready"])
+
+	@patch("myapp.services.ai_model_governance_service._ensure_tables")
+	def test_runtime_readiness_accepts_unique_policy_and_explicit_tool_model(self, _mock_tables):
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+			mock_frappe.get_roles.return_value = ["Sales User"]
+			mock_frappe.db.sql.side_effect = [
+				[SimpleNamespace(
+					policy_code="general-staging", published_version=2,
+					snapshot_json=frappe.as_json({
+						"scenario": "general", "environment": "staging",
+						"company_scope": [], "role_scope": [], "rollout_percentage": "100",
+						"primary_model_alias": "erp-fast-chat", "fallback_model_aliases": [],
+					}),
+				)],
+				[
+					SimpleNamespace(model_alias="erp-fast-chat", status="active", supports_tools=1),
+					SimpleNamespace(model_alias="erp-fixed", status="validated", supports_tools=1),
+				],
+			]
+			result = resolve_ai_agent_runtime_readiness(
+				scenario="general", environment="staging", company="Demo Company",
+				user="user@example.com", model_alias="erp-fixed",
+			)
+
+		self.assertEqual(result, {
+			"ready": True, "reason": "ready", "policy_code": "general-staging",
+			"policy_version": 2,
+		})
+
+	@patch("myapp.services.ai_model_governance_service._ensure_tables")
+	def test_runtime_readiness_uses_compatibility_fallback_for_scope_mismatch(self, _mock_tables):
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+			mock_frappe.get_roles.return_value = ["Sales User"]
+			mock_frappe.db.sql.return_value = [SimpleNamespace(
+				policy_code="product-other", published_version=1,
+				snapshot_json=frappe.as_json({
+					"scenario": "product_search", "environment": "staging",
+					"company_scope": ["Other Company"], "role_scope": ["Sales User"],
+					"rollout_percentage": "100", "primary_model_alias": "erp-fast-chat",
+				}),
+			)]
+			result = resolve_ai_agent_runtime_readiness(
+				scenario="product_search", environment="staging",
+				company="Demo Company", user="user@example.com",
+			)
+
+		self.assertEqual(result["reason"], "no_matching_policy")
+		self.assertFalse(result["ready"])
+
 	@patch("myapp.services.ai_model_governance_service._record_audit")
 	@patch("myapp.services.ai_model_governance_service._call_orchestrator")
 	@patch("myapp.services.ai_model_governance_service._ensure_tables")

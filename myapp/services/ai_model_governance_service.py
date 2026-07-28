@@ -6,7 +6,7 @@ import os
 import urllib.error
 import urllib.request
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
 import frappe
@@ -1147,6 +1147,163 @@ def _scopes_overlap(left: dict, right: dict) -> bool:
 	if priority == 4:
 		return bool(set(left.get("role_scope") or []) & set(right.get("role_scope") or []))
 	return True
+
+
+def _runtime_policy_active_now(snapshot: dict) -> bool:
+	now = datetime.now(UTC)
+	for field, is_start in (("effective_from", True), ("effective_to", False)):
+		value = snapshot.get(field)
+		if not value:
+			continue
+		try:
+			parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+			if parsed.tzinfo is None:
+				parsed = parsed.replace(tzinfo=UTC)
+		except ValueError:
+			return False
+		if is_start and now < parsed:
+			return False
+		if not is_start and now > parsed:
+			return False
+	return True
+
+
+def _runtime_policy_rollout_selected(
+	*, snapshot: dict, user: str, company: str | None, scenario: str,
+) -> bool:
+	try:
+		percentage = float(snapshot.get("rollout_percentage") or 0)
+	except (TypeError, ValueError):
+		return False
+	if percentage >= 100:
+		return True
+	if percentage <= 0:
+		return False
+	seed = str(snapshot.get("rollout_seed") or "")
+	value = f"{user}|{company or ''}|{scenario}|{seed}"
+	bucket = int(hashlib.sha256(value.encode("utf-8")).hexdigest()[:8], 16) % 10000
+	return bucket < int(percentage * 100)
+
+
+def _runtime_policy_priority(
+	*, snapshot: dict, company: str | None, roles: set[str],
+) -> int:
+	companies = set(snapshot.get("company_scope") or [])
+	policy_roles = set(snapshot.get("role_scope") or [])
+	if companies:
+		if not company or company not in companies:
+			return 0
+		if policy_roles:
+			return 4 if policy_roles & roles else 0
+		return 3
+	if policy_roles:
+		return 0
+	return 2
+
+
+def resolve_ai_agent_runtime_readiness(
+	*, scenario: str, environment: str, company: str | None, user: str,
+	model_alias: str | None = None,
+) -> dict:
+	"""Check whether a new read-only Agent Run can pass runtime governance.
+
+	The selection rules intentionally mirror the Orchestrator policy resolver so
+	that Backend does not create a capability-bearing Run which staging or
+	production must reject immediately.  This is a routing preflight only: policy
+	validation, approval and publication remain the release authority.
+	"""
+	_ensure_tables()
+	resolved_scenario = _normalize_text(scenario, max_length=80)
+	resolved_environment = _normalize_text(environment, max_length=30).lower()
+	resolved_company = _normalize_text(company, max_length=140) or None
+	resolved_user = _normalize_text(user, max_length=140)
+	resolved_model_alias = _normalize_text(model_alias, max_length=140) or None
+	rows = frappe.db.sql(
+		f"""
+		SELECT p.policy_code, p.published_version, v.snapshot_json
+		FROM `{POLICY_TABLE}` p
+		JOIN `{POLICY_VERSION_TABLE}` v
+			ON v.policy_code = p.policy_code AND v.version_no = p.published_version
+		WHERE p.status = 'active' AND v.status = 'active'
+		ORDER BY p.policy_code
+		""",
+		as_dict=True,
+	)
+	if not rows:
+		return {"ready": False, "reason": "no_published_policy", "policy_code": None}
+
+	roles = set(frappe.get_roles(resolved_user) or [])
+	candidates = []
+	for row in rows:
+		snapshot = _safe_json_loads(row.snapshot_json, {})
+		if (
+			snapshot.get("scenario") != resolved_scenario
+			or snapshot.get("environment") != resolved_environment
+			or not _runtime_policy_active_now(snapshot)
+			or not _runtime_policy_rollout_selected(
+				snapshot=snapshot,
+				user=resolved_user,
+				company=resolved_company,
+				scenario=resolved_scenario,
+			)
+		):
+			continue
+		priority = _runtime_policy_priority(
+			snapshot=snapshot, company=resolved_company, roles=roles,
+		)
+		if priority:
+			candidates.append((priority, row, snapshot))
+	if not candidates:
+		return {"ready": False, "reason": "no_matching_policy", "policy_code": None}
+
+	max_priority = max(priority for priority, _row, _snapshot in candidates)
+	winners = [
+		(row, snapshot)
+		for priority, row, snapshot in candidates
+		if priority == max_priority
+	]
+	if len(winners) != 1:
+		return {"ready": False, "reason": "ambiguous_policy", "policy_code": None}
+
+	row, snapshot = winners[0]
+	aliases = {
+		str(snapshot.get("primary_model_alias") or "").strip(),
+		*(str(value or "").strip() for value in snapshot.get("fallback_model_aliases") or []),
+	}
+	if resolved_model_alias:
+		aliases.add(resolved_model_alias)
+	aliases.discard("")
+	model_rows = frappe.db.sql(
+		f"""
+		SELECT model_alias, status, supports_tools
+		FROM `{REGISTRY_TABLE}`
+		WHERE model_alias IN ({', '.join(['%s'] * len(aliases))})
+		""",
+		tuple(sorted(aliases)),
+		as_dict=True,
+	) if aliases else []
+	models = {str(model.model_alias): model for model in model_rows}
+	unverified_aliases = sorted(
+		alias for alias in aliases
+		if alias not in models
+		or str(models[alias].status or "") not in {"active", "validated"}
+		or not cint(models[alias].supports_tools)
+	)
+	policy_code = str(row.policy_code or "") or None
+	if unverified_aliases:
+		return {
+			"ready": False,
+			"reason": "model_tools_unverified",
+			"policy_code": policy_code,
+			"policy_version": cint(row.published_version) or None,
+			"unverified_model_aliases": unverified_aliases,
+		}
+	return {
+		"ready": True,
+		"reason": "ready",
+		"policy_code": policy_code,
+		"policy_version": cint(row.published_version) or None,
+	}
 
 
 def _validate_policy_conflicts(snapshot: dict, *, exclude_policy_code: str) -> list[str]:

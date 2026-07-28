@@ -404,6 +404,70 @@ class TestAiService(TestCase):
 				self.assertEqual(mock_update.call_args.kwargs["expected_version"], 2)
 	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
+	@patch("myapp.services.ai_service.resolve_ai_agent_runtime_readiness")
+	def test_agent_runtime_uses_compatibility_query_when_policy_is_not_ready(
+		self, mock_readiness, _resolve_model, _current_user, _resolve_company,
+	):
+		mock_readiness.return_value = {
+			"ready": False, "reason": "no_published_policy", "policy_code": None,
+		}
+		with patch.dict(os.environ, {
+			"MYAPP_AI_AGENT_RUNTIME_ENABLED": "1", "MYAPP_AI_ENVIRONMENT": "staging",
+		}, clear=False), patch(
+			"myapp.services.ai_service.ai_repository.create_conversation",
+			return_value={"name": "AI-CONV-1", "company": "Demo Company"},
+		), patch("myapp.services.ai_service.ai_repository.append_message"), patch(
+			"myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-1",
+		), patch("myapp.services.ai_service.ai_repository.load_model_messages", return_value=[]), patch(
+			"myapp.services.ai_service._build_product_search_context",
+			return_value=({"tool": "search_products", "products": []}, [], []),
+		), patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.get_roles.return_value = []
+			prepared = _prepare_chat_run(
+				content="查询 Camera 的库存", scenario="product_search", company="Demo Company",
+			)
+
+		self.assertFalse(prepared["agent_mode"])
+		self.assertEqual(prepared["payload"]["context"]["tool"], "search_products")
+		self.assertTrue(prepared["warnings"])
+		self.assertEqual(prepared["tool_calls"][0]["tool"], "agent_runtime_readiness")
+		self.assertEqual(prepared["tool_calls"][0]["reason"], "no_published_policy")
+		mock_readiness.assert_called_once()
+
+	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
+	@patch("myapp.services.ai_service.resolve_ai_agent_runtime_readiness", return_value={
+		"ready": True, "reason": "ready", "policy_code": "general-staging",
+	})
+	def test_agent_runtime_is_enabled_only_when_policy_is_ready(
+		self, _readiness, _resolve_model, _current_user, _resolve_company,
+	):
+		with patch.dict(os.environ, {"MYAPP_AI_AGENT_RUNTIME_ENABLED": "1"}, clear=False), patch(
+			"myapp.services.ai_service.ai_repository.create_conversation",
+			return_value={"name": "AI-CONV-1", "company": "Demo Company"},
+		), patch("myapp.services.ai_service.ai_repository.append_message"), patch(
+			"myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-1",
+		), patch("myapp.services.ai_service.ai_repository.load_model_messages", return_value=[]), patch(
+			"myapp.services.ai_service.ai_repository.issue_agent_capability",
+			return_value="capability-token",
+		) as issue_capability, patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.get_roles.return_value = []
+			mock_frappe.has_permission.return_value = True
+			prepared = _prepare_chat_run(
+				content="查一下最近的订单", scenario="general", company="Demo Company",
+			)
+
+		self.assertTrue(prepared["agent_mode"])
+		self.assertEqual(prepared["payload"]["capability_token"], "capability-token")
+		self.assertEqual(prepared["warnings"], [])
+		issue_capability.assert_called_once()
+
+	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	def test_existing_conversation_uses_its_persisted_company_when_request_omits_company(
 		self, _current_user, mock_resolve_company,
 	):
@@ -1254,7 +1318,7 @@ class TestAiService(TestCase):
 	def test_shared_item_resolver_reports_not_found_and_semantic_availability(
 		self, _mock_search, mock_semantic,
 	):
-		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+		with patch("myapp.services.ai_service.frappe"):
 			result = _resolve_item_candidates("适合拍照的相机", company="Demo Company")
 
 		self.assertEqual(result["status"], "not_found")
@@ -1364,6 +1428,7 @@ class TestAiService(TestCase):
 			"started": 1,
 			"citations": [],
 			"tool_calls": [],
+			"warnings": ["兼容查询模式"],
 			"payload": {"messages": [{"role": "user", "content": "你好"}]},
 		}
 		mock_stream.return_value = iter(
@@ -1401,8 +1466,11 @@ class TestAiService(TestCase):
 		self.assertIn('"delta_count":2', body)
 		self.assertIn('"streamed_chars":2', body)
 		self.assertIn('"model_alias":"opencode-deepseek-v4-flash"', body)
+		self.assertIn('"type":"warning","message":"兼容查询模式"', body)
+		self.assertIn('"warnings":["兼容查询模式"]', body)
 		mock_complete.assert_called_once()
 		self.assertEqual(mock_complete.call_args.args[2], "你好")
+		self.assertEqual(mock_complete.call_args.args[1]["warnings"], ["兼容查询模式"])
 		self.assertGreaterEqual(mock_complete.call_args.kwargs["first_token_ms"], 0)
 
 	@patch("myapp.services.ai_service._complete_chat_run")
@@ -1572,6 +1640,32 @@ class TestAiService(TestCase):
 		self.assertEqual(payload["run_id"], "AI-RUN-1")
 		self.assertEqual(payload["model_alias"], "opencode-glm-5.2")
 		mock_selected_model.assert_called_once_with("opencode-glm-5.2")
+
+	@patch("myapp.services.ai_service._complete_chat_run", return_value={
+		"status": "completed", "latency_ms": 100, "first_token_ms": None,
+	})
+	@patch("myapp.services.ai_service._call_ai_orchestrator")
+	@patch("myapp.services.ai_service._prepare_chat_run")
+	def test_chat_ai_v1_returns_compatibility_warning_without_replaying_model_call(
+		self, mock_prepare, mock_call, _mock_complete,
+	):
+		mock_prepare.return_value = {
+			"user": "user@example.com", "can_view_advanced_diagnostics": False,
+			"conversation_id": "AI-CONV-1", "run_id": "AI-RUN-1", "payload": {},
+			"citations": [], "tool_calls": [], "warnings": ["兼容查询模式"],
+		}
+		mock_call.return_value = {
+			"message": {"role": "assistant", "content": "找到商品 Camera。"},
+			"warnings": ["只读模式"],
+		}
+
+		result = chat_ai_v1(content="查询 Camera", company="Demo Company")
+
+		self.assertEqual(result["data"]["warnings"], ["兼容查询模式", "只读模式"])
+		self.assertIn(
+			{"type": "warning", "message": "兼容查询模式"}, result["data"]["events"],
+		)
+		mock_call.assert_called_once_with({})
 
 	@patch("myapp.services.ai_service.ai_repository.complete_run")
 	@patch("myapp.services.ai_service.ai_repository.load_model_messages")
