@@ -99,6 +99,7 @@ jobs:
             echo "Expected Frappe ${expected_version}, got ${actual_version}."
             exit 1
           fi
+          mkdir -p "${HOME}/logs"
 
       - name: Install
         working-directory: /home/runner/frappe-bench
