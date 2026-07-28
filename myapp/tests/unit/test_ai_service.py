@@ -431,6 +431,8 @@ class TestAiService(TestCase):
 
 		self.assertFalse(prepared["agent_mode"])
 		self.assertEqual(prepared["payload"]["context"]["tool"], "search_products")
+		self.assertNotIn("policy_code", prepared["payload"])
+		self.assertNotIn("policy_version", prepared["payload"])
 		self.assertTrue(prepared["warnings"])
 		self.assertEqual(prepared["tool_calls"][0]["tool"], "agent_runtime_readiness")
 		self.assertEqual(prepared["tool_calls"][0]["reason"], "no_published_policy")
@@ -440,7 +442,7 @@ class TestAiService(TestCase):
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
 	@patch("myapp.services.ai_service.resolve_ai_agent_runtime_readiness", return_value={
-		"ready": True, "reason": "ready", "policy_code": "general-staging",
+		"ready": True, "reason": "ready", "policy_code": "general-staging", "policy_version": 4,
 	})
 	def test_agent_runtime_is_enabled_only_when_policy_is_ready(
 		self, _readiness, _resolve_model, _current_user, _resolve_company,
@@ -463,6 +465,8 @@ class TestAiService(TestCase):
 
 		self.assertTrue(prepared["agent_mode"])
 		self.assertEqual(prepared["payload"]["capability_token"], "capability-token")
+		self.assertEqual(prepared["payload"]["policy_code"], "general-staging")
+		self.assertEqual(prepared["payload"]["policy_version"], 4)
 		self.assertEqual(prepared["warnings"], [])
 		issue_capability.assert_called_once()
 

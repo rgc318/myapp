@@ -3648,6 +3648,8 @@ def _prepare_chat_run(
 				{
 					"capability_token": capability_token,
 					"allowed_tools": allowed_agent_tools,
+					"policy_code": agent_runtime_readiness.get("policy_code"),
+					"policy_version": agent_runtime_readiness.get("policy_version"),
 				}
 				if agent_mode else {}
 			),
