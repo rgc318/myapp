@@ -19,6 +19,7 @@ jobs:
     name: Server
     env:
       FRAPPE_REF: v16.18.3
+      ERPNEXT_REF: v16.18.3
 
     services:
       redis-cache:
@@ -102,9 +103,11 @@ jobs:
       - name: Install
         working-directory: /home/runner/frappe-bench
         run: |
+          bench get-app --branch "${ERPNEXT_REF}" erpnext https://github.com/frappe/erpnext
           bench get-app myapp $GITHUB_WORKSPACE
           bench setup requirements --dev
           bench new-site --db-root-password root --admin-password admin test_site
+          bench --site test_site install-app erpnext
           bench --site test_site install-app myapp
           env/bin/pip check
           bench build
