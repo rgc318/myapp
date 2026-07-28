@@ -384,8 +384,10 @@ return_result = process_sales_return(
 
 本应用可使用 GitHub Actions 做持续集成，当前已配置：
 
-- CI：在推送到 `develop` 分支时安装应用并运行单元测试
+- CI：在推送到 `main` / `develop` 或 Pull Request 时固定安装 Frappe、ERPNext `v16.18.3`，校验实际 Frappe 包版本，安装 `myapp` 后通过 bench Python 发现并运行 `myapp/tests/unit` 全部单元测试；单元测试步骤设置 10 分钟超时
 - Linters：在 Pull Request 上运行 [Frappe Semgrep Rules](https://github.com/frappe/semgrep-rules) 和 [pip-audit](https://pypi.org/project/pip-audit/)
+
+CI 不运行需要真实 HTTP 服务或专用业务数据的 `myapp/tests/http` 与 `myapp/tests/integration`；这些测试继续按 `TESTING.zh-CN.md` 在 devcontainer、Docker 或部署后的 staging 环境执行。
 
 ### 许可证
 

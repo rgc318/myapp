@@ -114,10 +114,11 @@ jobs:
         env:
           CI: 'Yes'
 
-      - name: Run Tests
+      - name: Run Unit Tests
         working-directory: /home/runner/frappe-bench
+        timeout-minutes: 10
         run: |
-          bench --site test_site set-config allow_tests true
-          bench --site test_site run-tests --app myapp
-        env:
-          TYPE: server
+          env/bin/python -m unittest discover \
+            -s apps/myapp/myapp/tests/unit \
+            -t . \
+            -p "test_*.py"
