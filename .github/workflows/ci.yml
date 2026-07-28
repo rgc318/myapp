@@ -17,6 +17,8 @@ jobs:
     strategy:
       fail-fast: false
     name: Server
+    env:
+      FRAPPE_REF: v16.18.3
 
     services:
       redis-cache:
@@ -84,7 +86,18 @@ jobs:
       - name: Setup
         run: |
           pip install frappe-bench
-          bench init --skip-redis-config-generation --skip-assets --python "$(which python)" ~/frappe-bench
+          bench init \
+            --frappe-branch "${FRAPPE_REF}" \
+            --skip-redis-config-generation \
+            --skip-assets \
+            --python "$(which python)" \
+            ~/frappe-bench
+          actual_version="$(~/frappe-bench/env/bin/python -c 'import importlib.metadata as md; print(md.version("frappe"))')"
+          expected_version="${FRAPPE_REF#v}"
+          if [ "${actual_version}" != "${expected_version}" ]; then
+            echo "Expected Frappe ${expected_version}, got ${actual_version}."
+            exit 1
+          fi
 
       - name: Install
         working-directory: /home/runner/frappe-bench
