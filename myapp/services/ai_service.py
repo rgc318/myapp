@@ -183,22 +183,6 @@ def _infer_ai_scenario(content: str) -> str:
 	return "general"
 
 
-def _should_parse_structured_intent(
-	content: str, local_scenario: str, conversation_state: dict | None = None,
-) -> bool:
-	if local_scenario in {"product_search", "order_query", "report_summary"}:
-		return True
-	state = conversation_state if isinstance(conversation_state, dict) else {}
-	if str(state.get("active_scenario") or "") in CONVERSATION_STATE_BUSINESS_SCENARIOS:
-		# The model decides whether a short follow-up is still about the previous
-		# business task.  Local rules only decide whether structured parsing is
-		# worth attempting; they never select the business tool or its filters.
-		return True
-	return any(word in (content or "") for word in (
-		"商品", "产品", "SKU", "库存", "价格", "订单", "发票", "销售额", "采购额", "应收", "应付", "现金流",
-	))
-
-
 def _conversation_state_for_intent(state: dict | None) -> dict:
 	"""Return only the bounded, non-sensitive working state sent to the parser."""
 	if not isinstance(state, dict):
@@ -367,33 +351,33 @@ def _call_ai_orchestrator(payload: dict, *, resume: bool = False) -> dict:
 def _call_ai_intent_orchestrator(
 	*, content: str, user: str, company: str | None, conversation_state: dict | None = None,
 ) -> dict:
-	base_url, service_token = _get_ai_orchestrator_settings()
-	payload = {
-		"messages": [{"role": "user", "content": content}],
-		"scenario": "intent_parse",
-		"user": user,
-		"company": company,
-		"locale": getattr(frappe.local, "lang", None) or "zh-CN",
-		"prompt_version": "erp-intent-v3",
-		"context": {"conversation_state": _conversation_state_for_intent(conversation_state)},
-	}
-	request = urllib.request.Request(
-		f"{base_url}/internal/v1/intent/parse",
-		data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-		headers={
-			"Authorization": f"Bearer {service_token}",
-			"Content-Type": "application/json",
-			"Accept": "application/json",
-		},
-		method="POST",
-	)
 	try:
+		base_url, service_token = _get_ai_orchestrator_settings()
+		payload = {
+			"messages": [{"role": "user", "content": content}],
+			"scenario": "intent_parse",
+			"user": user,
+			"company": company,
+			"locale": getattr(frappe.local, "lang", None) or "zh-CN",
+			"prompt_version": "erp-intent-v3",
+			"context": {"conversation_state": _conversation_state_for_intent(conversation_state)},
+		}
+		request = urllib.request.Request(
+			f"{base_url}/internal/v1/intent/parse",
+			data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+			headers={
+				"Authorization": f"Bearer {service_token}",
+				"Content-Type": "application/json",
+				"Accept": "application/json",
+			},
+			method="POST",
+		)
 		# Intent parsing is a separate model call.  Keep its timeout below the
 		# normal chat budget, but long enough for reasoning models on a cold route;
 		# a 20s ceiling caused valid contextual follow-ups to silently fall back.
 		with urllib.request.urlopen(request, timeout=45) as response:
 			result = json.loads(response.read().decode("utf-8") or "{}")
-	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+	except Exception:
 		frappe.log_error(frappe.get_traceback(), _("AI 意图解析调用失败，已回退本地规则"))
 		return {}
 	intent = result.get("intent") if isinstance(result, dict) else None
@@ -3454,15 +3438,18 @@ def _prepare_chat_run(
 		# The model selects a typed tool. Local routing remains available only as
 		# a compatibility fallback when Agent Runtime cannot be used.
 		resolved_scenario = "general" if requested_scenario == "auto" else requested_scenario
-	elif requested_scenario == "auto":
-		resolved_scenario = requested_action_scenario
-		intent_resolution = {"mode": "local_rules", "resolved_scenario": resolved_scenario}
-		if (
-			resolved_scenario not in {
-				"sales_order_draft", "purchase_order_draft", "inventory_adjustment_draft", "product_setup_draft",
-			}
-			and _should_parse_structured_intent(current_content, resolved_scenario, conversation_state)
-		):
+	else:
+		if requested_scenario == "auto":
+			resolved_scenario = requested_action_scenario
+			intent_resolution = {"mode": "local_rules", "resolved_scenario": resolved_scenario}
+		if resolved_scenario not in {
+			"sales_order_draft", "purchase_order_draft", "inventory_adjustment_draft", "product_setup_draft",
+		}:
+			# Compatibility mode still delegates semantic understanding and typed
+			# filters to the model. Deterministic routing above exists only to keep
+			# write intents inside the established draft + human review boundary.
+			# Local keyword rules are the last fallback when the parser is unavailable,
+			# unconfident, or returns a schema-invalid scenario.
 			intent = _call_ai_intent_orchestrator(
 				content=current_content,
 				user=user,
@@ -3477,12 +3464,19 @@ def _prepare_chat_run(
 				confidence = min(1.0, max(0.0, float(intent.get("confidence") or 0)))
 			except (TypeError, ValueError):
 				confidence = 0
-			if candidate in {"general", "product_search", "order_query", "report_summary"} and confidence >= 0.6:
-				resolved_scenario = candidate
+			candidate_is_usable = bool(
+				candidate in {"general", "product_search", "order_query", "report_summary"}
+				and confidence >= 0.6
+				and (requested_scenario == "auto" or candidate == resolved_scenario)
+			)
+			if candidate_is_usable:
+				if requested_scenario == "auto":
+					resolved_scenario = candidate
 				structured_intent = intent
 				intent_resolution = {
 					"mode": "structured_intent", "resolved_scenario": resolved_scenario,
 					"confidence": confidence,
+					"scenario_locked": requested_scenario != "auto",
 					"structured_filters_used": candidate in {"product_search", "order_query", "report_summary"},
 				}
 			else:

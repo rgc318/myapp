@@ -17,6 +17,7 @@ from myapp.services.ai_service import (
 	_build_product_setup_draft,
 	_execute_ai_draft_payload,
 	_build_report_query_dsl,
+	_call_ai_intent_orchestrator,
 	_normalize_ai_business_result_refresh,
 	_update_ai_draft_once,
 	_hybrid_rerank_product_rows,
@@ -33,7 +34,6 @@ from myapp.services.ai_service import (
 	_resolve_purchase_draft_item,
 	_resolve_prompt_version,
 	_resolve_sales_draft_item,
-	_should_parse_structured_intent,
 	_complete_chat_run,
 	_stream_ai_orchestrator,
 	chat_ai_v1,
@@ -402,12 +402,18 @@ class TestAiService(TestCase):
 					draft_id="AI-DRAFT-1", payload={}, expected_version=2,
 				)
 				self.assertEqual(mock_update.call_args.kwargs["expected_version"], 2)
+	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
+		"intent": "product_search", "confidence": 0.96, "product_query": "莫",
+		"entities": [], "report_type": None, "date_preset": "all",
+		"date_from": None, "date_to": None, "status": "all", "sort": "latest",
+		"min_amount": None, "limit": 10,
+	})
 	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
 	@patch("myapp.services.ai_service.resolve_ai_agent_runtime_readiness")
 	def test_agent_runtime_uses_compatibility_query_when_policy_is_not_ready(
-		self, mock_readiness, _resolve_model, _current_user, _resolve_company,
+		self, mock_readiness, _resolve_model, _current_user, _resolve_company, mock_intent,
 	):
 		mock_readiness.return_value = {
 			"ready": False, "reason": "no_published_policy", "policy_code": None,
@@ -422,14 +428,15 @@ class TestAiService(TestCase):
 		), patch("myapp.services.ai_service.ai_repository.load_model_messages", return_value=[]), patch(
 			"myapp.services.ai_service._build_product_search_context",
 			return_value=({"tool": "search_products", "products": []}, [], []),
-		), patch("myapp.services.ai_service.frappe") as mock_frappe:
+		) as build_context, patch("myapp.services.ai_service.frappe") as mock_frappe:
 			mock_frappe.local.lang = "zh-CN"
 			mock_frappe.get_roles.return_value = []
 			prepared = _prepare_chat_run(
-				content="查询 Camera 的库存", scenario="product_search", company="Demo Company",
+				content="查询一下有没有带莫字的商品", scenario="auto", company="Demo Company",
 			)
 
 		self.assertFalse(prepared["agent_mode"])
+		self.assertEqual(prepared["scenario"], "product_search")
 		self.assertEqual(prepared["payload"]["context"]["tool"], "search_products")
 		self.assertNotIn("policy_code", prepared["payload"])
 		self.assertNotIn("policy_version", prepared["payload"])
@@ -437,6 +444,78 @@ class TestAiService(TestCase):
 		self.assertEqual(prepared["tool_calls"][0]["tool"], "agent_runtime_readiness")
 		self.assertEqual(prepared["tool_calls"][0]["reason"], "no_published_policy")
 		mock_readiness.assert_called_once()
+		mock_intent.assert_called_once()
+		self.assertEqual(
+			build_context.call_args.kwargs["structured_intent"]["product_query"], "莫",
+		)
+
+	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
+		"intent": "product_search", "confidence": 0.97, "product_query": "迪莫",
+		"entities": [], "report_type": None, "date_preset": "all",
+		"date_from": None, "date_to": None, "status": "all", "sort": "latest",
+		"min_amount": None, "limit": 10,
+	})
+	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
+	def test_auto_compatibility_mode_uses_ai_semantics_without_a_local_keyword_hit(
+		self, _resolve_model, _current_user, _resolve_company, mock_intent,
+	):
+		with patch.dict(os.environ, {"MYAPP_AI_AGENT_RUNTIME_ENABLED": "0"}, clear=False), patch(
+			"myapp.services.ai_service.ai_repository.create_conversation",
+			return_value={"name": "AI-CONV-1", "company": "Demo Company"},
+		), patch("myapp.services.ai_service.ai_repository.append_message"), patch(
+			"myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-1",
+		), patch("myapp.services.ai_service.ai_repository.load_model_messages", return_value=[]), patch(
+			"myapp.services.ai_service._build_product_search_context",
+			return_value=({"tool": "search_products", "products": []}, [], []),
+		) as build_context, patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.get_roles.return_value = []
+			prepared = _prepare_chat_run(
+				content="仓里还剩迪莫吗", scenario="auto", company="Demo Company",
+			)
+
+		self.assertEqual(_infer_ai_scenario("仓里还剩迪莫吗"), "general")
+		self.assertEqual(prepared["scenario"], "product_search")
+		self.assertEqual(prepared["tool_calls"][0]["tool"], "parse_ai_intent")
+		self.assertEqual(prepared["tool_calls"][0]["mode"], "structured_intent")
+		self.assertEqual(
+			build_context.call_args.kwargs["structured_intent"]["product_query"], "迪莫",
+		)
+		mock_intent.assert_called_once()
+
+	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
+		"intent": "order_query", "confidence": 0.99, "product_query": None,
+		"entities": ["sales_order"], "report_type": None, "date_preset": "all",
+		"date_from": None, "date_to": None, "status": "all", "sort": "latest",
+		"min_amount": None, "limit": 10,
+	})
+	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
+	def test_explicit_readonly_scenario_cannot_be_rewritten_by_intent_parser(
+		self, _resolve_model, _current_user, _resolve_company, _mock_intent,
+	):
+		with patch.dict(os.environ, {"MYAPP_AI_AGENT_RUNTIME_ENABLED": "0"}, clear=False), patch(
+			"myapp.services.ai_service.ai_repository.create_conversation",
+			return_value={"name": "AI-CONV-1", "company": "Demo Company"},
+		), patch("myapp.services.ai_service.ai_repository.append_message"), patch(
+			"myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-1",
+		), patch("myapp.services.ai_service.ai_repository.load_model_messages", return_value=[]), patch(
+			"myapp.services.ai_service._build_product_search_context",
+			return_value=({"tool": "search_products", "products": []}, [], []),
+		) as build_context, patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.get_roles.return_value = []
+			prepared = _prepare_chat_run(
+				content="仓里还有迪莫吗", scenario="product_search", company="Demo Company",
+			)
+
+		self.assertEqual(prepared["scenario"], "product_search")
+		self.assertEqual(prepared["tool_calls"][0]["tool"], "parse_ai_intent")
+		self.assertEqual(prepared["tool_calls"][0]["mode"], "structured_intent_fallback")
+		self.assertIsNone(build_context.call_args.kwargs["structured_intent"])
 
 	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
@@ -864,14 +943,18 @@ class TestAiService(TestCase):
 		self.assertEqual(_infer_ai_scenario("我记得有个叫Camera的商品，帮我看看库存和售价"), "product_search")
 		self.assertEqual(_infer_ai_scenario("商品 Camera，告诉我真实匹配"), "product_search")
 		self.assertEqual(_infer_ai_scenario("你可以做什么"), "general")
-		self.assertTrue(_should_parse_structured_intent("商品Camera", "general"))
-		self.assertTrue(_should_parse_structured_intent("最近订单", "order_query"))
-		self.assertFalse(_should_parse_structured_intent("你好", "general"))
-		self.assertTrue(_should_parse_structured_intent(
-			"那就按刚才的继续",
-			"general",
-			{"active_scenario": "order_query"},
-		))
+
+	@patch("myapp.services.ai_service._get_ai_orchestrator_settings", side_effect=RuntimeError("missing token"))
+	def test_structured_intent_parser_configuration_failure_uses_local_fallback(self, _settings):
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			result = _call_ai_intent_orchestrator(
+				content="仓里还剩迪莫吗",
+				user="user@example.com",
+				company="Demo Company",
+			)
+
+		self.assertEqual(result, {})
+		mock_frappe.log_error.assert_called_once()
 
 	def test_context_merge_inherits_order_filters_and_applies_current_status(self):
 		state = {
@@ -1317,6 +1400,27 @@ class TestAiService(TestCase):
 		self.assertEqual(result["selected"]["item_code"], "SKU-1")
 		mock_semantic.assert_not_called()
 
+	@patch("myapp.services.ai_service.search_products_semantic")
+	@patch("myapp.services.ai_service.search_product_v2")
+	def test_structured_product_query_searches_the_model_extracted_substring(
+		self, mock_search, mock_semantic,
+	):
+		mock_search.return_value = {
+			"data": [{"item_code": "ITEM-DIMO", "item_name": "迪莫", "nickname": "迪莫"}],
+		}
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.get_list.return_value = ["ITEM-DIMO"]
+			result = _resolve_item_candidates(
+				"查询一下有没有带莫字的商品",
+				company="Demo Company",
+				entity_query="莫",
+			)
+
+		self.assertEqual(result["search_terms"], ["莫"])
+		self.assertEqual(result["candidates"][0]["item_name"], "迪莫")
+		self.assertEqual(mock_search.call_args.kwargs["search_key"], "莫")
+		mock_semantic.assert_not_called()
+
 	@patch("myapp.services.ai_service.search_products_semantic", return_value={"available": True, "rows": []})
 	@patch("myapp.services.ai_service.search_product_v2", return_value={"data": []})
 	def test_shared_item_resolver_reports_not_found_and_semantic_availability(
@@ -1719,7 +1823,12 @@ class TestAiService(TestCase):
 			"warnings": ["只读模式"],
 		}
 
-		with patch("myapp.services.ai_service.frappe") as mock_frappe, patch(
+		with patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
+			"intent": "product_search", "confidence": 0.96,
+			"product_query": "蓝色大包装饮料", "entities": [], "report_type": None,
+			"date_preset": "all", "date_from": None, "date_to": None,
+			"status": "all", "sort": "latest", "min_amount": None, "limit": 10,
+		}), patch("myapp.services.ai_service.frappe") as mock_frappe, patch(
 			"myapp.services.ai_service.now_datetime", return_value="2026-07-24 11:30:00",
 		):
 			mock_frappe.session.user = "user@example.com"
@@ -1740,7 +1849,9 @@ class TestAiService(TestCase):
 		self.assertEqual(payload["context"]["products"][0]["item_code"], "ITEM-001")
 		self.assertEqual(payload["context"]["retrieval"]["mode"], "lexical_fallback")
 		mock_semantic_search.assert_called_once()
-		self.assertEqual(mock_complete_run.call_args.kwargs["tool_calls"][0]["risk_level"], "L1_READ_ONLY")
+		tool_calls = mock_complete_run.call_args.kwargs["tool_calls"]
+		self.assertEqual(tool_calls[0]["tool"], "parse_ai_intent")
+		self.assertTrue(any(call["risk_level"] == "L1_READ_ONLY" for call in tool_calls))
 
 	@patch("myapp.services.ai_service.ai_repository.complete_run")
 	@patch("myapp.services.ai_service.ai_repository.load_model_messages")
@@ -1783,7 +1894,12 @@ class TestAiService(TestCase):
 			"warnings": ["只读模式"],
 		}
 
-		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+		with patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
+			"intent": "report_summary", "confidence": 0.96,
+			"product_query": None, "entities": [], "report_type": "sales",
+			"date_preset": "this_month", "date_from": None, "date_to": None,
+			"status": "all", "sort": "latest", "min_amount": None, "limit": 10,
+		}), patch("myapp.services.ai_service.frappe") as mock_frappe:
 			mock_frappe.session.user = "user@example.com"
 			mock_frappe.local.lang = "zh-CN"
 			mock_frappe.has_permission.return_value = True
@@ -1799,7 +1915,9 @@ class TestAiService(TestCase):
 		payload = mock_call.call_args.args[0]
 		self.assertEqual(payload["context"]["tool"], "get_business_report")
 		self.assertEqual(payload["context"]["dsl"]["report_type"], "sales")
-		self.assertEqual(mock_complete_run.call_args.kwargs["tool_calls"][0]["risk_level"], "L1_READ_ONLY")
+		tool_calls = mock_complete_run.call_args.kwargs["tool_calls"]
+		self.assertEqual(tool_calls[0]["tool"], "parse_ai_intent")
+		self.assertTrue(any(call["risk_level"] == "L1_READ_ONLY" for call in tool_calls))
 
 	@patch("myapp.services.ai_service._", side_effect=lambda value: value)
 	def test_chat_ai_v1_rejects_system_messages(self, mock_translate):
