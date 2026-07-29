@@ -227,8 +227,9 @@ def _execute_business_documents(arguments: dict, *, company: str) -> tuple[dict,
 	context, citations, _audit = _build_order_query_context(
 		query="", company=company, structured_intent=intent,
 	)
-	rows = (context.get("result_set") or {}).get("rows") or []
-	return context, citations, "ok" if rows else "not_found"
+	groups = (context.get("result_set") or {}).get("groups") or []
+	has_results = any(cint(group.get("returned_count")) > 0 for group in groups)
+	return context, citations, "ok" if has_results else "not_found"
 
 
 def _execute_business_report(arguments: dict, *, company: str) -> tuple[dict, list[dict], str]:
@@ -249,6 +250,43 @@ def _execute_business_report(arguments: dict, *, company: str) -> tuple[dict, li
 		query="", company=company, structured_intent=intent,
 	)
 	return context, citations, "ok"
+
+
+def _build_grounding_contract(*, context: dict, citations: list[dict], company: str) -> dict:
+	tool = str(context.get("tool") or "")
+	result_sets = []
+	if tool == "query_business_documents":
+		for group in (context.get("result_set") or {}).get("groups") or []:
+			truncated = group.get("truncated")
+			result_sets.append({
+				"type": str(group.get("entity") or "business_documents"),
+				"complete": None if truncated is None else not bool(truncated),
+				"returned_count": cint(group.get("returned_count")),
+				"available_count": group.get("available_count"),
+			})
+	elif tool == "search_products":
+		status = str((context.get("retrieval") or {}).get("status") or "not_found")
+		result_sets.append({
+			"type": "products",
+			"complete": True if status == "not_found" else None,
+			"returned_count": len(context.get("products") or []),
+			"available_count": None,
+		})
+	elif tool == "get_business_report":
+		result_sets.append({
+			"type": "business_report", "complete": True,
+			"returned_count": 1, "available_count": 1,
+		})
+	return {
+		"schema_version": "agent-grounding-v1",
+		"company": company,
+		"result_sets": result_sets,
+		"citation_refs": [
+			{"type": citation.get("type"), "id": citation.get("id")}
+			for citation in citations
+			if citation.get("type") and citation.get("id")
+		],
+	}
 
 
 def request_ai_agent_tool_approval_v1(
@@ -385,6 +423,9 @@ def execute_ai_agent_tool_v1(
 				"data": {"result_count": len(citations)},
 				"model_context": context,
 				"citations": citations,
+				"grounding": _build_grounding_contract(
+					context=context, citations=citations, company=company,
+				),
 				"error": None,
 				"retryable": False,
 			}

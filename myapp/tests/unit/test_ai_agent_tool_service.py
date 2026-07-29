@@ -3,12 +3,85 @@ from unittest.mock import patch
 
 from myapp.services.ai_agent_tool_service import (
 	TOOL_POLICIES,
+	_build_grounding_contract,
+	_execute_business_documents,
 	execute_ai_agent_tool_v1,
 	request_ai_agent_tool_approval_v1,
 )
 
 
 class TestAiAgentToolService(TestCase):
+	@patch("myapp.services.ai_service._build_order_query_context")
+	def test_business_document_tool_reports_ok_when_any_group_has_results(self, build_context):
+		build_context.return_value = (
+			{
+				"tool": "query_business_documents",
+				"result_set": {"groups": [
+					{"entity": "sales_order", "returned_count": 0},
+					{"entity": "sales_invoice", "returned_count": 2},
+				]},
+			},
+			[{"type": "sales_invoice", "id": "SINV-001"}],
+			[],
+		)
+
+		_context, _citations, status = _execute_business_documents(
+			{
+				"entities": ["sales_order", "sales_invoice"],
+				"date_from": None, "date_to": None, "status": "all",
+				"sort": "latest", "min_amount": None, "limit": 10,
+			},
+			company="Demo Company",
+		)
+
+		self.assertEqual(status, "ok")
+
+	@patch("myapp.services.ai_service._build_order_query_context")
+	def test_business_document_tool_reports_not_found_when_all_groups_are_empty(self, build_context):
+		build_context.return_value = (
+			{
+				"tool": "query_business_documents",
+				"result_set": {"groups": [
+					{"entity": "sales_order", "returned_count": 0},
+					{"entity": "sales_invoice", "returned_count": 0},
+				]},
+			},
+			[{"type": "business_result_set", "id": "snapshot-1"}],
+			[],
+		)
+
+		_context, _citations, status = _execute_business_documents(
+			{
+				"entities": ["sales_order", "sales_invoice"],
+				"date_from": None, "date_to": None, "status": "all",
+				"sort": "latest", "min_amount": None, "limit": 10,
+			},
+			company="Demo Company",
+		)
+
+		self.assertEqual(status, "not_found")
+
+	def test_grounding_contract_preserves_result_completeness_semantics(self):
+		contract = _build_grounding_contract(
+			context={
+				"tool": "query_business_documents",
+				"result_set": {"groups": [
+					{"entity": "sales_order", "truncated": False, "returned_count": 2, "available_count": 2},
+					{"entity": "sales_invoice", "truncated": True, "returned_count": 2, "available_count": 5},
+					{"entity": "purchase_order", "truncated": None, "returned_count": 1, "available_count": None},
+				]},
+			},
+			citations=[{"type": "sales_order", "id": "SO-001"}],
+			company="Demo Company",
+		)
+
+		self.assertEqual(contract["schema_version"], "agent-grounding-v1")
+		self.assertEqual(
+			[result["complete"] for result in contract["result_sets"]],
+			[True, False, None],
+		)
+		self.assertEqual(contract["citation_refs"], [{"type": "sales_order", "id": "SO-001"}])
+
 	def test_sensitive_tool_approval_request_uses_server_policy(self):
 		with patch.dict(
 			TOOL_POLICIES["search_products"],
@@ -109,6 +182,11 @@ class TestAiAgentToolService(TestCase):
 
 		self.assertEqual(result["status"], "resolved")
 		self.assertEqual(result["citations"][0]["id"], "SKU-MO")
+		self.assertEqual(result["grounding"]["schema_version"], "agent-grounding-v1")
+		self.assertEqual(result["grounding"]["company"], "Demo Company")
+		self.assertEqual(result["grounding"]["citation_refs"], [{
+			"type": "product", "id": "SKU-MO",
+		}])
 		validate.assert_called_once_with(
 			run_id="AI-RUN-1", capability_token="token", tool="search_products",
 		)
