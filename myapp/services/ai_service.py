@@ -12,6 +12,7 @@ from datetime import date, timedelta
 
 import frappe
 from frappe import _
+from frappe.exceptions import QueryDeadlockError
 from frappe.utils import cint, flt, getdate, now_datetime, nowdate
 from frappe.utils.synchronization import filelock
 from werkzeug.wrappers import Response
@@ -338,7 +339,39 @@ def _call_ai_orchestrator(payload: dict, *, resume: bool = False) -> dict:
 	try:
 		with urllib.request.urlopen(request, timeout=70) as response:
 			result = json.loads(response.read().decode("utf-8") or "{}")
-	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+	except urllib.error.HTTPError as error:
+		frappe.log_error(frappe.get_traceback(), _("AI Orchestrator 调用失败"))
+		code = {
+			401: "AI_SERVICE_AUTHENTICATION_FAILED",
+			403: "AI_SERVICE_AUTHENTICATION_FAILED",
+			409: "AI_PROMPT_VERSION_MISMATCH",
+			422: "AI_REQUEST_INVALID",
+			429: "AI_REQUEST_RATE_LIMITED",
+		}.get(error.code, "AI_SERVICE_UNAVAILABLE")
+		try:
+			body = json.loads(error.read().decode("utf-8") or "{}")
+			detail = body.get("detail") if isinstance(body, dict) else None
+			candidate = detail.get("code") if isinstance(detail, dict) else None
+			if isinstance(candidate, str) and (
+				candidate.startswith("AI_") or candidate == "MODEL_PROVIDER_REJECTED"
+			):
+				code = candidate
+		except (UnicodeDecodeError, json.JSONDecodeError):
+			pass
+		message = {
+			"AI_AGENT_CHECKPOINT_UNAVAILABLE": _("Agent 运行状态暂时无法保存，请稍后重试。"),
+			"AI_DAILY_BUDGET_EXCEEDED": _("今日 AI 使用预算已达到上限。"),
+			"AI_LOCAL_CONCURRENCY_LIMITED": _("当前 AI 请求较多，请稍后重试。"),
+			"AI_MODEL_CIRCUIT_OPEN": _("当前模型暂时不可用，请稍后重试。"),
+			"AI_MONTHLY_BUDGET_EXCEEDED": _("本月 AI 使用预算已达到上限。"),
+			"AI_PROMPT_VERSION_MISMATCH": _("AI 配置版本不一致，请联系管理员处理。"),
+			"AI_REQUEST_INVALID": _("AI 请求内容未通过校验，请修改后重试。"),
+			"AI_REQUEST_RATE_LIMITED": _("AI 请求过于频繁，请稍后重试。"),
+			"AI_RUNTIME_GOVERNANCE_UNAVAILABLE": _("AI 运行治理服务暂时不可用。"),
+			"AI_SERVICE_AUTHENTICATION_FAILED": _("AI 内部服务认证失败，请联系管理员。"),
+		}.get(code, _("AI 服务暂时不可用，请稍后重试。"))
+		raise AiServiceError(message, code=code, http_status=error.code) from error
+	except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
 		frappe.log_error(frappe.get_traceback(), _("AI Orchestrator 调用失败"))
 		raise UpstreamServiceUnavailableError(_("AI 服务暂时不可用，请稍后重试。"))
 
@@ -3812,50 +3845,66 @@ def _complete_chat_run(
 ):
 	_apply_agent_result(prepared, result)
 	latency_ms = int((time.perf_counter() - prepared["started"]) * 1000)
-	ai_repository.append_message(
-		conversation_id=prepared["conversation_id"],
-		user=prepared["user"],
-		role="assistant",
-		content=assistant_content,
-		scenario=prepared["scenario"],
-		run_id=prepared["run_id"],
-		citations=prepared["citations"],
-		prompt_version=prepared["prompt_version"],
-	)
-	try:
-		state_result = ai_repository.update_conversation_state(
-			conversation_id=prepared["conversation_id"],
-			user=prepared["user"],
-			state=prepared.get("next_conversation_state") or {},
-			expected_version=cint(prepared.get("conversation_state_version")),
-		)
-		prepared["tool_calls"].append({
-			"tool": "update_conversation_state",
-			"risk_level": "L0_SESSION_STATE",
-			"mode": "patched" if state_result.get("updated") else "state_update_skipped",
-			"state_version": state_result.get("version"),
-		})
-	except Exception:
-		# Conversation state is an optimization for continuity; a failed state
-		# write must never turn a successful read-only business answer into a run
-		# failure.  The next turn will rebuild from durable messages.
-		frappe.log_error(frappe.get_traceback(), _("AI 会话状态更新失败"))
-		prepared["tool_calls"].append({
-			"tool": "update_conversation_state",
-			"risk_level": "L0_SESSION_STATE",
-			"mode": "state_update_skipped",
-		})
-	ai_repository.complete_run(
-		run_id=prepared["run_id"],
-		user=prepared["user"],
-		result=result,
-		latency_ms=latency_ms,
-		first_token_ms=first_token_ms,
-		tool_calls=prepared["tool_calls"],
-	)
-	if prepared.get("agent_mode"):
-		ai_repository.revoke_agent_capability(run_id=prepared["run_id"], user=prepared["user"])
-	frappe.db.commit()
+	base_tool_calls = list(prepared["tool_calls"])
+	for attempt in range(2):
+		prepared["tool_calls"] = list(base_tool_calls)
+		try:
+			ai_repository.append_message(
+				conversation_id=prepared["conversation_id"],
+				user=prepared["user"],
+				role="assistant",
+				content=assistant_content,
+				scenario=prepared["scenario"],
+				run_id=prepared["run_id"],
+				citations=prepared["citations"],
+				prompt_version=prepared["prompt_version"],
+			)
+			try:
+				state_result = ai_repository.update_conversation_state(
+					conversation_id=prepared["conversation_id"],
+					user=prepared["user"],
+					state=prepared.get("next_conversation_state") or {},
+					expected_version=cint(prepared.get("conversation_state_version")),
+				)
+				prepared["tool_calls"].append({
+					"tool": "update_conversation_state",
+					"risk_level": "L0_SESSION_STATE",
+					"mode": "patched" if state_result.get("updated") else "state_update_skipped",
+					"state_version": state_result.get("version"),
+				})
+			except QueryDeadlockError:
+				# The Orchestrator persists Agent steps through separate HTTP
+				# transactions.  A final callback can briefly race this request's
+				# conversation/Run finalization; retry the whole local transaction.
+				raise
+			except Exception:
+				# Conversation state is an optimization for continuity; a failed state
+				# write must never turn a successful read-only business answer into a run
+				# failure.  The next turn will rebuild from durable messages.
+				frappe.log_error(frappe.get_traceback(), _("AI 会话状态更新失败"))
+				prepared["tool_calls"].append({
+					"tool": "update_conversation_state",
+					"risk_level": "L0_SESSION_STATE",
+					"mode": "state_update_skipped",
+				})
+			ai_repository.complete_run(
+				run_id=prepared["run_id"],
+				user=prepared["user"],
+				result=result,
+				latency_ms=latency_ms,
+				first_token_ms=first_token_ms,
+				tool_calls=prepared["tool_calls"],
+			)
+			if prepared.get("agent_mode"):
+				ai_repository.revoke_agent_capability(
+					run_id=prepared["run_id"], user=prepared["user"],
+				)
+			frappe.db.commit()
+			break
+		except QueryDeadlockError:
+			frappe.db.rollback()
+			if attempt:
+				raise
 	return {
 		"status": "completed",
 		"latency_ms": latency_ms,

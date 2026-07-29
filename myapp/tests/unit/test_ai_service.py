@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import urllib.error
 from contextlib import nullcontext
@@ -7,6 +8,7 @@ from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
 import frappe
+from frappe.exceptions import QueryDeadlockError
 
 from myapp.services.ai_service import (
 	_build_draft_version_diff,
@@ -17,6 +19,7 @@ from myapp.services.ai_service import (
 	_build_product_setup_draft,
 	_execute_ai_draft_payload,
 	_build_report_query_dsl,
+	_call_ai_orchestrator,
 	_call_ai_intent_orchestrator,
 	_normalize_ai_business_result_refresh,
 	_update_ai_draft_once,
@@ -1040,6 +1043,60 @@ class TestAiService(TestCase):
 
 		self.assertEqual(prepared["tool_calls"][-1]["mode"], "state_update_skipped")
 		mock_complete.assert_called_once()
+
+	@patch("myapp.services.ai_service.ai_repository.revoke_agent_capability")
+	@patch("myapp.services.ai_service.ai_repository.complete_run")
+	@patch("myapp.services.ai_service.ai_repository.update_conversation_state")
+	@patch("myapp.services.ai_service.ai_repository.append_message")
+	def test_complete_run_retries_whole_transaction_after_agent_callback_write_conflict(
+		self, mock_append, mock_update_state, mock_complete, mock_revoke,
+	):
+		mock_update_state.return_value = {"updated": True, "version": 4}
+		mock_complete.side_effect = [QueryDeadlockError("concurrent Agent callback"), None]
+		prepared = {
+			"started": 0, "conversation_id": "AI-CONV-1", "user": "user@example.com",
+			"scenario": "general", "run_id": "AI-RUN-1", "citations": [],
+			"prompt_version": "erp-readonly-v7", "tool_calls": [],
+			"conversation_state_version": 3,
+			"next_conversation_state": {"active_scenario": "general"},
+			"agent_mode": True,
+		}
+		with patch("myapp.services.ai_service.time.perf_counter", return_value=0), patch(
+			"myapp.services.ai_service.frappe",
+		) as mock_frappe:
+			_complete_chat_run(prepared, {"usage": {}}, "已完成")
+
+		self.assertEqual(mock_append.call_count, 2)
+		self.assertEqual(mock_update_state.call_count, 2)
+		self.assertEqual(mock_complete.call_count, 2)
+		mock_frappe.db.rollback.assert_called_once()
+		mock_frappe.db.commit.assert_called_once()
+		mock_revoke.assert_called_once_with(run_id="AI-RUN-1", user="user@example.com")
+		self.assertEqual(
+			[call["tool"] for call in prepared["tool_calls"]],
+			["update_conversation_state"],
+		)
+
+	@patch("myapp.services.ai_service.urllib.request.urlopen")
+	def test_sync_agent_call_preserves_checkpoint_failure_code(self, mock_urlopen):
+		body = json.dumps({
+			"detail": {
+				"code": "AI_AGENT_CHECKPOINT_UNAVAILABLE",
+				"message": "Agent 运行检查点暂时无法持久化。",
+			},
+		}).encode()
+		mock_urlopen.side_effect = urllib.error.HTTPError(
+			"http://ai-orchestrator/internal/v1/agent/run", 422,
+			"Unprocessable Entity", {}, io.BytesIO(body),
+		)
+		with patch.dict(os.environ, {"MYAPP_AI_SERVICE_TOKEN": "x" * 40}), patch(
+			"myapp.services.ai_service.frappe.log_error",
+		):
+			with self.assertRaises(AiServiceError) as raised:
+				_call_ai_orchestrator({"capability_token": "y" * 40})
+
+		self.assertEqual(raised.exception.code, "AI_AGENT_CHECKPOINT_UNAVAILABLE")
+		self.assertEqual(raised.exception.http_status, 422)
 
 	def test_order_dsl_understands_negative_status_recent_month_and_chinese_count(self):
 		dsl = _build_order_query_dsl(
