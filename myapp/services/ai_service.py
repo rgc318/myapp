@@ -59,7 +59,7 @@ PROMPT_VERSION_BY_SCENARIO = {
 	"sales_order_draft": "sales-order-draft-v2",
 	"purchase_order_draft": "purchase-order-draft-v2",
 	"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
-	"product_setup_draft": "product-setup-draft-v2",
+	"product_setup_draft": "product-setup-draft-v3",
 }
 PRODUCT_SEARCH_PREFIX_PATTERN = re.compile(
 	r"^(?:请|麻烦|可以|能否|帮我|给我|我想|我要)*(?:查询|查看|查找|搜索|检索|找一下|找一找|找找|找)?(?:一下|下)?"

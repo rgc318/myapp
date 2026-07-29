@@ -794,7 +794,7 @@ class TestAiService(TestCase):
 			"sales_order_draft": "sales-order-draft-v2",
 			"purchase_order_draft": "purchase-order-draft-v2",
 			"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
-			"product_setup_draft": "product-setup-draft-v2",
+			"product_setup_draft": "product-setup-draft-v3",
 		}
 		for scenario, expected in draft_versions.items():
 			with self.subTest(scenario=scenario):
