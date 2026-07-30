@@ -41,6 +41,15 @@ ALLOWED_ORDER_STATUSES = {"all", "unfinished", "completed", "cancelled", "delive
 ALLOWED_ORDER_SORTS = {"latest", "oldest", "amount_desc", "amount_asc"}
 ALLOWED_DATE_PRESETS = {"all", "today", "this_week", "last_month", "this_month", "last_30_days", "custom"}
 ALLOWED_REPORT_TYPES = {"overview", "sales", "purchase", "cashflow", "receivable_payable"}
+ALLOWED_AGENT_RUNTIME_EVENT_TYPES = {
+	"input_guardrail",
+	"model_decision",
+	"tool_guardrail",
+	"grounding_rewrite",
+	"output_guardrail",
+	"checkpoint",
+	"state_transition",
+}
 
 
 def _name(prefix: str) -> str:
@@ -1281,11 +1290,7 @@ def record_agent_runtime_event(
 	capability_token: str,
 ) -> dict:
 	validate_agent_run_capability(run_id=run_id, capability_token=capability_token)
-	allowed_types = {
-		"input_guardrail", "model_decision", "tool_guardrail", "output_guardrail",
-		"checkpoint", "state_transition",
-	}
-	if step_type not in allowed_types or status not in {"completed", "failed"}:
+	if step_type not in ALLOWED_AGENT_RUNTIME_EVENT_TYPES or status not in {"completed", "failed"}:
 		frappe.throw(_("Agent 运行事件类型或状态不正确。"))
 	resolved_event_id = str(event_id or "").strip()[:140]
 	if not resolved_event_id:
