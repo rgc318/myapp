@@ -52,10 +52,10 @@ CONVERSATION_STATE_BUSINESS_SCENARIOS = {"product_search", "order_query", "repor
 ALLOWED_AI_ROLES = {"user", "assistant"}
 ALLOWED_AI_SCENARIOS = {"auto", "general", "product_search", "order_query", "report_summary"}
 PROMPT_VERSION_BY_SCENARIO = {
-	"general": "erp-readonly-v7",
-	"product_search": "erp-readonly-v7",
-	"order_query": "erp-readonly-v7",
-	"report_summary": "erp-readonly-v7",
+	"general": "erp-readonly-v8",
+	"product_search": "erp-readonly-v8",
+	"order_query": "erp-readonly-v8",
+	"report_summary": "erp-readonly-v8",
 	"sales_order_draft": "sales-order-draft-v2",
 	"purchase_order_draft": "purchase-order-draft-v2",
 	"inventory_adjustment_draft": "inventory-adjustment-draft-v2",

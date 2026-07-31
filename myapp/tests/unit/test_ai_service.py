@@ -623,7 +623,7 @@ class TestAiService(TestCase):
 			return_value={
 				"run_id": "AI-RUN-1", "conversation_id": "AI-CONV-1", "scenario": "general",
 				"company": "Demo Company", "model_alias": "erp-fast-chat",
-				"prompt_version": "erp-readonly-v7", "allowed_tools": ["search_products"],
+				"prompt_version": "erp-readonly-v8", "allowed_tools": ["search_products"],
 				"capability_token": "new-capability-token", "checkpoint_stage": "tool_completed",
 			},
 		), patch(
@@ -643,7 +643,7 @@ class TestAiService(TestCase):
 		self.assertEqual(prepared["run_id"], "AI-RUN-1")
 		self.assertEqual(prepared["payload"]["capability_token"], "new-capability-token")
 		self.assertEqual(prepared["payload"]["model_alias"], "erp-fast-chat")
-		self.assertEqual(prepared["payload"]["prompt_version"], "erp-readonly-v7")
+		self.assertEqual(prepared["payload"]["prompt_version"], "erp-readonly-v8")
 		mock_frappe.db.commit.assert_called_once()
 
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
@@ -789,7 +789,7 @@ class TestAiService(TestCase):
 		)
 
 	def test_prompt_versions_are_mapped_by_scenario(self):
-		self.assertEqual(_resolve_prompt_version("general"), "erp-readonly-v7")
+		self.assertEqual(_resolve_prompt_version("general"), "erp-readonly-v8")
 		draft_versions = {
 			"sales_order_draft": "sales-order-draft-v2",
 			"purchase_order_draft": "purchase-order-draft-v2",
@@ -799,7 +799,7 @@ class TestAiService(TestCase):
 		for scenario, expected in draft_versions.items():
 			with self.subTest(scenario=scenario):
 				self.assertEqual(_resolve_prompt_version(scenario), expected)
-				self.assertNotEqual(expected, "erp-readonly-v7")
+				self.assertNotEqual(expected, "erp-readonly-v8")
 
 	@patch("myapp.services.ai_service.ai_repository.create_draft")
 	@patch("myapp.services.ai_service.ai_repository.fail_run")
@@ -1032,7 +1032,7 @@ class TestAiService(TestCase):
 		prepared = {
 			"started": 0, "conversation_id": "AI-CONV-1", "user": "user@example.com",
 			"scenario": "order_query", "run_id": "AI-RUN-1", "citations": [],
-			"prompt_version": "erp-readonly-v7", "tool_calls": [],
+			"prompt_version": "erp-readonly-v8", "tool_calls": [],
 			"conversation_state_version": 3,
 			"next_conversation_state": {"active_scenario": "order_query"},
 		}
@@ -1056,7 +1056,7 @@ class TestAiService(TestCase):
 		prepared = {
 			"started": 0, "conversation_id": "AI-CONV-1", "user": "user@example.com",
 			"scenario": "general", "run_id": "AI-RUN-1", "citations": [],
-			"prompt_version": "erp-readonly-v7", "tool_calls": [],
+			"prompt_version": "erp-readonly-v8", "tool_calls": [],
 			"conversation_state_version": 3,
 			"next_conversation_state": {"active_scenario": "general"},
 			"agent_mode": True,

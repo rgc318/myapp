@@ -67,7 +67,7 @@ class TestAiRepository(TestCase):
 				"tool": "search_products", "risk_level": "L3_SENSITIVE",
 			},
 			"tool_results": [], "citations": [], "usage": {}, "model": "model",
-			"model_alias": "erp-fast-chat", "prompt_version": "erp-readonly-v7",
+			"model_alias": "erp-fast-chat", "prompt_version": "erp-readonly-v8",
 			"trace_id": "trace", "agent_span_id": "span", "final_content": None,
 		}
 
@@ -208,7 +208,7 @@ class TestAiRepository(TestCase):
 				"call_id": "call-1", "tool": "search_products", "risk_level": "L3_SENSITIVE",
 			},
 			"tool_results": [], "citations": [], "usage": {}, "model": "model",
-			"model_alias": "erp-fast-chat", "prompt_version": "erp-readonly-v7",
+			"model_alias": "erp-fast-chat", "prompt_version": "erp-readonly-v8",
 			"trace_id": "trace", "agent_span_id": "span", "final_content": None,
 		}
 		approval_row = frappe._dict({
@@ -259,7 +259,7 @@ class TestAiRepository(TestCase):
 				"call_id": "call-1", "tool": "get_business_report", "risk_level": "L3_SENSITIVE",
 			},
 			"tool_results": [], "citations": [], "usage": {}, "model": "model",
-			"model_alias": "erp-fast-chat", "prompt_version": "erp-readonly-v7",
+			"model_alias": "erp-fast-chat", "prompt_version": "erp-readonly-v8",
 			"trace_id": "trace", "agent_span_id": "span", "final_content": None,
 		}
 		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
@@ -361,7 +361,7 @@ class TestAiRepository(TestCase):
 			"runtime_messages": [], "agent_steps": [], "tool_calls": [],
 			"pending_tool_calls": [], "tool_results": [], "citations": [],
 			"usage": {}, "model": "provider-model", "model_alias": "erp-fast-chat",
-			"prompt_version": "erp-readonly-v7", "trace_id": "trace", "agent_span_id": "span",
+			"prompt_version": "erp-readonly-v8", "trace_id": "trace", "agent_span_id": "span",
 			"final_content": None,
 		}
 		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
@@ -850,7 +850,7 @@ class TestAiRepository(TestCase):
 		message = frappe._dict({
 			"name": "AI-MSG-1", "sequence_no": 1, "role": "assistant", "content": "完成",
 			"scenario": "general", "run_id": "AI-RUN-1", "citations_json": "[]",
-			"prompt_version": "erp-readonly-v7", "creation": "2026-07-24 10:00:00",
+			"prompt_version": "erp-readonly-v8", "creation": "2026-07-24 10:00:00",
 			"run_status": "completed", "model_alias": "internal-alias", "model": "provider-model",
 			"trace_id": "trace-secret", "prompt_tokens": 10, "completion_tokens": 2,
 			"total_tokens": 12, "reasoning_tokens": 0, "latency_ms": 900,
