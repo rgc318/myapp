@@ -8,7 +8,7 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import frappe
 from frappe import _
@@ -36,7 +36,20 @@ from myapp.services.report_service import (
 	get_receivable_payable_report_v1,
 	get_sales_report_v1,
 )
-from myapp.services.wholesale_service import create_product_v2, search_product_v2
+from myapp.services.wholesale_service import (
+	create_product_v2,
+	get_product_detail_v2,
+	search_product_v2,
+	update_product_v2,
+)
+from myapp.services.ai_draft_state import (
+	SCHEMA_VERSION as AI_DRAFT_STATE_SCHEMA_VERSION,
+	build_draft_state,
+	classify_value,
+	derive_patch_from_submission,
+	field_fact,
+	merge_baseline_patch,
+)
 from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
 from myapp.utils.api_response import UpstreamServiceUnavailableError
 from myapp.utils.idempotency import get_current_request_id, run_idempotent
@@ -59,8 +72,21 @@ PROMPT_VERSION_BY_SCENARIO = {
 	"sales_order_draft": "sales-order-draft-v2",
 	"purchase_order_draft": "purchase-order-draft-v2",
 	"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
-	"product_setup_draft": "product-setup-draft-v3",
+	"product_setup_draft": "product-setup-draft-v4",
 }
+
+PRODUCT_SETUP_EDITABLE_FIELDS = (
+	"item_name",
+	"item_group",
+	"brand",
+	"stock_uom",
+	"standard_selling_rate",
+	"wholesale_rate",
+	"retail_rate",
+	"standard_buying_rate",
+	"currency",
+	"description",
+)
 PRODUCT_SEARCH_PREFIX_PATTERN = re.compile(
 	r"^(?:请|麻烦|可以|能否|帮我|给我|我想|我要)*(?:查询|查看|查找|搜索|检索|找一下|找一找|找找|找)?(?:一下|下)?"
 )
@@ -1798,6 +1824,82 @@ def _resolve_purchase_draft_supplier(query: str | None) -> tuple[dict | None, li
 	return exact or (candidates[0] if len(candidates) == 1 else None), candidates
 
 
+def _authoritative_reference_price(selected: dict, *, buying: bool) -> tuple[float | None, str]:
+	price_summary = selected.get("price_summary") if isinstance(selected.get("price_summary"), dict) else {}
+	price_list = "Standard Buying" if buying else str(selected.get("price_list") or "Standard Selling")
+	rows = price_summary.get("buying_prices" if buying else "selling_prices") or []
+	row = next((value for value in rows if str(value.get("price_list") or "") == price_list), None)
+	if row:
+		return flt(row.get("rate")), f"Item Price/{price_list}"
+	if not buying and selected.get("standard_rate") not in (None, "", 0, 0.0):
+		return flt(selected.get("standard_rate")), "Item/standard_rate"
+	return None, f"Item Price/{price_list}"
+
+
+def _resolve_line_price_intent(
+	candidate: dict,
+	*,
+	reference_price: float | None,
+	allow_user_price: bool,
+) -> tuple[float | None, dict]:
+	previous_state = candidate.get("_state") if isinstance(candidate.get("_state"), dict) else {}
+	previous_patch = previous_state.get("patch") if isinstance(previous_state.get("patch"), dict) else {}
+	previous_effective = previous_state.get("effective") if isinstance(previous_state.get("effective"), dict) else {}
+	user_patch = dict(previous_patch)
+	submitted_price = None if candidate.get("price") in (None, "") else flt(candidate.get("price"))
+	if allow_user_price:
+		if previous_state.get("schema_version") == AI_DRAFT_STATE_SCHEMA_VERSION:
+			if submitted_price != previous_effective.get("price"):
+				if submitted_price == reference_price:
+					user_patch.pop("price", None)
+				else:
+					user_patch["price"] = submitted_price
+		elif submitted_price is not None:
+			user_patch["price"] = submitted_price
+	if user_patch.get("price") is not None and flt(user_patch.get("price")) < 0:
+		user_patch.pop("price", None)
+	resolved_price = user_patch.get("price") if "price" in user_patch else reference_price
+	return resolved_price, user_patch
+
+
+def _build_transaction_line_state(
+	*,
+	selected: dict,
+	reference_price: float | None,
+	reference_source: str,
+	resolved_price: float | None,
+	user_patch: dict,
+	uom: str | None,
+	conversion_factor: float | None,
+) -> dict:
+	state = build_draft_state(
+		operation="transaction",
+		entity_doctype="Item",
+		entity_name=selected.get("item_code"),
+		entity_modified=selected.get("modified"),
+		observed_at=datetime.now(),
+		baseline={"price": reference_price},
+		patch=user_patch,
+		fields={
+			"price": field_fact(
+				resolved_price,
+				source="user" if "price" in user_patch else reference_source,
+			),
+			"conversion_factor": field_fact(conversion_factor, source="UOM Conversion Detail"),
+		},
+		source_facts={
+			"entity_modified": selected.get("modified"),
+			"reference_price": reference_price,
+			"reference_price_status": classify_value(reference_price),
+			"uom": uom,
+			"conversion_factor": conversion_factor,
+		},
+	)
+	state["reference_price"] = reference_price
+	state["reference_price_source"] = reference_source
+	return state
+
+
 def _resolve_purchase_draft_item(
 	candidate: dict, *, company: str, default_warehouse: str | None,
 	allow_user_price: bool = False,
@@ -1829,29 +1931,38 @@ def _resolve_purchase_draft_item(
 	if requested_uom and not uom_row:
 		warnings.append(_("商品 {0} 未配置单位 {1}，已改用采购默认单位。" ).format(selected.get("item_code"), requested_uom))
 	resolved_uom = (uom_row or {}).get("uom") or selected.get("wholesale_default_uom") or selected.get("uom")
-	price_summary = selected.get("price_summary") or {}
-	buying_prices = price_summary.get("buying_prices") or []
-	reference_price = float(
-		price_summary.get("standard_buying_rate")
-		or (buying_prices[0].get("rate") if buying_prices else 0)
-		or 0
-	)
-	user_price = None if candidate.get("price") in (None, "") else float(candidate.get("price"))
+	reference_price, reference_source = _authoritative_reference_price(selected, buying=True)
+	user_price = None if candidate.get("price") in (None, "") else flt(candidate.get("price"))
 	if allow_user_price and user_price is not None and user_price < 0:
 		warnings.append(_("人工价格不能小于 0，已改用当前后端采购参考价。"))
-		user_price = None
-	resolved_price = user_price if allow_user_price and user_price is not None else reference_price
+	resolved_price, user_patch = _resolve_line_price_intent(
+		candidate,
+		reference_price=reference_price,
+		allow_user_price=allow_user_price,
+	)
 	if not allow_user_price and user_price is not None and user_price != reference_price:
 		warnings.append(_("模型建议价格未采用，草稿使用当前后端采购参考价。"))
+	conversion_factor = float((uom_row or {}).get("conversion_factor") or 1)
 	return {
 		"item_query": query, "item_code": selected.get("item_code"), "item_name": selected.get("item_name"),
 		"qty": qty, "uom": resolved_uom,
 		"uom_display": (uom_row or {}).get("uom_display") or resolve_uom_display_name(resolved_uom),
 		"stock_uom": selected.get("uom"), "stock_uom_display": selected.get("uom_display"),
-		"price": resolved_price, "warehouse": warehouse,
-		"conversion_factor": float((uom_row or {}).get("conversion_factor") or 1),
+		"price": resolved_price, "reference_price": reference_price,
+		"price_source": "user" if "price" in user_patch else "system",
+		"warehouse": warehouse,
+		"conversion_factor": conversion_factor,
 		"candidates": [{"item_code": row.get("item_code"), "item_name": row.get("item_name")} for row in rows],
 		"warnings": warnings,
+		"_state": _build_transaction_line_state(
+			selected=selected,
+			reference_price=reference_price,
+			reference_source=reference_source,
+			resolved_price=resolved_price,
+			user_patch=user_patch,
+			uom=resolved_uom,
+			conversion_factor=conversion_factor,
+		),
 	}
 
 
@@ -1951,6 +2062,39 @@ def _resolve_inventory_draft_item(
 		else:
 			target_stock_qty = resolved_stock_qty
 	price_summary = selected.get("price_summary") or {}
+	valuation_value = price_summary.get("valuation_rate")
+	valuation_rate = None if valuation_value in (None, "") else flt(valuation_value)
+	conversion_factor = flt((quantity_context or {}).get("conversion_factor") or 1)
+	line_state = build_draft_state(
+		operation="transaction",
+		entity_doctype="Item",
+		entity_name=selected.get("item_code"),
+		entity_modified=selected.get("modified"),
+		observed_at=datetime.now(),
+		baseline={
+			"current_stock_qty": current_stock_qty,
+			"valuation_rate": valuation_rate,
+			"conversion_factor": conversion_factor,
+		},
+		patch={
+			"adjustment_type": adjustment_type,
+			"quantity": input_qty,
+			"uom": resolved_uom,
+		},
+		fields={
+			"current_stock_qty": field_fact(current_stock_qty, source="Bin/actual_qty"),
+			"valuation_rate": field_fact(valuation_rate, source="Item/valuation_rate"),
+			"conversion_factor": field_fact(conversion_factor, source="UOM Conversion Detail"),
+		},
+		source_facts={
+			"entity_modified": selected.get("modified"),
+			"warehouse": warehouse,
+			"current_stock_qty": current_stock_qty,
+			"valuation_rate": valuation_rate,
+			"uom": resolved_uom,
+			"conversion_factor": conversion_factor,
+		},
+	)
 	return {
 		"item_query": query,
 		"item_code": selected.get("item_code"),
@@ -1961,16 +2105,17 @@ def _resolve_inventory_draft_item(
 		"stock_uom": stock_uom,
 		"stock_uom_display": selected.get("uom_display") or resolve_uom_display_name(stock_uom),
 		"warehouse": warehouse,
-		"conversion_factor": flt((quantity_context or {}).get("conversion_factor") or 1),
+		"conversion_factor": conversion_factor,
 		"current_stock_qty": current_stock_qty,
 		"target_stock_qty": target_stock_qty,
 		"qty_delta": flt(target_stock_qty - current_stock_qty) if target_stock_qty is not None else None,
-		"valuation_rate": flt(price_summary.get("valuation_rate") or 0),
+		"valuation_rate": valuation_rate,
 		"candidates": [
 			{"item_code": row.get("item_code"), "item_name": row.get("item_name")}
 			for row in rows
 		],
 		"warnings": warnings,
+		"_state": line_state,
 	}
 
 
@@ -2080,14 +2225,18 @@ def _resolve_sales_draft_item(
 	if requested_uom and not uom_row:
 		warnings.append(_("商品 {0} 未配置单位 {1}，已改用默认单位。" ).format(selected.get("item_code"), requested_uom))
 	resolved_uom = (uom_row or {}).get("uom") or selected.get("wholesale_default_uom") or selected.get("uom")
-	reference_price = float(selected.get("price") or 0)
-	user_price = None if candidate.get("price") in (None, "") else float(candidate.get("price"))
+	reference_price, reference_source = _authoritative_reference_price(selected, buying=False)
+	user_price = None if candidate.get("price") in (None, "") else flt(candidate.get("price"))
 	if allow_user_price and user_price is not None and user_price < 0:
 		warnings.append(_("人工价格不能小于 0，已改用当前后端参考价。"))
-		user_price = None
-	resolved_price = user_price if allow_user_price and user_price is not None else reference_price
+	resolved_price, user_patch = _resolve_line_price_intent(
+		candidate,
+		reference_price=reference_price,
+		allow_user_price=allow_user_price,
+	)
 	if not allow_user_price and user_price is not None and user_price != reference_price:
 		warnings.append(_("模型建议价格未采用，草稿使用当前后端参考价。"))
+	conversion_factor = float((uom_row or {}).get("conversion_factor") or 1)
 	return {
 		"item_query": query,
 		"item_code": selected.get("item_code"),
@@ -2098,10 +2247,21 @@ def _resolve_sales_draft_item(
 		"stock_uom": selected.get("uom"),
 		"stock_uom_display": selected.get("uom_display"),
 		"price": resolved_price,
+		"reference_price": reference_price,
+		"price_source": "user" if "price" in user_patch else "system",
 		"warehouse": warehouse,
-		"conversion_factor": float((uom_row or {}).get("conversion_factor") or 1),
+		"conversion_factor": conversion_factor,
 		"candidates": [{"item_code": row.get("item_code"), "item_name": row.get("item_name")} for row in rows],
 		"warnings": warnings,
+		"_state": _build_transaction_line_state(
+			selected=selected,
+			reference_price=reference_price,
+			reference_source=reference_source,
+			resolved_price=resolved_price,
+			user_patch=user_patch,
+			uom=resolved_uom,
+			conversion_factor=conversion_factor,
+		),
 	}
 
 
@@ -2525,7 +2685,126 @@ def _resolve_optional_master_name(doctype: str, query: str | None) -> str | None
 	return str(rows[0]) if len(rows) == 1 else None
 
 
+def _resolve_existing_product_for_setup(candidate: dict) -> tuple[dict | None, list[dict]]:
+	state = candidate.get("_state") if isinstance(candidate.get("_state"), dict) else {}
+	state_entity = state.get("entity") if isinstance(state.get("entity"), dict) else {}
+	item_code = str(state_entity.get("name") or candidate.get("item_code") or "").strip()
+	item_name = str(candidate.get("item_name") or "").strip()
+	matches: dict[str, dict] = {}
+	if item_code:
+		for row in frappe.get_list(
+			"Item", filters={"name": item_code}, fields=["name", "item_name", "modified"], limit_page_length=2,
+		):
+			matches[str(row.get("name"))] = dict(row)
+	if item_name:
+		for row in frappe.get_list(
+			"Item", filters={"item_name": item_name}, fields=["name", "item_name", "modified"], limit_page_length=5,
+		):
+			matches[str(row.get("name"))] = dict(row)
+	rows = list(matches.values())
+	if len(rows) != 1:
+		return None, rows
+	detail = (get_product_detail_v2(
+		item_code=rows[0]["name"], company=candidate.get("company"),
+	) or {}).get("data") or {}
+	return detail, rows
+
+
+def _product_price_fact(detail: dict, price_list: str, *, buying: bool = False) -> tuple[float | None, str]:
+	price_summary = detail.get("price_summary") if isinstance(detail.get("price_summary"), dict) else {}
+	rows = price_summary.get("buying_prices" if buying else "selling_prices") or []
+	row = next(
+		(value for value in rows if str(value.get("price_list") or "") == price_list),
+		None,
+	)
+	if row:
+		return flt(row.get("rate")), f"Item Price/{price_list}"
+	if price_list == "Standard Selling" and detail.get("standard_rate") not in (None, "", 0, 0.0):
+		return flt(detail.get("standard_rate")), "Item/standard_rate"
+	return None, f"Item Price/{price_list}"
+
+
+def _build_existing_product_baseline(detail: dict, *, company: str) -> tuple[dict, dict, dict]:
+	standard_selling_rate, standard_selling_source = _product_price_fact(detail, "Standard Selling")
+	wholesale_rate, wholesale_source = _product_price_fact(detail, "Wholesale")
+	retail_rate, retail_source = _product_price_fact(detail, "Retail")
+	standard_buying_rate, standard_buying_source = _product_price_fact(
+		detail, "Standard Buying", buying=True,
+	)
+	currency = detail.get("currency") or frappe.db.get_value("Company", company, "default_currency") or None
+	baseline = {
+		"item_name": detail.get("item_name"),
+		"item_code": detail.get("item_code"),
+		"item_group": detail.get("item_group"),
+		"brand": detail.get("brand"),
+		"stock_uom": detail.get("stock_uom"),
+		"standard_selling_rate": standard_selling_rate,
+		"wholesale_rate": wholesale_rate,
+		"retail_rate": retail_rate,
+		"standard_buying_rate": standard_buying_rate,
+		"currency": currency,
+		"description": detail.get("description") or None,
+	}
+	sources = {
+		"item_name": "Item/item_name",
+		"item_code": "Item/name",
+		"item_group": "Item/item_group",
+		"brand": "Item/brand",
+		"stock_uom": "Item/stock_uom",
+		"standard_selling_rate": standard_selling_source,
+		"wholesale_rate": wholesale_source,
+		"retail_rate": retail_source,
+		"standard_buying_rate": standard_buying_source,
+		"currency": "Company/default_currency",
+		"description": "Item/description",
+	}
+	context = {
+		"inventory_read_only": True,
+		"company_total_qty": detail.get("total_qty"),
+		"company_warehouse_stock": detail.get("warehouse_stock_details") or [],
+		"stock_uom": detail.get("stock_uom"),
+		"stock_uom_display": detail.get("stock_uom_display"),
+	}
+	return baseline, sources, context
+
+
+def _initial_product_patch(candidate: dict, normalized: dict, *, operation: str) -> dict:
+	if operation == "create":
+		return {
+			field: normalized.get(field)
+			for field in PRODUCT_SETUP_EDITABLE_FIELDS
+			if field in normalized and normalized.get(field) not in (None, "")
+		}
+	patch = {}
+	for field in PRODUCT_SETUP_EDITABLE_FIELDS:
+		if field == "item_name":
+			continue
+		if field in {"item_group", "brand", "stock_uom"}:
+			explicit = {
+				"item_group": candidate.get("item_group") or candidate.get("item_group_query"),
+				"brand": candidate.get("brand") or candidate.get("brand_query"),
+				"stock_uom": candidate.get("stock_uom"),
+			}[field]
+			if explicit not in (None, ""):
+				patch[field] = normalized.get(field)
+		elif candidate.get(field) not in (None, ""):
+			patch[field] = normalized.get(field)
+	return patch
+
+
 def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, dict]:
+	candidate = dict(candidate or {})
+	candidate["company"] = company
+	previous_state = candidate.get("_state") if isinstance(candidate.get("_state"), dict) else {}
+	requested_operation = str(
+		candidate.get("operation") or previous_state.get("operation") or "auto"
+	).strip().lower()
+	if requested_operation not in {"auto", "create", "update"}:
+		requested_operation = "auto"
+	existing_detail, existing_matches = _resolve_existing_product_for_setup(candidate)
+	operation = requested_operation
+	if operation == "auto":
+		operation = "update" if existing_detail else "create"
 	item_name = str(candidate.get("item_name") or "").strip()[:140] or None
 	item_code = str(candidate.get("item_code") or "").strip()[:140] or None
 	item_group_query = str(candidate.get("item_group") or candidate.get("item_group_query") or "").strip() or None
@@ -2575,15 +2854,21 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 	description = str(candidate.get("description") or "").strip()[:2000] or None
 	errors = []
 	warnings = []
-	if not item_name:
+	if operation == "update" and not existing_detail:
+		errors.append(_("未找到唯一的现有商品，请补充准确商品名称或编码。"))
+	elif operation == "create" and existing_detail:
+		errors.append(_("商品 {0} 已存在；如需完善资料，请将操作改为“完善现有商品”。").format(
+			existing_detail.get("item_name") or existing_detail.get("item_code")
+		))
+	elif len(existing_matches) > 1:
+		errors.append(_("商品名称匹配到多条记录，请使用商品编码明确选择。"))
+	if not item_name and operation == "create":
 		errors.append(_("请填写商品名称。"))
-	elif frappe.db.exists("Item", {"item_name": item_name}):
-		errors.append(_("商品名称 {0} 已存在，请确认是否应编辑现有商品。" ).format(item_name))
-	if item_code and frappe.db.exists("Item", item_code):
-		errors.append(_("商品编码 {0} 已存在。" ).format(item_code))
+	if operation == "create" and item_code and frappe.db.exists("Item", item_code):
+		errors.append(_("商品编码 {0} 已存在。").format(item_code))
 	if item_group_query and not item_group:
 		errors.append(_("商品分类无法唯一匹配，请人工选择。"))
-	elif not item_group:
+	elif operation == "create" and not item_group:
 		warnings.append(_("未指定商品分类，正式商品页面将使用后端默认分类。"))
 	if brand_query and not brand:
 		errors.append(_("品牌无法唯一匹配，请人工选择。"))
@@ -2591,20 +2876,22 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 		errors.append(_("币种 {0} 无法识别，请人工选择标准币种代码。" ).format(currency_query))
 	if not stock_uom:
 		errors.append(_("库存单位无法唯一匹配，请人工选择。"))
-	if opening_uom and stock_uom and opening_uom != stock_uom:
+	if operation == "update" and opening_qty not in (None, 0, 0.0):
+		errors.append(_("完善现有商品时不能把当前库存作为初始库存；请使用库存调整草稿处理库存变化。"))
+	if operation == "create" and opening_uom and stock_uom and opening_uom != stock_uom:
 		errors.append(_("商品建档草稿首期只支持按库存基准单位初始化库存，请补充单位换算后再创建。"))
-	if opening_qty is not None and opening_qty < 0:
+	if operation == "create" and opening_qty is not None and opening_qty < 0:
 		errors.append(_("初始库存数量不能为负数。"))
-	if opening_qty and not warehouse:
+	if operation == "create" and opening_qty and not warehouse:
 		errors.append(_("填写初始库存时必须选择当前公司的叶子仓库。"))
-	if opening_qty and standard_buying_rate is None:
+	if operation == "create" and opening_qty and standard_buying_rate is None:
 		errors.append(_("填写初始库存时必须补充成本价（默认采购价）；系统会将其作为首次入库成本，售价不会用于库存计价。"))
-	if opening_qty and not frappe.has_permission("Stock Entry", ptype="create"):
+	if operation == "create" and opening_qty and not frappe.has_permission("Stock Entry", ptype="create"):
 		errors.append(_("当前账号无权创建初始库存入库单。"))
-	if any(rate is not None for rate in (standard_selling_rate, wholesale_rate, retail_rate)) and not frappe.has_permission(
-		"Item Price", ptype="create"
-	):
-		errors.append(_("当前账号无权创建商品销售价格。"))
+	if operation == "create" and not frappe.has_permission("Item", ptype="create"):
+		errors.append(_("当前账号无权创建商品。"))
+	if operation == "update" and existing_detail and not frappe.has_permission("Item", ptype="write"):
+		errors.append(_("当前账号无权完善现有商品。"))
 	if standard_selling_rate is not None and standard_selling_rate < 0:
 		errors.append(_("标准售价不能为负数。"))
 	if wholesale_rate is not None and wholesale_rate < 0:
@@ -2613,22 +2900,12 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 		errors.append(_("零售价不能为负数。"))
 	if standard_buying_rate is not None and standard_buying_rate < 0:
 		errors.append(_("成本价（默认采购价）不能为负数。"))
-	payload = {
-		"company": company,
+	normalized = {
 		"item_name": item_name,
 		"item_code": item_code,
-		"item_group_query": item_group_query,
 		"item_group": item_group,
-		"brand_query": brand_query,
 		"brand": brand,
 		"stock_uom": stock_uom,
-		"stock_uom_display": resolve_uom_display_name(stock_uom),
-		"uom_candidates": uom_candidates,
-		"warehouse_query": warehouse_query,
-		"warehouse": warehouse,
-		"opening_qty": opening_qty,
-		"opening_uom": opening_uom or stock_uom,
-		"opening_uom_display": resolve_uom_display_name(opening_uom or stock_uom),
 		"standard_selling_rate": standard_selling_rate,
 		"wholesale_rate": wholesale_rate,
 		"retail_rate": retail_rate,
@@ -2636,6 +2913,100 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 		"currency": currency,
 		"description": description,
 	}
+	baseline = {}
+	field_sources = {field: "user" for field in PRODUCT_SETUP_EDITABLE_FIELDS}
+	inventory_context = {}
+	if operation == "update" and existing_detail:
+		baseline, field_sources, inventory_context = _build_existing_product_baseline(
+			existing_detail, company=company,
+		)
+		if previous_state.get("schema_version") == AI_DRAFT_STATE_SCHEMA_VERSION:
+			patch = derive_patch_from_submission(
+				baseline=previous_state.get("baseline"),
+				previous_patch=previous_state.get("patch"),
+				previous_effective=previous_state.get("effective"),
+				submitted=normalized,
+				fields=PRODUCT_SETUP_EDITABLE_FIELDS,
+			)
+		else:
+			patch = _initial_product_patch(candidate, normalized, operation=operation)
+	else:
+		patch = _initial_product_patch(candidate, normalized, operation=operation)
+	price_patch_fields = {
+		"standard_selling_rate", "wholesale_rate", "retail_rate", "standard_buying_rate",
+	}
+	if price_patch_fields.intersection(patch) and not (
+		frappe.has_permission("Item Price", ptype="create")
+		or frappe.has_permission("Item Price", ptype="write")
+	):
+		errors.append(_("当前账号无权维护商品价格。"))
+	for field in price_patch_fields.intersection(patch):
+		if patch.get(field) is None:
+			errors.append(_(
+				"AI 完善草稿不支持直接删除价格；如需明确零价请输入 0，如需删除价格记录请进入商品模块处理。"
+			))
+			break
+	for field, label in (
+		("item_name", _("商品名称")),
+		("item_group", _("商品分类")),
+		("stock_uom", _("库存基准单位")),
+		("currency", _("币种")),
+	):
+		if field in patch and patch.get(field) in (None, ""):
+			errors.append(_("{0} 不能清空。").format(label))
+	effective = merge_baseline_patch(baseline, patch)
+	if operation == "update" and existing_detail:
+		effective["item_code"] = existing_detail.get("item_code")
+		effective["item_name"] = patch.get("item_name", baseline.get("item_name"))
+	stock_uom = effective.get("stock_uom") or stock_uom
+	state = build_draft_state(
+		operation=operation,
+		entity_doctype="Item",
+		entity_name=existing_detail.get("item_code") if existing_detail else None,
+		entity_modified=existing_detail.get("modified") if existing_detail else None,
+		observed_at=datetime.now(),
+		baseline=baseline,
+		patch=patch,
+		fields={
+			field: field_fact(
+				patch.get(field, baseline.get(field)),
+				source="user" if field in patch else field_sources.get(field, "system"),
+			)
+			for field in PRODUCT_SETUP_EDITABLE_FIELDS
+		},
+		source_facts={
+			"entity_modified": existing_detail.get("modified") if existing_detail else None,
+			"baseline": baseline,
+		},
+	)
+	state["context"] = inventory_context
+	payload = {
+		"company": company,
+		"operation": operation,
+		"item_name": effective.get("item_name"),
+		"item_code": effective.get("item_code") or item_code,
+		"item_group_query": item_group_query,
+		"item_group": effective.get("item_group"),
+		"brand_query": brand_query,
+		"brand": effective.get("brand"),
+		"stock_uom": stock_uom,
+		"stock_uom_display": resolve_uom_display_name(stock_uom),
+		"uom_candidates": uom_candidates,
+		"warehouse_query": warehouse_query if operation == "create" else None,
+		"warehouse": warehouse if operation == "create" else None,
+		"opening_qty": opening_qty if operation == "create" else None,
+		"opening_uom": opening_uom or stock_uom,
+		"opening_uom_display": resolve_uom_display_name(opening_uom or stock_uom),
+		"standard_selling_rate": effective.get("standard_selling_rate"),
+		"wholesale_rate": effective.get("wholesale_rate"),
+		"retail_rate": effective.get("retail_rate"),
+		"standard_buying_rate": effective.get("standard_buying_rate"),
+		"currency": effective.get("currency") or currency,
+		"description": effective.get("description"),
+		"_state": state,
+	}
+	if operation == "update" and existing_detail and not patch:
+		errors.append(_("尚未修改现有商品字段；请填写需要完善的资料。"))
 	return payload, {"ready_for_handoff": not errors, "errors": errors, "warnings": warnings}
 
 
@@ -2651,8 +3022,11 @@ def generate_ai_product_setup_draft_v1(
 	model_alias = resolve_ai_selected_model_alias(model_alias)
 	content = _normalize_content(content)
 	company = _resolve_company_scope(company, required=True)
-	if not frappe.has_permission("Item", ptype="create"):
-		raise frappe.PermissionError(_("无权创建商品建档草稿。"))
+	if not (
+		frappe.has_permission("Item", ptype="create")
+		or frappe.has_permission("Item", ptype="write")
+	):
+		raise frappe.PermissionError(_("无权创建或完善商品草稿。"))
 	if not conversation_id:
 		conversation = ai_repository.create_conversation(user=user, title=content, company=company)
 		conversation_id = conversation["name"]
@@ -2786,7 +3160,8 @@ def _update_ai_draft_once(
 			_resolve_purchase_draft_item(
 				{"item_query": row.get("item_code") or row.get("item_query"), "qty": row.get("qty"),
 				 "uom": row.get("uom"), "price": row.get("price"),
-				 "warehouse_query": row.get("warehouse") or default_warehouse},
+				 "warehouse_query": row.get("warehouse") or default_warehouse,
+				 "_state": row.get("_state")},
 				company=company, default_warehouse=default_warehouse,
 				allow_user_price=True,
 			)
@@ -2836,6 +3211,7 @@ def _update_ai_draft_once(
 				"item_query": row.get("item_code") or row.get("item_query"),
 				"qty": row.get("qty"), "uom": row.get("uom"), "price": row.get("price"),
 				"warehouse_query": row.get("warehouse") or default_warehouse,
+				"_state": row.get("_state"),
 			},
 			company=company, default_warehouse=default_warehouse,
 			allow_user_price=True,
@@ -3131,6 +3507,46 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 	payload = draft["payload"]
 	draft_type = draft["draft_type"]
 	if draft_type == "product_setup":
+		state = payload.get("_state") if isinstance(payload.get("_state"), dict) else {}
+		operation = str(payload.get("operation") or state.get("operation") or "create")
+		if operation == "update":
+			entity = state.get("entity") if isinstance(state.get("entity"), dict) else {}
+			item_code = str(entity.get("name") or payload.get("item_code") or "").strip()
+			patch = state.get("patch") if isinstance(state.get("patch"), dict) else {}
+			update_kwargs = {}
+			for field in ("item_name", "item_group", "brand", "stock_uom", "description"):
+				if field in patch:
+					update_kwargs[field] = (
+						"" if field in {"brand", "description"} and patch.get(field) is None
+						else patch.get(field)
+					)
+			if "currency" in patch:
+				update_kwargs["currency"] = patch.get("currency")
+			if "standard_selling_rate" in patch:
+				update_kwargs["standard_rate"] = patch.get("standard_selling_rate")
+			selling_prices = []
+			for price_list, field in (("Wholesale", "wholesale_rate"), ("Retail", "retail_rate")):
+				if field in patch:
+					selling_prices.append({
+						"price_list": price_list,
+						"rate": patch.get(field),
+						"currency": payload.get("currency"),
+					})
+			if selling_prices:
+				update_kwargs["selling_prices"] = selling_prices
+			if "standard_buying_rate" in patch:
+				update_kwargs["buying_prices"] = [{
+					"price_list": "Standard Buying",
+					"rate": patch.get("standard_buying_rate"),
+					"currency": payload.get("currency"),
+				}]
+			result = update_product_v2(
+				item_code=item_code,
+				company=payload.get("company"),
+				request_id=request_id,
+				**update_kwargs,
+			)
+			return {"target_doctype": "Item", "target_name": item_code, "result": result}
 		standard_buying_rate = payload.get("standard_buying_rate")
 		if standard_buying_rate in (None, ""):
 			standard_buying_rate = payload.get("valuation_rate")
@@ -3206,6 +3622,133 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 	frappe.throw(_("当前草稿类型不支持在 AI 工作台执行。"))
 
 
+def _draft_source_hashes(payload: dict) -> list[str]:
+	hashes = []
+	state = payload.get("_state") if isinstance(payload.get("_state"), dict) else {}
+	if state.get("source_hash"):
+		hashes.append(str(state["source_hash"]))
+	for row in payload.get("items") or []:
+		if not isinstance(row, dict):
+			continue
+		row_state = row.get("_state") if isinstance(row.get("_state"), dict) else {}
+		if row_state.get("source_hash"):
+			hashes.append(str(row_state["source_hash"]))
+	return hashes
+
+
+def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
+	payload = draft.get("payload") or {}
+	company = draft.get("company")
+	draft_type = draft.get("draft_type")
+	default_warehouse = _resolve_sales_draft_warehouse(payload.get("warehouse"), company)
+	if draft_type == "purchase_order":
+		supplier_query = payload.get("supplier") or payload.get("supplier_query")
+		supplier, supplier_candidates = _resolve_purchase_draft_supplier(supplier_query)
+		items = [
+			_resolve_purchase_draft_item(
+				{
+					"item_query": row.get("item_code") or row.get("item_query"),
+					"qty": row.get("qty"),
+					"uom": row.get("uom"),
+					"price": row.get("price"),
+					"warehouse_query": row.get("warehouse") or default_warehouse,
+					"_state": row.get("_state"),
+				},
+				company=company,
+				default_warehouse=default_warehouse,
+				allow_user_price=True,
+			)
+			for row in payload.get("items") or []
+			if isinstance(row, dict)
+		]
+		errors = []
+		if not supplier:
+			errors.append(_("供应商当前无法唯一匹配。"))
+		next_payload = {
+			**payload,
+			"supplier": supplier.get("name") if supplier else None,
+			"supplier_display_name": supplier.get("display_name") if supplier else None,
+			"supplier_candidates": supplier_candidates,
+			"warehouse": default_warehouse,
+			"items": items,
+		}
+	else:
+		customer_query = payload.get("customer") or payload.get("customer_query")
+		customer, customer_candidates = _resolve_sales_draft_customer(customer_query)
+		items = [
+			_resolve_sales_draft_item(
+				{
+					"item_query": row.get("item_code") or row.get("item_query"),
+					"qty": row.get("qty"),
+					"uom": row.get("uom"),
+					"price": row.get("price"),
+					"warehouse_query": row.get("warehouse") or default_warehouse,
+					"_state": row.get("_state"),
+				},
+				company=company,
+				default_warehouse=default_warehouse,
+				allow_user_price=True,
+			)
+			for row in payload.get("items") or []
+			if isinstance(row, dict)
+		]
+		errors = []
+		if not customer:
+			errors.append(_("客户当前无法唯一匹配。"))
+		next_payload = {
+			**payload,
+			"customer": customer.get("name") if customer else None,
+			"customer_display_name": customer.get("display_name") if customer else None,
+			"customer_candidates": customer_candidates,
+			"warehouse": default_warehouse,
+			"items": items,
+		}
+	for index, row in enumerate(items, 1):
+		if not row.get("item_code") or flt(row.get("qty")) <= 0 or not row.get("warehouse"):
+			errors.append(_("第 {0} 行当前无法通过商品、数量或仓库校验。").format(index))
+	return next_payload, {
+		"ready_for_handoff": not errors,
+		"errors": errors,
+		"warnings": [warning for row in items for warning in row.get("warnings") or []],
+	}
+
+
+def _refresh_ai_draft_before_execution(*, draft: dict, user: str) -> dict:
+	previous_payload = draft.get("payload") or {}
+	if draft.get("draft_type") == "product_setup":
+		next_payload, validation = _build_product_setup_draft(
+			previous_payload,
+			company=draft.get("company"),
+		)
+	elif draft.get("draft_type") == "inventory_adjustment":
+		next_payload, validation = _build_inventory_adjustment_draft(
+			previous_payload,
+			company=draft.get("company"),
+		)
+	elif draft.get("draft_type") in {"sales_order", "purchase_order"}:
+		next_payload, validation = _rebuild_order_draft_before_execution(draft)
+	else:
+		return draft
+	previous_hashes = _draft_source_hashes(previous_payload)
+	next_hashes = _draft_source_hashes(next_payload)
+	if not previous_hashes or previous_hashes != next_hashes:
+		ai_repository.update_draft(
+			draft_id=draft["name"],
+			user=user,
+			payload=next_payload,
+			validation=validation,
+			expected_version=cint(draft["version"]),
+			change_source="system_refresh_before_execute",
+		)
+		frappe.db.commit()
+		raise AiDraftVersionConflictError(
+			_("业务主数据、价格、单位换算或实时库存发生变化，草稿已刷新；请检查新版本后重新确认。")
+		)
+	if not validation.get("ready_for_handoff"):
+		frappe.throw(_("草稿按当前业务数据重新校验后已不可执行，请先修正校验问题。"))
+	return {**draft, "payload": next_payload, "validation": validation}
+
+
 def execute_ai_draft_v1(
 	draft_id: str, expected_version: int, confirmed: bool | int = False,
 	request_id: str | None = None,
@@ -3233,6 +3776,7 @@ def execute_ai_draft_v1(
 				raise AiDraftVersionConflictError(_("草稿版本已变化，请刷新并重新确认后再执行。"))
 			if not draft["validation"].get("ready_for_handoff"):
 				frappe.throw(_("草稿仍有未解决的校验问题，不能执行。"))
+			draft = _refresh_ai_draft_before_execution(draft=draft, user=user)
 			try:
 				execution_result = _execute_ai_draft_payload(draft, request_id=resolved_request_id)
 				if not execution_result.get("target_name"):

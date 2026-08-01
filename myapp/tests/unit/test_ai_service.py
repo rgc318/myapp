@@ -17,6 +17,9 @@ from myapp.services.ai_service import (
 	_build_order_query_dsl,
 	_build_next_conversation_state,
 	_build_product_setup_draft,
+	_authoritative_reference_price,
+	_refresh_ai_draft_before_execution,
+	_resolve_line_price_intent,
 	_execute_ai_draft_payload,
 	_build_report_query_dsl,
 	_call_ai_orchestrator,
@@ -147,7 +150,9 @@ class TestAiService(TestCase):
 			"item_code": "ITEM-001", "item_name": "煌星", "uom": "Unit",
 			"uom_display": "个", "all_uoms": [{"uom": "Unit", "conversion_factor": 1}],
 			"price": 100, "price_summary": {
-				"standard_buying_rate": 60, "buying_prices": [{"rate": 60}],
+				"standard_buying_rate": 60,
+				"selling_prices": [{"price_list": "Standard Selling", "rate": 100}],
+				"buying_prices": [{"price_list": "Standard Buying", "rate": 60}],
 			},
 		}
 		mock_search.return_value = {"data": [base]}
@@ -171,6 +176,58 @@ class TestAiService(TestCase):
 		self.assertEqual(model_sales["price"], 100)
 		self.assertEqual(user_sales["price"], 88)
 		self.assertEqual(user_purchase["price"], 88)
+
+	def test_reference_price_distinguishes_missing_from_explicit_zero(self):
+		missing, missing_source = _authoritative_reference_price(
+			{"price_list": "Standard Selling", "price_summary": {"selling_prices": []}},
+			buying=False,
+		)
+		explicit_zero, zero_source = _authoritative_reference_price(
+			{
+				"price_list": "Standard Selling",
+				"price_summary": {
+					"selling_prices": [
+						{"price_list": "Standard Selling", "rate": 0},
+					],
+				},
+			},
+			buying=False,
+		)
+
+		self.assertIsNone(missing)
+		self.assertEqual(explicit_zero, 0)
+		self.assertEqual(missing_source, zero_source)
+
+	def test_system_price_refreshes_while_user_override_remains_intentional(self):
+		system_price, system_patch = _resolve_line_price_intent(
+			{
+				"price": 100,
+				"_state": {
+					"schema_version": "ai-draft-state-v1",
+					"patch": {},
+					"effective": {"price": 100},
+				},
+			},
+			reference_price=120,
+			allow_user_price=True,
+		)
+		user_price, user_patch = _resolve_line_price_intent(
+			{
+				"price": 88,
+				"_state": {
+					"schema_version": "ai-draft-state-v1",
+					"patch": {"price": 88},
+					"effective": {"price": 88},
+				},
+			},
+			reference_price=120,
+			allow_user_price=True,
+		)
+
+		self.assertEqual(system_price, 120)
+		self.assertEqual(system_patch, {})
+		self.assertEqual(user_price, 88)
+		self.assertEqual(user_patch, {"price": 88})
 	@patch("myapp.services.ai_service.create_product_v2")
 	def test_execute_product_setup_draft_reuses_product_domain_service(self, mock_create):
 		mock_create.return_value = {"status": "success", "data": {"item_code": "ITEM-001"}}
@@ -198,6 +255,34 @@ class TestAiService(TestCase):
 			buying_prices=[{"price_list": "Standard Buying", "rate": 5000, "currency": "CNY"}],
 			description="测试商品", company="Demo Company", warehouse="Stores - DC",
 			warehouse_stock_qty=5, warehouse_stock_uom="Unit", request_id="REQ-1",
+		)
+
+	@patch("myapp.services.ai_service.update_product_v2")
+	def test_execute_product_update_only_sends_user_patch(self, mock_update):
+		mock_update.return_value = {"status": "success", "data": {"item_code": "ITEM-001"}}
+
+		result = _execute_ai_draft_payload({
+			"draft_type": "product_setup",
+			"payload": {
+				"operation": "update",
+				"company": "Demo Company",
+				"item_code": "ITEM-001",
+				"currency": "CNY",
+				"_state": {
+					"operation": "update",
+					"entity": {"doctype": "Item", "name": "ITEM-001"},
+					"patch": {"standard_selling_rate": 5, "description": "新说明"},
+				},
+			},
+		}, request_id="REQ-UPDATE")
+
+		self.assertEqual(result["target_name"], "ITEM-001")
+		mock_update.assert_called_once_with(
+			item_code="ITEM-001",
+			company="Demo Company",
+			request_id="REQ-UPDATE",
+			description="新说明",
+			standard_rate=5,
 		)
 
 	@patch("myapp.services.ai_service.create_order_v2")
@@ -243,9 +328,10 @@ class TestAiService(TestCase):
 	@patch("myapp.services.ai_service.filelock", side_effect=lambda *_args, **_kwargs: nullcontext())
 	@patch("myapp.services.ai_service._record_ai_draft_execution_audit")
 	@patch("myapp.services.ai_service._execute_ai_draft_payload")
+	@patch("myapp.services.ai_service._refresh_ai_draft_before_execution", side_effect=lambda draft, user: draft)
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	def test_execute_ai_draft_checks_version_and_persists_receipt(
-		self, _user, mock_execute, _audit, _lock, _idempotent,
+		self, _user, _refresh, mock_execute, _audit, _lock, _idempotent,
 	):
 		draft = {
 			"name": "AI-DRAFT-1", "draft_type": "sales_order", "status": "draft", "version": 3,
@@ -350,6 +436,36 @@ class TestAiService(TestCase):
 		self.assertEqual(call["expected_version"], 2)
 		self.assertEqual(call["payload"]["items"][0]["qty"], 5)
 		self.assertEqual(call["payload"]["items"][0]["price"], 120)
+
+	@patch("myapp.services.ai_service.ai_repository.update_draft")
+	@patch("myapp.services.ai_service._build_product_setup_draft")
+	def test_execution_refresh_persists_new_version_when_business_facts_drift(
+		self, mock_build, mock_update,
+	):
+		draft = {
+			"name": "AI-DRAFT-1",
+			"company": "Demo Company",
+			"draft_type": "product_setup",
+			"version": 3,
+			"payload": {"_state": {"schema_version": "ai-draft-state-v1", "source_hash": "old"}},
+		}
+		mock_build.return_value = (
+			{"_state": {"schema_version": "ai-draft-state-v1", "source_hash": "new"}},
+			{"ready_for_handoff": True, "errors": [], "warnings": []},
+		)
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			with self.assertRaises(AiDraftVersionConflictError):
+				_refresh_ai_draft_before_execution(draft=draft, user="user@example.com")
+
+		mock_update.assert_called_once_with(
+			draft_id="AI-DRAFT-1",
+			user="user@example.com",
+			payload={"_state": {"schema_version": "ai-draft-state-v1", "source_hash": "new"}},
+			validation={"ready_for_handoff": True, "errors": [], "warnings": []},
+			expected_version=3,
+			change_source="system_refresh_before_execute",
+		)
+		mock_frappe.db.commit.assert_called_once()
 
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	def test_update_purchase_draft_preserves_currency_reference_and_version(self, _user):
@@ -794,7 +910,7 @@ class TestAiService(TestCase):
 			"sales_order_draft": "sales-order-draft-v2",
 			"purchase_order_draft": "purchase-order-draft-v2",
 			"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
-			"product_setup_draft": "product-setup-draft-v3",
+			"product_setup_draft": "product-setup-draft-v4",
 		}
 		for scenario, expected in draft_versions.items():
 			with self.subTest(scenario=scenario):
@@ -1260,6 +1376,49 @@ class TestAiService(TestCase):
 		self.assertEqual(payload["standard_buying_rate"], 5000)
 		self.assertEqual(payload["wholesale_rate"], 8800)
 		self.assertEqual(payload["retail_rate"], 10800)
+		self.assertTrue(validation["ready_for_handoff"])
+
+	@patch("myapp.services.ai_service._resolve_existing_product_for_setup")
+	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value=None)
+	@patch("myapp.services.ai_service._resolve_optional_master_name", return_value=None)
+	@patch("myapp.services.ai_service._resolve_product_setup_uom", return_value=("Unit", [{"name": "Unit"}]))
+	def test_product_setup_auto_hydrates_existing_product_without_turning_stock_into_opening_stock(
+		self, _uom, _master, _warehouse, mock_existing,
+	):
+		mock_existing.return_value = ({
+			"item_code": "ITEM-DIMO",
+			"item_name": "迪莫",
+			"item_group": "Products",
+			"brand": None,
+			"stock_uom": "Unit",
+			"stock_uom_display": "个",
+			"description": None,
+			"standard_rate": 0,
+			"total_qty": 1000,
+			"warehouse_stock_details": [{"warehouse": "Stores - TC", "qty": 1000}],
+			"modified": "2026-07-31 10:00:00",
+			"price_summary": {
+				"selling_prices": [
+					{"price_list": "Standard Selling", "rate": 5, "currency": "CNY"},
+					{"price_list": "Wholesale", "rate": 3, "currency": "CNY"},
+				],
+				"buying_prices": [],
+			},
+		}, [{"name": "ITEM-DIMO"}])
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.db.get_value.return_value = "CNY"
+			mock_frappe.has_permission.return_value = True
+			payload, validation = _build_product_setup_draft(
+				{"operation": "auto", "item_name": "迪莫", "description": "补充说明"},
+				company="Test Company",
+			)
+
+		self.assertEqual(payload["operation"], "update")
+		self.assertEqual(payload["standard_selling_rate"], 5)
+		self.assertEqual(payload["wholesale_rate"], 3)
+		self.assertIsNone(payload["opening_qty"])
+		self.assertEqual(payload["_state"]["context"]["company_total_qty"], 1000)
+		self.assertEqual(payload["_state"]["patch"], {"description": "补充说明"})
 		self.assertTrue(validation["ready_for_handoff"])
 
 	def test_build_order_query_dsl_supports_multiple_document_types(self):

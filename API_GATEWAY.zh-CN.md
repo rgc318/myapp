@@ -200,11 +200,11 @@ AI 同步、流式失败事件和持久化 Run 必须保留稳定 `error_code`�
 
 ### AI Copilot 结构化草稿
 
-销售订单、采购订单、库存调整和商品建档分别通过 `generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1` 生成严格结构化候选。模型只负责提取用户原文；Frappe 重新按当前用户权限解析真实 Customer / Supplier / Item / Warehouse、商品分类、品牌、UOM、价格或实时库存，并持久化为 `MyApp AI Draft`。`resolve_ai_scenario_v1` 是 Web 自动识别的后端事实来源，写意图可以返回上述四类草稿场景，商品是否入库、到货、现货或库存状态等问法返回 `product_search`；Web 不复制关键词规则。
+销售订单、采购订单、库存调整和商品创建/完善分别通过 `generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1` 生成严格结构化候选。模型只负责提取用户原文和操作意图；Frappe 重新按当前用户权限解析真实 Customer / Supplier / Item / Warehouse、商品分类、品牌、UOM、价格或实时库存，并持久化为 `MyApp AI Draft`。权威业务事实、用户补丁和字段来源保存在 `_state`，价格状态区分未配置与明确零价。`resolve_ai_scenario_v1` 是 Web 自动识别的后端事实来源，写意图可以返回上述四类草稿场景，商品是否入库、到货、现货或库存状态等问法返回 `product_search`；Web 不复制关键词规则。
 
-商品建档草稿类型为 `product_setup`，同时承载 Item 主数据、Standard Selling 默认单价、Wholesale 批发价、Retail 零售价、Standard Buying 成本价（默认采购价）和可选初始库存预填，但模型生成阶段不执行任何写入。对应字段为 `standard_selling_rate`、`wholesale_rate`、`retail_rate`、`standard_buying_rate`。初始库存统一使用 `stock_uom` 作为 `opening_uom`；初始库存大于 0 时必须补齐当前公司叶子仓库和 `standard_buying_rate`。正式执行会把批发价、零售价分别写入 Wholesale、Retail 价格表，把成本价写入 Standard Buying 并作为首次入库成本，任何售价都不得自动用于库存计价。旧草稿的 `valuation_rate` 仅作为兼容输入读取。用户可在 AI 工作台确认当前版本后由 `execute_ai_draft_v1` 复用幂等 `create_product_v2`，也可选择进入 `/master-data/products` 处理复杂字段。
+商品草稿类型为 `product_setup`，`operation` 为 `create` 或 `update`。创建模式承载 Item 主数据、四类价格和可选初始库存，复用幂等 `create_product_v2`；完善模式读取现有商品和价格作为 baseline，只把 `_state.patch` 交给 `update_product_v2`。完善模式不接受初始库存，当前库存仅在 `_state.context` 中只读展示；库存变化必须使用库存调整。旧草稿的 `valuation_rate` 仅作为兼容输入读取。用户可在 AI 工作台确认当前版本后原地执行，也可选择进入 `/master-data/products` 处理复杂字段。
 
-`execute_ai_draft_v1` 是四类草稿的统一原地确认执行接口。请求必须为 POST，携带 `draft_id`、用户当前看到的 `expected_version`、`confirmed=1` 和 `Idempotency-Key`。服务端重新检查草稿 owner、状态、版本和 `ready_for_handoff`，再分别调用 `create_product_v2`、`create_order_v2`、`create_purchase_order` 或 `reconcile_inventory_stock_v1`；成功后草稿进入 `executed` 并保存执行人、执行时间、正式 DocType、正式名称和结果回执。模型或后台任务不能绕过用户确认调用该能力。保存、历史恢复或执行使用的 `expected_version` 已过期时，Gateway 稳定返回 HTTP `409` 与 `code=AI_DRAFT_VERSION_CONFLICT`，Web 应读取最新草稿并进入显式版本对比，不得依赖错误文案或静默覆盖。
+`execute_ai_draft_v1` 是四类草稿的统一原地确认执行接口。请求必须为 POST，携带 `draft_id`、用户当前看到的 `expected_version`、`confirmed=1` 和 `Idempotency-Key`。服务端重新检查 owner、状态、版本和 `ready_for_handoff`，并在调用 `create_product_v2` / `update_product_v2`、`create_order_v2`、`create_purchase_order` 或 `reconcile_inventory_stock_v1` 前重新读取商品、系统参考价、UOM 换算和实时库存。权威事实漂移时先持久化刷新后的新版本，再返回 HTTP `409` 与 `code=AI_DRAFT_VERSION_CONFLICT`；用户明确覆盖的订单价格不随系统参考价漂移。成功后草稿进入 `executed` 并保存正式回执。模型或后台任务不能绕过用户确认调用该能力。
 
 ### AI 商品向量质量治理
 
