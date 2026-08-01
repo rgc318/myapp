@@ -314,8 +314,13 @@ def _merge_intent_with_conversation_state(
 def _infer_ai_action_scenario(content: str) -> str:
 	text = " ".join((content or "").strip().split())
 	write_words = ("创建", "新增", "添加", "生成", "新建", "建档", "录入")
+	product_write_words = write_words + ("完善", "修改", "补充", "维护", "更新")
 	if any(word in text for word in ("库存", "存量")) and any(
-		word in text for word in ("调整", "盘点", "增加", "减少", "改为", "设置为")
+		word in text
+		for word in (
+			"调整", "盘点", "增加", "添加", "补充", "减少", "扣减", "移除",
+			"改为", "设置为", "设为", "更新",
+		)
 	):
 		return "inventory_adjustment_draft"
 	if any(word in text for word in ("采购订单", "采购单", "向供应商采购", "进货")) and any(
@@ -326,7 +331,9 @@ def _infer_ai_action_scenario(content: str) -> str:
 		word in text for word in write_words + ("给客户", "卖给", "开",)
 	):
 		return "sales_order_draft"
-	if any(word in text for word in ("商品", "产品", "SKU")) and any(word in text for word in write_words):
+	if any(word in text for word in ("商品", "产品", "SKU")) and any(
+		word in text for word in product_write_words
+	):
 		return "product_setup_draft"
 	return _infer_ai_scenario(text)
 
@@ -409,6 +416,7 @@ def _call_ai_orchestrator(payload: dict, *, resume: bool = False) -> dict:
 
 def _call_ai_intent_orchestrator(
 	*, content: str, user: str, company: str | None, conversation_state: dict | None = None,
+	model_alias: str | None = None,
 ) -> dict:
 	try:
 		base_url, service_token = _get_ai_orchestrator_settings()
@@ -421,6 +429,8 @@ def _call_ai_intent_orchestrator(
 			"prompt_version": "erp-intent-v3",
 			"context": {"conversation_state": _conversation_state_for_intent(conversation_state)},
 		}
+		if model_alias:
+			payload["model_alias"] = model_alias
 		request = urllib.request.Request(
 			f"{base_url}/internal/v1/intent/parse",
 			data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -4032,6 +4042,7 @@ def _prepare_chat_run(
 				user=user,
 				company=intent_company,
 				conversation_state=conversation_state,
+				model_alias=model_alias,
 			)
 			intent = _merge_intent_with_conversation_state(
 				current_content, intent, conversation_state,

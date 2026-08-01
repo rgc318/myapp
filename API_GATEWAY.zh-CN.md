@@ -140,7 +140,7 @@
 }
 ```
 
-`model_alias` 可省略。省略时继续使用已发布模型策略；只有 `System Manager` 和 `AI Model Manager` 可以显式提供固定模型。Frappe 同时校验角色，以及注册表中的 `active / validated` 状态和 `fast_chat / reasoning / structured` 能力；未授权账号即使绕过 Web 提交别名也会被拒绝。`list_ai_selectable_models_v1` 为所有已登录 AI 用户返回工作台能力位，但只向上述两个角色返回受控模型清单，不返回 Embedding、停用、退役、缺失或未验证模型。浏览器不能自行提交注册表外别名，也不能直连 Orchestrator 或 LiteLLM。显式选择会传给同步 Chat、SSE 和四类草稿，并禁用该次请求的静默模型 fallback。
+`model_alias` 可省略。省略时继续使用已发布模型策略；只有 `System Manager` 和 `AI Model Manager` 可以显式提供固定模型。Frappe 同时校验角色，以及注册表中的 `active / validated` 状态和 `fast_chat / reasoning / structured` 能力；未授权账号即使绕过 Web 提交别名也会被拒绝。`list_ai_selectable_models_v1` 为所有已登录 AI 用户返回工作台能力位，但只向上述两个角色返回受控模型清单，不返回 Embedding、停用、退役、缺失或未验证模型。浏览器不能自行提交注册表外别名，也不能直连 Orchestrator 或 LiteLLM。显式选择会传给同步 Chat、SSE、普通聊天前置的结构化意图解析和四类草稿，并禁用该次请求的静默模型 fallback。
 
 `list_ai_selectable_models_v1` 的 `data.capabilities` 包含 `can_select_fixed_model` 和 `can_view_advanced_diagnostics`。后者仅对 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 为真。模型清单的 `provider_model_display` 用作友好名称，技术 `model_alias` 仅供获授权治理人员核对。
 

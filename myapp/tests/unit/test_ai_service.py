@@ -602,7 +602,7 @@ class TestAiService(TestCase):
 		self.assertEqual(
 			build_context.call_args.kwargs["structured_intent"]["product_query"], "迪莫",
 		)
-		mock_intent.assert_called_once()
+		self.assertEqual(mock_intent.call_args.kwargs["model_alias"], "erp-fast-chat")
 
 	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
 		"intent": "order_query", "confidence": 0.99, "product_query": None,
@@ -1075,6 +1075,38 @@ class TestAiService(TestCase):
 		self.assertEqual(result, {})
 		mock_frappe.log_error.assert_called_once()
 
+	@patch(
+		"myapp.services.ai_service._get_ai_orchestrator_settings",
+		return_value=("http://ai", "service-token"),
+	)
+	@patch("myapp.services.ai_service.urllib.request.urlopen")
+	def test_structured_intent_parser_forwards_selected_model_alias(self, mock_urlopen, _settings):
+		response = MagicMock()
+		response.read.return_value = json.dumps({
+			"intent": {
+				"intent": "general", "confidence": 0.9, "product_query": None,
+				"entities": [], "report_type": None, "date_preset": "all",
+				"date_from": None, "date_to": None, "status": "all", "sort": "latest",
+				"min_amount": None, "limit": 10,
+			},
+		}).encode("utf-8")
+		mock_urlopen.return_value.__enter__.return_value = response
+
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.local.lang = "zh-CN"
+			result = _call_ai_intent_orchestrator(
+				content="你好",
+				user="user@example.com",
+				company="Demo Company",
+				model_alias="gpt-5.5",
+			)
+
+		request = mock_urlopen.call_args.args[0]
+		payload = json.loads(request.data.decode("utf-8"))
+		self.assertEqual(result["intent"], "general")
+		self.assertEqual(payload["model_alias"], "gpt-5.5")
+		self.assertEqual(request.full_url, "http://ai/internal/v1/intent/parse")
+
 	def test_context_merge_inherits_order_filters_and_applies_current_status(self):
 		state = {
 			"active_scenario": "order_query",
@@ -1316,6 +1348,18 @@ class TestAiService(TestCase):
 		self.assertEqual(
 			_infer_ai_action_scenario("查询最新销售订单"),
 			"order_query",
+		)
+		self.assertEqual(
+			_infer_ai_action_scenario("给迪莫添加10个库存"),
+			"inventory_adjustment_draft",
+		)
+		self.assertEqual(
+			_infer_ai_action_scenario("完善迪莫商品资料"),
+			"product_setup_draft",
+		)
+		self.assertEqual(
+			_infer_ai_action_scenario("更新迪莫商品库存"),
+			"inventory_adjustment_draft",
 		)
 
 	def test_auto_scenario_routes_product_stock_status_queries_to_product_search(self):
