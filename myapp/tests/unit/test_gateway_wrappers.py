@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import frappe
 from myapp.api import gateway as gateway_module
+from myapp.utils.ai_errors import AiServiceError
 
 from myapp.api.gateway import (
 	add_product_barcode_v2,
@@ -191,6 +192,30 @@ class TestGatewayWrappers(TestCase):
 		self.assertNotIn("tabSecret", result["message"])
 		self.assertEqual(mock_frappe.local.response["http_status_code"], 500)
 		mock_frappe.log_error.assert_called_once()
+
+	def test_gateway_preserves_user_safe_model_failure_details(self):
+		error = AiServiceError(
+			"模型 DeepSeek V4 Flash 暂时不可用，请更换模型或稍后重试。",
+			code="MODEL_PROVIDER_REJECTED",
+			http_status=502,
+			public_data={
+				"model_display": "DeepSeek V4 Flash",
+				"model_alias": "opencode-deepseek-v4-flash",
+				"provider_error_code": "PROVIDER_HTTP_403",
+				"retryable": True,
+			},
+		)
+		with patch.object(gateway_module, "frappe") as mock_frappe:
+			mock_frappe.local.response = {}
+			result = gateway_module._handle_gateway_call(
+				lambda: (_ for _ in ()).throw(error),
+				success_code="UNUSED",
+			)
+
+		self.assertEqual(result["code"], "MODEL_PROVIDER_REJECTED")
+		self.assertIn("DeepSeek V4 Flash", result["message"])
+		self.assertEqual(result["data"]["provider_error_code"], "PROVIDER_HTTP_403")
+		self.assertEqual(mock_frappe.local.response["http_status_code"], 502)
 
 	@patch("myapp.api.gateway.resume_ai_run_v1_service")
 	def test_resume_ai_run_is_owner_scoped_service_wrapper(self, mock_resume):
@@ -467,8 +492,22 @@ class TestGatewayWrappers(TestCase):
 
 		result = check_ai_model_availability_v1(request_id="availability-1")
 
-		mock_service.assert_called_once_with(request_id="availability-1")
+		mock_service.assert_called_once_with(model_aliases=None, request_id="availability-1")
 		self.assertEqual(result["code"], "AI_MODEL_AVAILABILITY_CHECKED")
+
+	@patch("myapp.api.gateway.check_ai_model_availability_v1_service")
+	def test_check_ai_model_availability_v1_forwards_selected_models(self, mock_service):
+		mock_service.return_value = {"status": "success", "data": {"checked_count": 2}}
+
+		check_ai_model_availability_v1(
+			model_aliases=["gpt-5.5", "opencode-glm-5.2"],
+			request_id="availability-selected-1",
+		)
+
+		mock_service.assert_called_once_with(
+			model_aliases=["gpt-5.5", "opencode-glm-5.2"],
+			request_id="availability-selected-1",
+		)
 
 	@patch("myapp.api.gateway.generate_ai_inventory_adjustment_draft_v1_service")
 	def test_generate_ai_inventory_adjustment_draft_passes_company_scope(self, mock_draft_service):

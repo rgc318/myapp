@@ -229,7 +229,11 @@ AI 同步、流式失败事件和持久化 Run 必须保留稳定 `error_code`�
 
 ### AI 模型管理
 
-模型管理接口只面向 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 的职责范围。模型注册同步只从受服务 Token 保护的 Orchestrator 读取当前 LiteLLM Key 可见的完整模型库存，不保存供应商 Key；同步中已消失的 LiteLLM 模型标记为 `degraded / missing`，人工维护的 `disabled / retired` 状态不会被同步覆盖。同步只证明当前 Key 在 LiteLLM `/v1/models` 中可见，不证明推理可用。`check_ai_model_availability_v1` 会对 Chat 模型执行最小回答与强制 Function Calling 探测，对 Embedding 模型执行最小向量请求，分别持久化 `available / unavailable` 和 `supports_tools`。Agent 场景策略要求所有主/降级模型均通过工具能力验证。检查可能产生少量 Provider 费用，但不会自动修改人工管理状态。策略草稿、验证、审批、发布和回滚使用不可变版本与审计事件；生产策略起草人与审批人必须分离，只有 System Manager 可以发布或紧急回滚。
+模型管理接口只面向 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 的职责范围。模型注册同步只从受服务 Token 保护的 Orchestrator 读取当前 LiteLLM Key 可见的完整模型库存，不保存供应商 Key；同步中已消失的 LiteLLM 模型标记为 `degraded / missing`，人工维护的 `disabled / retired` 状态不会被同步覆盖。同步只证明当前 Key 在 LiteLLM `/v1/models` 中可见，不证明推理可用。`check_ai_model_availability_v1` 会对 Chat 模型执行最小回答与强制 Function Calling 探测，对 Embedding 模型执行最小向量请求，分别持久化 `available / unavailable` 和 `supports_tools`。请求可省略 `model_aliases` 检查全部未停用模型，也可传入 1～100 个别名执行单项或多选检测；返回 `requested_count`、`checked_count`、`available_count`、`unavailable_count`、`trigger` 和逐模型稳定错误码。Agent 场景策略要求所有主/降级模型均通过工具能力验证。检查可能产生少量 Provider 费用，但不会自动修改人工管理状态。策略草稿、验证、审批、发布和回滚使用不可变版本与审计事件；生产策略起草人与审批人必须分离，只有 System Manager 可以发布或紧急回滚。
+
+模型健康检查默认由 Frappe Scheduler 每天站点时区 03:15 执行，并使用 Redis 锁防止并发重复探测。站点配置 `myapp_ai_model_healthcheck_enabled=0` 可关闭；`myapp_ai_model_healthcheck_aliases=["alias-a", "alias-b"]` 可把定时范围限制到指定模型，未配置时检查全部未停用模型。治理总览返回 `model_health_schedule`，模型管理页展示启停状态、范围和最近检测时间。
+
+Chat、SSE 和四类结构化草稿在自动策略或固定模型被 Provider 拒绝时统一使用 `MODEL_PROVIDER_REJECTED`。响应/SSE 至少返回用户安全的 `model_display`；具备高级诊断权限时还返回实际 `model_alias` 和 `provider_error_code`（例如 `PROVIDER_HTTP_403`）。不得返回 Provider 原始响应正文、密钥或内部 Header。成功响应同样返回 `model_display`，高级诊断响应继续返回技术 alias、Provider 模型、trace 和 Token。
 
 所有治理写接口均为 POST，并使用项目统一幂等机制。策略验证会同时检查注册模型能力/健康状态、当前 Prompt、确定性 offline full gate 和受控 live/Embedding 完整报告。缺少完整报告、报告为 partial、阈值失败、模型别名不一致或报告格式错误时，策略保持 `draft`，不能进入审批或发布。
 

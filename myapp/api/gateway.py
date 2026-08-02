@@ -238,12 +238,17 @@ def _handle_gateway_call(callback, *, success_code: str):
 		message = str(exc)
 		if http_status >= 500:
 			frappe.log_error(frappe.get_traceback(), "Gateway 请求处理失败")
-			message = (
-				"上游服务暂不可用，请稍后重试。"
-				if http_status == 503
-				else "系统内部错误，请稍后重试。"
-			)
-		return error_response(message=message, code=code)
+			if not bool(getattr(exc, "user_safe", False)):
+				message = (
+					"上游服务暂不可用，请稍后重试。"
+					if http_status == 503
+					else "系统内部错误，请稍后重试。"
+				)
+		return error_response(
+			message=message,
+			code=code,
+			data=getattr(exc, "public_data", None),
+		)
 
 
 def _merge_kwargs(kwargs, extra_kwargs):
@@ -791,9 +796,12 @@ def sync_ai_model_registry_v1(request_id: str | None = None):
 
 
 @frappe.whitelist(methods=["POST"])
-def check_ai_model_availability_v1(request_id: str | None = None):
+def check_ai_model_availability_v1(model_aliases=None, request_id: str | None = None):
 	return _handle_gateway_call(
-		lambda: check_ai_model_availability_v1_service(request_id=request_id),
+		lambda: check_ai_model_availability_v1_service(
+			model_aliases=model_aliases,
+			request_id=request_id,
+		),
 		success_code="AI_MODEL_AVAILABILITY_CHECKED",
 	)
 

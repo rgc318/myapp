@@ -108,6 +108,58 @@ def _can_view_advanced_diagnostics(user: str) -> bool:
 	return user == "Administrator" or bool(roles & ADVANCED_DIAGNOSTIC_ROLES)
 
 
+def _diagnostic_user() -> str:
+	try:
+		return _current_user()
+	except (RuntimeError, frappe.AuthenticationError):
+		return "Guest"
+
+
+def _resolve_ai_model_display(model_alias: str | None) -> str | None:
+	resolved_alias = str(model_alias or "").strip()
+	if not resolved_alias:
+		return None
+	try:
+		display = frappe.db.get_value(
+			"MyApp AI Model Registry",
+			{"model_alias": resolved_alias},
+			"provider_model_display",
+		)
+	except Exception:
+		display = None
+	return str(display).strip() if isinstance(display, str) and display.strip() else resolved_alias
+
+
+def _public_ai_model_display(
+	model_alias: str | None,
+	*,
+	include_advanced_diagnostics: bool,
+) -> str | None:
+	resolved_alias = str(model_alias or "").strip() or None
+	if not resolved_alias:
+		return None
+	display = _resolve_ai_model_display(resolved_alias)
+	if include_advanced_diagnostics or display != resolved_alias:
+		return display
+	return _("策略自动选择模型")
+
+
+def _public_model_details(model_alias: str | None, *, user: str) -> dict:
+	resolved_alias = str(model_alias or "").strip() or None
+	if not resolved_alias:
+		return {}
+	advanced = _can_view_advanced_diagnostics(user)
+	result = {
+		"model_display": _public_ai_model_display(
+			resolved_alias,
+			include_advanced_diagnostics=advanced,
+		),
+	}
+	if advanced:
+		result["model_alias"] = resolved_alias
+	return result
+
+
 def _public_run_summary(run: dict, *, include_advanced_diagnostics: bool) -> dict:
 	public = {
 		"status": run.get("status"),
@@ -126,9 +178,14 @@ def _public_ai_result_details(
 	*, result: dict, run: dict, include_advanced_diagnostics: bool,
 	stream: dict | None = None,
 ) -> dict:
+	model_alias = str(result.get("model_alias") or "").strip() or None
 	public = {
 		"run": _public_run_summary(
 			run,
+			include_advanced_diagnostics=include_advanced_diagnostics,
+		),
+		"model_display": _public_ai_model_display(
+			model_alias,
 			include_advanced_diagnostics=include_advanced_diagnostics,
 		),
 		"warnings": result.get("warnings") or [],
@@ -136,7 +193,7 @@ def _public_ai_result_details(
 	if include_advanced_diagnostics:
 		public.update({
 			"model": result.get("model"),
-			"model_alias": result.get("model_alias"),
+			"model_alias": model_alias,
 			"policy_code": result.get("policy_code"),
 			"policy_version": result.get("policy_version"),
 			"fallback_reason": result.get("fallback_reason"),
@@ -381,6 +438,8 @@ def _call_ai_orchestrator(payload: dict, *, resume: bool = False) -> dict:
 			422: "AI_REQUEST_INVALID",
 			429: "AI_REQUEST_RATE_LIMITED",
 		}.get(error.code, "AI_SERVICE_UNAVAILABLE")
+		model_alias = str(payload.get("model_alias") or "").strip() or None
+		provider_error_code = None
 		try:
 			body = json.loads(error.read().decode("utf-8") or "{}")
 			detail = body.get("detail") if isinstance(body, dict) else None
@@ -389,8 +448,13 @@ def _call_ai_orchestrator(payload: dict, *, resume: bool = False) -> dict:
 				candidate.startswith("AI_") or candidate == "MODEL_PROVIDER_REJECTED"
 			):
 				code = candidate
+			if isinstance(detail, dict):
+				model_alias = str(detail.get("model_alias") or model_alias or "").strip() or None
+				provider_error_code = str(detail.get("provider_error_code") or "").strip() or None
 		except (UnicodeDecodeError, json.JSONDecodeError):
 			pass
+		user = _diagnostic_user()
+		model_display = _public_model_details(model_alias, user=user).get("model_display")
 		message = {
 			"AI_AGENT_CHECKPOINT_UNAVAILABLE": _("Agent 运行状态暂时无法保存，请稍后重试。"),
 			"AI_DAILY_BUDGET_EXCEEDED": _("今日 AI 使用预算已达到上限。"),
@@ -402,8 +466,24 @@ def _call_ai_orchestrator(payload: dict, *, resume: bool = False) -> dict:
 			"AI_REQUEST_RATE_LIMITED": _("AI 请求过于频繁，请稍后重试。"),
 			"AI_RUNTIME_GOVERNANCE_UNAVAILABLE": _("AI 运行治理服务暂时不可用。"),
 			"AI_SERVICE_AUTHENTICATION_FAILED": _("AI 内部服务认证失败，请联系管理员。"),
+			"MODEL_PROVIDER_REJECTED": _("模型 {0} 暂时不可用，请更换模型或稍后重试。").format(
+				model_display or _("当前自动模型")
+			),
 		}.get(code, _("AI 服务暂时不可用，请稍后重试。"))
-		raise AiServiceError(message, code=code, http_status=error.code) from error
+		public_data = {
+			**_public_model_details(model_alias, user=user),
+			"retryable": code in {"AI_SERVICE_UNAVAILABLE", "MODEL_PROVIDER_REJECTED"},
+		}
+		if provider_error_code and _can_view_advanced_diagnostics(user):
+			public_data["provider_error_code"] = provider_error_code
+		raise AiServiceError(
+			message,
+			code=code,
+			http_status=error.code,
+			model_alias=model_alias,
+			provider_error_code=provider_error_code,
+			public_data=public_data,
+		) from error
 	except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
 		frappe.log_error(frappe.get_traceback(), _("AI Orchestrator 调用失败"))
 		raise UpstreamServiceUnavailableError(_("AI 服务暂时不可用，请稍后重试。"))
@@ -476,10 +556,47 @@ def _sync_ai_feedback_to_orchestrator(payload: dict) -> bool:
 		return False
 
 
-def _call_ai_orchestrator_sales_draft(payload: dict) -> dict:
+def _draft_provider_error(error: urllib.error.HTTPError, *, payload: dict) -> AiServiceError:
+	code = "AI_SERVICE_UNAVAILABLE"
+	model_alias = str(payload.get("model_alias") or "").strip() or None
+	provider_error_code = None
+	try:
+		body = json.loads(error.read().decode("utf-8") or "{}")
+		detail = body.get("detail") if isinstance(body, dict) else None
+		if isinstance(detail, dict):
+			candidate = str(detail.get("code") or "").strip()
+			if candidate == "MODEL_PROVIDER_REJECTED" or candidate.startswith("AI_"):
+				code = candidate
+			model_alias = str(detail.get("model_alias") or model_alias or "").strip() or None
+			provider_error_code = str(detail.get("provider_error_code") or "").strip() or None
+	except (UnicodeDecodeError, json.JSONDecodeError):
+		pass
+	user = _diagnostic_user()
+	if code == "MODEL_PROVIDER_REJECTED":
+		model_display = _public_model_details(model_alias, user=user).get("model_display") or _("当前自动模型")
+		message = _("模型 {0} 暂时不可用，请更换模型或稍后重试。").format(model_display)
+	else:
+		message = _("AI 草稿服务暂时不可用，请稍后重试。")
+	public_data = {
+		**_public_model_details(model_alias, user=user),
+		"retryable": True,
+	}
+	if provider_error_code and _can_view_advanced_diagnostics(user):
+		public_data["provider_error_code"] = provider_error_code
+	return AiServiceError(
+		message,
+		code=code,
+		http_status=502 if code == "MODEL_PROVIDER_REJECTED" else error.code,
+		model_alias=model_alias,
+		provider_error_code=provider_error_code,
+		public_data=public_data,
+	)
+
+
+def _call_ai_orchestrator_draft(payload: dict, *, endpoint: str, log_title: str) -> dict:
 	base_url, service_token = _get_ai_orchestrator_settings()
 	request = urllib.request.Request(
-		f"{base_url}/internal/v1/drafts/sales-order",
+		f"{base_url}{endpoint}",
 		data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
 		headers={
 			"Authorization": f"Bearer {service_token}",
@@ -491,69 +608,47 @@ def _call_ai_orchestrator_sales_draft(payload: dict) -> dict:
 	try:
 		with urllib.request.urlopen(request, timeout=90) as response:
 			result = json.loads(response.read().decode("utf-8") or "{}")
-	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-		frappe.log_error(frappe.get_traceback(), _("AI 销售订单草稿调用失败"))
+	except urllib.error.HTTPError as error:
+		frappe.log_error(frappe.get_traceback(), log_title)
+		raise _draft_provider_error(error, payload=payload) from error
+	except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+		frappe.log_error(frappe.get_traceback(), log_title)
 		raise UpstreamServiceUnavailableError(_("AI 草稿服务暂时不可用，请稍后重试。"))
 	if not isinstance(result.get("draft"), dict):
 		raise UpstreamServiceUnavailableError(_("AI 草稿服务返回了无效响应。"))
 	return result
+
+
+def _call_ai_orchestrator_sales_draft(payload: dict) -> dict:
+	return _call_ai_orchestrator_draft(
+		payload,
+		endpoint="/internal/v1/drafts/sales-order",
+		log_title=_("AI 销售订单草稿调用失败"),
+	)
 
 
 def _call_ai_orchestrator_purchase_draft(payload: dict) -> dict:
-	base_url, service_token = _get_ai_orchestrator_settings()
-	request = urllib.request.Request(
-		f"{base_url}/internal/v1/drafts/purchase-order",
-		data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-		headers={"Authorization": f"Bearer {service_token}", "Content-Type": "application/json", "Accept": "application/json"},
-		method="POST",
+	return _call_ai_orchestrator_draft(
+		payload,
+		endpoint="/internal/v1/drafts/purchase-order",
+		log_title=_("AI 采购订单草稿调用失败"),
 	)
-	try:
-		with urllib.request.urlopen(request, timeout=90) as response:
-			result = json.loads(response.read().decode("utf-8") or "{}")
-	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-		frappe.log_error(frappe.get_traceback(), _("AI 采购订单草稿调用失败"))
-		raise UpstreamServiceUnavailableError(_("AI 草稿服务暂时不可用，请稍后重试。"))
-	if not isinstance(result.get("draft"), dict):
-		raise UpstreamServiceUnavailableError(_("AI 草稿服务返回了无效响应。"))
-	return result
 
 
 def _call_ai_orchestrator_inventory_adjustment_draft(payload: dict) -> dict:
-	base_url, service_token = _get_ai_orchestrator_settings()
-	request = urllib.request.Request(
-		f"{base_url}/internal/v1/drafts/inventory-adjustment",
-		data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-		headers={"Authorization": f"Bearer {service_token}", "Content-Type": "application/json", "Accept": "application/json"},
-		method="POST",
+	return _call_ai_orchestrator_draft(
+		payload,
+		endpoint="/internal/v1/drafts/inventory-adjustment",
+		log_title=_("AI 库存调整草稿调用失败"),
 	)
-	try:
-		with urllib.request.urlopen(request, timeout=90) as response:
-			result = json.loads(response.read().decode("utf-8") or "{}")
-	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-		frappe.log_error(frappe.get_traceback(), _("AI 库存调整草稿调用失败"))
-		raise UpstreamServiceUnavailableError(_("AI 草稿服务暂时不可用，请稍后重试。"))
-	if not isinstance(result.get("draft"), dict):
-		raise UpstreamServiceUnavailableError(_("AI 草稿服务返回了无效响应。"))
-	return result
 
 
 def _call_ai_orchestrator_product_setup_draft(payload: dict) -> dict:
-	base_url, service_token = _get_ai_orchestrator_settings()
-	request = urllib.request.Request(
-		f"{base_url}/internal/v1/drafts/product-setup",
-		data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-		headers={"Authorization": f"Bearer {service_token}", "Content-Type": "application/json", "Accept": "application/json"},
-		method="POST",
+	return _call_ai_orchestrator_draft(
+		payload,
+		endpoint="/internal/v1/drafts/product-setup",
+		log_title=_("AI 商品建档草稿调用失败"),
 	)
-	try:
-		with urllib.request.urlopen(request, timeout=90) as response:
-			result = json.loads(response.read().decode("utf-8") or "{}")
-	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-		frappe.log_error(frappe.get_traceback(), _("AI 商品建档草稿调用失败"))
-		raise UpstreamServiceUnavailableError(_("AI 草稿服务暂时不可用，请稍后重试。"))
-	if not isinstance(result.get("draft"), dict):
-		raise UpstreamServiceUnavailableError(_("AI 草稿服务返回了无效响应。"))
-	return result
 
 
 def _stream_ai_orchestrator(payload: dict, *, resume: bool = False):
@@ -2300,7 +2395,9 @@ def generate_ai_sales_order_draft_v1(
 		conversation_id=conversation_id, user=user, role="user", content=content,
 		scenario=scenario, prompt_version=prompt_version,
 	)
-	run_id = ai_repository.create_run(conversation_id=conversation_id, user=user, scenario=scenario)
+	run_id = ai_repository.create_run(
+		conversation_id=conversation_id, user=user, scenario=scenario, model_alias=model_alias,
+	)
 	frappe.db.commit()
 	started = time.perf_counter()
 	try:
@@ -2415,7 +2512,9 @@ def generate_ai_purchase_order_draft_v1(
 		conversation_id=conversation_id, user=user, role="user", content=content,
 		scenario=scenario, prompt_version=prompt_version,
 	)
-	run_id = ai_repository.create_run(conversation_id=conversation_id, user=user, scenario=scenario)
+	run_id = ai_repository.create_run(
+		conversation_id=conversation_id, user=user, scenario=scenario, model_alias=model_alias,
+	)
 	frappe.db.commit()
 	started = time.perf_counter()
 	try:
@@ -2534,6 +2633,7 @@ def generate_ai_inventory_adjustment_draft_v1(
 		conversation_id=conversation_id,
 		user=user,
 		scenario=scenario,
+		model_alias=model_alias,
 	)
 	frappe.db.commit()
 	started = time.perf_counter()
@@ -3048,7 +3148,9 @@ def generate_ai_product_setup_draft_v1(
 		conversation_id=conversation_id, user=user, role="user", content=content,
 		scenario=scenario, prompt_version=prompt_version,
 	)
-	run_id = ai_repository.create_run(conversation_id=conversation_id, user=user, scenario=scenario)
+	run_id = ai_repository.create_run(
+		conversation_id=conversation_id, user=user, scenario=scenario, model_alias=model_alias,
+	)
 	frappe.db.commit()
 	started = time.perf_counter()
 	try:
@@ -4739,6 +4841,7 @@ def _stream_prepared_ai_run(prepared: dict, *, resume: bool = False):
 		content_parts = []
 		completed_result = None
 		paused_result = None
+		active_model_alias = str(prepared.get("payload", {}).get("model_alias") or "").strip() or None
 		streamed_warnings = _merge_ai_warnings(prepared.get("warnings"))
 		first_token_ms = None
 		delta_count = 0
@@ -4784,13 +4887,18 @@ def _stream_prepared_ai_run(prepared: dict, *, resume: bool = False):
 			for event in _stream_ai_orchestrator(prepared["payload"], resume=resume):
 				event_type = event.get("type")
 				if event_type == "started":
+					active_model_alias = str(event.get("model_alias") or active_model_alias or "").strip() or None
 					yield _encode_sse(
 						{
 							"type": "run_progress",
 							"phase": "model_started",
 							"message": _("模型已接收请求，等待首个 Token"),
+							"model_display": _public_ai_model_display(
+								active_model_alias,
+								include_advanced_diagnostics=include_advanced_diagnostics,
+							),
 							**(
-								{"model_alias": event.get("model_alias")}
+								{"model_alias": active_model_alias}
 								if include_advanced_diagnostics else {}
 							),
 						}
@@ -4821,9 +4929,34 @@ def _stream_prepared_ai_run(prepared: dict, *, resume: bool = False):
 					)
 					yield _encode_sse(event)
 				elif event_type == "error":
+					active_model_alias = str(event.get("model_alias") or active_model_alias or "").strip() or None
+					public_data = {
+						"model_display": _public_ai_model_display(
+							active_model_alias,
+							include_advanced_diagnostics=include_advanced_diagnostics,
+						),
+						"retryable": True,
+					}
+					if active_model_alias and include_advanced_diagnostics:
+						public_data["model_alias"] = active_model_alias
+					provider_error_code = str(event.get("provider_error_code") or "").strip() or None
+					if provider_error_code and include_advanced_diagnostics:
+						public_data["provider_error_code"] = provider_error_code
 					raise AiServiceError(
-						str(event.get("message") or _("AI 服务暂时不可用。")),
+						(
+							_("模型 {0} 暂时不可用，请更换模型或稍后重试。").format(
+								_public_ai_model_display(
+									active_model_alias,
+									include_advanced_diagnostics=include_advanced_diagnostics,
+								) or _("当前自动模型")
+							)
+							if event.get("code") == "MODEL_PROVIDER_REJECTED"
+							else str(event.get("message") or _("AI 服务暂时不可用。"))
+						),
 						code=str(event.get("code") or "AI_SERVICE_UNAVAILABLE"),
+						model_alias=active_model_alias,
+						provider_error_code=provider_error_code,
+						public_data=public_data,
 					)
 				elif event_type == "completed":
 					completed_result = {
@@ -4886,6 +5019,7 @@ def _stream_prepared_ai_run(prepared: dict, *, resume: bool = False):
 					"message": error_message,
 					"conversation": prepared["conversation_id"],
 					"run_id": prepared["run_id"],
+					**getattr(error, "public_data", {}),
 				}
 			)
 

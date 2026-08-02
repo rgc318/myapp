@@ -23,6 +23,7 @@ from myapp.services.ai_service import (
 	_execute_ai_draft_payload,
 	_build_report_query_dsl,
 	_call_ai_orchestrator,
+	_call_ai_orchestrator_product_setup_draft,
 	_call_ai_intent_orchestrator,
 	_normalize_ai_business_result_refresh,
 	_update_ai_draft_once,
@@ -74,6 +75,42 @@ class TestAiService(TestCase):
 
 	def tearDown(self):
 		self._agent_runtime_env.stop()
+
+	@patch("myapp.services.ai_service._can_view_advanced_diagnostics", return_value=True)
+	@patch("myapp.services.ai_service._current_user", return_value="manager@example.com")
+	@patch("myapp.services.ai_service._resolve_ai_model_display", return_value="DeepSeek V4 Flash")
+	@patch("myapp.services.ai_service._get_ai_orchestrator_settings", return_value=("http://ai", "token"))
+	@patch("myapp.services.ai_service.urllib.request.urlopen")
+	def test_structured_draft_provider_error_preserves_model_diagnostics(
+		self, mock_urlopen, _settings, _display, _user, _advanced,
+	):
+		body = json.dumps({
+			"detail": {
+				"code": "MODEL_PROVIDER_REJECTED",
+				"message": "模型供应商拒绝了请求。",
+				"model_alias": "opencode-deepseek-v4-flash",
+				"provider_error_code": "PROVIDER_HTTP_403",
+			},
+		}).encode()
+		mock_urlopen.side_effect = urllib.error.HTTPError(
+			"http://ai/internal/v1/drafts/product-setup", 502, "Bad Gateway", {}, io.BytesIO(body),
+		)
+
+		with self.assertRaises(AiServiceError) as raised:
+			_call_ai_orchestrator_product_setup_draft({
+				"messages": [{"role": "user", "content": "完善迪莫商品资料"}],
+				"model_alias": None,
+			})
+
+		self.assertEqual(raised.exception.code, "MODEL_PROVIDER_REJECTED")
+		self.assertEqual(raised.exception.model_alias, "opencode-deepseek-v4-flash")
+		self.assertEqual(raised.exception.public_data, {
+			"model_display": "DeepSeek V4 Flash",
+			"model_alias": "opencode-deepseek-v4-flash",
+			"provider_error_code": "PROVIDER_HTTP_403",
+			"retryable": True,
+		})
+		self.assertIn("DeepSeek V4 Flash", str(raised.exception))
 
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	@patch("myapp.services.ai_service.ai_repository.list_conversations")

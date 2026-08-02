@@ -194,6 +194,46 @@ class TestAiModelGovernanceService(TestCase):
 		mock_audit.assert_called_once()
 		self.assertEqual(mock_audit.call_args.kwargs["action"], "check_model_availability")
 
+	@patch("myapp.services.ai_model_governance_service._record_audit")
+	@patch("myapp.services.ai_model_governance_service._call_orchestrator")
+	@patch("myapp.services.ai_model_governance_service._ensure_tables")
+	@patch("myapp.services.ai_model_governance_service._require_manager", return_value="manager@example.com")
+	@patch("myapp.services.ai_model_governance_service.run_idempotent", side_effect=_run_immediately)
+	def test_availability_check_limits_provider_calls_to_selected_models(
+		self, _idempotent, _actor, _tables, mock_orchestrator, mock_audit,
+	):
+		mock_orchestrator.return_value = {
+			"source": "litellm",
+			"items": [{
+				"model_alias": "gpt-5.5", "capability": "structured",
+				"available": True, "latency_ms": 210,
+				"provider_model": "openai/gpt-5.5", "error_code": None,
+			}],
+		}
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe, patch(
+			"myapp.services.ai_model_governance_service.now_datetime",
+			return_value="2026-08-01 12:00:00",
+		):
+			mock_frappe.db.sql.side_effect = [
+				[frappe._dict(model_alias="gpt-5.5")],
+				None,
+			]
+			result = check_ai_model_availability_v1(
+				model_aliases=["gpt-5.5"],
+				request_id="health-selected-1",
+			)
+
+		self.assertEqual(result["data"]["requested_count"], 1)
+		self.assertEqual(result["data"]["trigger"], "manual_selected")
+		mock_orchestrator.assert_called_once_with(
+			"/internal/v1/governance/models/availability",
+			payload={"model_aliases": ["gpt-5.5"]},
+			method="POST",
+			timeout=180,
+		)
+		self.assertIn("model_alias IN (%s)", mock_frappe.db.sql.call_args_list[0].args[0])
+		self.assertEqual(mock_audit.call_args.kwargs["parameters"]["trigger"], "manual_selected")
+
 	@patch("myapp.services.ai_model_governance_service._ensure_tables")
 	@patch("myapp.services.ai_model_governance_service._current_user", return_value="user@example.com")
 	def test_selectable_models_only_include_active_chat_capabilities(self, _user, _tables):
@@ -296,6 +336,7 @@ class TestAiModelGovernanceService(TestCase):
 			"langfuse_configured": True, "prompt_versions": {"general": "v5"},
 		}
 		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+			mock_frappe.conf = {}
 			mock_frappe.db.table_exists.return_value = True
 			mock_frappe.db.sql.side_effect = [
 				[frappe._dict(status="active", count=2)],
@@ -308,6 +349,7 @@ class TestAiModelGovernanceService(TestCase):
 					estimated_cost=2.5, cost_currency="CNY", latency_p95_ms=1800,
 					first_token_p95_ms=500,
 				)],
+				[frappe._dict(last_health_at="2026-08-01 03:15:00")],
 			]
 			result = get_ai_model_governance_overview_v1()
 
@@ -315,6 +357,11 @@ class TestAiModelGovernanceService(TestCase):
 		self.assertEqual(result["data"]["data_task_counts"]["review_required"], 3)
 		self.assertEqual(result["data"]["vector_counts"]["failed"], 3)
 		self.assertEqual(result["data"]["usage_7d"]["request_count"], 20)
+		self.assertTrue(result["data"]["model_health_schedule"]["enabled"])
+		self.assertEqual(
+			result["data"]["model_health_schedule"]["last_health_at"],
+			"2026-08-01 03:15:00",
+		)
 
 	@patch("myapp.services.ai_model_governance_service._ensure_tables")
 	@patch("myapp.services.ai_model_governance_service._require_viewer")

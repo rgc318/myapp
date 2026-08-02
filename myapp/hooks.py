@@ -159,6 +159,11 @@ scheduler_events = {
 		"myapp.tasks.refresh_ai_usage_metrics",
 		"myapp.tasks.reconcile_ai_product_vectors",
 	],
+	"cron": {
+		"15 3 * * *": [
+			"myapp.tasks.check_ai_model_availability",
+		],
+	},
 }
 
 # Testing

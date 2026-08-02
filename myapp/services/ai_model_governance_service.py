@@ -44,6 +44,7 @@ POLICY_SCENARIOS = {
 BUDGET_ACTIONS = {"warn", "use_lower_cost_fallback", "reject_noncritical"}
 ENVIRONMENTS = {"development", "test", "staging", "production"}
 MAX_PAGE_SIZE = 100
+MODEL_HEALTHCHECK_CRON = "15 3 * * *"
 
 
 def _name(prefix: str) -> str:
@@ -146,6 +147,26 @@ def _normalize_nonnegative_decimal(value, field_label: str) -> Decimal:
 	if resolved < 0:
 		frappe.throw(_("{0}不能小于 0。").format(field_label))
 	return resolved
+
+
+def get_ai_model_healthcheck_schedule() -> dict:
+	conf = frappe.conf or {}
+	raw_enabled = conf.get("myapp_ai_model_healthcheck_enabled", True)
+	if isinstance(raw_enabled, str):
+		enabled = raw_enabled.strip().lower() not in {"0", "false", "no", "off"}
+	else:
+		enabled = bool(raw_enabled)
+	model_aliases = _normalize_list(
+		conf.get("myapp_ai_model_healthcheck_aliases"),
+		max_items=100,
+	)
+	return {
+		"enabled": enabled,
+		"cron": MODEL_HEALTHCHECK_CRON,
+		"timezone": "site",
+		"model_aliases": model_aliases,
+		"scope": "selected" if model_aliases else "all_enabled",
+	}
 
 
 def _normalize_nonnegative_int(value, field_label: str, *, maximum: int = 10_000_000) -> int:
@@ -458,6 +479,17 @@ def get_ai_model_governance_overview_v1() -> dict:
 		as_dict=True,
 	)
 	usage_7d = dict(usage_rows[0]) if usage_rows else {}
+	health_rows = frappe.db.sql(
+		f"SELECT MAX(last_health_at) AS last_health_at FROM `{REGISTRY_TABLE}`",
+		as_dict=True,
+	)
+	health_schedule = {
+		**get_ai_model_healthcheck_schedule(),
+		"last_health_at": (
+			str(health_rows[0].last_health_at or "") or None
+			if health_rows else None
+		),
+	}
 	try:
 		runtime_result = _call_orchestrator("/health", timeout=5)
 		runtime = {
@@ -481,6 +513,7 @@ def get_ai_model_governance_overview_v1() -> dict:
 			"data_task_counts": data_task_counts,
 			"vector_counts": vector_counts,
 			"usage_7d": usage_7d,
+			"model_health_schedule": health_schedule,
 			"runtime": runtime,
 			"recent_audits": [dict(row) for row in recent_audits],
 		},
@@ -682,95 +715,137 @@ def sync_ai_model_registry_v1(*, request_id: str | None = None) -> dict:
 	return run_idempotent("sync_ai_model_registry_v1", request_id, _sync, request_payload={})
 
 
-def check_ai_model_availability_v1(*, request_id: str | None = None) -> dict:
-	actor = _require_manager()
+def _resolve_healthcheck_model_aliases(model_aliases=None) -> list[str]:
+	requested = _normalize_list(model_aliases, max_items=100)
+	explicit_selection = model_aliases not in (None, "")
+	if explicit_selection and not requested:
+		frappe.throw(_("请至少选择一个需要检测的模型。"))
+	params: list = []
+	selection_sql = ""
+	if requested:
+		placeholders = ", ".join(["%s"] * len(requested))
+		selection_sql = f" AND model_alias IN ({placeholders})"
+		params.extend(requested)
+	rows = frappe.db.sql(
+		f"""
+		SELECT model_alias FROM `{REGISTRY_TABLE}`
+		WHERE status NOT IN ('disabled', 'retired'){selection_sql}
+		ORDER BY model_alias
+		""",
+		tuple(params),
+		as_dict=True,
+	)
+	resolved = [str(row.model_alias) for row in rows]
+	missing = [alias for alias in requested if alias not in resolved]
+	if missing:
+		frappe.throw(_("以下模型不存在、已停用或已退役：{0}").format("、".join(missing)))
+	if not resolved:
+		frappe.throw(_("当前没有可检测的未停用模型。"))
+	return resolved
+
+
+def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str) -> dict:
 	_ensure_tables()
+	resolved_aliases = _resolve_healthcheck_model_aliases(model_aliases)
+	result = _call_orchestrator(
+		"/internal/v1/governance/models/availability",
+		payload={"model_aliases": resolved_aliases},
+		method="POST",
+		timeout=180,
+	)
+	items = result.get("items")
+	if not isinstance(items, list):
+		frappe.throw(_("Orchestrator 未返回有效的模型可用性结果。"))
+
+	now = now_datetime()
+	normalized_items = []
+	for item in items:
+		if not isinstance(item, dict):
+			continue
+		model_alias = _normalize_text(item.get("model_alias"), max_length=140)
+		if not model_alias or model_alias not in resolved_aliases:
+			continue
+		available = bool(item.get("available"))
+		supports_tools = bool(item.get("supports_tools"))
+		error_code = _normalize_text(
+			item.get("error_code") or item.get("tool_error_code"), max_length=140,
+		) or None
+		provider_model = _normalize_text(item.get("provider_model"), max_length=255) or None
+		latency_ms = max(0, int(float(item.get("latency_ms") or 0)))
+		frappe.db.sql(
+			f"""
+			UPDATE `{REGISTRY_TABLE}`
+			SET last_health_at = %s, last_health_status = %s, last_error_code = %s,
+				provider_model_display = COALESCE(%s, provider_model_display), supports_tools = %s,
+				modified = %s, modified_by = %s
+			WHERE model_alias = %s
+			""",
+			(
+				now, "available" if available else "unavailable", error_code,
+				provider_model, cint(supports_tools), now, actor, model_alias,
+			),
+		)
+		normalized_items.append({
+			"model_alias": model_alias,
+			"capability": _normalize_text(item.get("capability"), max_length=30) or None,
+			"available": available,
+			"supports_tools": supports_tools,
+			"latency_ms": latency_ms,
+			"provider_model": provider_model,
+			"error_code": error_code,
+		})
+
+	available_count = sum(1 for item in normalized_items if item["available"])
+	response = {
+		"source": _normalize_text(result.get("source"), max_length=40) or "litellm",
+		"trigger": trigger,
+		"requested_count": len(resolved_aliases),
+		"checked_count": len(normalized_items),
+		"available_count": available_count,
+		"unavailable_count": len(normalized_items) - available_count,
+		"items": normalized_items,
+	}
+	_record_audit(
+		actor=actor,
+		action="check_model_availability",
+		object_type="model_registry",
+		object_name="all" if not model_aliases else ",".join(resolved_aliases),
+		parameters={"model_aliases": resolved_aliases, "trigger": trigger},
+		result=response,
+	)
+	return {
+		"status": "success",
+		"message": _("AI 模型可用性检查已完成。"),
+		"data": response,
+	}
+
+
+def check_ai_model_availability_v1(*, model_aliases=None, request_id: str | None = None) -> dict:
+	actor = _require_manager()
 
 	def _check():
-		rows = frappe.db.sql(
-			f"""
-			SELECT model_alias FROM `{REGISTRY_TABLE}`
-			WHERE status NOT IN ('disabled', 'retired')
-			ORDER BY model_alias
-			""",
-			as_dict=True,
-		)
-		model_aliases = [str(row.model_alias) for row in rows]
-		result = _call_orchestrator(
-			"/internal/v1/governance/models/availability",
-			payload={"model_aliases": model_aliases},
-			method="POST",
-			timeout=180,
-		)
-		items = result.get("items")
-		if not isinstance(items, list):
-			frappe.throw(_("Orchestrator 未返回有效的模型可用性结果。"))
-
-		now = now_datetime()
-		normalized_items = []
-		for item in items:
-			if not isinstance(item, dict):
-				continue
-			model_alias = _normalize_text(item.get("model_alias"), max_length=140)
-			if not model_alias or model_alias not in model_aliases:
-				continue
-			available = bool(item.get("available"))
-			supports_tools = bool(item.get("supports_tools"))
-			error_code = _normalize_text(
-				item.get("error_code") or item.get("tool_error_code"), max_length=140,
-			) or None
-			provider_model = _normalize_text(item.get("provider_model"), max_length=255) or None
-			latency_ms = max(0, int(float(item.get("latency_ms") or 0)))
-			frappe.db.sql(
-				f"""
-				UPDATE `{REGISTRY_TABLE}`
-				SET last_health_at = %s, last_health_status = %s, last_error_code = %s,
-					provider_model_display = COALESCE(%s, provider_model_display), supports_tools = %s,
-					modified = %s, modified_by = %s
-				WHERE model_alias = %s
-				""",
-				(
-					now, "available" if available else "unavailable", error_code,
-					provider_model, cint(supports_tools), now, actor, model_alias,
-				),
-			)
-			normalized_items.append({
-				"model_alias": model_alias,
-				"capability": _normalize_text(item.get("capability"), max_length=30) or None,
-				"available": available,
-				"supports_tools": supports_tools,
-				"latency_ms": latency_ms,
-				"provider_model": provider_model,
-				"error_code": error_code,
-			})
-
-		available_count = sum(1 for item in normalized_items if item["available"])
-		response = {
-			"source": _normalize_text(result.get("source"), max_length=40) or "litellm",
-			"checked_count": len(normalized_items),
-			"available_count": available_count,
-			"unavailable_count": len(normalized_items) - available_count,
-			"items": normalized_items,
-		}
-		_record_audit(
+		return _check_ai_model_availability(
+			model_aliases=model_aliases,
 			actor=actor,
-			action="check_model_availability",
-			object_type="model_registry",
-			object_name="all",
-			parameters={"model_aliases": model_aliases},
-			result=response,
+			trigger="manual_selected" if model_aliases not in (None, "") else "manual_all",
 		)
-		return {
-			"status": "success",
-			"message": _("AI 模型可用性检查已完成。"),
-			"data": response,
-		}
 
 	return run_idempotent(
 		"check_ai_model_availability_v1",
 		request_id,
 		_check,
-		request_payload={},
+		request_payload={"model_aliases": _normalize_list(model_aliases, max_items=100)},
+	)
+
+
+def run_scheduled_ai_model_availability_check() -> dict:
+	schedule = get_ai_model_healthcheck_schedule()
+	if not schedule["enabled"]:
+		return {"status": "skipped", "message": _("AI 模型定时健康检查已停用。"), "data": schedule}
+	return _check_ai_model_availability(
+		model_aliases=schedule["model_aliases"] or None,
+		actor="Administrator",
+		trigger="scheduled",
 	)
 
 

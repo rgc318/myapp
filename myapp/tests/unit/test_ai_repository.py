@@ -662,7 +662,8 @@ class TestAiRepository(TestCase):
 			)
 
 		parameters = mock_frappe.db.sql.call_args.args[1]
-		self.assertEqual(parameters[3], "AI_REQUEST_RATE_LIMITED")
+		self.assertIsNone(parameters[3])
+		self.assertEqual(parameters[4], "AI_REQUEST_RATE_LIMITED")
 
 	def test_fail_run_hides_unknown_internal_error_details(self):
 		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
@@ -680,8 +681,9 @@ class TestAiRepository(TestCase):
 			)
 
 		parameters = mock_frappe.db.sql.call_args.args[1]
-		self.assertEqual(parameters[3], "AI_RUN_FAILED")
-		self.assertNotIn("password", parameters[4])
+		self.assertIsNone(parameters[3])
+		self.assertEqual(parameters[4], "AI_RUN_FAILED")
+		self.assertNotIn("password", parameters[5])
 
 	def test_update_draft_locks_and_advances_the_expected_version(self):
 		updated = {"name": "AI-DRAFT-1", "status": "draft", "version": 3}

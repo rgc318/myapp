@@ -251,6 +251,7 @@ def _serialize_message_run(row, *, include_advanced_diagnostics: bool) -> dict |
 		"latency_ms": cint(row.latency_ms),
 		"error_code": row.error_code,
 		"error": row.error,
+		"model_display": getattr(row, "model_display", None) or None,
 	}
 	if include_advanced_diagnostics:
 		run.update({
@@ -522,12 +523,14 @@ def get_conversation(
 		SELECT m.name, m.sequence_no, m.role, m.content, m.scenario, m.run_id,
 			m.citations_json, m.prompt_version, m.creation,
 			r.status AS run_status, r.model_alias, r.model, r.trace_id,
+			COALESCE(mr.provider_model_display, r.model_alias) AS model_display,
 			r.prompt_tokens, r.completion_tokens, r.total_tokens, r.reasoning_tokens,
 			r.latency_ms, r.first_token_ms, r.error_code, r.error,
 			f.rating AS feedback_rating, f.category AS feedback_category,
 			f.comment AS feedback_comment
 		FROM `{MESSAGE_TABLE}` m
 		LEFT JOIN `{RUN_TABLE}` r ON r.name = m.run_id AND r.requested_by = %s
+		LEFT JOIN `tabMyApp AI Model Registry` mr ON mr.model_alias = r.model_alias
 		LEFT JOIN `{FEEDBACK_TABLE}` f ON f.run_id = m.run_id AND f.owner = %s
 		WHERE m.conversation = %s{sequence_sql}
 		ORDER BY m.sequence_no DESC
@@ -1693,6 +1696,7 @@ def complete_run(
 def fail_run(*, run_id: str, user: str, error: Exception, latency_ms: int):
 	now = now_datetime()
 	error_code = str(getattr(error, "code", "") or "").strip()
+	model_alias = str(getattr(error, "model_alias", "") or "").strip() or None
 	if not error_code:
 		if isinstance(error, frappe.PermissionError):
 			error_code = "PERMISSION_DENIED"
@@ -1713,13 +1717,14 @@ def fail_run(*, run_id: str, user: str, error: Exception, latency_ms: int):
 		f"""
 		UPDATE `{RUN_TABLE}`
 		SET modified = %s, modified_by = %s, status = 'failed', latency_ms = %s,
-			error_code = %s, error = %s, completed_at = %s
+			model_alias = COALESCE(%s, model_alias), error_code = %s, error = %s, completed_at = %s
 		WHERE name = %s AND requested_by = %s AND status = 'running'
 		""",
 		(
 			now,
 			user,
 			max(0, cint(latency_ms)),
+			model_alias,
 			error_code,
 			error_message[:2000],
 			now,

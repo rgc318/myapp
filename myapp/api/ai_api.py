@@ -434,8 +434,11 @@ def sync_ai_model_registry_v1(request_id: str | None = None):
 	return sync_ai_model_registry_v1_service(request_id=request_id)
 
 
-def check_ai_model_availability_v1(request_id: str | None = None):
-	return check_ai_model_availability_v1_service(request_id=request_id)
+def check_ai_model_availability_v1(model_aliases=None, request_id: str | None = None):
+	return check_ai_model_availability_v1_service(
+		model_aliases=model_aliases,
+		request_id=request_id,
+	)
 
 
 def list_ai_models_v1(
