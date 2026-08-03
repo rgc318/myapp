@@ -474,6 +474,29 @@ class TestAiService(TestCase):
 		self.assertEqual(call["payload"]["items"][0]["qty"], 5)
 		self.assertEqual(call["payload"]["items"][0]["price"], 120)
 
+	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value=None)
+	@patch("myapp.services.ai_service._resolve_item_candidates")
+	def test_unresolved_order_lines_preserve_item_and_warehouse_queries(
+		self, mock_candidates, _warehouse,
+	):
+		mock_candidates.return_value = {"candidates": [], "selected": None}
+		for resolver in (_resolve_sales_draft_item, _resolve_purchase_draft_item):
+			with self.subTest(resolver=resolver.__name__):
+				row = resolver(
+					{
+						"item_query": "圣晶石",
+						"qty": 2,
+						"warehouse_query": "临时仓",
+					},
+					company="Demo Company",
+					default_warehouse=None,
+				)
+
+				self.assertIsNone(row["item_code"])
+				self.assertEqual(row["item_query"], "圣晶石")
+				self.assertIsNone(row["warehouse"])
+				self.assertEqual(row["warehouse_query"], "临时仓")
+
 	@patch("myapp.services.ai_service.ai_repository.update_draft")
 	@patch("myapp.services.ai_service._build_product_setup_draft")
 	def test_execution_refresh_persists_new_version_when_business_facts_drift(
@@ -909,7 +932,10 @@ class TestAiService(TestCase):
 		mock_conversation.return_value = {"name": "AI-CONV-DRAFT", "company": "Test Company"}
 		mock_messages.return_value = [{"role": "user", "content": "给客户A开2箱相机"}]
 		mock_call.return_value = {
-			"draft": {"customer_query": "客户A", "items": [{"item_query": "相机", "qty": 2}]},
+			"draft": {
+				"customer_query": "客户A", "warehouse_query": "Stores - TC",
+				"items": [{"item_query": "相机", "qty": 2}],
+			},
 			"model": "structured-model", "model_alias": "erp-structured", "trace_id": "trace-draft", "usage": {},
 		}
 		mock_customer.return_value = ({"name": "CUST-1", "display_name": "客户A"}, [{"name": "CUST-1"}])
@@ -932,6 +958,10 @@ class TestAiService(TestCase):
 		self.assertEqual(result["data"]["run"]["status"], "completed")
 		self.assertGreaterEqual(result["data"]["run"]["latency_ms"], 0)
 		self.assertEqual(mock_create_draft.call_args.kwargs["payload"]["customer"], "CUST-1")
+		self.assertEqual(
+			mock_create_draft.call_args.kwargs["payload"]["warehouse_query"],
+			"Stores - TC",
+		)
 		self.assertTrue(mock_create_draft.call_args.kwargs["validation"]["ready_for_handoff"])
 		self.assertEqual(_complete.call_args.kwargs["tool_calls"][0]["risk_level"], "L2_DRAFT_ONLY")
 		expected_prompt_version = _resolve_prompt_version("sales_order_draft")
@@ -1014,6 +1044,10 @@ class TestAiService(TestCase):
 			{expected_prompt_version},
 		)
 		self.assertEqual(mock_run.call_args.kwargs["scenario"], "purchase_order_draft")
+		self.assertEqual(
+			mock_create_draft.call_args.kwargs["payload"]["warehouse_query"],
+			"Stores - TC",
+		)
 
 	@patch("myapp.services.ai_service.ai_repository.create_draft")
 	@patch("myapp.services.ai_service.ai_repository.fail_run")

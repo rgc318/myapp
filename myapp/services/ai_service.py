@@ -2015,7 +2015,8 @@ def _resolve_purchase_draft_item(
 	rows = resolution["candidates"]
 	selected = resolution["selected"]
 	warnings = []
-	warehouse = _resolve_sales_draft_warehouse(candidate.get("warehouse_query"), company) or default_warehouse
+	warehouse_query = candidate.get("warehouse_query")
+	warehouse = _resolve_sales_draft_warehouse(warehouse_query, company) or default_warehouse
 	if qty <= 0:
 		warnings.append(_("数量必须大于 0。"))
 	if not warehouse:
@@ -2025,7 +2026,8 @@ def _resolve_purchase_draft_item(
 		return {
 			"item_query": query, "item_code": None, "item_name": None, "qty": qty,
 			"uom": candidate.get("uom"), "uom_display": None, "stock_uom": None,
-			"stock_uom_display": None, "price": None, "warehouse": warehouse,
+			"stock_uom_display": None, "price": None, "warehouse_query": warehouse_query,
+			"warehouse": warehouse,
 			"conversion_factor": None,
 			"candidates": [{"item_code": row.get("item_code"), "item_name": row.get("item_name")} for row in rows],
 			"warnings": warnings,
@@ -2055,7 +2057,7 @@ def _resolve_purchase_draft_item(
 		"stock_uom": selected.get("uom"), "stock_uom_display": selected.get("uom_display"),
 		"price": resolved_price, "reference_price": reference_price,
 		"price_source": "user" if "price" in user_patch else "system",
-		"warehouse": warehouse,
+		"warehouse_query": warehouse_query, "warehouse": warehouse,
 		"conversion_factor": conversion_factor,
 		"candidates": [{"item_code": row.get("item_code"), "item_name": row.get("item_name")} for row in rows],
 		"warnings": warnings,
@@ -2311,7 +2313,8 @@ def _resolve_sales_draft_item(
 	warnings = []
 	if qty <= 0:
 		warnings.append(_("数量必须大于 0。"))
-	warehouse = _resolve_sales_draft_warehouse(candidate.get("warehouse_query"), company) or default_warehouse
+	warehouse_query = candidate.get("warehouse_query")
+	warehouse = _resolve_sales_draft_warehouse(warehouse_query, company) or default_warehouse
 	if not warehouse:
 		warnings.append(_("缺少当前公司可用的明细仓库。"))
 	if not selected:
@@ -2320,7 +2323,8 @@ def _resolve_sales_draft_item(
 			"item_query": query, "item_code": None, "item_name": None, "qty": qty,
 			"uom": candidate.get("uom"), "uom_display": None, "price": None,
 			"stock_uom": None, "stock_uom_display": None,
-			"warehouse": warehouse, "conversion_factor": None,
+			"warehouse_query": warehouse_query, "warehouse": warehouse,
+			"conversion_factor": None,
 			"candidates": [{"item_code": row.get("item_code"), "item_name": row.get("item_name")} for row in rows],
 			"warnings": warnings,
 		}
@@ -2354,7 +2358,7 @@ def _resolve_sales_draft_item(
 		"price": resolved_price,
 		"reference_price": reference_price,
 		"price_source": "user" if "price" in user_patch else "system",
-		"warehouse": warehouse,
+		"warehouse_query": warehouse_query, "warehouse": warehouse,
 		"conversion_factor": conversion_factor,
 		"candidates": [{"item_code": row.get("item_code"), "item_name": row.get("item_name")} for row in rows],
 		"warnings": warnings,
@@ -2441,6 +2445,7 @@ def generate_ai_sales_order_draft_v1(
 			"transaction_date": transaction_date,
 			"delivery_date": delivery_date,
 			"default_sales_mode": candidate.get("default_sales_mode") or "wholesale",
+			"warehouse_query": candidate.get("warehouse_query"),
 			"warehouse": default_warehouse,
 			"remarks": candidate.get("remarks"),
 			"items": items,
@@ -2555,6 +2560,7 @@ def generate_ai_purchase_order_draft_v1(
 			"supplier_candidates": supplier_candidates, "transaction_date": transaction_date,
 			"schedule_date": schedule_date,
 			"default_purchase_mode": candidate.get("default_purchase_mode") or "wholesale",
+			"warehouse_query": candidate.get("warehouse_query"),
 			"warehouse": default_warehouse, "currency": currency,
 			"supplier_ref": candidate.get("supplier_ref"), "remarks": candidate.get("remarks"),
 			"items": items,
@@ -3267,12 +3273,13 @@ def _update_ai_draft_once(
 		company = draft["company"]
 		supplier_query = payload.get("supplier") or payload.get("supplier_query")
 		supplier, supplier_candidates = _resolve_purchase_draft_supplier(supplier_query)
-		default_warehouse = _resolve_sales_draft_warehouse(payload.get("warehouse"), company)
+		warehouse_query = payload.get("warehouse") or payload.get("warehouse_query")
+		default_warehouse = _resolve_sales_draft_warehouse(warehouse_query, company)
 		items = [
 			_resolve_purchase_draft_item(
 				{"item_query": row.get("item_code") or row.get("item_query"), "qty": row.get("qty"),
 				 "uom": row.get("uom"), "price": row.get("price"),
-				 "warehouse_query": row.get("warehouse") or default_warehouse,
+				 "warehouse_query": row.get("warehouse") or row.get("warehouse_query") or default_warehouse,
 				 "_state": row.get("_state")},
 				company=company, default_warehouse=default_warehouse,
 				allow_user_price=True,
@@ -3300,7 +3307,8 @@ def _update_ai_draft_once(
 			"transaction_date": str(getdate(payload.get("transaction_date") or nowdate())),
 			"schedule_date": str(getdate(payload.get("schedule_date") or payload.get("transaction_date") or nowdate())),
 			"default_purchase_mode": "retail" if payload.get("default_purchase_mode") == "retail" else "wholesale",
-			"warehouse": default_warehouse, "currency": currency,
+			"warehouse_query": warehouse_query, "warehouse": default_warehouse,
+			"currency": currency,
 			"supplier_ref": str(payload.get("supplier_ref") or "")[:140] or None,
 			"remarks": str(payload.get("remarks") or "")[:1000] or None, "items": items,
 		}
@@ -3316,13 +3324,14 @@ def _update_ai_draft_once(
 	company = draft["company"]
 	customer_query = payload.get("customer") or payload.get("customer_query")
 	customer, customer_candidates = _resolve_sales_draft_customer(customer_query)
-	default_warehouse = _resolve_sales_draft_warehouse(payload.get("warehouse"), company)
+	warehouse_query = payload.get("warehouse") or payload.get("warehouse_query")
+	default_warehouse = _resolve_sales_draft_warehouse(warehouse_query, company)
 	items = [
 		_resolve_sales_draft_item(
 			{
 				"item_query": row.get("item_code") or row.get("item_query"),
 				"qty": row.get("qty"), "uom": row.get("uom"), "price": row.get("price"),
-				"warehouse_query": row.get("warehouse") or default_warehouse,
+				"warehouse_query": row.get("warehouse") or row.get("warehouse_query") or default_warehouse,
 				"_state": row.get("_state"),
 			},
 			company=company, default_warehouse=default_warehouse,
@@ -3347,7 +3356,8 @@ def _update_ai_draft_once(
 		"customer_candidates": customer_candidates, "transaction_date": transaction_date,
 		"delivery_date": delivery_date,
 		"default_sales_mode": "retail" if payload.get("default_sales_mode") == "retail" else "wholesale",
-		"warehouse": default_warehouse, "remarks": str(payload.get("remarks") or "")[:1000] or None,
+		"warehouse_query": warehouse_query, "warehouse": default_warehouse,
+		"remarks": str(payload.get("remarks") or "")[:1000] or None,
 		"items": items,
 	}
 	validation = {
@@ -3752,7 +3762,8 @@ def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
 	payload = draft.get("payload") or {}
 	company = draft.get("company")
 	draft_type = draft.get("draft_type")
-	default_warehouse = _resolve_sales_draft_warehouse(payload.get("warehouse"), company)
+	warehouse_query = payload.get("warehouse") or payload.get("warehouse_query")
+	default_warehouse = _resolve_sales_draft_warehouse(warehouse_query, company)
 	if draft_type == "purchase_order":
 		supplier_query = payload.get("supplier") or payload.get("supplier_query")
 		supplier, supplier_candidates = _resolve_purchase_draft_supplier(supplier_query)
@@ -3763,7 +3774,7 @@ def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
 					"qty": row.get("qty"),
 					"uom": row.get("uom"),
 					"price": row.get("price"),
-					"warehouse_query": row.get("warehouse") or default_warehouse,
+					"warehouse_query": row.get("warehouse") or row.get("warehouse_query") or default_warehouse,
 					"_state": row.get("_state"),
 				},
 				company=company,
@@ -3781,7 +3792,7 @@ def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
 			"supplier": supplier.get("name") if supplier else None,
 			"supplier_display_name": supplier.get("display_name") if supplier else None,
 			"supplier_candidates": supplier_candidates,
-			"warehouse": default_warehouse,
+			"warehouse_query": warehouse_query, "warehouse": default_warehouse,
 			"items": items,
 		}
 	else:
@@ -3794,7 +3805,7 @@ def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
 					"qty": row.get("qty"),
 					"uom": row.get("uom"),
 					"price": row.get("price"),
-					"warehouse_query": row.get("warehouse") or default_warehouse,
+					"warehouse_query": row.get("warehouse") or row.get("warehouse_query") or default_warehouse,
 					"_state": row.get("_state"),
 				},
 				company=company,
@@ -3812,7 +3823,7 @@ def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
 			"customer": customer.get("name") if customer else None,
 			"customer_display_name": customer.get("display_name") if customer else None,
 			"customer_candidates": customer_candidates,
-			"warehouse": default_warehouse,
+			"warehouse_query": warehouse_query, "warehouse": default_warehouse,
 			"items": items,
 		}
 	for index, row in enumerate(items, 1):
