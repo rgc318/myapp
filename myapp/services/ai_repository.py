@@ -252,9 +252,12 @@ def _serialize_message_run(row, *, include_advanced_diagnostics: bool) -> dict |
 		"error_code": row.error_code,
 		"error": row.error,
 		"model_display": getattr(row, "model_display", None) or None,
+		"model_selection": "fixed" if getattr(row, "requested_model_alias", None) else "auto",
+		"requested_model_display": getattr(row, "requested_model_display", None) or None,
 	}
 	if include_advanced_diagnostics:
 		run.update({
+			"requested_model_alias": getattr(row, "requested_model_alias", None) or None,
 			"model_alias": row.model_alias,
 			"model": row.model,
 			"trace_id": row.trace_id,
@@ -522,8 +525,9 @@ def get_conversation(
 		f"""
 		SELECT m.name, m.sequence_no, m.role, m.content, m.scenario, m.run_id,
 			m.citations_json, m.prompt_version, m.creation,
-			r.status AS run_status, r.model_alias, r.model, r.trace_id,
+			r.status AS run_status, r.requested_model_alias, r.model_alias, r.model, r.trace_id,
 			COALESCE(mr.provider_model_display, r.model_alias) AS model_display,
+			COALESCE(requested_mr.provider_model_display, r.requested_model_alias) AS requested_model_display,
 			r.prompt_tokens, r.completion_tokens, r.total_tokens, r.reasoning_tokens,
 			r.latency_ms, r.first_token_ms, r.error_code, r.error,
 			f.rating AS feedback_rating, f.category AS feedback_category,
@@ -531,6 +535,8 @@ def get_conversation(
 		FROM `{MESSAGE_TABLE}` m
 		LEFT JOIN `{RUN_TABLE}` r ON r.name = m.run_id AND r.requested_by = %s
 		LEFT JOIN `tabMyApp AI Model Registry` mr ON mr.model_alias = r.model_alias
+		LEFT JOIN `tabMyApp AI Model Registry` requested_mr
+			ON requested_mr.model_alias = r.requested_model_alias
 		LEFT JOIN `{FEEDBACK_TABLE}` f ON f.run_id = m.run_id AND f.owner = %s
 		WHERE m.conversation = %s{sequence_sql}
 		ORDER BY m.sequence_no DESC
@@ -653,10 +659,18 @@ def load_model_messages(*, conversation_id: str, user: str, limit: int = 20) -> 
 	context_start_sequence = max(1, cint(getattr(conversation, "context_start_sequence", 1)) or 1)
 	rows = frappe.db.sql(
 		f"""
-		SELECT role, content
-		FROM `{MESSAGE_TABLE}`
-		WHERE conversation = %s AND sequence_no >= %s
-		ORDER BY sequence_no DESC
+		SELECT m.role, m.content
+		FROM `{MESSAGE_TABLE}` m
+		LEFT JOIN `{RUN_TABLE}` r ON r.name = m.run_id
+		WHERE m.conversation = %s AND m.sequence_no >= %s
+			AND (
+				m.role <> 'assistant'
+				OR (
+					COALESCE(m.content, '') <> ''
+					AND (r.status IS NULL OR r.status NOT IN ('failed', 'cancelled'))
+				)
+			)
+		ORDER BY m.sequence_no DESC
 		LIMIT %s
 		""",
 		(conversation_id, context_start_sequence, max(1, min(20, cint(limit) or 20))),
@@ -668,6 +682,7 @@ def load_model_messages(*, conversation_id: str, user: str, limit: int = 20) -> 
 def create_run(
 	*, conversation_id: str, user: str, scenario: str,
 	tool_calls: list[dict] | None = None, model_alias: str | None = None,
+	retry_of_run_id: str | None = None,
 ) -> str:
 	_get_owned_conversation(conversation_id, user)
 	now = now_datetime()
@@ -676,16 +691,151 @@ def create_run(
 		f"""
 		INSERT INTO `{RUN_TABLE}`
 			(name, creation, modified, modified_by, owner, docstatus, idx,
-			 conversation, requested_by, scenario, environment, status, model_alias, tool_calls_json, started_at)
-		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, 'running', %s, %s, %s)
+			 conversation, requested_by, scenario, environment, status, requested_model_alias,
+			 retry_of_run_id, model_alias, tool_calls_json, started_at)
+		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, 'running', %s, %s, %s, %s, %s)
 		""",
 		(
 			run_id, now, now, user, user, conversation_id, user, scenario,
 			os.environ.get("MYAPP_AI_ENVIRONMENT", "development").strip() or "development",
-			model_alias, frappe.as_json(tool_calls or []), now,
+			model_alias, retry_of_run_id, model_alias, frappe.as_json(tool_calls or []), now,
 		),
 	)
 	return run_id
+
+
+def append_failed_run_message(*, run_id: str, user: str) -> None:
+	rows = frappe.db.sql(
+		f"""
+		SELECT r.conversation, r.scenario, r.error
+		FROM `{RUN_TABLE}` r
+		LEFT JOIN `{MESSAGE_TABLE}` m ON m.run_id = r.name
+		WHERE r.name = %s AND r.requested_by = %s AND r.status = 'failed'
+			AND m.name IS NULL
+		LIMIT 1
+		""",
+		(run_id, user),
+		as_dict=True,
+	)
+	if not rows:
+		return
+	row = rows[0]
+	append_message(
+		conversation_id=row.conversation,
+		user=user,
+		role="assistant",
+		content="",
+		scenario=row.scenario,
+		run_id=run_id,
+	)
+
+
+def prepare_failed_run_retry(*, run_id: str, user: str) -> dict:
+	rows = frappe.db.sql(
+		f"""
+		SELECT r.name, r.conversation, r.scenario, c.company_scope,
+			m.name AS failed_message_id, m.sequence_no AS failed_sequence
+		FROM `{RUN_TABLE}` r
+		JOIN `{CONVERSATION_TABLE}` c ON c.name = r.conversation AND c.owner = %s
+		JOIN `{MESSAGE_TABLE}` m ON m.run_id = r.name AND m.role = 'assistant'
+		WHERE r.name = %s AND r.requested_by = %s AND r.status IN ('failed', 'cancelled')
+			AND c.status = 'active' AND m.sequence_no = c.message_count
+		LIMIT 1
+		FOR UPDATE
+		""",
+		(user, run_id, user),
+		as_dict=True,
+	)
+	if not rows:
+		raise frappe.ValidationError(_("只能重试当前账号活跃会话中的失败 AI Run。"))
+	row = rows[0]
+	request_rows = frappe.db.sql(
+		f"""
+		SELECT name, content
+		FROM `{MESSAGE_TABLE}`
+		WHERE conversation = %s AND role = 'user' AND sequence_no < %s
+		ORDER BY sequence_no DESC
+		LIMIT 1
+		""",
+		(row.conversation, row.failed_sequence),
+		as_dict=True,
+	)
+	if not request_rows or not str(request_rows[0].content or "").strip():
+		raise frappe.ValidationError(_("失败 Run 缺少可重试的用户消息。"))
+	return {
+		"conversation_id": row.conversation,
+		"company": row.company_scope,
+		"content": str(request_rows[0].content).strip(),
+		"failed_message_id": row.failed_message_id,
+		"scenario": row.scenario,
+		"source_run_id": row.name,
+	}
+
+
+def rebind_failed_run_message_for_retry(
+	*, message_id: str, source_run_id: str, retry_run_id: str, user: str,
+	scenario: str, prompt_version: str,
+) -> None:
+	now = now_datetime()
+	empty_content = ""
+	frappe.db.sql(
+		f"""
+		UPDATE `{MESSAGE_TABLE}`
+		SET modified = %s, modified_by = %s, run_id = %s, content = %s,
+			content_hash = %s, citations_json = %s, scenario = %s, prompt_version = %s
+		WHERE name = %s AND owner = %s AND run_id = %s AND role = 'assistant'
+		""",
+		(
+			now,
+			user,
+			retry_run_id,
+			empty_content,
+			hashlib.sha256(empty_content.encode("utf-8")).hexdigest(),
+			frappe.as_json([]),
+			scenario,
+			prompt_version,
+			message_id,
+			user,
+			source_run_id,
+		),
+	)
+
+
+def complete_retried_run_message(
+	*, run_id: str, user: str, content: str, scenario: str,
+	citations: list[dict] | None, prompt_version: str | None,
+) -> None:
+	now = now_datetime()
+	frappe.db.sql(
+		f"""
+		UPDATE `{MESSAGE_TABLE}`
+		SET creation = %s, modified = %s, modified_by = %s, content = %s,
+			content_hash = %s, citations_json = %s, scenario = %s, prompt_version = %s
+		WHERE run_id = %s AND owner = %s AND role = 'assistant'
+		""",
+		(
+			now,
+			now,
+			user,
+			content,
+			hashlib.sha256(content.encode("utf-8")).hexdigest(),
+			frappe.as_json(citations or []),
+			scenario,
+			prompt_version,
+			run_id,
+			user,
+		),
+	)
+	frappe.db.sql(
+		f"""
+		UPDATE `{CONVERSATION_TABLE}` c
+		JOIN `{RUN_TABLE}` r ON r.conversation = c.name
+		SET c.modified = %s, c.modified_by = %s, c.last_message_at = %s,
+			c.retention_until = %s
+		WHERE r.name = %s AND r.requested_by = %s
+		""",
+		(now, user, now, add_days(now, _retention_days()), run_id, user),
+	)
 
 
 def issue_agent_capability(

@@ -134,6 +134,7 @@ def stream_ai_message_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
+	retry_run_id: str | None = None,
 ):
 	return stream_ai_message_v1_service(
 		content=content,
@@ -141,6 +142,7 @@ def stream_ai_message_v1(
 		company=company,
 		conversation_id=conversation_id,
 		model_alias=model_alias,
+		retry_run_id=retry_run_id,
 	)
 
 

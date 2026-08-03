@@ -900,7 +900,7 @@ def list_ai_selectable_models_v1() -> dict:
 		rows = frappe.db.sql(
 			f"""
 			SELECT model_alias, capability, provider_model_display, supports_streaming, supports_tools,
-				supports_json_schema, status
+				supports_json_schema, status, last_health_at, last_health_status, last_error_code
 			FROM `{REGISTRY_TABLE}`
 			WHERE status IN ('active', 'validated')
 				AND capability IN ('fast_chat', 'reasoning', 'structured')
@@ -921,6 +921,9 @@ def list_ai_selectable_models_v1() -> dict:
 					"supports_tools": bool(cint(row.supports_tools)),
 					"supports_json_schema": bool(cint(row.supports_json_schema)),
 					"status": row.status,
+					"last_health_at": str(row.last_health_at or "") or None,
+					"last_health_status": row.last_health_status,
+					"last_error_code": row.last_error_code,
 				}
 				for row in rows
 			],
@@ -938,7 +941,7 @@ def resolve_ai_selected_model_alias(model_alias: str | None) -> str | None:
 	_ensure_tables()
 	row = frappe.db.sql(
 		f"""
-		SELECT model_alias FROM `{REGISTRY_TABLE}`
+		SELECT model_alias, last_health_status FROM `{REGISTRY_TABLE}`
 		WHERE model_alias = %s
 			AND status IN ('active', 'validated')
 			AND capability IN ('fast_chat', 'reasoning', 'structured')
@@ -949,6 +952,8 @@ def resolve_ai_selected_model_alias(model_alias: str | None) -> str | None:
 	)
 	if not row:
 		frappe.throw(_("所选 AI 模型不可用，请刷新模型列表后重试。"))
+	if str(row[0].last_health_status or "").strip() == "unavailable":
+		frappe.throw(_("所选 AI 模型最近一次健康检查不可用，请选择其他模型。"))
 	return str(row[0].model_alias)
 
 
@@ -1744,7 +1749,8 @@ def get_published_ai_model_policies_for_runtime() -> dict:
 	model_rows = frappe.db.sql(
 		f"""
 		SELECT model_alias, capability, status, supports_tools, supports_json_schema, input_cost, output_cost, currency,
-			data_region, retention_policy, sensitive_data_allowed, registry_version
+			data_region, retention_policy, sensitive_data_allowed, registry_version,
+			last_health_at, last_health_status, last_error_code
 		FROM `{REGISTRY_TABLE}`
 		WHERE status IN ('active', 'validated')
 			OR model_alias IN ({', '.join(['%s'] * len(policy_aliases))})
@@ -1754,7 +1760,8 @@ def get_published_ai_model_policies_for_runtime() -> dict:
 	) if policy_aliases else frappe.db.sql(
 		f"""
 		SELECT model_alias, capability, status, supports_tools, supports_json_schema, input_cost, output_cost, currency,
-			data_region, retention_policy, sensitive_data_allowed, registry_version
+			data_region, retention_policy, sensitive_data_allowed, registry_version,
+			last_health_at, last_health_status, last_error_code
 		FROM `{REGISTRY_TABLE}` WHERE status IN ('active', 'validated')
 		""",
 		as_dict=True,
@@ -1774,6 +1781,9 @@ def get_published_ai_model_policies_for_runtime() -> dict:
 				"retention_policy": row.retention_policy,
 				"sensitive_data_allowed": bool(cint(row.sensitive_data_allowed)),
 				"registry_version": cint(row.registry_version),
+				"last_health_at": str(row.last_health_at or "") or None,
+				"last_health_status": row.last_health_status,
+				"last_error_code": row.last_error_code,
 			}
 			for row in model_rows
 		},

@@ -68,6 +68,8 @@ def execute():
 			`requested_by` varchar(140) NOT NULL,
 			`scenario` varchar(40) NOT NULL,
 			`status` varchar(20) NOT NULL,
+			`requested_model_alias` varchar(140) DEFAULT NULL,
+			`retry_of_run_id` varchar(140) DEFAULT NULL,
 			`model_alias` varchar(140) DEFAULT NULL,
 			`model` varchar(140) DEFAULT NULL,
 			`trace_id` varchar(140) DEFAULT NULL,
@@ -84,6 +86,7 @@ def execute():
 			PRIMARY KEY (`name`),
 			KEY `idx_myapp_ai_run_owner_status` (`requested_by`, `status`, `started_at`),
 			KEY `idx_myapp_ai_run_conversation` (`conversation`, `started_at`),
+			KEY `idx_myapp_ai_run_retry_of` (`retry_of_run_id`),
 			KEY `idx_myapp_ai_run_trace` (`trace_id`)
 		) ENGINE=InnoDB ROW_FORMAT=DYNAMIC
 		"""

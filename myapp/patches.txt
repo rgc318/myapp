@@ -38,3 +38,4 @@ myapp.patches.create_ai_agent_approval_table
 myapp.patches.add_ai_model_supports_tools
 myapp.patches.create_test_dataset_tables
 myapp.patches.extend_test_dataset_runs_v2
+myapp.patches.extend_ai_run_retry_fields

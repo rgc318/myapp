@@ -241,6 +241,8 @@ class TestAiModelGovernanceService(TestCase):
 			frappe._dict(
 				model_alias="gpt-5.5", capability="fast_chat", provider_model_display="GPT 5.5",
 				supports_streaming=1, supports_json_schema=0, status="active",
+				last_health_at="2026-08-03 09:00:00", last_health_status="available",
+				last_error_code=None,
 			),
 			frappe._dict(
 				model_alias="opencode-glm-5.2", capability="reasoning", provider_model_display=None,
@@ -258,6 +260,7 @@ class TestAiModelGovernanceService(TestCase):
 		)
 		self.assertTrue(result["data"]["capabilities"]["can_select_fixed_model"])
 		self.assertTrue(result["data"]["capabilities"]["can_view_advanced_diagnostics"])
+		self.assertEqual(result["data"]["items"][0]["last_health_status"], "available")
 		self.assertIn("status IN ('active', 'validated')", mock_frappe.db.sql.call_args.args[0])
 		self.assertIn("capability IN ('fast_chat', 'reasoning', 'structured')", mock_frappe.db.sql.call_args.args[0])
 
@@ -313,6 +316,21 @@ class TestAiModelGovernanceService(TestCase):
 			result = resolve_ai_selected_model_alias("opencode-glm-5.2")
 
 		self.assertEqual(result, "opencode-glm-5.2")
+
+	@patch("myapp.services.ai_model_governance_service._ensure_tables")
+	@patch("myapp.services.ai_model_governance_service._current_user", return_value="user@example.com")
+	def test_selected_model_rejects_latest_unavailable_health(self, _user, _tables):
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+			mock_frappe.get_roles.return_value = ["AI Model Manager"]
+			mock_frappe.ValidationError = frappe.ValidationError
+			mock_frappe.throw.side_effect = frappe.ValidationError
+			mock_frappe.db.sql.return_value = [frappe._dict(
+				model_alias="opencode-deepseek-v4-flash",
+				last_health_status="unavailable",
+			)]
+
+			with self.assertRaises(frappe.ValidationError):
+				resolve_ai_selected_model_alias("opencode-deepseek-v4-flash")
 
 	@patch("myapp.services.ai_model_governance_service._current_user", return_value="user@example.com")
 	def test_selected_model_rejects_business_user_override(self, _user):

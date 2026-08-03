@@ -164,6 +164,8 @@ def _public_run_summary(run: dict, *, include_advanced_diagnostics: bool) -> dic
 	public = {
 		"status": run.get("status"),
 		"latency_ms": cint(run.get("latency_ms")),
+		"model_selection": run.get("model_selection") or "auto",
+		"requested_model_display": run.get("requested_model_display"),
 	}
 	if run.get("error_code"):
 		public["error_code"] = run.get("error_code")
@@ -171,6 +173,7 @@ def _public_run_summary(run: dict, *, include_advanced_diagnostics: bool) -> dic
 		public["error"] = run.get("error")
 	if include_advanced_diagnostics:
 		public["first_token_ms"] = run.get("first_token_ms")
+		public["requested_model_alias"] = run.get("requested_model_alias")
 	return public
 
 
@@ -4055,12 +4058,23 @@ def _prepare_chat_run(
 	conversation_id: str | None = None,
 	content: str | None = None,
 	model_alias: str | None = None,
+	retry_run_id: str | None = None,
 ):
 	user = _current_user()
 	model_alias = resolve_ai_selected_model_alias(model_alias)
 	requested_scenario = _resolve_scenario(scenario)
 	legacy_messages = _normalize_messages(messages) if messages not in (None, "", []) else []
 	current_content = _normalize_content(content) if content not in (None, "") else None
+	retry_context = None
+	if retry_run_id:
+		retry_context = ai_repository.prepare_failed_run_retry(
+			run_id=str(retry_run_id).strip(), user=user,
+		)
+		conversation_id = retry_context["conversation_id"]
+		requested_scenario = _resolve_scenario(retry_context["scenario"])
+		current_content = retry_context["content"]
+		company = retry_context.get("company")
+		legacy_messages = []
 	if not current_content:
 		if legacy_messages and legacy_messages[-1]["role"] != "user":
 			frappe.throw(_("messages 最后一条必须是 user 消息。"))
@@ -4200,7 +4214,9 @@ def _prepare_chat_run(
 		conversation_id = conversation["name"]
 
 	initial_messages = legacy_messages if legacy_messages and content in (None, "") and is_new_conversation else []
-	if initial_messages:
+	if retry_context:
+		pass
+	elif initial_messages:
 		for row in initial_messages:
 			ai_repository.append_message(
 				conversation_id=conversation_id,
@@ -4224,7 +4240,17 @@ def _prepare_chat_run(
 		user=user,
 		scenario=resolved_scenario,
 		model_alias=model_alias,
+		retry_of_run_id=retry_context.get("source_run_id") if retry_context else None,
 	)
+	if retry_context:
+		ai_repository.rebind_failed_run_message_for_retry(
+			message_id=retry_context["failed_message_id"],
+			source_run_id=retry_context["source_run_id"],
+			retry_run_id=run_id,
+			user=user,
+			scenario=resolved_scenario,
+			prompt_version=prompt_version,
+		)
 	allowed_agent_tools = []
 	capability_token = None
 	if agent_mode:
@@ -4324,6 +4350,8 @@ def _prepare_chat_run(
 		"next_conversation_state": next_conversation_state,
 		"agent_mode": agent_mode,
 		"warnings": compatibility_warnings,
+		"retry_of_run_id": retry_context.get("source_run_id") if retry_context else None,
+		"requested_model_alias": model_alias,
 		"payload": {
 			"messages": model_messages,
 			"scenario": resolved_scenario,
@@ -4517,16 +4545,26 @@ def _complete_chat_run(
 	for attempt in range(2):
 		prepared["tool_calls"] = list(base_tool_calls)
 		try:
-			ai_repository.append_message(
-				conversation_id=prepared["conversation_id"],
-				user=prepared["user"],
-				role="assistant",
-				content=assistant_content,
-				scenario=prepared["scenario"],
-				run_id=prepared["run_id"],
-				citations=prepared["citations"],
-				prompt_version=prepared["prompt_version"],
-			)
+			if prepared.get("retry_of_run_id"):
+				ai_repository.complete_retried_run_message(
+					run_id=prepared["run_id"],
+					user=prepared["user"],
+					content=assistant_content,
+					scenario=prepared["scenario"],
+					citations=prepared["citations"],
+					prompt_version=prepared["prompt_version"],
+				)
+			else:
+				ai_repository.append_message(
+					conversation_id=prepared["conversation_id"],
+					user=prepared["user"],
+					role="assistant",
+					content=assistant_content,
+					scenario=prepared["scenario"],
+					run_id=prepared["run_id"],
+					citations=prepared["citations"],
+					prompt_version=prepared["prompt_version"],
+				)
 			try:
 				state_result = ai_repository.update_conversation_state(
 					conversation_id=prepared["conversation_id"],
@@ -4577,6 +4615,11 @@ def _complete_chat_run(
 		"status": "completed",
 		"latency_ms": latency_ms,
 		"first_token_ms": first_token_ms,
+		"model_selection": "fixed" if prepared.get("requested_model_alias") else "auto",
+		"requested_model_alias": prepared.get("requested_model_alias"),
+		"requested_model_display": _resolve_ai_model_display(
+			prepared.get("requested_model_alias")
+		),
 	}
 
 
@@ -4601,6 +4644,9 @@ def _fail_chat_run(prepared: dict, error: Exception):
 		user=prepared["user"],
 		error=error,
 		latency_ms=latency_ms,
+	)
+	ai_repository.append_failed_run_message(
+		run_id=prepared["run_id"], user=prepared["user"],
 	)
 	if prepared.get("agent_mode"):
 		ai_repository.revoke_agent_capability(run_id=prepared["run_id"], user=prepared["user"])
@@ -4830,6 +4876,7 @@ def stream_ai_message_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
+	retry_run_id: str | None = None,
 ):
 	prepared = _prepare_chat_run(
 		scenario=scenario,
@@ -4837,6 +4884,7 @@ def stream_ai_message_v1(
 		conversation_id=conversation_id,
 		content=content,
 		model_alias=model_alias,
+		retry_run_id=retry_run_id,
 	)
 	return _stream_prepared_ai_run(prepared)
 

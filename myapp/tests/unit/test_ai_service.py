@@ -757,6 +757,78 @@ class TestAiService(TestCase):
 		self.assertEqual(prepared["tool_calls"][-1]["tool"], "load_conversation_context")
 		self.assertFalse(prepared["tool_calls"][-1]["event_visible"])
 
+	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
+		"intent": "general", "confidence": 0.99, "product_query": None,
+		"entities": [], "report_type": None, "date_preset": "all",
+		"date_from": None, "date_to": None, "status": "all", "sort": "latest",
+		"min_amount": None, "limit": 10,
+	})
+	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="gpt-5.6-luna")
+	def test_failed_run_retry_reuses_message_and_current_selected_model(
+		self, _resolve_model, _current_user, _resolve_company, _intent,
+	):
+		with patch.dict(
+			os.environ, {"MYAPP_AI_AGENT_RUNTIME_ENABLED": "0"}, clear=False,
+		), patch(
+			"myapp.services.ai_service.ai_repository.prepare_failed_run_retry",
+			return_value={
+				"conversation_id": "AI-CONV-1",
+				"company": "Demo Company",
+				"content": "查询库存",
+				"failed_message_id": "AI-MSG-2",
+				"scenario": "general",
+				"source_run_id": "AI-RUN-FAILED",
+			},
+		), patch(
+			"myapp.services.ai_service.ai_repository.get_conversation",
+			return_value={
+				"conversation": {
+					"name": "AI-CONV-1", "status": "active", "company": "Demo Company",
+				},
+			},
+		), patch(
+			"myapp.services.ai_service.ai_repository.get_conversation_state",
+			return_value={"version": 0, "state": {"active_scenario": "general"}},
+		), patch(
+			"myapp.services.ai_service.ai_repository.append_message",
+		) as append_message, patch(
+			"myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-RETRY",
+		) as create_run_mock, patch(
+			"myapp.services.ai_service.ai_repository.rebind_failed_run_message_for_retry",
+		) as rebind, patch(
+			"myapp.services.ai_service.ai_repository.load_model_messages",
+			return_value=[{"role": "user", "content": "查询库存"}],
+		), patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.get_roles.return_value = []
+			prepared = _prepare_chat_run(
+				content="ignored",
+				scenario="auto",
+				model_alias="gpt-5.6-luna",
+				retry_run_id="AI-RUN-FAILED",
+			)
+
+		append_message.assert_not_called()
+		create_run_mock.assert_called_once_with(
+			conversation_id="AI-CONV-1",
+			user="user@example.com",
+			scenario="general",
+			model_alias="gpt-5.6-luna",
+			retry_of_run_id="AI-RUN-FAILED",
+		)
+		rebind.assert_called_once_with(
+			message_id="AI-MSG-2",
+			source_run_id="AI-RUN-FAILED",
+			retry_run_id="AI-RUN-RETRY",
+			user="user@example.com",
+			scenario="general",
+			prompt_version=prepared["prompt_version"],
+		)
+		self.assertEqual(prepared["payload"]["model_alias"], "gpt-5.6-luna")
+		self.assertEqual(prepared["retry_of_run_id"], "AI-RUN-FAILED")
+
 	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	def test_readonly_agent_does_not_capture_existing_product_setup_draft_flow(

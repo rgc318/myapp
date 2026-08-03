@@ -11,6 +11,7 @@ from myapp.services.ai_repository import (
 	_normalize_agent_checkpoint,
 	_normalize_conversation_state,
 	cancel_agent_run,
+	create_run,
 	fail_run,
 	get_agent_run_control,
 	get_agent_checkpoint,
@@ -21,6 +22,7 @@ from myapp.services.ai_repository import (
 	list_conversations,
 	list_drafts,
 	load_model_messages,
+	prepare_failed_run_retry,
 	record_agent_runtime_event,
 	prepare_agent_run_resume,
 	prepare_reviewed_agent_approval_resume,
@@ -40,6 +42,55 @@ from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
 
 
 class TestAiRepository(TestCase):
+	def test_create_run_audits_requested_model_and_retry_lineage(self):
+		with patch.object(
+			ai_repository, "_get_owned_conversation",
+		), patch.object(ai_repository, "_name", return_value="AI-RUN-RETRY"), patch.object(
+			ai_repository, "frappe",
+		) as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime",
+			return_value="2026-08-03 10:00:00",
+		):
+			mock_frappe.as_json.side_effect = frappe.as_json
+			result = create_run(
+				conversation_id="AI-CONV-1",
+				user="user@example.com",
+				scenario="general",
+				model_alias="gpt-5.6-luna",
+				retry_of_run_id="AI-RUN-FAILED",
+			)
+
+		self.assertEqual(result, "AI-RUN-RETRY")
+		query, parameters = mock_frappe.db.sql.call_args.args
+		self.assertIn("requested_model_alias", query)
+		self.assertIn("retry_of_run_id", query)
+		self.assertEqual(parameters[-5], "gpt-5.6-luna")
+		self.assertEqual(parameters[-4], "AI-RUN-FAILED")
+		self.assertEqual(parameters[-3], "gpt-5.6-luna")
+
+	def test_prepare_failed_run_retry_locks_latest_assistant_message(self):
+		with patch.object(ai_repository, "frappe") as mock_frappe:
+			mock_frappe.ValidationError = frappe.ValidationError
+			mock_frappe.db.sql.side_effect = [
+				[frappe._dict({
+					"name": "AI-RUN-FAILED",
+					"conversation": "AI-CONV-1",
+					"scenario": "general",
+					"company_scope": "Demo Company",
+					"failed_message_id": "AI-MSG-2",
+					"failed_sequence": 2,
+				})],
+				[frappe._dict({"name": "AI-MSG-1", "content": "查询库存"})],
+			]
+			result = prepare_failed_run_retry(
+				run_id="AI-RUN-FAILED", user="user@example.com",
+			)
+
+		self.assertEqual(result["content"], "查询库存")
+		self.assertEqual(result["failed_message_id"], "AI-MSG-2")
+		self.assertIn("m.sequence_no = c.message_count", mock_frappe.db.sql.call_args_list[0].args[0])
+		self.assertIn("FOR UPDATE", mock_frappe.db.sql.call_args_list[0].args[0])
+
 	@staticmethod
 	def _agent_capability_row(token: str, now: datetime):
 		return frappe._dict({
