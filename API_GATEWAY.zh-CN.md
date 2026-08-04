@@ -14,6 +14,9 @@
 - `myapp.api.gateway.add_product_barcode_v2`
 - `myapp.api.gateway.set_primary_product_barcode_v2`
 - `myapp.api.gateway.delete_product_barcode_v2`
+- `myapp.api.gateway.upload_item_image`
+- `myapp.api.gateway.replace_item_image`
+- `myapp.api.gateway.delete_item_image`
 - `myapp.api.gateway.get_mobile_release_info_v1`
 - `myapp.api.gateway.create_order`
 - `myapp.api.gateway.create_order_v2`
@@ -140,21 +143,31 @@
 }
 ```
 
-`model_alias` 可省略。省略时继续使用已发布模型策略；只有 `System Manager` 和 `AI Model Manager` 可以显式提供固定模型。Frappe 同时校验角色，以及注册表中的 `active / validated` 状态和 `fast_chat / reasoning / structured` 能力；未授权账号即使绕过 Web 提交别名也会被拒绝。`list_ai_selectable_models_v1` 为所有已登录 AI 用户返回工作台能力位，但只向上述两个角色返回受控模型清单，不返回 Embedding、停用、退役、缺失或未验证模型。浏览器不能自行提交注册表外别名，也不能直连 Orchestrator 或 LiteLLM。显式选择会传给同步 Chat、SSE、普通聊天前置的结构化意图解析和四类草稿，并禁用该次请求的静默模型 fallback。
+`model_alias` 可省略。省略时继续使用已发布模型策略；只有 `System Manager` 和 `AI Model Manager` 可以显式提供固定模型。Frappe 同时校验角色，以及注册表中的 `active / validated` 状态、`fast_chat / reasoning / structured` 能力和最近健康状态；最近健康状态为 `unavailable` 的固定模型直接拒绝。未授权账号即使绕过 Web 提交别名也会被拒绝。`list_ai_selectable_models_v1` 为所有已登录 AI 用户返回工作台能力位，但只向上述两个角色返回受控模型清单，不返回 Embedding、停用、退役、缺失或未验证模型。清单同时返回 `last_health_at`、`last_health_status` 和 `last_error_code`，供 Web 禁用不可用项并解释原因。浏览器不能自行提交注册表外别名，也不能直连 Orchestrator 或 LiteLLM。显式选择会传给同步 Chat、SSE、普通聊天前置的结构化意图解析和四类草稿，并禁用该次请求的静默模型 fallback。
 
-`list_ai_selectable_models_v1` 的 `data.capabilities` 包含 `can_select_fixed_model` 和 `can_view_advanced_diagnostics`。后者仅对 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 为真。模型清单的 `provider_model_display` 用作友好名称，技术 `model_alias` 仅供获授权治理人员核对。
+`list_ai_selectable_models_v1` 的 `data.capabilities` 包含 `can_select_fixed_model` 和 `can_view_advanced_diagnostics`。后者仅对 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 为真。模型清单的 `provider_model_display` 用作友好名称，技术 `model_alias` 仅供获授权治理人员核对。健康状态不会自动修改人工生命周期，但 `unavailable` 会阻止新的固定模型请求；自动模式由 Orchestrator 跳过不可用候选并按治理链选择后续模型。
 
 当前聊天场景支持 `auto`、`general`、`product_search`、`order_query`、`report_summary`。省略场景或传 `auto` 时，Frappe 根据当前用户问题确定实际场景，并把解析后的场景写入 Message、Run、Prompt 和 Orchestrator 请求。商品工具复用 `search_product_v2`；单据工具支持销售订单、销售发票、采购订单和采购发票的单类型或混合查询，订单复用销售/采购工作台服务，发票复用 `list_business_documents_v1`；报表工具复用既有经营报表服务。所有工具都强制 DocType、公司和记录级读取权限。商品 citation 记录 `company` 和 `queried_at`，作为库存、价格等“回答时数据”的快照范围。单据查询 citation 首项为版本化 `business_result_set`，包含 `queried_at`、`snapshot_source`、`permission_filtered`、查询范围，以及每类请求数、返回数、权限安全的可见总量、截断状态和业务模块入口；`status_semantics=result_coverage_only` 明确 `success / partial / empty` 只表示结果覆盖，不代表单据业务健康或异常判断。后续 citation 保留逐单据详情与受控跳转，供 Web 聚合表格和历史会话恢复。
 
 未明确日期的“最新/最近”单据查询默认覆盖全部日期并按最新排序，不再隐式限制最近 30 天；用户明确说今天、本周、本月、上月或近 N 天时才应用对应日期范围。混合查询按每种单据类型分别应用数量上限和权限过滤，例如“最新 5 条销售订单、销售发票和采购订单”最多返回 5 + 5 + 5 条结构化引用。Agent 单据工具的结构化明细只通过 citation 交给 Web；发送给模型的上下文只包含查询范围和各组请求/返回数量，不包含逐单据字段，因此 `erp-readonly-v8` 仍只概括查询范围、数量不足和空结果。其他受控上下文若没有声明界面承担明细展示，而用户明确询问金额最高、最近或唯一结果，则 v8 会简要返回与问题直接相关的受控标识、金额和状态。
 
-同步接口对所有账号返回 `conversation`、`run_id`、带 `citations` 的 `message`、安全警告、`events[]` 和持久 Run 摘要；基础 Run 摘要只包含 `status`、后端 `latency_ms` 与稳定错误信息。具备高级诊断权限时，响应才额外包含实际模型、模型 alias、策略信息、trace、Token 和 `first_token_ms`。`stream_ai_message_v1` 返回真正 `text/event-stream`，事件包含 `run_started`、`run_progress`、`tool_started`、`tool_completed`、`citation`、`message_delta`、`warning`、`completed` 和 `error`；普通业务账号的 `model_started` 与 `completed` 事件不返回模型 alias、Provider 模型、trace、Token、首 Token 或流式统计。`get_ai_conversation_v1` 使用同一服务端权限规则恢复历史 Run；普通账号只得到状态、总耗时、稳定错误和反馈，治理角色才能得到模型、trace、Token 与首 Token。接口仍支持 `before_sequence` + `limit` 向前游标分页；未传游标时返回最近一页，响应 `pagination` 包含 `total`、`returned_count`、`has_more` 和 `next_before_sequence`。客户端加载更早消息时必须传上一页的 `next_before_sequence`，避免会话末尾新增消息导致 offset 重复或跳页。`submit_ai_feedback_v1` 对本人已完成 Run 记录 `positive` / `negative` 反馈。正式单据创建、提交、取消、收付款和库存变更不属于这些接口能力。
+同步接口对所有账号返回 `conversation`、`run_id`、带 `citations` 的 `message`、安全警告、`events[]` 和持久 Run 摘要；基础 Run 摘要包含 `status`、后端 `latency_ms`、`model_selection`、安全的请求/实际模型展示名与稳定错误信息。具备高级诊断权限时，响应才额外包含请求/实际模型 alias、策略信息、trace、Token 和 `first_token_ms`。`stream_ai_message_v1` 返回真正 `text/event-stream`，事件包含 `run_started`、`run_progress`、`tool_started`、`tool_completed`、`citation`、`message_delta`、`warning`、`completed` 和 `error`；普通业务账号的事件不返回模型 alias、Provider 模型、trace、Token、首 Token 或流式统计。`get_ai_conversation_v1` 使用同一服务端权限规则恢复历史 Run；普通账号得到状态、总耗时、安全模型展示、稳定错误和反馈，治理角色才能得到技术 alias、trace、Token 与首 Token。接口仍支持 `before_sequence` + `limit` 向前游标分页；未传游标时返回最近一页，响应 `pagination` 包含 `total`、`returned_count`、`has_more` 和 `next_before_sequence`。客户端加载更早消息时必须传上一页的 `next_before_sequence`，避免会话末尾新增消息导致 offset 重复或跳页。`submit_ai_feedback_v1` 对本人已完成 Run 记录 `positive` / `negative` 反馈。正式单据创建、提交、取消、收付款和库存变更不属于这些接口能力。
 
 会话现在同时维护短期消息历史和受控的 `conversation-state-v1` 工作状态。状态只保存当前业务场景、唯一商品实体、订单/报表筛选、结果集 ID 及少量权限过滤后的实体摘要，不保存完整业务结果、模型原文或凭据；状态由服务端 owner 校验、字段白名单、大小限制和 `state_version` 乐观并发控制保护。每轮业务工具调用前重新读取状态，当前用户明确表达优先于历史状态；业务工具仍必须按当前请求重新执行公司范围、DocType 和记录权限校验。回答成功后才写回状态，版本冲突时跳过写回并审计，不影响当前只读回答。用户清除上下文或状态自动过期时，服务端同时更新 `context_start_sequence`，旧消息仍可在历史中查看但不会继续发送给模型；状态损坏会在下一次发送前恢复为空上下文并记录审计原因。
 
 `auto` 场景在已有业务状态时会继续调用结构化意图解析器，因此“它”“刚才那个”“只看未完成的”“换成上个月”等自然语言省略表达可以继承上一轮实体和筛选。Orchestrator 的意图 Prompt 版本为 `erp-intent-v3`；它只输出完整的当前有效意图，不能把历史业务事实当作实时事实。状态只是解析辅助，不能替代本轮 Frappe 查询。
 
-AI 同步、流式失败事件和持久化 Run 必须保留稳定 `error_code`。运行时限流、预算、并发、模型熔断、配置版本、检查点持久化、内部认证和服务不可用等错误不得统一折叠为 Python 异常类名或通用文案；同步异常、SSE `error.code` 与 Run `error_code` 应保持一致，供 Web 区分“稍后重试、修改输入、权限拒绝和系统/治理故障”。未知异常统一记录为 `AI_RUN_FAILED`，不得把堆栈或供应商原始错误正文暴露给普通用户。
+AI 同步、流式失败事件和持久化 Run 必须保留稳定 `error_code`。运行时限流、预算、并发、模型熔断、配置版本、检查点持久化、内部认证和服务不可用等错误不得统一折叠为 Python 异常类名或通用文案；同步异常、SSE `error.code` 与 Run `error_code` 应保持一致，供 Web 区分“使用当前模型重试、修改输入、权限拒绝和系统/治理故障”。未知异常统一记录为 `AI_RUN_FAILED`，不得把堆栈或供应商原始错误正文暴露给普通用户。
+
+`stream_ai_message_v1` 接受可选 `retry_run_id`，用于消息级原位重试。该参数只能引用当前账号、当前活跃会话中最后一条失败或取消的助手 Run；Backend 从持久化记录恢复原用户问题、场景、公司和会话，不信任浏览器重新拼装这些事实。重试时不再插入重复用户消息，而是创建新的 Run，将原失败助手消息重新绑定到新 Run，并在成功后原位更新正文和 citation。旧 Run 保留不变，新 Run 通过 `retry_of_run_id` 记录来源。
+
+`MyApp AI Run` 同时区分：
+
+- `requested_model_alias`：本次请求显式固定的模型；自动模式为空。
+- `model_alias`：实际执行或最终失败尝试的模型。
+- `retry_of_run_id`：消息级重试来源；普通新 Run 为空。
+
+Run 摘要返回 `model_selection=auto/fixed`、安全的 `requested_model_display` 和实际 `model_display`；具备高级诊断权限时再返回请求/实际 alias。失败 Run 必须持久化空正文助手占位，使刷新页面后仍能在原会话位置恢复诊断和重试入口。加载模型上下文时排除失败/取消的空助手消息，避免把错误占位发送给模型。
 
 已有会话的公司范围以会话持久化字段为准。调用方省略 `company` 时，Chat/SSE 会自动恢复会话公司；调用方显式传入与会话不同的公司时仍失败关闭并要求新建会话，避免同一上下文混入跨公司业务数据。工作偏好中的默认公司只用于创建新会话或无公司会话的首次业务上下文。
 
@@ -202,7 +215,7 @@ AI 同步、流式失败事件和持久化 Run 必须保留稳定 `error_code`�
 
 销售订单、采购订单、库存调整和商品创建/完善分别通过 `generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1` 生成严格结构化候选。模型只负责提取用户原文和操作意图；Frappe 重新按当前用户权限解析真实 Customer / Supplier / Item / Warehouse、商品分类、品牌、UOM、价格或实时库存，并持久化为 `MyApp AI Draft`。权威业务事实、用户补丁和字段来源保存在 `_state`，价格状态区分未配置与明确零价。`resolve_ai_scenario_v1` 是 Web 自动识别的后端事实来源，写意图可以返回上述四类草稿场景，商品是否入库、到货、现货或库存状态等问法返回 `product_search`；Web 不复制关键词规则。
 
-商品草稿类型为 `product_setup`，`operation` 为 `create` 或 `update`。创建模式承载 Item 主数据、四类价格和可选初始库存，复用幂等 `create_product_v2`；完善模式读取现有商品和价格作为 baseline，只把 `_state.patch` 交给 `update_product_v2`。完善模式不接受初始库存，当前库存仅在 `_state.context` 中只读展示；库存变化必须使用库存调整。旧草稿的 `valuation_rate` 仅作为兼容输入读取。用户可在 AI 工作台确认当前版本后原地执行，也可选择进入 `/master-data/products` 处理复杂字段。
+商品草稿类型为 `product_setup`，`operation` 为 `create` 或 `update`。创建模式承载 Item 主数据、商品图片、四类价格和可选初始库存，复用幂等 `create_product_v2`；完善模式读取现有商品、图片和价格作为 baseline，只把 `_state.patch` 交给 `update_product_v2`。图片是人工编辑的结构化字段，不发送给模型；Web 先通过 `upload_item_image` 暂存，确认执行时再由正式商品写接口绑定。完善模式不接受初始库存，当前库存仅在 `_state.context` 中只读展示；库存变化必须使用库存调整。旧草稿的 `valuation_rate` 仅作为兼容输入读取。用户可在 AI 工作台确认当前版本后原地执行，也可选择进入 `/master-data/products` 处理复杂字段。
 
 `execute_ai_draft_v1` 是四类草稿的统一原地确认执行接口。请求必须为 POST，携带 `draft_id`、用户当前看到的 `expected_version`、`confirmed=1` 和 `Idempotency-Key`。服务端重新检查 owner、状态、版本和 `ready_for_handoff`，并在调用 `create_product_v2` / `update_product_v2`、`create_order_v2`、`create_purchase_order` 或 `reconcile_inventory_stock_v1` 前重新读取商品、系统参考价、UOM 换算和实时库存。权威事实漂移时先持久化刷新后的新版本，再返回 HTTP `409` 与 `code=AI_DRAFT_VERSION_CONFLICT`；用户明确覆盖的订单价格不随系统参考价漂移。成功后草稿进入 `executed` 并保存正式回执。模型或后台任务不能绕过用户确认调用该能力。
 
@@ -229,11 +242,86 @@ AI 同步、流式失败事件和持久化 Run 必须保留稳定 `error_code`�
 
 ### AI 模型管理
 
-模型管理接口只面向 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 的职责范围。模型注册同步只从受服务 Token 保护的 Orchestrator 读取当前 LiteLLM Key 可见的完整模型库存，不保存供应商 Key；同步中已消失的 LiteLLM 模型标记为 `degraded / missing`，人工维护的 `disabled / retired` 状态不会被同步覆盖。同步只证明当前 Key 在 LiteLLM `/v1/models` 中可见，不证明推理可用。`check_ai_model_availability_v1` 会对 Chat 模型执行最小回答与强制 Function Calling 探测，对 Embedding 模型执行最小向量请求，分别持久化 `available / unavailable` 和 `supports_tools`。请求可省略 `model_aliases` 检查全部未停用模型，也可传入 1～100 个别名执行单项或多选检测；返回 `requested_count`、`checked_count`、`available_count`、`unavailable_count`、`trigger` 和逐模型稳定错误码。Agent 场景策略要求所有主/降级模型均通过工具能力验证。检查可能产生少量 Provider 费用，但不会自动修改人工管理状态。策略草稿、验证、审批、发布和回滚使用不可变版本与审计事件；生产策略起草人与审批人必须分离，只有 System Manager 可以发布或紧急回滚。
+模型管理接口只面向 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 的职责范围。模型注册同步只从受服务 Token 保护的 Orchestrator 读取当前 LiteLLM Key 可见的完整模型库存，不保存供应商 Key；同步中已消失的 LiteLLM 模型标记为 `degraded / missing`，人工维护的 `disabled / retired` 状态不会被同步覆盖。同步只证明当前 Key 在 LiteLLM `/v1/models` 中可见，不证明推理可用。
+
+`check_ai_model_availability_v1` 会对 Chat 模型执行最小回答与强制 Function Calling 探测，对 Embedding 模型执行最小向量请求，分别持久化 `available / unavailable` 和 `supports_tools`。选择语义如下：
+
+| `model_aliases` | 检测范围 | `trigger` |
+|---|---|---|
+| 不传或 `null` | 全部未停用、未退役模型 | `manual_all` |
+| `["alias-a"]` | 单个指定模型 | `manual_selected` |
+| `["alias-a", "alias-b"]` | 多个指定模型 | `manual_selected` |
+| 显式空列表 | 拒绝请求，避免把误操作解释为全量检测 | - |
+
+未知、停用或退役 alias 会整体拒绝，不进行部分检测。单次最多选择 100 个模型。检查返回 `requested_count`、`checked_count`、`available_count`、`unavailable_count`、`trigger` 和逐模型稳定错误码。Agent 场景策略要求所有主/降级模型均通过工具能力验证。检查可能产生少量 Provider 费用，但不会自动修改 `active / validated / disabled / retired` 等人工治理状态。
+
+单项或多选请求示例：
+
+```http
+POST /api/method/myapp.api.gateway.check_ai_model_availability_v1
+Content-Type: application/json
+Authorization: Bearer <jwt>
+
+{
+  "model_aliases": ["gpt-5.5", "opencode-deepseek-v4-flash"],
+  "request_id": "model-health-20260802-001"
+}
+```
+
+业务响应中的 `data` 示例：
+
+```json
+{
+  "source": "litellm",
+  "trigger": "manual_selected",
+  "requested_count": 2,
+  "checked_count": 2,
+  "available_count": 1,
+  "unavailable_count": 1,
+  "items": [
+    {
+      "model_alias": "gpt-5.5",
+      "available": true,
+      "supports_tools": true,
+      "latency_ms": 1580,
+      "provider_model": "gpt-5.5",
+      "error_code": null
+    },
+    {
+      "model_alias": "opencode-deepseek-v4-flash",
+      "available": false,
+      "supports_tools": false,
+      "latency_ms": 8708,
+      "provider_model": null,
+      "error_code": "PROVIDER_HTTP_403"
+    }
+  ]
+}
+```
+
+健康结果是带时间戳的运行快照，不是永久 SLA。Provider 可在两次检测之间恢复或退化；页面和策略验证必须结合 `last_health_at`、`last_health_status`、能力标记和发布门禁判断，不能把一次成功当成长期保证。
 
 模型健康检查默认由 Frappe Scheduler 每天站点时区 03:15 执行，并使用 Redis 锁防止并发重复探测。站点配置 `myapp_ai_model_healthcheck_enabled=0` 可关闭；`myapp_ai_model_healthcheck_aliases=["alias-a", "alias-b"]` 可把定时范围限制到指定模型，未配置时检查全部未停用模型。治理总览返回 `model_health_schedule`，模型管理页展示启停状态、范围和最近检测时间。
 
+部署或修改站点配置后应确认 Scheduler 正在运行，并在 `Scheduled Job Type` 中存在以下记录：
+
+```text
+method=myapp.tasks.check_ai_model_availability
+frequency=Cron
+cron_format=15 3 * * *
+stopped=0
+```
+
 Chat、SSE 和四类结构化草稿在自动策略或固定模型被 Provider 拒绝时统一使用 `MODEL_PROVIDER_REJECTED`。响应/SSE 至少返回用户安全的 `model_display`；具备高级诊断权限时还返回实际 `model_alias` 和 `provider_error_code`（例如 `PROVIDER_HTTP_403`）。不得返回 Provider 原始响应正文、密钥或内部 Header。成功响应同样返回 `model_display`，高级诊断响应继续返回技术 alias、Provider 模型、trace 和 Token。
+
+这里需要区分四个概念：
+
+- 请求模型：用户显式固定的 alias；自动模式下可以为空。
+- 实际模型：本次最终尝试或成功执行的 `model_alias`，由服务端 Run/错误事件确定。
+- 展示名称：面向业务用户的 `model_display`，普通用户不需要看到技术 alias。
+- Provider 模型：高级诊断中的底层路由名称，不作为业务选择事实。
+
+自动模式也必须显示服务端返回的本次实际模型，不能只显示“自动选择”。自动策略可以按已发布、可审计的 fallback 链尝试其他模型，但最终成功或失败必须显示实际执行 alias 和 fallback 事实；固定模型关闭本次 fallback。浏览器不自动重复提交模型请求，用户可在确认错误后手动重试或选择其他合规模型。
 
 所有治理写接口均为 POST，并使用项目统一幂等机制。策略验证会同时检查注册模型能力/健康状态、当前 Prompt、确定性 offline full gate 和受控 live/Embedding 完整报告。缺少完整报告、报告为 partial、阈值失败、模型别名不一致或报告格式错误时，策略保持 `draft`，不能进入审批或发布。
 
@@ -266,6 +354,8 @@ Data Task 是商品主数据整理建议，不是 AI 直接写业务数据。Web
 - 每个关键动作写入 `MyApp AI Audit Event`，审计正文保存哈希和必要元数据，不保存供应商密钥。
 
 草稿支持查询、人工更新后重新校验、放弃、不可变版本列表和历史恢复。`update_ai_draft_v1` 必须使用 POST，携带 `draft_id`、完整 `payload`、用户打开编辑器时看到的 `expected_version` 和 `Idempotency-Key`；服务端锁定草稿行并校验版本，版本已变化时以 `AI_DRAFT_VERSION_CONFLICT` 拒绝旧表单覆盖。`restore_ai_draft_version_v1` 同样必须携带目标历史 `version`、当前 `expected_version` 和幂等键；历史 payload 会用当前主数据重新校验并创建新版本，不直接覆盖当前快照。重复的同参数幂等请求返回已有结果，不重复递增草稿版本。
+
+草稿中的主数据查询词与已解析主键必须分开：客户/供应商、商品、商品分类、品牌和仓库无法唯一匹配时，已解析字段保持 `null`，原始 `*_query` 必须继续保留供人工选择和再次校验。销售/采购草稿同时保留顶层 `warehouse_query` 与 `items[].warehouse_query`；Web 不得把查询词当成已选 Link 值，人工保存时也不得因编辑其他字段而丢失这些查询词。
 
 `list_ai_drafts_v1` 只返回当前登录用户自己的草稿，支持 `status=draft/executed/handed_off/discarded/all`、`draft_type=sales_order/purchase_order/inventory_adjustment/product_setup`、`start` 和 `limit`。列表按最近修改时间倒序，调用方不得使用该接口查看其他用户草稿。
 
@@ -2410,6 +2500,26 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 商品编辑前预加载
 - 商品搜索结果中的“查看库存详情”
 
+### 商品图片上传与保存边界
+
+相关方法：
+
+- `myapp.api.gateway.upload_item_image`
+- `myapp.api.gateway.replace_item_image`
+- `myapp.api.gateway.delete_item_image`
+
+`upload_item_image` 接受 `filename`、`file_content_base64`、可选 `content_type`、`item_code` 和 `is_private`。商品创建、普通编辑和 AI 商品草稿应省略 `item_code`，只取得暂存 `file_url`；暂存上传不会提前修改正式 `Item.image`。用户确认保存后，把该 `file_url` 作为 `create_product_v2.image` 或 `update_product_v2.image` 提交，由商品写事务绑定到 Item。
+
+保存事务语义：
+
+- 新图片绑定、商品字段和价格/库存等同一请求内的后续写入共享事务；请求回滚时清理本次新暂存图片。
+- 替换图片时，旧的受管文件只在事务提交后清理；失败或回滚不会提前删除旧图片。
+- `update_product_v2` 显式传 `image = ""` 表示删除当前商品图片；省略 `image` 表示保持不变。
+- 未绑定的暂存图片默认保留 24 小时后由清理任务回收；仍被 `draft` 或 `handed_off` 状态 AI 草稿引用的图片不会被提前删除。
+- `replace_item_image` / `delete_item_image` 保留给明确的独立图片动作；表单编辑默认使用“暂存后随表单保存”，避免用户取消表单时正式商品已经被修改。
+
+当前上传限制为单文件不超过 5MB，并按扩展名与声明 MIME 类型校验 JPEG、PNG、WebP、GIF、BMP、HEIC 和 HEIF。当前阶段尚未实现图片像素尺寸、真实文件头检测和缩略图派生。
+
 ### update_product_v2
 
 方法：
@@ -2454,7 +2564,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
     - `{"uom": "Box", "conversion_factor": 12}`
   - 后端会自动保证库存基准单位行存在且系数为 `1`
 - `nickname` 优先写入 `Item.custom_nickname`
-- `image` 写入标准字段 `Item.image`
+- `image` 写入标准字段 `Item.image`；空字符串表示删除，省略字段表示保持不变
 - `wholesale_default_uom` / `retail_default_uom` 当前用于保存商品在不同销售模式下的默认成交单位
   - 2026-03-25 起，后端会校验这些默认成交单位必须能通过 `uom_conversions` 换算到 `stock_uom`
 - `standard_rate` 有值时同步更新标准售价
@@ -3978,6 +4088,7 @@ frappe.call({
   - `returned_qty`：已通过提交状态退货单冲回的数量
   - `max_returnable_qty`：当前剩余可退数量，等于 `source_qty - returned_qty`
   - `default_return_qty`：页面默认本次退货数量，等于当前剩余可退数量
+- `items[]` 同时返回 `image` 和 `specification`，供销售/采购退货选行时直接展示商品图片与规格，无需逐行再次查询 Item。
 - 当所有明细 `max_returnable_qty <= 0` 时，`actions.can_process_return = false`，前端应禁止继续提交退货。
 
 说明：

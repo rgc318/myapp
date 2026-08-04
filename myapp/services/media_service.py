@@ -198,6 +198,17 @@ def cleanup_temporary_item_image(*, file_url: str) -> bool:
 	return True
 
 
+def cleanup_replaced_item_image(
+	*, item_code: str, previous_image_url: str | None, current_image_url: str | None,
+) -> dict:
+	"""Remove an old managed image after the Item update has committed."""
+	return _cleanup_previous_item_image(
+		item_code=item_code,
+		previous_image_url=previous_image_url,
+		current_image_url=current_image_url,
+	)
+
+
 def cleanup_expired_temporary_item_images(*, older_than_hours: int = DEFAULT_TEMP_IMAGE_RETENTION_HOURS) -> dict:
 	retention_hours = max(1, int(older_than_hours or DEFAULT_TEMP_IMAGE_RETENTION_HOURS))
 	cutoff = now_datetime() - timedelta(hours=retention_hours)
@@ -212,11 +223,15 @@ def cleanup_expired_temporary_item_images(*, older_than_hours: int = DEFAULT_TEM
 	)
 	deleted: list[str] = []
 	skipped_recent: list[str] = []
+	skipped_referenced: list[str] = []
 
 	for row in rows:
 		modified = getattr(row, "modified", None)
 		if modified and _coerce_datetime(modified) > cutoff:
 			skipped_recent.append(row.name)
+			continue
+		if _is_file_url_referenced_by_active_ai_draft(row.file_url):
+			skipped_referenced.append(row.name)
 			continue
 		if cleanup_temporary_item_image(file_url=row.file_url):
 			deleted.append(row.name)
@@ -228,8 +243,10 @@ def cleanup_expired_temporary_item_images(*, older_than_hours: int = DEFAULT_TEM
 			"retention_hours": retention_hours,
 			"deleted_count": len(deleted),
 			"skipped_recent_count": len(skipped_recent),
+			"skipped_referenced_count": len(skipped_referenced),
 			"deleted_files": deleted,
 			"skipped_recent_files": skipped_recent,
+			"skipped_referenced_files": skipped_referenced,
 		},
 	}
 
@@ -344,6 +361,22 @@ def _is_file_url_referenced_by_other_items(*, file_url: str, item_code: str) -> 
 		pluck="name",
 	)
 	return any(name != item_code for name in referenced_items)
+
+
+def _is_file_url_referenced_by_active_ai_draft(file_url: str | None) -> bool:
+	resolved_file_url = _normalize_optional_text(file_url)
+	if not resolved_file_url or not frappe.db.table_exists("MyApp AI Draft"):
+		return False
+	rows = frappe.db.sql(
+		"""
+		SELECT name
+		FROM `tabMyApp AI Draft`
+		WHERE status IN ('draft', 'handed_off') AND payload_json LIKE %s
+		LIMIT 1
+		""",
+		(f"%{resolved_file_url}%",),
+	)
+	return bool(rows)
 
 
 def _decode_base64_file_content(file_content_base64: str) -> bytes:

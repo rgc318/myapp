@@ -77,6 +77,7 @@ PROMPT_VERSION_BY_SCENARIO = {
 
 PRODUCT_SETUP_EDITABLE_FIELDS = (
 	"item_name",
+	"image",
 	"item_group",
 	"brand",
 	"stock_uom",
@@ -2853,6 +2854,7 @@ def _build_existing_product_baseline(detail: dict, *, company: str) -> tuple[dic
 	currency = detail.get("currency") or frappe.db.get_value("Company", company, "default_currency") or None
 	baseline = {
 		"item_name": detail.get("item_name"),
+		"image": detail.get("image") or None,
 		"item_code": detail.get("item_code"),
 		"item_group": detail.get("item_group"),
 		"brand": detail.get("brand"),
@@ -2866,6 +2868,7 @@ def _build_existing_product_baseline(detail: dict, *, company: str) -> tuple[dic
 	}
 	sources = {
 		"item_name": "Item/item_name",
+		"image": "Item/image",
 		"item_code": "Item/name",
 		"item_group": "Item/item_group",
 		"brand": "Item/brand",
@@ -2971,6 +2974,7 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 		else:
 			invalid_currency = True
 	description = str(candidate.get("description") or "").strip()[:2000] or None
+	image = str(candidate.get("image") or "").strip() or None
 	errors = []
 	warnings = []
 	if operation == "update" and not existing_detail:
@@ -3021,6 +3025,7 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 		errors.append(_("成本价（默认采购价）不能为负数。"))
 	normalized = {
 		"item_name": item_name,
+		"image": image,
 		"item_code": item_code,
 		"item_group": item_group,
 		"brand": brand,
@@ -3103,6 +3108,7 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 		"company": company,
 		"operation": operation,
 		"item_name": effective.get("item_name"),
+		"image": effective.get("image"),
 		"item_code": effective.get("item_code") or item_code,
 		"item_group_query": item_group_query,
 		"item_group": effective.get("item_group"),
@@ -3432,6 +3438,7 @@ def _build_draft_version_diff(previous: dict | None, current: dict) -> dict:
 		"reason",
 		"remarks",
 		"item_name",
+		"image",
 		"item_code",
 		"item_group",
 		"brand",
@@ -3535,6 +3542,7 @@ def prepare_ai_draft_handoff_v1(draft_id: str):
 		handoff_payload = {
 			"company": payload.get("company"),
 			"item_name": payload.get("item_name"),
+			"image": payload.get("image"),
 			"item_code": payload.get("item_code"),
 			"item_group": payload.get("item_group"),
 			"brand": payload.get("brand"),
@@ -3639,10 +3647,10 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 			item_code = str(entity.get("name") or payload.get("item_code") or "").strip()
 			patch = state.get("patch") if isinstance(state.get("patch"), dict) else {}
 			update_kwargs = {}
-			for field in ("item_name", "item_group", "brand", "stock_uom", "description"):
+			for field in ("item_name", "image", "item_group", "brand", "stock_uom", "description"):
 				if field in patch:
 					update_kwargs[field] = (
-						"" if field in {"brand", "description"} and patch.get(field) is None
+						"" if field in {"brand", "description", "image"} and patch.get(field) is None
 						else patch.get(field)
 					)
 			if "currency" in patch:
@@ -3695,6 +3703,7 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 				})
 		result = create_product_v2(
 			item_name=payload.get("item_name"), item_code=payload.get("item_code"),
+			**({"image": payload.get("image")} if payload.get("image") else {}),
 			item_group=payload.get("item_group"), brand=payload.get("brand"),
 			stock_uom=payload.get("stock_uom"), standard_rate=payload.get("standard_selling_rate"),
 			valuation_rate=standard_buying_rate, currency=payload.get("currency"),

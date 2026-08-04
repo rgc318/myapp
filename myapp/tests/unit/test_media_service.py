@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, call, patch
 import frappe
 
 from myapp.services.media_service import (
+	_is_file_url_referenced_by_active_ai_draft,
 	bind_uploaded_item_image,
 	cleanup_expired_temporary_item_images,
 	cleanup_temporary_item_image,
@@ -16,6 +17,19 @@ from myapp.services.media_service import (
 
 
 class TestMediaService(TestCase):
+	def test_active_ai_draft_image_reference_includes_handed_off_drafts(self):
+		from myapp.services import media_service
+
+		fake_db = MagicMock()
+		fake_db.table_exists.return_value = True
+		fake_db.sql.return_value = [("AI-DRAFT-001",)]
+		with patch.object(media_service.frappe, "db", fake_db):
+			self.assertTrue(_is_file_url_referenced_by_active_ai_draft("/files/item.png"))
+
+		query = fake_db.sql.call_args.args[0]
+		self.assertIn("status IN ('draft', 'handed_off')", query)
+		self.assertEqual(fake_db.sql.call_args.args[1], ("%/files/item.png%",))
+
 	@patch("myapp.services.media_service.save_file")
 	@patch("myapp.services.media_service._ensure_item_image_folder", return_value="Home/Attachments/MyApp Item Images")
 	def test_upload_item_image_uses_frappe_file_storage(self, _mock_ensure_item_image_folder, mock_save_file):
@@ -309,10 +323,11 @@ class TestMediaService(TestCase):
 		mock_delete_doc.assert_called_once_with("File", "FILE-TEMP-001", ignore_permissions=True, force=True)
 
 	@patch("myapp.services.media_service.cleanup_temporary_item_image")
+	@patch("myapp.services.media_service._is_file_url_referenced_by_active_ai_draft", return_value=False)
 	@patch("myapp.services.media_service.now_datetime")
 	@patch("myapp.services.media_service.frappe.get_all")
 	def test_cleanup_expired_temporary_item_images_deletes_only_old_temp_files(
-		self, mock_get_all, mock_now_datetime, mock_cleanup_temporary_item_image
+		self, mock_get_all, mock_now_datetime, _mock_draft_reference, mock_cleanup_temporary_item_image
 	):
 		from datetime import datetime
 
@@ -340,3 +355,29 @@ class TestMediaService(TestCase):
 		mock_cleanup_temporary_item_image.assert_called_once_with(file_url="/files/old.png")
 		self.assertEqual(result["data"]["deleted_files"], ["FILE-OLD-001"])
 		self.assertEqual(result["data"]["skipped_recent_files"], ["FILE-NEW-001"])
+		self.assertEqual(result["data"]["skipped_referenced_files"], [])
+
+	@patch("myapp.services.media_service.cleanup_temporary_item_image")
+	@patch("myapp.services.media_service._is_file_url_referenced_by_active_ai_draft", return_value=True)
+	@patch("myapp.services.media_service.now_datetime")
+	@patch("myapp.services.media_service.frappe.get_all")
+	def test_cleanup_expired_temporary_item_images_preserves_active_ai_draft_image(
+		self, mock_get_all, mock_now_datetime, _mock_draft_reference, mock_cleanup_temporary_item_image
+	):
+		from datetime import datetime
+
+		mock_now_datetime.return_value = datetime(2026, 4, 7, 12, 0, 0)
+		mock_get_all.return_value = [
+			frappe._dict({
+				"name": "FILE-DRAFT-001",
+				"file_url": "/files/draft.png",
+				"modified": "2026-04-05 09:00:00",
+			})
+		]
+
+		result = cleanup_expired_temporary_item_images(older_than_hours=24)
+
+		mock_cleanup_temporary_item_image.assert_not_called()
+		self.assertEqual(result["data"]["deleted_files"], [])
+		self.assertEqual(result["data"]["skipped_recent_files"], [])
+		self.assertEqual(result["data"]["skipped_referenced_files"], ["FILE-DRAFT-001"])

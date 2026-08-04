@@ -3,7 +3,11 @@ from frappe import _
 from frappe.query_builder.functions import Sum
 from frappe.utils import cint, flt, getdate
 
-from myapp.services.media_service import bind_uploaded_item_image, cleanup_temporary_item_image
+from myapp.services.media_service import (
+	bind_uploaded_item_image,
+	cleanup_replaced_item_image,
+	cleanup_temporary_item_image,
+)
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom_display import build_uom_display_map, sort_uom_rows
@@ -1702,6 +1706,9 @@ def update_product_v2(
 
 	def _update_product():
 		item = frappe.get_doc("Item", item_code)
+		previous_image_url = _normalize_text(getattr(item, "image", None)) or None
+		image_change_requested = "image" in kwargs
+		next_image_url = _normalize_text(kwargs.get("image")) or None
 		nickname_field = _get_item_nickname_field()
 		specification_field = _get_item_specification_field()
 
@@ -1727,9 +1734,12 @@ def update_product_v2(
 		if description is not None:
 			item.description = _normalize_text(description)
 
-		image = kwargs.get("image")
-		if image is not None:
-			item.image = _normalize_text(image)
+		if image_change_requested:
+			item.image = next_image_url
+			if next_image_url and next_image_url != previous_image_url:
+				frappe.db.after_rollback.add(
+					lambda file_url=next_image_url: cleanup_temporary_item_image(file_url=file_url)
+				)
 
 		if "disabled" in kwargs and kwargs.get("disabled") is not None:
 			item.disabled = cint(kwargs.get("disabled"))
@@ -1771,6 +1781,16 @@ def update_product_v2(
 		)
 
 		item.save()
+		if image_change_requested and next_image_url and next_image_url != previous_image_url:
+			bind_uploaded_item_image(file_url=next_image_url, item_code=item.name)
+		if image_change_requested and previous_image_url != next_image_url:
+			frappe.db.after_commit.add(
+				lambda old_url=previous_image_url, new_url=next_image_url: cleanup_replaced_item_image(
+					item_code=item.name,
+					previous_image_url=old_url,
+					current_image_url=new_url,
+				)
+			)
 
 		warehouse_stock_qty = kwargs.get("warehouse_stock_qty")
 		resolved_warehouse = _normalize_text(kwargs.get("warehouse")) or None

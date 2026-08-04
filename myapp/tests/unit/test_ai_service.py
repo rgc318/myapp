@@ -277,13 +277,15 @@ class TestAiService(TestCase):
 				"retail_rate": 10800, "standard_buying_rate": 5000,
 				"currency": "CNY", "warehouse": "Stores - DC", "opening_qty": 5,
 				"opening_uom": "Unit", "description": "测试商品",
+				"image": "/files/huangxing.png",
 			},
 		}, request_id="REQ-1")
 
 		self.assertEqual(result["target_doctype"], "Item")
 		self.assertEqual(result["target_name"], "ITEM-001")
 		mock_create.assert_called_once_with(
-			item_name="煌星", item_code="ITEM-001", item_group="Products", brand="Brand A",
+			item_name="煌星", item_code="ITEM-001", image="/files/huangxing.png",
+			item_group="Products", brand="Brand A",
 			stock_uom="Unit", standard_rate=10000, valuation_rate=5000, currency="CNY",
 			selling_prices=[
 				{"price_list": "Wholesale", "rate": 8800, "currency": "CNY"},
@@ -308,7 +310,11 @@ class TestAiService(TestCase):
 				"_state": {
 					"operation": "update",
 					"entity": {"doctype": "Item", "name": "ITEM-001"},
-					"patch": {"standard_selling_rate": 5, "description": "新说明"},
+					"patch": {
+						"standard_selling_rate": 5,
+						"description": "新说明",
+						"image": "/files/item-new.png",
+					},
 				},
 			},
 		}, request_id="REQ-UPDATE")
@@ -319,6 +325,7 @@ class TestAiService(TestCase):
 			company="Demo Company",
 			request_id="REQ-UPDATE",
 			description="新说明",
+			image="/files/item-new.png",
 			standard_rate=5,
 		)
 
@@ -972,14 +979,15 @@ class TestAiService(TestCase):
 
 	def test_build_draft_version_diff_tracks_fields_and_lines(self):
 		diff = _build_draft_version_diff(
-			{"payload": {"customer": "CUST-1", "items": [{"item_code": "ITEM-1", "qty": 1, "uom": "Box"}]}},
-			{"payload": {"customer": "CUST-2", "items": [
+			{"payload": {"customer": "CUST-1", "image": "/files/old.png", "items": [{"item_code": "ITEM-1", "qty": 1, "uom": "Box"}]}},
+			{"payload": {"customer": "CUST-2", "image": "/files/new.png", "items": [
 				{"item_code": "ITEM-1", "qty": 2, "uom": "Box"},
 				{"item_code": "ITEM-2", "qty": 1, "uom": "Nos"},
 			]}},
 		)
 
 		self.assertEqual(diff["fields"][0]["field"], "customer")
+		self.assertIn("image", [row["field"] for row in diff["fields"]])
 		self.assertEqual(diff["items"][0]["change"], "modified")
 		self.assertEqual(diff["items"][0]["fields"], ["qty"])
 		self.assertEqual(diff["items"][1]["change"], "added")
@@ -1580,6 +1588,7 @@ class TestAiService(TestCase):
 			"stock_uom": "Unit",
 			"stock_uom_display": "个",
 			"description": None,
+			"image": "/files/dimo.png",
 			"standard_rate": 0,
 			"total_qty": 1000,
 			"warehouse_stock_details": [{"warehouse": "Stores - TC", "qty": 1000}],
@@ -1603,6 +1612,7 @@ class TestAiService(TestCase):
 		self.assertEqual(payload["operation"], "update")
 		self.assertEqual(payload["standard_selling_rate"], 5)
 		self.assertEqual(payload["wholesale_rate"], 3)
+		self.assertEqual(payload["image"], "/files/dimo.png")
 		self.assertIsNone(payload["opening_qty"])
 		self.assertEqual(payload["_state"]["context"]["company_total_qty"], 1000)
 		self.assertEqual(payload["_state"]["patch"], {"description": "补充说明"})

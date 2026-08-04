@@ -1190,6 +1190,7 @@ class TestWholesaleService(TestCase):
 	 ):
 		item = MagicMock()
 		item.name = "ITEM-001"
+		item.image = "/files/old.png"
 		item.standard_rate = 18
 		item.valuation_rate = 9
 		mock_get_doc.return_value = item
@@ -1202,23 +1203,48 @@ class TestWholesaleService(TestCase):
 		mock_resolve_item_quantity_to_stock.return_value = {"stock_qty": 24}
 		mock_build_product_detail_payload.return_value = {"item_code": "ITEM-001", "nickname": "新昵称"}
 
-		result = update_product_v2(
-			item_code="ITEM-001",
-			item_name="新名称",
-			item_group="饮料",
-			brand="可口可乐",
-			barcode="BAR-NEW",
-			description="新描述",
-			nickname="新昵称",
-			specification="1000ml",
-			image="/files/new.png",
-			wholesale_default_uom="Case",
-			retail_default_uom="Piece",
-			standard_rate=18,
-			warehouse="Stores - RD",
-			warehouse_stock_qty=12,
-			warehouse_stock_uom="Case",
-		)
+		from myapp.services import wholesale_service
+
+		fake_db = MagicMock()
+		fake_db.after_commit = MagicMock()
+		fake_db.after_rollback = MagicMock()
+		with (
+			patch.object(wholesale_service.frappe, "db", fake_db),
+			patch("myapp.services.wholesale_service.bind_uploaded_item_image") as mock_bind_image,
+			patch("myapp.services.wholesale_service.cleanup_replaced_item_image") as mock_cleanup_replaced,
+			patch("myapp.services.wholesale_service.cleanup_temporary_item_image") as mock_cleanup_temporary,
+		):
+			result = update_product_v2(
+				item_code="ITEM-001",
+				item_name="新名称",
+				item_group="饮料",
+				brand="可口可乐",
+				barcode="BAR-NEW",
+				description="新描述",
+				nickname="新昵称",
+				specification="1000ml",
+				image="/files/new.png",
+				wholesale_default_uom="Case",
+				retail_default_uom="Piece",
+				standard_rate=18,
+				warehouse="Stores - RD",
+				warehouse_stock_qty=12,
+				warehouse_stock_uom="Case",
+			)
+
+			mock_bind_image.assert_called_once_with(
+				file_url="/files/new.png", item_code="ITEM-001",
+			)
+			fake_db.after_rollback.add.assert_called_once()
+			fake_db.after_commit.add.assert_called_once()
+			fake_db.after_rollback.add.call_args.args[0]()
+			fake_db.after_commit.add.call_args.args[0]()
+			mock_cleanup_temporary.assert_called_once_with(file_url="/files/new.png")
+			mock_cleanup_replaced.assert_called_once_with(
+				item_code="ITEM-001",
+				previous_image_url="/files/old.png",
+				current_image_url="/files/new.png",
+			)
 
 		self.assertEqual(item.item_name, "新名称")
 		self.assertEqual(item.item_group, "饮料")

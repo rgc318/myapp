@@ -33,6 +33,7 @@ class TestReturnService(TestCase):
 						"sales_invoice_item": "SII-001",
 						"item_code": "ITEM-001",
 						"item_name": "Item 1",
+						"image": "/files/item-001.png",
 						"uom": "Nos",
 						"uom_display": "件",
 						"warehouse": "Stores - TC",
@@ -57,6 +58,7 @@ class TestReturnService(TestCase):
 		self.assertEqual(result["data"]["items"][0]["max_returnable_qty"], 2.0)
 		self.assertEqual(result["data"]["items"][0]["returned_qty"], 0)
 		self.assertEqual(result["data"]["items"][0]["uom_display"], "件")
+		self.assertEqual(result["data"]["items"][0]["image"], "/files/item-001.png")
 		self.assertEqual(result["data"]["amounts"]["primary_amount"], 120.0)
 		mock_get_all.assert_called_once()
 
