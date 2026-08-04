@@ -12,6 +12,8 @@ from frappe.core.api.file import create_new_folder
 from frappe.utils import get_datetime, now_datetime
 from frappe.utils.file_manager import save_file
 
+from myapp.utils.image_processing import ITEM_IMAGE_PROFILE, normalize_image_upload
+
 
 DEFAULT_IMAGE_EXTENSION = ".bin"
 SUPPORTED_IMAGE_EXTENSIONS = {
@@ -34,7 +36,7 @@ SUPPORTED_IMAGE_MIME_TYPES = {
 	"image/heif",
 }
 STORAGE_PROVIDER_FRAPPE = "frappe_file"
-MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024
+MAX_IMAGE_SOURCE_SIZE_BYTES = 20 * 1024 * 1024
 ITEM_IMAGE_ROOT_FOLDER = "Home/Attachments/MyApp Item Images"
 TEMP_ITEM_IMAGE_FOLDER = f"{ITEM_IMAGE_ROOT_FOLDER}/Temporary"
 FORMAL_ITEM_IMAGE_FOLDER = ITEM_IMAGE_ROOT_FOLDER
@@ -54,9 +56,14 @@ def upload_item_image(
 	resolved_content_type = _normalize_optional_text(content_type)
 	_validate_image_content_type(resolved_filename, resolved_content_type)
 	file_bytes = _decode_base64_file_content(file_content_base64)
-	file_doc = _save_item_image_via_frappe(
+	normalized_image = normalize_image_upload(
 		filename=resolved_filename,
-		file_bytes=file_bytes,
+		content=file_bytes,
+		profile=ITEM_IMAGE_PROFILE,
+	)
+	file_doc = _save_item_image_via_frappe(
+		filename=normalized_image.filename,
+		file_bytes=normalized_image.content,
 		item_code=resolved_item_code,
 		is_private=is_private,
 	)
@@ -66,8 +73,17 @@ def upload_item_image(
 		"message": _("商品图片已上传。"),
 		"data": {
 			"file_url": file_doc.file_url,
-			"file_name": getattr(file_doc, "file_name", resolved_filename),
+			"file_name": getattr(file_doc, "file_name", normalized_image.filename),
 			"file_id": getattr(file_doc, "name", None),
+			"content_type": normalized_image.content_type,
+			"file_size": normalized_image.file_size,
+			"width": normalized_image.width,
+			"height": normalized_image.height,
+			"profile": normalized_image.profile,
+			"quality": normalized_image.quality,
+			"source_width": normalized_image.source_width,
+			"source_height": normalized_image.source_height,
+			"source_format": normalized_image.source_format,
 			"is_private": cint_bool(getattr(file_doc, "is_private", is_private)),
 			"attached_to_doctype": getattr(file_doc, "attached_to_doctype", "Item" if resolved_item_code else None),
 			"attached_to_name": getattr(file_doc, "attached_to_name", resolved_item_code),
@@ -394,8 +410,8 @@ def _decode_base64_file_content(file_content_base64: str) -> bytes:
 
 	if not decoded:
 		raise frappe.ValidationError(_("图片内容不能为空。"))
-	if len(decoded) > MAX_IMAGE_SIZE_BYTES:
-		raise frappe.ValidationError(_("图片请控制在 5MB 以内后再上传。"))
+	if len(decoded) > MAX_IMAGE_SOURCE_SIZE_BYTES:
+		raise frappe.ValidationError(_("原始图片请控制在 20MB 以内后再上传。"))
 
 	return decoded
 

@@ -21,6 +21,7 @@ from myapp.services.media_service import (
 	_normalize_image_filename,
 	_validate_image_content_type,
 )
+from myapp.utils.image_processing import USER_AVATAR_PROFILE, normalize_image_upload
 from myapp.services.user_preferences_service import _build_workspace_preferences_payload
 
 
@@ -264,12 +265,17 @@ def upload_current_user_avatar(filename, file_content_base64, content_type=None)
 	resolved_filename = _normalize_image_filename(filename, content_type)
 	_validate_image_content_type(resolved_filename, content_type)
 	file_bytes = _decode_base64_file_content(file_content_base64)
+	normalized_image = normalize_image_upload(
+		filename=resolved_filename,
+		content=file_bytes,
+		profile=USER_AVATAR_PROFILE,
+	)
 	folder = _ensure_folder_path(USER_AVATAR_FOLDER)
 	doc = frappe.get_doc("User", user)
 	previous_url = _normalize_text(doc.user_image) or None
 	file_doc = save_file(
-		fname=resolved_filename,
-		content=file_bytes,
+		fname=normalized_image.filename,
+		content=normalized_image.content,
 		dt="User",
 		dn=user,
 		folder=folder,
@@ -290,7 +296,20 @@ def upload_current_user_avatar(filename, file_content_base64, content_type=None)
 		"status": "success",
 		"code": "CURRENT_USER_AVATAR_UPDATED",
 		"message": _("头像已更新。"),
-		"data": {"file_url": file_doc.file_url, "file_id": file_doc.name, "file_name": file_doc.file_name},
+		"data": {
+			"file_url": file_doc.file_url,
+			"file_id": file_doc.name,
+			"file_name": file_doc.file_name,
+			"content_type": normalized_image.content_type,
+			"file_size": normalized_image.file_size,
+			"width": normalized_image.width,
+			"height": normalized_image.height,
+			"profile": normalized_image.profile,
+			"quality": normalized_image.quality,
+			"source_width": normalized_image.source_width,
+			"source_height": normalized_image.source_height,
+			"source_format": normalized_image.source_format,
+		},
 	}
 
 

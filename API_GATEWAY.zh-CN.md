@@ -2518,7 +2518,13 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 未绑定的暂存图片默认保留 24 小时后由清理任务回收；仍被 `draft` 或 `handed_off` 状态 AI 草稿引用的图片不会被提前删除。
 - `replace_item_image` / `delete_item_image` 保留给明确的独立图片动作；表单编辑默认使用“暂存后随表单保存”，避免用户取消表单时正式商品已经被修改。
 
-当前上传限制为单文件不超过 5MB，并按扩展名与声明 MIME 类型校验 JPEG、PNG、WebP、GIF、BMP、HEIC 和 HEIF。当前阶段尚未实现图片像素尺寸、真实文件头检测和缩略图派生。
+统一媒体规范：
+
+- 官方 Web 客户端接受 JPG、PNG 和 WebP，原始图片最大 20MB、最大 4000 万像素。
+- 商品图片使用 `item-square-v1`：最短边至少 300px；客户端提供 1:1 裁剪、拖动、缩放和旋转；后端真实解码并最终输出 1600 × 1600、质量 82 的 WebP。
+- 后端不信任客户端扩展名或声明 MIME；会实际解码图片、纠正 EXIF 方向、限制像素、移除元数据并重新编码。损坏、伪造或无法解码的图片失败关闭。
+- 上传响应在原有 File 字段外返回 `content_type`、`file_size`、`width`、`height`、`profile`、`quality`、`source_width`、`source_height` 和 `source_format`。若初始质量仍超过 profile 的字节上限，后端会逐级降低编码质量，无法满足上限时拒绝保存。
+- 当前不生成额外缩略图派生，也不长期保留原始上传文件；`Item.image` 仍只绑定规范化后的正式图片。
 
 ### update_product_v2
 
@@ -4800,7 +4806,7 @@ curl -X GET \
 
 - `get_current_user_profile_v1`：读取本人主档、角色、能力摘要、工作偏好和数据权限。
 - `update_current_user_profile_v1`：维护本人姓名、联系方式、语言、时区、头像地址和简介。
-- `upload_current_user_avatar_v1`：上传并绑定本人头像，复用 Frappe `File`，支持常见图片格式和 5MB 限制。
+- `upload_current_user_avatar_v1`：上传并绑定本人头像，复用 Frappe `File`。头像使用 `avatar-square-v1`：原图最大 20MB、最短边至少 128px，后端真实解码后输出 512 × 512、质量 85 的 WebP，并返回统一媒体元数据。
 - `change_current_user_password_v1`：校验旧密码并应用 Frappe 密码强度策略；成功后客户端应重新登录。
 - `get_user_security_v1`：本人或系统管理员读取 2FA、IP 限制、Frappe Session、JWT refresh 会话和授权代次。
 - `revoke_user_sessions_v1`：注销 Frappe Session、删除 refresh token 并提升 JWT 授权代次，使既有 access token 立即失效。

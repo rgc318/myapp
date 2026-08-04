@@ -153,6 +153,7 @@ class TestUserManagementService(TestCase):
 	@patch("myapp.services.user_management_service._normalize_image_filename", return_value="avatar.png")
 	@patch("myapp.services.user_management_service._validate_image_content_type")
 	@patch("myapp.services.user_management_service._decode_base64_file_content", return_value=b"image")
+	@patch("myapp.services.user_management_service.normalize_image_upload")
 	@patch("myapp.services.user_management_service._ensure_folder_path", return_value="Home/Avatars")
 	@patch("myapp.services.user_management_service.save_file")
 	@patch("myapp.services.user_management_service.frappe.get_doc")
@@ -161,11 +162,25 @@ class TestUserManagementService(TestCase):
 		mock_get_doc,
 		mock_save_file,
 		_mock_folder,
+		mock_normalize_image_upload,
 		_mock_decode,
 		_mock_validate,
 		_mock_filename,
 		_mock_user,
 	):
+		mock_normalize_image_upload.return_value = Mock(
+			content=b"avatar-webp",
+			content_type="image/webp",
+			filename="avatar.webp",
+			file_size=100,
+			height=512,
+			profile="avatar-square-v1",
+			quality=85,
+			source_format="png",
+			source_height=600,
+			source_width=800,
+			width=512,
+		)
 		user_doc = Mock(user_image=None)
 		mock_get_doc.return_value = user_doc
 		mock_save_file.return_value = Mock(file_url="/files/avatar.png", name="FILE-1", file_name="avatar.png")
@@ -173,5 +188,6 @@ class TestUserManagementService(TestCase):
 		result = upload_current_user_avatar("avatar.png", "base64", "image/png")
 
 		self.assertEqual(result["data"]["file_url"], "/files/avatar.png")
+		self.assertEqual(result["data"]["profile"], "avatar-square-v1")
 		self.assertEqual(user_doc.user_image, "/files/avatar.png")
 		user_doc.save.assert_called_once_with(ignore_permissions=True)

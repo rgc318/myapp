@@ -14,6 +14,22 @@ from myapp.services.media_service import (
 	replace_item_image,
 	upload_item_image,
 )
+from myapp.utils.image_processing import NormalizedImage
+
+
+NORMALIZED_ITEM_IMAGE = NormalizedImage(
+	content=b"normalized-webp",
+	content_type="image/webp",
+	filename="item.webp",
+	file_size=15,
+	height=1600,
+	profile="item-square-v1",
+	quality=82,
+	source_format="png",
+	source_height=800,
+	source_width=1200,
+	width=1600,
+)
 
 
 class TestMediaService(TestCase):
@@ -32,7 +48,10 @@ class TestMediaService(TestCase):
 
 	@patch("myapp.services.media_service.save_file")
 	@patch("myapp.services.media_service._ensure_item_image_folder", return_value="Home/Attachments/MyApp Item Images")
-	def test_upload_item_image_uses_frappe_file_storage(self, _mock_ensure_item_image_folder, mock_save_file):
+	@patch("myapp.services.media_service.normalize_image_upload", return_value=NORMALIZED_ITEM_IMAGE)
+	def test_upload_item_image_uses_frappe_file_storage(
+		self, _mock_normalize_image_upload, _mock_ensure_item_image_folder, mock_save_file
+	):
 		mock_save_file.return_value = frappe._dict(
 			{
 				"name": "FILE-0001",
@@ -52,8 +71,8 @@ class TestMediaService(TestCase):
 		)
 
 		mock_save_file.assert_called_once_with(
-			fname="item.png",
-			content=b"fake-image",
+			fname="item.webp",
+			content=b"normalized-webp",
 			dt="Item",
 			dn="ITEM-001",
 			folder="Home/Attachments/MyApp Item Images",
@@ -62,6 +81,8 @@ class TestMediaService(TestCase):
 		)
 		self.assertEqual(result["data"]["file_url"], "/files/item.png")
 		self.assertEqual(result["data"]["storage_provider"], "frappe_file")
+		self.assertEqual(result["data"]["profile"], "item-square-v1")
+		self.assertEqual(result["data"]["width"], 1600)
 
 	def test_upload_item_image_rejects_unsupported_extension(self):
 		with self.assertRaises(frappe.ValidationError):
@@ -92,8 +113,10 @@ class TestMediaService(TestCase):
 	@patch("myapp.services.media_service.save_file")
 	@patch("myapp.services.media_service._ensure_item_image_folder", return_value="Home/Attachments/MyApp Item Images")
 	@patch("myapp.services.media_service.frappe.get_doc")
+	@patch("myapp.services.media_service.normalize_image_upload", return_value=NORMALIZED_ITEM_IMAGE)
 	def test_replace_item_image_deletes_previous_managed_file(
 		self,
+		_mock_normalize_image_upload,
 		mock_get_doc,
 		_mock_ensure_item_image_folder,
 		mock_save_file,
@@ -135,8 +158,10 @@ class TestMediaService(TestCase):
 	@patch("myapp.services.media_service.save_file")
 	@patch("myapp.services.media_service._ensure_item_image_folder", return_value="Home/Attachments/MyApp Item Images")
 	@patch("myapp.services.media_service.frappe.get_doc")
+	@patch("myapp.services.media_service.normalize_image_upload", return_value=NORMALIZED_ITEM_IMAGE)
 	def test_replace_item_image_rolls_back_new_upload_when_item_save_fails(
 		self,
+		_mock_normalize_image_upload,
 		mock_get_doc,
 		_mock_ensure_item_image_folder,
 		mock_save_file,
@@ -175,8 +200,10 @@ class TestMediaService(TestCase):
 	@patch("myapp.services.media_service.save_file")
 	@patch("myapp.services.media_service._ensure_item_image_folder", return_value="Home/Attachments/MyApp Item Images")
 	@patch("myapp.services.media_service.frappe.get_doc")
+	@patch("myapp.services.media_service.normalize_image_upload", return_value=NORMALIZED_ITEM_IMAGE)
 	def test_replace_item_image_skips_cleanup_when_old_url_is_shared(
 		self,
+		_mock_normalize_image_upload,
 		mock_get_doc,
 		_mock_ensure_item_image_folder,
 		mock_save_file,
