@@ -169,6 +169,7 @@ class TestUserManagementService(TestCase):
 		_mock_user,
 	):
 		mock_normalize_image_upload.return_value = Mock(
+			aspect_ratio=1,
 			content=b"avatar-webp",
 			content_type="image/webp",
 			filename="avatar.webp",
@@ -188,6 +189,7 @@ class TestUserManagementService(TestCase):
 		result = upload_current_user_avatar("avatar.png", "base64", "image/png")
 
 		self.assertEqual(result["data"]["file_url"], "/files/avatar.png")
+		self.assertEqual(result["data"]["aspect_ratio"], 1)
 		self.assertEqual(result["data"]["profile"], "avatar-square-v1")
 		self.assertEqual(user_doc.user_image, "/files/avatar.png")
 		user_doc.save.assert_called_once_with(ignore_permissions=True)

@@ -2521,9 +2521,9 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 统一媒体规范：
 
 - 官方 Web 客户端接受 JPG、PNG 和 WebP，原始图片最大 20MB、最大 4000 万像素。
-- 商品图片使用 `item-square-v1`：最短边至少 300px；客户端提供 1:1 裁剪、拖动、缩放和旋转；后端真实解码并最终输出 1600 × 1600、质量 82 的 WebP。
+- 商品图片使用 `item-flexible-v2`：最短边至少 300px；客户端提供自由、1:1、4:3、3:2、16:9 裁剪、横纵切换、拖动、缩放和旋转；后端真实解码并保留裁剪后的宽高比，最长边规范化为 1600px，起始质量 82。自由宽高比限制为 `0.4–2.5`，极端狭长图片会被拒绝。
 - 后端不信任客户端扩展名或声明 MIME；会实际解码图片、纠正 EXIF 方向、限制像素、移除元数据并重新编码。损坏、伪造或无法解码的图片失败关闭。
-- 上传响应在原有 File 字段外返回 `content_type`、`file_size`、`width`、`height`、`profile`、`quality`、`source_width`、`source_height` 和 `source_format`。若初始质量仍超过 profile 的字节上限，后端会逐级降低编码质量，无法满足上限时拒绝保存。
+- 上传响应在原有 File 字段外返回 `content_type`、`file_size`、`width`、`height`、`aspect_ratio`、`profile`、`quality`、`source_width`、`source_height` 和 `source_format`。若初始质量仍超过 profile 的字节上限，后端会逐级降低编码质量，无法满足上限时拒绝保存。
 - 当前不生成额外缩略图派生，也不长期保留原始上传文件；`Item.image` 仍只绑定规范化后的正式图片。
 
 ### update_product_v2

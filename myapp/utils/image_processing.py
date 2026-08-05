@@ -24,10 +24,14 @@ class ImageProfile:
 	height: int
 	quality: int
 	min_source_edge: int
+	preserve_aspect: bool = False
+	min_aspect: float | None = None
+	max_aspect: float | None = None
 
 
 @dataclass(frozen=True)
 class NormalizedImage:
+	aspect_ratio: float
 	content: bytes
 	content_type: str
 	filename: str
@@ -44,11 +48,14 @@ class NormalizedImage:
 ITEM_IMAGE_PROFILE = ImageProfile(
 	max_output_bytes=5 * 1024 * 1024,
 	min_quality=52,
-	name="item-square-v1",
+	name="item-flexible-v2",
 	width=1600,
 	height=1600,
 	quality=82,
 	min_source_edge=300,
+	preserve_aspect=True,
+	min_aspect=0.4,
+	max_aspect=2.5,
 )
 
 USER_AVATAR_PROFILE = ImageProfile(
@@ -86,26 +93,22 @@ def normalize_image_upload(*, filename: str, content: bytes, profile: ImageProfi
 
 	source_width, source_height = source.size
 
-	prepared = _prepare_color_mode(source)
-	prepared = ImageOps.fit(
-		prepared,
-		(profile.width, profile.height),
-		method=Image.Resampling.LANCZOS,
-		centering=(0.5, 0.5),
-	)
+	prepared = _prepare_profile_output(_prepare_color_mode(source), profile)
 	output_content, output_quality = _encode_webp(prepared, profile)
+	output_width, output_height = prepared.size
 	return NormalizedImage(
+		aspect_ratio=round(output_width / output_height, 6),
 		content=output_content,
 		content_type=OUTPUT_IMAGE_MIME_TYPE,
 		filename=f"{Path(filename).stem}{OUTPUT_IMAGE_EXTENSION}",
 		file_size=len(output_content),
-		height=profile.height,
+		height=output_height,
 		profile=profile.name,
 		quality=output_quality,
 		source_format=source_format.lower(),
 		source_height=source_height,
 		source_width=source_width,
-		width=profile.width,
+		width=output_width,
 	)
 
 
@@ -114,6 +117,34 @@ def _prepare_color_mode(image: Image.Image) -> Image.Image:
 		image.mode == "P" and "transparency" in image.info
 	)
 	return image.convert("RGBA" if has_alpha else "RGB")
+
+
+def _prepare_profile_output(image: Image.Image, profile: ImageProfile) -> Image.Image:
+	if not profile.preserve_aspect:
+		return ImageOps.fit(
+			image,
+			(profile.width, profile.height),
+			method=Image.Resampling.LANCZOS,
+			centering=(0.5, 0.5),
+		)
+
+	width, height = image.size
+	aspect_ratio = width / height
+	if profile.min_aspect is not None and aspect_ratio < profile.min_aspect:
+		raise frappe.ValidationError(
+			_("商品图片裁剪比例过窄，宽高比至少需要 {0}。").format(profile.min_aspect)
+		)
+	if profile.max_aspect is not None and aspect_ratio > profile.max_aspect:
+		raise frappe.ValidationError(
+			_("商品图片裁剪比例过宽，宽高比最多允许 {0}。").format(profile.max_aspect)
+		)
+
+	scale = min(profile.width / width, profile.height / height)
+	target_size = (
+		max(1, round(width * scale)),
+		max(1, round(height * scale)),
+	)
+	return image.resize(target_size, Image.Resampling.LANCZOS)
 
 
 def _validate_source_dimensions(size: tuple[int, int], profile: ImageProfile):

@@ -297,6 +297,7 @@ def upload_current_user_avatar(filename, file_content_base64, content_type=None)
 		"code": "CURRENT_USER_AVATAR_UPDATED",
 		"message": _("头像已更新。"),
 		"data": {
+			"aspect_ratio": normalized_image.aspect_ratio,
 			"file_url": file_doc.file_url,
 			"file_id": file_doc.name,
 			"file_name": file_doc.file_name,

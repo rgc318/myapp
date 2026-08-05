@@ -18,7 +18,7 @@ def _build_image(*, size=(1200, 800), image_format="PNG", mode="RGB") -> bytes:
 
 
 class TestImageProcessing(TestCase):
-	def test_item_profile_crops_and_converts_to_canonical_webp(self):
+	def test_item_profile_preserves_crop_ratio_and_converts_to_canonical_webp(self):
 		result = normalize_image_upload(
 			filename="wide-product.png",
 			content=_build_image(),
@@ -27,11 +27,22 @@ class TestImageProcessing(TestCase):
 
 		self.assertEqual(result.filename, "wide-product.webp")
 		self.assertEqual(result.content_type, "image/webp")
-		self.assertEqual((result.width, result.height), (1600, 1600))
+		self.assertEqual(result.profile, "item-flexible-v2")
+		self.assertEqual((result.width, result.height), (1600, 1067))
+		self.assertEqual(result.aspect_ratio, round(1600 / 1067, 6))
 		self.assertEqual((result.source_width, result.source_height), (1200, 800))
 		with Image.open(BytesIO(result.content)) as rendered:
 			self.assertEqual(rendered.format, "WEBP")
-			self.assertEqual(rendered.size, (1600, 1600))
+			self.assertEqual(rendered.size, (1600, 1067))
+
+	def test_item_profile_preserves_portrait_crop_ratio(self):
+		result = normalize_image_upload(
+			filename="portrait-product.png",
+			content=_build_image(size=(800, 1200)),
+			profile=ITEM_IMAGE_PROFILE,
+		)
+
+		self.assertEqual((result.width, result.height), (1067, 1600))
 
 	def test_avatar_profile_outputs_512_square(self):
 		result = normalize_image_upload(
@@ -42,6 +53,7 @@ class TestImageProcessing(TestCase):
 
 		self.assertEqual(result.profile, "avatar-square-v1")
 		self.assertEqual((result.width, result.height), (512, 512))
+		self.assertEqual(result.aspect_ratio, 1)
 
 	def test_rejects_non_image_content_even_with_image_filename(self):
 		with self.assertRaises(frappe.ValidationError):
@@ -56,5 +68,13 @@ class TestImageProcessing(TestCase):
 			normalize_image_upload(
 				filename="tiny.png",
 				content=_build_image(size=(200, 200)),
+				profile=ITEM_IMAGE_PROFILE,
+			)
+
+	def test_rejects_extreme_item_crop_ratio(self):
+		with self.assertRaises(frappe.ValidationError):
+			normalize_image_upload(
+				filename="too-narrow.png",
+				content=_build_image(size=(300, 1000)),
 				profile=ITEM_IMAGE_PROFILE,
 			)

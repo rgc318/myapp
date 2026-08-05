@@ -18,12 +18,13 @@ from myapp.utils.image_processing import NormalizedImage
 
 
 NORMALIZED_ITEM_IMAGE = NormalizedImage(
+	aspect_ratio=1.499531,
 	content=b"normalized-webp",
 	content_type="image/webp",
 	filename="item.webp",
 	file_size=15,
-	height=1600,
-	profile="item-square-v1",
+	height=1067,
+	profile="item-flexible-v2",
 	quality=82,
 	source_format="png",
 	source_height=800,
@@ -81,7 +82,8 @@ class TestMediaService(TestCase):
 		)
 		self.assertEqual(result["data"]["file_url"], "/files/item.png")
 		self.assertEqual(result["data"]["storage_provider"], "frappe_file")
-		self.assertEqual(result["data"]["profile"], "item-square-v1")
+		self.assertEqual(result["data"]["profile"], "item-flexible-v2")
+		self.assertEqual(result["data"]["aspect_ratio"], 1.499531)
 		self.assertEqual(result["data"]["width"], 1600)
 
 	def test_upload_item_image_rejects_unsupported_extension(self):
@@ -101,7 +103,7 @@ class TestMediaService(TestCase):
 			)
 
 	def test_upload_item_image_rejects_oversized_payload(self):
-		oversized = base64.b64encode(b"a" * (5 * 1024 * 1024 + 1)).decode()
+		oversized = base64.b64encode(b"a" * (20 * 1024 * 1024 + 1)).decode()
 		with self.assertRaises(frappe.ValidationError):
 			upload_item_image(
 				filename="item.png",

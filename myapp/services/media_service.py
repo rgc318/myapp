@@ -72,6 +72,7 @@ def upload_item_image(
 		"status": "success",
 		"message": _("商品图片已上传。"),
 		"data": {
+			"aspect_ratio": normalized_image.aspect_ratio,
 			"file_url": file_doc.file_url,
 			"file_name": getattr(file_doc, "file_name", normalized_image.filename),
 			"file_id": getattr(file_doc, "name", None),
