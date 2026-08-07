@@ -86,6 +86,42 @@ PERMISSION_SNAPSHOT_DOCTYPES = (
 	"Warehouse",
 	"Stock Entry",
 )
+MANAGED_USER_PERMISSION_APPLICABLE_DOCTYPES = {
+	"Company": (
+		"Sales Order",
+		"Delivery Note",
+		"Sales Invoice",
+		"Purchase Order",
+		"Purchase Receipt",
+		"Purchase Invoice",
+		"Payment Entry",
+		"Warehouse",
+		"Stock Entry",
+	),
+	"Warehouse": (
+		"Sales Order",
+		"Delivery Note",
+		"Sales Invoice",
+		"Purchase Order",
+		"Purchase Receipt",
+		"Purchase Invoice",
+		"Stock Entry",
+		"Bin",
+		"Stock Ledger Entry",
+	),
+	"Customer": (
+		"Sales Order",
+		"Delivery Note",
+		"Sales Invoice",
+		"Payment Entry",
+	),
+	"Supplier": (
+		"Purchase Order",
+		"Purchase Receipt",
+		"Purchase Invoice",
+		"Payment Entry",
+	),
+}
 
 
 def _normalize_text(value):
@@ -147,6 +183,57 @@ def _serialize_user_permission(row):
 		"apply_to_all_doctypes": bool(row.get("apply_to_all_doctypes")),
 		"applicable_for": row.get("applicable_for"),
 		"hide_descendants": bool(row.get("hide_descendants")),
+	}
+
+
+def _normalize_user_permission_input(
+	user,
+	allow,
+	for_value,
+	*,
+	is_default=0,
+	apply_to_all_doctypes=1,
+	applicable_for=None,
+	hide_descendants=0,
+):
+	resolved_user = _normalize_text(user)
+	resolved_allow = _normalize_text(allow)
+	resolved_value = _normalize_text(for_value)
+	resolved_apply_to_all = 1 if cint(apply_to_all_doctypes) else 0
+	resolved_applicable_for = _normalize_text(applicable_for) or None
+	resolved_hide_descendants = 1 if cint(hide_descendants) else 0
+
+	if not resolved_user or not frappe.db.exists("User", resolved_user):
+		frappe.throw(_("用户不存在。"))
+	if resolved_user == "Administrator":
+		frappe.throw(_("Administrator 不受 User Permission 限制，请勿为该账号配置数据范围。"))
+	if resolved_allow not in MANAGED_USER_PERMISSION_APPLICABLE_DOCTYPES:
+		frappe.throw(_("当前管理入口只支持 Company、Warehouse、Customer 和 Supplier 数据权限。"))
+	if not resolved_value or not frappe.db.exists(resolved_allow, resolved_value):
+		frappe.throw(_("授权值 {0} 不存在于 {1}。").format(resolved_value, resolved_allow))
+
+	if resolved_apply_to_all:
+		resolved_applicable_for = None
+	else:
+		allowed_doctypes = MANAGED_USER_PERMISSION_APPLICABLE_DOCTYPES[resolved_allow]
+		if not resolved_applicable_for:
+			frappe.throw(_("未应用到全部相关单据时，必须选择限定单据类型。"))
+		if resolved_applicable_for not in allowed_doctypes:
+			frappe.throw(
+				_("{0} 权限不能限定到 {1}。").format(resolved_allow, resolved_applicable_for)
+			)
+
+	if resolved_hide_descendants and not frappe.get_meta(resolved_allow).is_nested_set():
+		frappe.throw(_("{0} 不是树形主数据，不能隐藏下级节点。").format(resolved_allow))
+
+	return {
+		"user": resolved_user,
+		"allow": resolved_allow,
+		"for_value": resolved_value,
+		"is_default": 1 if cint(is_default) else 0,
+		"apply_to_all_doctypes": resolved_apply_to_all,
+		"applicable_for": resolved_applicable_for,
+		"hide_descendants": resolved_hide_descendants,
 	}
 
 
@@ -424,7 +511,19 @@ def get_user_permission_snapshot(user):
 		"status": "success",
 		"code": "USER_PERMISSION_SNAPSHOT_FETCHED",
 		"message": _("已生成用户权限快照。"),
-		"data": {"user": user, "roles": frappe.get_roles(user), "permissions": permissions},
+		"data": {
+			"user": user,
+			"roles": frappe.get_roles(user),
+			"permissions": permissions,
+			"permission_catalog": [
+				{
+					"allow": allow,
+					"applicable_doctypes": list(applicable_doctypes),
+					"supports_descendants": allow in {"Company", "Warehouse"},
+				}
+				for allow, applicable_doctypes in MANAGED_USER_PERMISSION_APPLICABLE_DOCTYPES.items()
+			],
+		},
 	}
 
 
@@ -659,11 +758,16 @@ def list_roles(search=None):
 
 def add_user_permission(user, allow, for_value, is_default=0, apply_to_all_doctypes=1, applicable_for=None, hide_descendants=0):
 	_ensure_system_manager()
-	if not frappe.db.exists("User", user) or not frappe.db.exists("DocType", allow):
-		frappe.throw(_("用户或授权类型不存在。"))
-	if not frappe.db.exists(allow, for_value):
-		frappe.throw(_("授权值 {0} 不存在于 {1}。").format(for_value, allow))
-	doc = frappe.get_doc({"doctype": "User Permission", "user": user, "allow": allow, "for_value": for_value, "is_default": cint(is_default), "apply_to_all_doctypes": cint(apply_to_all_doctypes), "applicable_for": _normalize_text(applicable_for) or None, "hide_descendants": cint(hide_descendants)})
+	payload = _normalize_user_permission_input(
+		user,
+		allow,
+		for_value,
+		is_default=is_default,
+		apply_to_all_doctypes=apply_to_all_doctypes,
+		applicable_for=applicable_for,
+		hide_descendants=hide_descendants,
+	)
+	doc = frappe.get_doc({"doctype": "User Permission", **payload})
 	doc.insert(ignore_permissions=True)
 	return {"status": "success", "code": "USER_PERMISSION_CREATED", "message": _("数据权限已添加。"), "data": _serialize_user_permission(doc.as_dict())}
 

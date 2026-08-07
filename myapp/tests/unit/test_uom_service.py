@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 import frappe
 
 from myapp.services.uom_service import (
+	_collect_uom_references,
 	create_uom_v2,
 	delete_uom_v2,
 	disable_uom_v2,
@@ -14,9 +15,36 @@ from myapp.services.uom_service import (
 
 
 class TestUOMService(TestCase):
-	@patch("myapp.services.uom_service.frappe.get_all")
-	def test_list_uoms_v2_returns_rows_with_meta(self, mock_get_all):
-		mock_get_all.side_effect = [
+	@patch("myapp.services.uom_service.frappe.get_list")
+	@patch("myapp.services.uom_service.require_doctype_permission")
+	@patch("myapp.services.uom_service.frappe.get_meta")
+	@patch("myapp.services.uom_service._list_uom_link_fields")
+	def test_collect_uom_references_skips_inaccessible_doctypes(
+		self,
+		mock_list_uom_link_fields,
+		mock_get_meta,
+		mock_require_doctype_permission,
+		mock_get_list,
+	):
+		mock_list_uom_link_fields.return_value = [("Sales Order", "stock_uom")]
+		mock_get_meta.return_value = frappe._dict({"issingle": 0})
+		mock_require_doctype_permission.side_effect = frappe.PermissionError("denied")
+
+		result = _collect_uom_references("Box")
+
+		self.assertEqual(result, {"total_references": 0, "doctypes": []})
+		mock_get_list.assert_not_called()
+
+	@patch("myapp.services.uom_service.require_doctype_permission")
+	def test_list_uoms_v2_rejects_missing_read_permission(self, mock_require_doctype_permission):
+		mock_require_doctype_permission.side_effect = frappe.PermissionError("denied")
+
+		with self.assertRaises(frappe.PermissionError):
+			list_uoms_v2()
+
+	@patch("myapp.services.uom_service.frappe.get_list")
+	def test_list_uoms_v2_returns_rows_with_meta(self, mock_get_list):
+		mock_get_list.side_effect = [
 			[
 				frappe._dict(
 					{
@@ -53,16 +81,23 @@ class TestUOMService(TestCase):
 		self.assertTrue(result["meta"]["has_more"])
 		self.assertTrue(result["pagination"]["has_more"])
 		self.assertEqual(
-			mock_get_all.call_args_list[0].kwargs["filters"]["creation"],
+			mock_get_list.call_args_list[0].kwargs["filters"]["creation"],
 			["between", ["2026-03-01 00:00:00", "2026-03-31 23:59:59"]],
 		)
 		self.assertEqual(result["meta"]["filters"]["date_from"], "2026-03-01")
 		self.assertEqual(result["meta"]["filters"]["date_to"], "2026-03-31")
 
+	@patch("myapp.services.uom_service.require_document_permission")
+	def test_get_uom_detail_v2_rejects_missing_document_permission(self, mock_require_document_permission):
+		mock_require_document_permission.side_effect = frappe.PermissionError("denied")
+
+		with self.assertRaises(frappe.PermissionError):
+			get_uom_detail_v2("Box")
+
 	@patch("myapp.services.uom_service._collect_uom_references")
-	@patch("myapp.services.uom_service.frappe.get_doc")
-	def test_get_uom_detail_v2_includes_usage_summary(self, mock_get_doc, mock_collect_uom_references):
-		mock_get_doc.return_value = frappe._dict(
+	@patch("myapp.services.uom_service.require_document_permission")
+	def test_get_uom_detail_v2_includes_usage_summary(self, mock_require_document_permission, mock_collect_uom_references):
+		mock_require_document_permission.return_value = frappe._dict(
 			{
 				"name": "Box",
 				"uom_name": "Box",
@@ -117,9 +152,9 @@ class TestUOMService(TestCase):
 		doc.insert.assert_called_once()
 
 	@patch("myapp.services.uom_service.frappe.throw")
-	@patch("myapp.services.uom_service.frappe.get_doc")
-	def test_update_uom_v2_rejects_rename(self, mock_get_doc, mock_throw):
-		mock_get_doc.return_value = frappe._dict(
+	@patch("myapp.services.uom_service.require_document_permission")
+	def test_update_uom_v2_rejects_rename(self, mock_require_document_permission, mock_throw):
+		mock_require_document_permission.return_value = frappe._dict(
 			{
 				"name": "Box",
 				"uom_name": "Box",
@@ -134,10 +169,10 @@ class TestUOMService(TestCase):
 
 	@patch("myapp.services.uom_service._collect_uom_references")
 	@patch("myapp.services.uom_service.frappe.throw")
-	@patch("myapp.services.uom_service.frappe.get_doc")
+	@patch("myapp.services.uom_service.require_document_permission")
 	def test_update_uom_v2_rejects_whole_number_rule_change_when_referenced(
 		self,
-		mock_get_doc,
+		mock_require_document_permission,
 		mock_throw,
 		mock_collect_uom_references,
 	):
@@ -146,7 +181,7 @@ class TestUOMService(TestCase):
 		doc.uom_name = "Piece"
 		doc.must_be_whole_number = 0
 		doc.enabled = 1
-		mock_get_doc.return_value = doc
+		mock_require_document_permission.return_value = doc
 		mock_collect_uom_references.return_value = {
 			"total_references": 3,
 			"doctypes": [{"doctype": "Item", "fieldname": "stock_uom", "count": 3, "examples": ["ITEM-001"]}],
@@ -157,14 +192,14 @@ class TestUOMService(TestCase):
 			update_uom_v2(uom="Piece", must_be_whole_number=1)
 
 	@patch("myapp.services.uom_service._collect_uom_references")
-	@patch("myapp.services.uom_service.frappe.get_doc")
-	def test_update_uom_v2_updates_allowed_fields(self, mock_get_doc, mock_collect_uom_references):
+	@patch("myapp.services.uom_service.require_document_permission")
+	def test_update_uom_v2_updates_allowed_fields(self, mock_require_document_permission, mock_collect_uom_references):
 		doc = MagicMock()
 		doc.name = "Piece"
 		doc.uom_name = "Piece"
 		doc.enabled = 1
 		doc.must_be_whole_number = 0
-		mock_get_doc.return_value = doc
+		mock_require_document_permission.return_value = doc
 		mock_collect_uom_references.return_value = {"total_references": 0, "doctypes": []}
 
 		result = update_uom_v2(
@@ -191,12 +226,17 @@ class TestUOMService(TestCase):
 
 	@patch("myapp.services.uom_service._collect_uom_references")
 	@patch("myapp.services.uom_service.frappe.throw")
-	@patch("myapp.services.uom_service.frappe.get_doc")
-	def test_delete_uom_v2_rejects_referenced_uom(self, mock_get_doc, mock_throw, mock_collect_uom_references):
+	@patch("myapp.services.uom_service.require_document_permission")
+	def test_delete_uom_v2_rejects_referenced_uom(
+		self,
+		mock_require_document_permission,
+		mock_throw,
+		mock_collect_uom_references,
+	):
 		doc = MagicMock()
 		doc.name = "Box"
 		doc.uom_name = "Box"
-		mock_get_doc.return_value = doc
+		mock_require_document_permission.return_value = doc
 		mock_collect_uom_references.return_value = {
 			"total_references": 2,
 			"doctypes": [{"doctype": "Item", "fieldname": "stock_uom", "count": 2, "examples": ["ITEM-001"]}],
@@ -207,12 +247,16 @@ class TestUOMService(TestCase):
 			delete_uom_v2(uom="Box")
 
 	@patch("myapp.services.uom_service._collect_uom_references")
-	@patch("myapp.services.uom_service.frappe.get_doc")
-	def test_delete_uom_v2_deletes_unreferenced_uom(self, mock_get_doc, mock_collect_uom_references):
+	@patch("myapp.services.uom_service.require_document_permission")
+	def test_delete_uom_v2_deletes_unreferenced_uom(
+		self,
+		mock_require_document_permission,
+		mock_collect_uom_references,
+	):
 		doc = MagicMock()
 		doc.name = "Loose"
 		doc.uom_name = "Loose"
-		mock_get_doc.return_value = doc
+		mock_require_document_permission.return_value = doc
 		mock_collect_uom_references.return_value = {"total_references": 0, "doctypes": []}
 
 		result = delete_uom_v2(uom="Loose")

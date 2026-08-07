@@ -12,6 +12,7 @@ from myapp.services.order_service import (
 )
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.pagination import build_offset_pagination
+from myapp.services.data_permission_service import require_document_permission, require_doctype_permission
 
 
 def _normalize_text(value: str | None):
@@ -238,6 +239,7 @@ def list_customers_v2(
 	sort_by: str = "modified",
 	sort_order: str = "desc",
 ):
+	require_doctype_permission("Customer", "read")
 	limit = _normalize_limit(limit)
 	start = _normalize_start(start)
 	sort_by, sort_order = _normalize_sort(sort_by, sort_order)
@@ -289,7 +291,7 @@ def list_customers_v2(
 	]:
 		if _safe_doc_field("Customer", optional_field):
 			fields.append(optional_field)
-	rows = frappe.get_all(
+	rows = frappe.get_list(
 		"Customer",
 		filters=filters,
 		or_filters=or_filters,
@@ -300,7 +302,7 @@ def list_customers_v2(
 	)
 
 	total_count = len(
-		frappe.get_all(
+		frappe.get_list(
 			"Customer",
 			filters=filters,
 			or_filters=or_filters,
@@ -346,7 +348,7 @@ def get_customer_detail_v2(customer: str):
 	if not customer:
 		frappe.throw(_("客户不能为空。"))
 
-	customer_doc = frappe.get_doc("Customer", customer)
+	customer_doc = require_document_permission("Customer", customer, "read")
 	return {
 		"status": "success",
 		"message": _("客户 {0} 详情获取成功。").format(customer_doc.customer_name or customer_doc.name),

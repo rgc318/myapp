@@ -4,6 +4,7 @@ from frappe.utils import cint, flt, nowdate
 
 from myapp.services.return_service import build_return_submission_payload
 from myapp.utils.idempotency import run_idempotent
+from myapp.services.data_permission_service import require_document_permission
 
 
 def _coerce_json_value(value, default):
@@ -526,7 +527,7 @@ def get_payment_entry_detail(payment_entry_name: str):
 		frappe.throw(_("payment_entry_name 不能为空。"))
 
 	try:
-		payment_entry = frappe.get_doc("Payment Entry", payment_entry_name)
+		payment_entry = require_document_permission("Payment Entry", payment_entry_name, "read")
 		references = _build_payment_entry_references(payment_entry)
 		deductions = _build_payment_entry_deductions(payment_entry)
 		cancel_hint = _build_payment_entry_cancel_hint(payment_entry)

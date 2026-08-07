@@ -7,9 +7,9 @@ from myapp.services.document_list_service import list_business_documents_v1
 
 
 class TestDocumentListService(TestCase):
-	@patch("myapp.services.document_list_service.frappe.get_all")
-	def test_list_business_documents_v1_returns_sales_invoice_rows(self, mock_get_all):
-		mock_get_all.side_effect = [
+	@patch("myapp.services.document_list_service.frappe.get_list")
+	def test_list_business_documents_v1_returns_sales_invoice_rows(self, mock_get_list):
+		mock_get_list.side_effect = [
 			[
 				frappe._dict(
 					{
@@ -49,7 +49,7 @@ class TestDocumentListService(TestCase):
 		self.assertEqual(result["data"]["items"][0]["document_status"], "Submitted")
 		self.assertEqual(result["data"]["items"][0]["amount"], 120)
 		self.assertEqual(result["data"]["pagination"]["total_count"], 1)
-		self.assertEqual(mock_get_all.call_args_list[0].kwargs["filters"]["docstatus"], 1)
+		self.assertEqual(mock_get_list.call_args_list[0].kwargs["filters"]["docstatus"], 1)
 
 	@patch("myapp.services.document_list_service.frappe.throw")
 	def test_list_business_documents_v1_rejects_unlisted_doctype(self, mock_throw):

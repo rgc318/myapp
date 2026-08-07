@@ -17,16 +17,16 @@ class TestCustomerService(TestCase):
 	@patch("myapp.services.customer_service._serialize_contact_doc")
 	@patch("myapp.services.customer_service._get_doc_if_exists")
 	@patch("myapp.services.customer_service._safe_doc_field", return_value=True)
-	@patch("myapp.services.customer_service.frappe.get_all")
+	@patch("myapp.services.customer_service.frappe.get_list")
 	def test_list_customers_v2_returns_summaries_with_meta(
 		self,
-		mock_get_all,
+		mock_get_list,
 		_mock_safe_doc_field,
 		mock_get_doc_if_exists,
 		mock_serialize_contact_doc,
 		mock_serialize_address_doc,
 	):
-		mock_get_all.side_effect = [
+		mock_get_list.side_effect = [
 			[
 				frappe._dict(
 					{
@@ -83,7 +83,7 @@ class TestCustomerService(TestCase):
 		self.assertTrue(result["meta"]["has_more"])
 		self.assertTrue(result["pagination"]["has_more"])
 		self.assertEqual(
-			mock_get_all.call_args_list[0].kwargs["filters"]["creation"],
+			mock_get_list.call_args_list[0].kwargs["filters"]["creation"],
 			["between", ["2026-03-01 00:00:00", "2026-03-31 23:59:59"]],
 		)
 		self.assertEqual(result["meta"]["filters"]["date_from"], "2026-03-01")

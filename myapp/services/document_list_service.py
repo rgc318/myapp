@@ -3,6 +3,7 @@ from frappe import _
 from frappe.utils import cint, flt, getdate
 
 from myapp.utils.pagination import build_offset_pagination
+from myapp.services.data_permission_service import require_doctype_permission
 
 
 DOCUMENT_LIST_CONFIG = {
@@ -164,6 +165,7 @@ def list_business_documents_v1(
 ):
 	if doctype not in DOCUMENT_LIST_CONFIG:
 		frappe.throw(_("暂不支持该单据类型列表。"))
+	require_doctype_permission(doctype, "read")
 
 	config = DOCUMENT_LIST_CONFIG[doctype]
 	limit = _normalize_limit(limit)
@@ -198,7 +200,7 @@ def list_business_documents_v1(
 		*config["extra_fields"],
 	]
 
-	rows = frappe.get_all(
+	rows = frappe.get_list(
 		doctype,
 		filters=filters,
 		or_filters=or_filters,
@@ -207,7 +209,7 @@ def list_business_documents_v1(
 		limit_start=start,
 		limit_page_length=limit,
 	)
-	count_rows = frappe.get_all(
+	count_rows = frappe.get_list(
 		doctype,
 		filters=filters,
 		or_filters=or_filters,

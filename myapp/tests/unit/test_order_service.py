@@ -6,8 +6,10 @@ import frappe
 from myapp.services.order_service import (
 	_build_action_flags,
 	_check_doc_permission,
+	_get_default_warehouse_for_context,
 	_get_sales_order_doc_for_update,
 	_build_payment_summary,
+	_build_delivery_note_action_flags,
 	_build_sales_invoice_action_flags,
 	_build_sales_order_timeline,
 	_collect_sales_invoice_payment_entries,
@@ -40,6 +42,64 @@ from myapp.services.order_service import (
 
 
 class TestOrderService(TestCase):
+	@patch("myapp.services.order_service.has_doctype_permission")
+	def test_order_action_flags_hide_actions_without_target_permissions(self, mock_has_doctype_permission):
+		permissions = {
+			("Delivery Note", "create"): True,
+			("Sales Invoice", "create"): False,
+			("Payment Entry", "create"): False,
+			("Sales Order", "cancel"): False,
+		}
+		mock_has_doctype_permission.side_effect = lambda doctype, ptype: permissions[(doctype, ptype)]
+
+		result = _build_action_flags(
+			{"is_fully_delivered": False},
+			{"outstanding_amount": 100, "is_fully_paid": False},
+			invoice_names=[],
+			delivery_note_names=[],
+			docstatus=1,
+		)
+
+		self.assertTrue(result["can_submit_delivery"])
+		self.assertFalse(result["can_create_sales_invoice"])
+		self.assertFalse(result["can_record_payment"])
+		self.assertFalse(result["can_cancel_sales_order"])
+		self.assertIn("没有作废销售订单", result["cancel_sales_order_hint"])
+
+	@patch("myapp.services.order_service.has_doctype_permission", return_value=False)
+	def test_sales_document_action_flags_explain_missing_permissions(self, _mock_has_doctype_permission):
+		delivery_actions = _build_delivery_note_action_flags(docstatus=1, sales_invoices=[])
+		invoice_actions = _build_sales_invoice_action_flags(
+			docstatus=1,
+			latest_payment_entry=None,
+			paid_amount=0,
+			outstanding_amount=100,
+			return_summary={},
+		)
+
+		self.assertFalse(delivery_actions["can_cancel_delivery_note"])
+		self.assertIn("没有作废销售发货单", delivery_actions["cancel_delivery_note_hint"])
+		self.assertFalse(invoice_actions["can_cancel_sales_invoice"])
+		self.assertFalse(invoice_actions["can_record_payment"])
+		self.assertIn("没有创建收款单", invoice_actions["record_payment_hint"])
+
+	@patch("myapp.services.order_service.get_permitted_warehouse_names", return_value=["Allowed Stores - AC"])
+	@patch("myapp.services.order_service.ensure_warehouse_access", side_effect=frappe.PermissionError("denied"))
+	@patch("myapp.services.order_service.frappe.defaults.get_user_default", return_value="Stale Stores - SC")
+	def test_sales_context_default_warehouse_falls_back_when_preference_is_out_of_scope(
+		self,
+		_mock_get_user_default,
+		_mock_ensure_warehouse_access,
+		mock_get_permitted_warehouse_names,
+	):
+		result = _get_default_warehouse_for_context("Allowed Company")
+
+		self.assertEqual(result, "Allowed Stores - AC")
+		mock_get_permitted_warehouse_names.assert_called_once_with(
+			company="Allowed Company",
+			applicable_for="Sales Order",
+		)
+
 	def test_check_doc_permission_delegates_to_frappe_document(self):
 		document = MagicMock()
 

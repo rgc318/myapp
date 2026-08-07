@@ -12,9 +12,9 @@ from myapp.services.warehouse_service import (
 
 
 class TestWarehouseService(TestCase):
-	@patch("myapp.services.warehouse_service.frappe.get_all")
-	def test_list_warehouses_v2_returns_rows_with_meta(self, mock_get_all):
-		mock_get_all.side_effect = [
+	@patch("myapp.services.warehouse_service.frappe.get_list")
+	def test_list_warehouses_v2_returns_rows_with_meta(self, mock_get_list):
+		mock_get_list.side_effect = [
 			[
 				frappe._dict(
 					{

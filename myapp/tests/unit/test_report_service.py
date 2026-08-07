@@ -4,6 +4,8 @@ from unittest.mock import patch
 import frappe
 
 from myapp.services.report_service import (
+	_build_business_report_overview_v1_data,
+	_build_sales_report_v1_data,
 	get_business_report_overview_v1,
 	get_business_report_v1,
 	get_cashflow_report_v1,
@@ -15,6 +17,99 @@ from myapp.services.report_service import (
 
 
 class TestReportService(TestCase):
+	@patch("myapp.services.report_service._build_cashflow_overview")
+	@patch("myapp.services.report_service._make_scalar_aggregate", return_value=42)
+	@patch(
+		"myapp.services.report_service._get_report_visibility",
+		return_value={
+			"sales": True,
+			"purchase": False,
+			"receivable": True,
+			"payable": False,
+			"cashflow": False,
+		},
+	)
+	def test_business_overview_returns_partial_metrics_without_querying_forbidden_domains(
+		self,
+		_mock_visibility,
+		mock_make_scalar_aggregate,
+		mock_build_cashflow_overview,
+	):
+		result = _build_business_report_overview_v1_data(
+			company=None,
+			date_from="2026-04-01",
+			date_to="2026-04-02",
+		)
+
+		self.assertEqual(result["overview"]["sales_amount_total"], 42)
+		self.assertIsNone(result["overview"]["purchase_amount_total"])
+		self.assertEqual(result["overview"]["receivable_outstanding_total"], 42)
+		self.assertIsNone(result["overview"]["payable_outstanding_total"])
+		self.assertIsNone(result["overview"]["net_cashflow_total"])
+		self.assertFalse(result["visibility"]["cashflow"])
+		self.assertEqual(
+			[entry.args[0] for entry in mock_make_scalar_aggregate.call_args_list],
+			["tabSales Order", "tabSales Invoice"],
+		)
+		mock_build_cashflow_overview.assert_not_called()
+
+	@patch("myapp.services.report_service._make_sales_hourly_rows", return_value=[])
+	@patch("myapp.services.report_service._make_sales_product_rows", return_value=[])
+	@patch("myapp.services.report_service._make_sales_trend_rows", return_value=[])
+	@patch("myapp.services.report_service._make_grouped_rows", return_value=[])
+	@patch("myapp.services.report_service._build_cashflow_overview")
+	@patch("myapp.services.report_service._make_scalar_aggregate", return_value=42)
+	@patch(
+		"myapp.services.report_service._get_report_visibility",
+		return_value={
+			"sales": True,
+			"purchase": False,
+			"receivable": False,
+			"payable": False,
+			"cashflow": False,
+		},
+	)
+	def test_sales_report_keeps_sales_data_when_finance_permissions_are_missing(
+		self,
+		_mock_visibility,
+		mock_make_scalar_aggregate,
+		mock_build_cashflow_overview,
+		_mock_grouped_rows,
+		_mock_sales_trend_rows,
+		_mock_sales_product_rows,
+		_mock_sales_hourly_rows,
+	):
+		result = _build_sales_report_v1_data(
+			company=None,
+			date_from="2026-04-01",
+			date_to="2026-04-02",
+			limit=5,
+		)
+
+		self.assertEqual(result["overview"]["sales_amount_total"], 42)
+		self.assertIsNone(result["overview"]["received_amount_total"])
+		self.assertIsNone(result["overview"]["receivable_outstanding_total"])
+		self.assertEqual(len(mock_make_scalar_aggregate.call_args_list), 1)
+		mock_build_cashflow_overview.assert_not_called()
+
+	@patch(
+		"myapp.services.report_service.get_permission_query_condition",
+		return_value="`tabSales Order`.`company` in ('Allowed Company')",
+	)
+	def test_build_where_clause_includes_record_permission_condition(self, _mock_permission_condition):
+		from myapp.services.report_service import _build_where_clause
+
+		where_sql, params = _build_where_clause(
+			table_name="tabSales Order",
+			date_field="transaction_date",
+			company=None,
+			date_from="2026-04-01",
+			date_to="2026-04-02",
+		)
+
+		self.assertIn("`tabSales Order`.`company` in ('Allowed Company')", where_sql)
+		self.assertEqual(params, ["2026-04-01", "2026-04-02"])
+
 	@patch("myapp.services.report_service._build_business_report_overview_v1_data")
 	def test_get_business_report_overview_v1_returns_overview_and_meta(self, mock_build_business_report_overview_v1_data):
 		mock_build_business_report_overview_v1_data.return_value = {

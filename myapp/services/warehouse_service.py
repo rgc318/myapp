@@ -4,6 +4,7 @@ from frappe.utils import cint, getdate
 
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.pagination import build_offset_pagination
+from myapp.services.data_permission_service import require_document_permission, require_doctype_permission
 
 
 def _normalize_text(value: str | None):
@@ -120,6 +121,7 @@ def list_warehouses_v2(
 	sort_by: str = "modified",
 	sort_order: str = "desc",
 ):
+	require_doctype_permission("Warehouse", "read")
 	limit = _normalize_limit(limit)
 	start = _normalize_start(start)
 	sort_by, sort_order = _normalize_sort(sort_by, sort_order)
@@ -174,7 +176,7 @@ def list_warehouses_v2(
 		"modified",
 		"creation",
 	]
-	rows = frappe.get_all(
+	rows = frappe.get_list(
 		"Warehouse",
 		filters=filters,
 		or_filters=or_filters,
@@ -184,7 +186,7 @@ def list_warehouses_v2(
 		limit_page_length=limit,
 	)
 	total = len(
-		frappe.get_all(
+		frappe.get_list(
 			"Warehouse",
 			filters=filters,
 			or_filters=or_filters,
@@ -229,7 +231,7 @@ def get_warehouse_detail_v2(warehouse: str):
 	warehouse = _normalize_text(warehouse)
 	if not warehouse:
 		frappe.throw(_("仓库不能为空。"))
-	doc = frappe.get_doc("Warehouse", warehouse)
+	doc = require_document_permission("Warehouse", warehouse, "read")
 	return {
 		"status": "success",
 		"message": _("仓库 {0} 详情获取成功。").format(doc.name),

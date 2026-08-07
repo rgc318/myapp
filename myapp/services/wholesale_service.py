@@ -8,6 +8,12 @@ from myapp.services.media_service import (
 	cleanup_replaced_item_image,
 	cleanup_temporary_item_image,
 )
+from myapp.services.data_permission_service import (
+	ensure_warehouse_access,
+	get_permitted_warehouse_names,
+	require_document_permission,
+	require_doctype_permission,
+)
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom_display import build_uom_display_map, sort_uom_rows
@@ -259,7 +265,7 @@ def _search_item_codes(
 			return matched_codes
 
 	if "item_code" in search_fields:
-		codes = frappe.get_all(
+		codes = frappe.get_list(
 			"Item",
 			filters={**item_filters, "name": ["like", f"%{search_key}%"]},
 			pluck="name",
@@ -270,7 +276,7 @@ def _search_item_codes(
 			return matched_codes
 
 	if "item_name" in search_fields:
-		codes = frappe.get_all(
+		codes = frappe.get_list(
 			"Item",
 			filters={**item_filters, "item_name": ["like", f"%{search_key}%"]},
 			pluck="name",
@@ -288,7 +294,7 @@ def _search_item_codes(
 		}
 		if nickname_field:
 			or_filters[nickname_field] = ["like", f"%{search_key}%"]
-		codes = frappe.get_all(
+		codes = frappe.get_list(
 			"Item",
 			filters=item_filters,
 			or_filters=or_filters,
@@ -301,7 +307,7 @@ def _search_item_codes(
 	if "specification" in search_fields:
 		specification_field = _get_item_specification_field()
 		if specification_field:
-			codes = frappe.get_all(
+			codes = frappe.get_list(
 				"Item",
 				filters={**item_filters, specification_field: ["like", f"%{search_key}%"]},
 				pluck="name",
@@ -327,7 +333,7 @@ def _list_item_codes_by_filters(
 	if brand:
 		item_filters["brand"] = brand
 
-	return frappe.get_all(
+	return frappe.get_list(
 		"Item",
 		filters=item_filters,
 		pluck="name",
@@ -382,7 +388,7 @@ def _get_item_data_map(
 
 	return {
 		d.name: d
-		for d in frappe.get_all(
+		for d in frappe.get_list(
 			"Item",
 			filters={
 				**item_filters,
@@ -464,7 +470,7 @@ def _get_item_rows(
 		if specification_field:
 			or_filters[specification_field] = ["like", f"%{search_key}%"]
 
-	rows = frappe.get_all(
+	rows = frappe.get_list(
 		"Item",
 		filters=filters,
 		or_filters=or_filters,
@@ -479,7 +485,7 @@ def _get_item_rows(
 		missing = [code for code in barcode_codes if code not in existing]
 		if missing:
 			rows = (
-				frappe.get_all("Item", filters={"name": ["in", missing]}, fields=fields, limit_page_length=len(missing))
+				frappe.get_list("Item", filters={"name": ["in", missing]}, fields=fields, limit_page_length=len(missing))
 				+ rows
 			)[:limit]
 
@@ -526,7 +532,7 @@ def _count_item_rows(
 			or_filters[specification_field] = ["like", f"%{search_key}%"]
 
 	total = len(
-		frappe.get_all(
+		frappe.get_list(
 			"Item",
 			filters=filters,
 			or_filters=or_filters,
@@ -542,10 +548,16 @@ def _count_item_rows(
 def _get_price_map(item_codes: list[str], *, price_list: str, currency: str | None):
 	if not item_codes:
 		return {}
+	permitted_price_lists = _get_permitted_price_list_names([price_list])
+	if price_list not in permitted_price_lists:
+		return {}
 
 	price_filters = {"item_code": ["in", item_codes], "price_list": price_list}
 	if currency:
 		price_filters["currency"] = currency
+	# ERPNext transaction users consume Item Price through pricing services even though the
+	# raw Item Price DocType is not readable by standard Sales/Purchase roles. The requested
+	# Price List is permission-filtered above, and item_codes already came from Item.get_list.
 	price_data = frappe.get_all("Item Price", filters=price_filters, fields=["item_code", "price_list_rate"])
 	return {p.item_code: p.price_list_rate for p in price_data}
 
@@ -553,8 +565,11 @@ def _get_price_map(item_codes: list[str], *, price_list: str, currency: str | No
 def _get_multi_price_map(item_codes: list[str], *, price_lists: list[str], currency: str | None):
 	if not item_codes or not price_lists:
 		return {}
+	permitted_price_lists = _get_permitted_price_list_names(price_lists)
+	if not permitted_price_lists:
+		return {}
 
-	price_filters = {"item_code": ["in", item_codes], "price_list": ["in", price_lists]}
+	price_filters = {"item_code": ["in", item_codes], "price_list": ["in", permitted_price_lists]}
 	if currency:
 		price_filters["currency"] = currency
 	price_rows = frappe.get_all(
@@ -571,6 +586,23 @@ def _get_multi_price_map(item_codes: list[str], *, price_lists: list[str], curre
 			"currency": row.currency or currency,
 		}
 	return result
+
+
+def _get_permitted_price_list_names(price_lists: list[str]) -> list[str]:
+	resolved = list(dict.fromkeys(_normalize_text(name) for name in price_lists if _normalize_text(name)))
+	if not resolved:
+		return []
+	try:
+		return list(
+			frappe.get_list(
+				"Price List",
+				filters={"name": ["in", resolved]},
+				pluck="name",
+				limit_page_length=0,
+			)
+		)
+	except frappe.PermissionError:
+		return []
 
 
 def _get_uom_map(item_codes: list[str]):
@@ -594,26 +626,22 @@ def _get_uom_map(item_codes: list[str]):
 def _get_qty_map(item_codes: list[str], *, warehouse: str | None, company: str | None):
 	if not item_codes:
 		return {}
+	if warehouse:
+		permitted_warehouses = [
+			ensure_warehouse_access(warehouse, company=company, applicable_for="Bin")
+		]
+	else:
+		permitted_warehouses = get_permitted_warehouse_names(company=company, applicable_for="Bin")
+	if not permitted_warehouses:
+		return {item_code: 0 for item_code in item_codes}
 
 	bin_dt = frappe.qb.DocType("Bin")
 	query = (
 		frappe.qb.from_(bin_dt)
 		.select(bin_dt.item_code, Sum(bin_dt.actual_qty).as_("total_qty"))
 		.where(bin_dt.item_code.isin(item_codes))
+		.where(bin_dt.warehouse.isin(permitted_warehouses))
 	)
-
-	if warehouse:
-		query = query.where(bin_dt.warehouse == warehouse)
-	elif company:
-		warehouse_dt = frappe.qb.DocType("Warehouse")
-		query = (
-			frappe.qb.from_(bin_dt)
-			.inner_join(warehouse_dt)
-			.on(bin_dt.warehouse == warehouse_dt.name)
-			.select(bin_dt.item_code, Sum(bin_dt.actual_qty).as_("total_qty"))
-			.where(bin_dt.item_code.isin(item_codes))
-			.where(warehouse_dt.company == company)
-		)
 
 	inventory_data = query.groupby(bin_dt.item_code).run(as_dict=True)
 	return {d.item_code: d.total_qty or 0 for d in inventory_data}
@@ -621,6 +649,9 @@ def _get_qty_map(item_codes: list[str], *, warehouse: str | None, company: str |
 
 def _get_warehouse_stock_detail_map(item_codes: list[str], *, company: str | None):
 	if not item_codes:
+		return {}
+	permitted_warehouses = get_permitted_warehouse_names(company=company, applicable_for="Bin")
+	if not permitted_warehouses:
 		return {}
 
 	bin_dt = frappe.qb.DocType("Bin")
@@ -636,9 +667,8 @@ def _get_warehouse_stock_detail_map(item_codes: list[str], *, company: str | Non
 			Sum(bin_dt.actual_qty).as_("total_qty"),
 		)
 		.where(bin_dt.item_code.isin(item_codes))
+		.where(bin_dt.warehouse.isin(permitted_warehouses))
 	)
-	if company:
-		query = query.where(warehouse_dt.company == company)
 
 	rows = query.groupby(bin_dt.item_code, bin_dt.warehouse, warehouse_dt.company).run(as_dict=True)
 	result = {}
@@ -946,6 +976,7 @@ def list_products_v2(
 	sort_by: str = "modified",
 	sort_order: str = "desc",
 ):
+	require_doctype_permission("Item", "read")
 	limit = _normalize_limit(limit)
 	start = _normalize_start(start)
 	warehouse = _normalize_text(warehouse) or None
@@ -1126,6 +1157,7 @@ def search_product(
 	- 未传 warehouse、传入 company 时，汇总该公司下所有仓库库存
 	- warehouse 和 company 都不传时，汇总全仓库存
 	"""
+	require_doctype_permission("Item", "read")
 	search_key = _normalize_text(search_key)
 	if not search_key:
 		return {"status": "success", "data": []}
@@ -1206,7 +1238,7 @@ def get_product_detail_v2(
 	price_list = _normalize_text(price_list) or "Standard Selling"
 	currency = _normalize_currency(currency)
 
-	item = frappe.get_doc("Item", item_code)
+	item = require_document_permission("Item", item_code, "read")
 	return {
 		"status": "success",
 		"data": _build_product_detail_payload(
@@ -1235,6 +1267,7 @@ def search_product_v2(
 	in_stock_only: bool = False,
 	item_context: str | None = "sales",
 ):
+	require_doctype_permission("Item", "read")
 	search_key = _normalize_text(search_key)
 	limit = _normalize_limit(limit)
 	item_context = _normalize_item_context(item_context)

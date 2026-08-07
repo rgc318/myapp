@@ -4,6 +4,11 @@ from frappe.utils import add_days, cint, flt, getdate, nowdate
 
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.uom import resolve_item_quantity_to_stock
+from myapp.services.data_permission_service import (
+	ensure_warehouse_access,
+	get_permitted_warehouse_names,
+	require_doctype_permission,
+)
 from myapp.utils.warehouse import validate_transaction_warehouse
 
 
@@ -68,7 +73,7 @@ def _get_item_name_map(item_codes: list[str]):
 	unique_item_codes = sorted({item_code for item_code in item_codes if item_code})
 	if not unique_item_codes:
 		return {}
-	rows = frappe.get_all(
+	rows = frappe.get_list(
 		"Item",
 		filters={"name": ["in", unique_item_codes]},
 		fields=["name", "item_name"],
@@ -80,7 +85,7 @@ def _get_item_snapshot_map(item_codes: list[str]):
 	unique_item_codes = sorted({item_code for item_code in item_codes if item_code})
 	if not unique_item_codes:
 		return {}
-	rows = frappe.get_all(
+	rows = frappe.get_list(
 		"Item",
 		filters={"name": ["in", unique_item_codes]},
 		fields=["name", "item_name", "stock_uom", "disabled"],
@@ -100,7 +105,7 @@ def _search_inventory_item_codes(search_key: str | None):
 	if not resolved:
 		return None
 
-	rows = frappe.get_all(
+	rows = frappe.get_list(
 		"Item",
 		filters=[
 			["disabled", "=", 0],
@@ -116,7 +121,7 @@ def _search_inventory_item_codes(search_key: str | None):
 	if rows:
 		return [row.name for row in rows]
 
-	rows = frappe.get_all(
+	rows = frappe.get_list(
 		"Item",
 		filters=[
 			["disabled", "=", 0],
@@ -136,7 +141,7 @@ def _get_company_warehouses(company: str | None):
 	resolved_company = _normalize_text(company)
 	if not resolved_company:
 		return None
-	rows = frappe.get_all(
+	rows = frappe.get_list(
 		"Warehouse",
 		filters={"company": resolved_company, "disabled": 0, "is_group": 0},
 		fields=["name", "company"],
@@ -148,7 +153,7 @@ def _get_warehouse_company_map(warehouses: list[str]):
 	unique_warehouses = sorted({warehouse for warehouse in warehouses if warehouse})
 	if not unique_warehouses:
 		return {}
-	rows = frappe.get_all(
+	rows = frappe.get_list(
 		"Warehouse",
 		filters={"name": ["in", unique_warehouses]},
 		fields=["name", "company"],
@@ -340,11 +345,14 @@ def _build_stock_summary_filters(
 ):
 	filters = {}
 	if warehouse:
-		filters["warehouse"] = warehouse
-	elif company:
-		warehouses = _get_company_warehouses(company)
-		if warehouses is not None:
-			filters["warehouse"] = ["in", warehouses or ["__no_warehouse__"]]
+		filters["warehouse"] = ensure_warehouse_access(
+			warehouse,
+			company=company,
+			applicable_for="Bin",
+		)
+	else:
+		warehouses = get_permitted_warehouse_names(company=company, applicable_for="Bin")
+		filters["warehouse"] = ["in", warehouses or ["__no_warehouse__"]]
 	if item_codes is not None:
 		filters["item_code"] = ["in", item_codes or ["__no_item__"]]
 	return filters
@@ -407,6 +415,7 @@ def list_inventory_stock_summary_v1(
 	page: int | str | None = 1,
 	page_size: int | str | None = DEFAULT_STOCK_SUMMARY_PAGE_SIZE,
 ):
+	require_doctype_permission("Bin", "read")
 	resolved_company = _normalize_text(company)
 	resolved_warehouse = _normalize_text(warehouse)
 	resolved_stock_status = (_normalize_text(stock_status) or "all").lower()
@@ -429,7 +438,7 @@ def list_inventory_stock_summary_v1(
 		item_codes=item_codes,
 		warehouse=resolved_warehouse,
 	)
-	bin_rows = frappe.get_all(
+	bin_rows = frappe.get_list(
 		"Bin",
 		filters=filters,
 		fields=[
@@ -779,6 +788,7 @@ def list_stock_ledger_entries_v1(
 	page: int | str | None = 1,
 	page_size: int | str | None = DEFAULT_STOCK_LEDGER_PAGE_SIZE,
 ):
+	require_doctype_permission("Stock Ledger Entry", "read")
 	resolved_company = _normalize_text(company)
 	resolved_item_code = _normalize_text(item_code)
 	resolved_warehouse = _normalize_text(warehouse)
@@ -802,8 +812,15 @@ def list_stock_ledger_entries_v1(
 		voucher_type=resolved_voucher_type,
 		voucher_no=resolved_voucher_no,
 	)
-	total_count = frappe.db.count("Stock Ledger Entry", filters=filters)
-	rows = frappe.get_all(
+	total_count = len(
+		frappe.get_list(
+			"Stock Ledger Entry",
+			filters=filters,
+			pluck="name",
+			limit_page_length=0,
+		)
+	)
+	rows = frappe.get_list(
 		"Stock Ledger Entry",
 		filters=filters,
 		fields=[

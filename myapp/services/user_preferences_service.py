@@ -1,6 +1,8 @@
 import frappe
 from frappe import _
 
+from myapp.services.data_permission_service import ensure_user_permission_value, ensure_warehouse_access
+
 
 def _normalize_text(value: str | None):
 	return (value or "").strip()
@@ -28,7 +30,7 @@ def _validate_company(company: str | None):
 	resolved = _normalize_text(company) or None
 	if resolved and not frappe.db.exists("Company", resolved):
 		frappe.throw(_("公司 {0} 不存在。").format(resolved))
-	return resolved
+	return ensure_user_permission_value("Company", resolved)
 
 
 def _validate_warehouse(warehouse: str | None, *, company: str | None = None):
@@ -38,6 +40,7 @@ def _validate_warehouse(warehouse: str | None, *, company: str | None = None):
 
 	if not frappe.db.exists("Warehouse", resolved):
 		frappe.throw(_("仓库 {0} 不存在。").format(resolved))
+	ensure_warehouse_access(resolved, company=company)
 
 	if company:
 		warehouse_company = _normalize_text(frappe.db.get_value("Warehouse", resolved, "company")) or None

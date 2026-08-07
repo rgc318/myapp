@@ -13,6 +13,11 @@ from frappe.utils import get_datetime, now_datetime
 from frappe.utils.file_manager import save_file
 
 from myapp.utils.image_processing import ITEM_IMAGE_PROFILE, normalize_image_upload
+from myapp.services.data_permission_service import (
+	current_user,
+	require_any_doctype_permission,
+	require_document_permission,
+)
 
 
 DEFAULT_IMAGE_EXTENSION = ".bin"
@@ -53,6 +58,10 @@ def upload_item_image(
 ):
 	resolved_filename = _normalize_image_filename(filename, content_type)
 	resolved_item_code = _normalize_optional_text(item_code)
+	if resolved_item_code:
+		require_document_permission("Item", resolved_item_code, "write")
+	else:
+		require_any_doctype_permission("Item", ("create", "write"))
 	resolved_content_type = _normalize_optional_text(content_type)
 	_validate_image_content_type(resolved_filename, resolved_content_type)
 	file_bytes = _decode_base64_file_content(file_content_base64)
@@ -105,7 +114,7 @@ def replace_item_image(
 	if not resolved_item_code:
 		raise frappe.ValidationError(_("商品编码不能为空。"))
 
-	item = frappe.get_doc("Item", resolved_item_code)
+	item = require_document_permission("Item", resolved_item_code, "write")
 	previous_image_url = _normalize_optional_text(getattr(item, "image", None))
 	upload_result = upload_item_image(
 		filename=filename,
@@ -150,7 +159,7 @@ def delete_item_image(*, item_code: str):
 	if not resolved_item_code:
 		raise frappe.ValidationError(_("商品编码不能为空。"))
 
-	item = frappe.get_doc("Item", resolved_item_code)
+	item = require_document_permission("Item", resolved_item_code, "write")
 	previous_image_url = _normalize_optional_text(getattr(item, "image", None))
 	if not previous_image_url:
 		return {
@@ -323,9 +332,11 @@ def _find_file_name_by_url(*, file_url: str, item_code: str | None, prefer_unatt
 	files = frappe.get_all(
 		"File",
 		filters={"file_url": file_url},
-		fields=["name", "attached_to_doctype", "attached_to_name", "attached_to_field", "modified"],
+		fields=["name", "owner", "attached_to_doctype", "attached_to_name", "attached_to_field", "modified"],
 		order_by="modified desc",
 	)
+	user = current_user()
+	can_manage_all = user == "Administrator" or "System Manager" in set(frappe.get_roles(user) or [])
 	for row in files:
 		attached_doctype = _normalize_optional_text(getattr(row, "attached_to_doctype", None))
 		attached_name = _normalize_optional_text(getattr(row, "attached_to_name", None))
@@ -337,7 +348,7 @@ def _find_file_name_by_url(*, file_url: str, item_code: str | None, prefer_unatt
 			and attached_name == item_code
 			and attached_field == "image"
 		)
-		if prefer_unattached and is_unattached:
+		if prefer_unattached and is_unattached and (can_manage_all or row.owner == user):
 			return row.name
 		if not prefer_unattached and is_same_item_image:
 			return row.name

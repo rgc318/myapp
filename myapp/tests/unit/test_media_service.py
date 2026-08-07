@@ -50,8 +50,13 @@ class TestMediaService(TestCase):
 	@patch("myapp.services.media_service.save_file")
 	@patch("myapp.services.media_service._ensure_item_image_folder", return_value="Home/Attachments/MyApp Item Images")
 	@patch("myapp.services.media_service.normalize_image_upload", return_value=NORMALIZED_ITEM_IMAGE)
+	@patch("myapp.services.media_service.require_document_permission")
 	def test_upload_item_image_uses_frappe_file_storage(
-		self, _mock_normalize_image_upload, _mock_ensure_item_image_folder, mock_save_file
+		self,
+		_mock_require_document_permission,
+		_mock_normalize_image_upload,
+		_mock_ensure_item_image_folder,
+		mock_save_file,
 	):
 		mock_save_file.return_value = frappe._dict(
 			{
@@ -302,6 +307,29 @@ class TestMediaService(TestCase):
 		self.assertEqual(file_doc.attached_to_field, "image")
 		self.assertEqual(file_doc.folder, "Home/Attachments/MyApp Item Images")
 		file_doc.save.assert_called_once_with(ignore_permissions=True)
+
+	@patch("myapp.services.media_service.frappe.get_roles", return_value=[])
+	@patch("myapp.services.media_service.current_user", return_value="other@example.com")
+	@patch("myapp.services.media_service.frappe.get_all")
+	def test_bind_uploaded_item_image_rejects_another_users_temp_file(
+		self,
+		mock_get_all,
+		_mock_current_user,
+		_mock_get_roles,
+	):
+		mock_get_all.return_value = [
+			frappe._dict(
+				{
+					"name": "FILE-TEMP-001",
+					"owner": "owner@example.com",
+					"attached_to_doctype": None,
+					"attached_to_name": None,
+					"attached_to_field": None,
+				}
+			)
+		]
+
+		self.assertFalse(bind_uploaded_item_image(file_url="/files/item.png", item_code="ITEM-001"))
 
 	@patch("myapp.services.media_service.create_new_folder")
 	def test_ensure_item_image_folder_creates_missing_nested_folders(self, mock_create_new_folder):

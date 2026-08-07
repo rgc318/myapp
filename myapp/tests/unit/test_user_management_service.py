@@ -5,6 +5,7 @@ import frappe
 
 from myapp.services.user_management_service import (
 	_ensure_system_manager,
+	_normalize_user_permission_input,
 	_validate_roles,
 	add_user_permission,
 	batch_set_users_enabled,
@@ -19,6 +20,85 @@ from myapp.services import user_management_service
 
 
 class TestUserManagementService(TestCase):
+	@patch("myapp.services.user_management_service.frappe.throw", side_effect=frappe.ValidationError)
+	def test_user_permission_rejects_administrator(self, _mock_throw):
+		mock_db = Mock()
+		mock_db.exists.return_value = True
+		with patch.object(user_management_service.frappe, "db", mock_db):
+			with self.assertRaises(frappe.ValidationError):
+				_normalize_user_permission_input("Administrator", "Company", "Demo Company")
+
+	@patch("myapp.services.user_management_service.frappe.throw", side_effect=frappe.ValidationError)
+	def test_user_permission_requires_supported_scope_type(self, _mock_throw):
+		mock_db = Mock()
+		mock_db.exists.return_value = True
+		with patch.object(user_management_service.frappe, "db", mock_db):
+			with self.assertRaises(frappe.ValidationError):
+				_normalize_user_permission_input("user@example.com", "Item", "ITEM-001")
+
+	@patch("myapp.services.user_management_service.frappe.throw", side_effect=frappe.ValidationError)
+	def test_user_permission_requires_applicable_doctype_for_targeted_scope(self, _mock_throw):
+		mock_db = Mock()
+		mock_db.exists.return_value = True
+		with patch.object(user_management_service.frappe, "db", mock_db):
+			with self.assertRaises(frappe.ValidationError):
+				_normalize_user_permission_input(
+					"user@example.com",
+					"Company",
+					"Demo Company",
+					apply_to_all_doctypes=0,
+				)
+
+	@patch("myapp.services.user_management_service.frappe.throw", side_effect=frappe.ValidationError)
+	def test_user_permission_rejects_unrelated_applicable_doctype(self, _mock_throw):
+		mock_db = Mock()
+		mock_db.exists.return_value = True
+		with patch.object(user_management_service.frappe, "db", mock_db):
+			with self.assertRaises(frappe.ValidationError):
+				_normalize_user_permission_input(
+					"user@example.com",
+					"Customer",
+					"CUST-001",
+					apply_to_all_doctypes=0,
+					applicable_for="Purchase Order",
+				)
+
+	@patch("myapp.services.user_management_service.frappe.get_meta")
+	@patch("myapp.services.user_management_service.frappe.throw", side_effect=frappe.ValidationError)
+	def test_user_permission_rejects_descendants_for_non_tree_scope(self, _mock_throw, mock_get_meta):
+		mock_db = Mock()
+		mock_db.exists.return_value = True
+		mock_get_meta.return_value.is_nested_set.return_value = False
+		with patch.object(user_management_service.frappe, "db", mock_db):
+			with self.assertRaises(frappe.ValidationError):
+				_normalize_user_permission_input(
+					"user@example.com",
+					"Customer",
+					"CUST-001",
+					hide_descendants=1,
+				)
+
+	@patch("myapp.services.user_management_service.frappe.get_meta")
+	def test_user_permission_normalizes_global_scope(self, mock_get_meta):
+		mock_db = Mock()
+		mock_db.exists.return_value = True
+		mock_get_meta.return_value.is_nested_set.return_value = True
+		with patch.object(user_management_service.frappe, "db", mock_db):
+			result = _normalize_user_permission_input(
+				" user@example.com ",
+				" Company ",
+				" Demo Company ",
+				apply_to_all_doctypes=1,
+				applicable_for="Sales Order",
+				hide_descendants=1,
+			)
+
+		self.assertEqual(result["user"], "user@example.com")
+		self.assertEqual(result["allow"], "Company")
+		self.assertEqual(result["for_value"], "Demo Company")
+		self.assertIsNone(result["applicable_for"])
+		self.assertEqual(result["hide_descendants"], 1)
+
 	@patch("myapp.services.user_management_service.frappe.get_roles", return_value=["Sales User"])
 	@patch("myapp.services.user_management_service._ensure_authenticated_user", return_value="user@example.com")
 	def test_system_manager_role_is_required(self, _mock_authenticated, _mock_roles):
@@ -148,6 +228,10 @@ class TestUserManagementService(TestCase):
 		self.assertTrue(result["data"]["permissions"][0]["read"])
 		self.assertTrue(result["data"]["permissions"][0]["write"])
 		self.assertFalse(result["data"]["permissions"][0]["create"])
+		self.assertEqual(
+			[result["allow"] for result in result["data"]["permission_catalog"]],
+			["Company", "Warehouse", "Customer", "Supplier"],
+		)
 
 	@patch("myapp.services.user_management_service._ensure_authenticated_user", return_value="user@example.com")
 	@patch("myapp.services.user_management_service._normalize_image_filename", return_value="avatar.png")

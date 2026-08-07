@@ -3,6 +3,7 @@ from frappe import _
 from frappe.utils import add_days, cint, flt, getdate, nowdate
 
 from myapp.services.wholesale_service import _get_item_specification_field
+from myapp.services.data_permission_service import current_user, get_permission_query_condition
 
 
 MAX_REPORT_LIMIT = 50
@@ -17,6 +18,29 @@ REPORT_INDEX_HINTS = {
 	"tabPurchase Invoice": "idx_myapp_pinv_company_docstatus_return_date_supplier",
 	"tabPayment Entry": "idx_myapp_pe_company_docstatus_date_type",
 }
+REPORT_VISIBILITY_DOCTYPES = {
+	"sales": "Sales Order",
+	"purchase": "Purchase Order",
+	"receivable": "Sales Invoice",
+	"payable": "Purchase Invoice",
+	"cashflow": "Payment Entry",
+}
+
+
+def _get_report_visibility():
+	user = current_user()
+	return {
+		key: user == "Administrator" or frappe.has_permission(doctype, ptype="read", user=user)
+		for key, doctype in REPORT_VISIBILITY_DOCTYPES.items()
+	}
+
+
+def _empty_cashflow_overview():
+	return {
+		"received_amount_total": None,
+		"paid_amount_total": None,
+		"net_cashflow_total": None,
+	}
 
 
 def _resolve_report_limit(limit: int | str | None):
@@ -46,12 +70,24 @@ def _resolve_positive_int(value: int | str | None, *, default: int, minimum: int
 	return max(minimum, resolved)
 
 
-def _build_where_clause(*, date_field: str, company: str | None, date_from: str, date_to: str, extra_sql: str | None = None):
+def _build_where_clause(
+	*,
+	table_name: str,
+	date_field: str,
+	company: str | None,
+	date_from: str,
+	date_to: str,
+	extra_sql: str | None = None,
+):
 	clauses = [
 		"docstatus = 1",
 		f"`{date_field}` between %s and %s",
 	]
 	params = [date_from, date_to]
+	doctype = table_name.removeprefix("tab")
+	permission_condition = get_permission_query_condition(doctype)
+	if permission_condition:
+		clauses.append(f"({permission_condition})")
 	if company:
 		clauses.append("company = %s")
 		params.append(company)
@@ -85,6 +121,7 @@ def _make_grouped_rows(
 	if extra_filters:
 		extra_sql = " AND ".join(f"`{key}` = %s" for key in extra_filters)
 	where_sql, params = _build_where_clause(
+		table_name=table_name,
 		date_field=date_field,
 		company=company,
 		date_from=date_from,
@@ -130,6 +167,7 @@ def _make_invoice_grouped_rows(
 	outstanding_expr = "ifnull(outstanding_amount, 0)"
 	paid_expr = f"greatest(({total_expr}) - ({outstanding_expr}), 0)"
 	where_sql, params = _build_where_clause(
+		table_name=table_name,
 		date_field=date_field,
 		company=company,
 		date_from=date_from,
@@ -166,6 +204,7 @@ def _make_scalar_aggregate(
 	extra_sql: str | None = None,
 ):
 	where_sql, params = _build_where_clause(
+		table_name=table_name,
 		date_field=date_field,
 		company=company,
 		date_from=date_from,
@@ -245,6 +284,7 @@ def _make_cashflow_entry_rows(
 		party_type=party_type,
 	)
 	where_sql, params = _build_where_clause(
+		table_name="tabPayment Entry",
 		date_field="posting_date",
 		company=company,
 		date_from=date_from,
@@ -292,6 +332,7 @@ def _count_cashflow_entries(
 		party_type=party_type,
 	)
 	where_sql, params = _build_where_clause(
+		table_name="tabPayment Entry",
 		date_field="posting_date",
 		company=company,
 		date_from=date_from,
@@ -314,6 +355,7 @@ def _count_cashflow_entries(
 
 def _make_cashflow_trend_rows(*, company: str | None, date_from: str, date_to: str):
 	where_sql, params = _build_where_clause(
+		table_name="tabPayment Entry",
 		date_field="posting_date",
 		company=company,
 		date_from=date_from,
@@ -348,6 +390,7 @@ def _make_cashflow_trend_rows(*, company: str | None, date_from: str, date_to: s
 
 def _make_payment_type_totals(*, company: str | None, date_from: str, date_to: str):
 	where_sql, params = _build_where_clause(
+		table_name="tabPayment Entry",
 		date_field="posting_date",
 		company=company,
 		date_from=date_from,
@@ -370,6 +413,7 @@ def _make_payment_type_totals(*, company: str | None, date_from: str, date_to: s
 
 def _make_sales_trend_rows(*, company: str | None, date_from: str, date_to: str, limit: int):
 	where_sql, params = _build_where_clause(
+		table_name="tabSales Order",
 		date_field="transaction_date",
 		company=company,
 		date_from=date_from,
@@ -404,6 +448,8 @@ def _make_sales_product_rows(*, company: str | None, date_from: str, date_to: st
 	if specification_field:
 		item_join_sql = " LEFT JOIN `tabItem` item ON item.name = soi.item_code"
 		select_specification_sql = f'\n\t\t\tMAX(ifnull(item.`{specification_field}`, "")) AS specification,'
+	permission_condition = get_permission_query_condition("Sales Order", table_alias="so")
+	permission_sql = f" AND ({permission_condition})" if permission_condition else ""
 	return frappe.db.sql(
 		f"""
 		SELECT
@@ -418,6 +464,7 @@ def _make_sales_product_rows(*, company: str | None, date_from: str, date_to: st
 		WHERE so.docstatus = 1
 			AND so.transaction_date between %s and %s
 			{company_sql}
+			{permission_sql}
 		GROUP BY COALESCE(soi.item_code, soi.item_name)
 		ORDER BY amount DESC
 		LIMIT %s
@@ -429,6 +476,7 @@ def _make_sales_product_rows(*, company: str | None, date_from: str, date_to: st
 
 def _make_purchase_trend_rows(*, company: str | None, date_from: str, date_to: str, limit: int):
 	where_sql, params = _build_where_clause(
+		table_name="tabPurchase Order",
 		date_field="transaction_date",
 		company=company,
 		date_from=date_from,
@@ -463,6 +511,8 @@ def _make_purchase_product_rows(*, company: str | None, date_from: str, date_to:
 	if specification_field:
 		item_join_sql = " LEFT JOIN `tabItem` item ON item.name = poi.item_code"
 		select_specification_sql = f'\n\t\t\tMAX(ifnull(item.`{specification_field}`, "")) AS specification,'
+	permission_condition = get_permission_query_condition("Purchase Order", table_alias="po")
+	permission_sql = f" AND ({permission_condition})" if permission_condition else ""
 	return frappe.db.sql(
 		f"""
 		SELECT
@@ -477,6 +527,7 @@ def _make_purchase_product_rows(*, company: str | None, date_from: str, date_to:
 		WHERE po.docstatus = 1
 			AND po.transaction_date between %s and %s
 			{company_sql}
+			{permission_sql}
 		GROUP BY COALESCE(poi.item_code, poi.item_name)
 		ORDER BY amount DESC
 		LIMIT %s
@@ -492,6 +543,8 @@ def _make_sales_hourly_rows(*, company: str | None, trend_date: str):
 	if company:
 		company_sql = " AND company = %s"
 		params.append(company)
+	permission_condition = get_permission_query_condition("Sales Order")
+	permission_sql = f" AND ({permission_condition})" if permission_condition else ""
 	return frappe.db.sql(
 		f"""
 		SELECT
@@ -502,6 +555,7 @@ def _make_sales_hourly_rows(*, company: str | None, trend_date: str):
 		WHERE docstatus = 1
 			AND DATE(creation) = %s
 			{company_sql}
+			{permission_sql}
 		GROUP BY HOUR(creation)
 		ORDER BY trend_hour ASC
 		""",
@@ -516,6 +570,8 @@ def _make_purchase_hourly_rows(*, company: str | None, trend_date: str):
 	if company:
 		company_sql = " AND company = %s"
 		params.append(company)
+	permission_condition = get_permission_query_condition("Purchase Order")
+	permission_sql = f" AND ({permission_condition})" if permission_condition else ""
 	return frappe.db.sql(
 		f"""
 		SELECT
@@ -526,6 +582,7 @@ def _make_purchase_hourly_rows(*, company: str | None, trend_date: str):
 		WHERE docstatus = 1
 			AND DATE(creation) = %s
 			{company_sql}
+			{permission_sql}
 		GROUP BY HOUR(creation)
 		ORDER BY trend_hour ASC
 		""",
@@ -702,13 +759,19 @@ def _build_cashflow_overview(*, company: str | None, date_from: str, date_to: st
 def _build_business_report_overview_v1_data(*, company: str | None, date_from: str, date_to: str):
 	order_amount_expr = "ifnull(rounded_total, ifnull(grand_total, 0))"
 	invoice_outstanding_expr = "ifnull(outstanding_amount, 0)"
-	cashflow_overview = _build_cashflow_overview(
-		company=company,
-		date_from=date_from,
-		date_to=date_to,
+	visibility = _get_report_visibility()
+	cashflow_overview = (
+		_build_cashflow_overview(
+			company=company,
+			date_from=date_from,
+			date_to=date_to,
+		)
+		if visibility["cashflow"]
+		else _empty_cashflow_overview()
 	)
 
 	return {
+		"visibility": visibility,
 		"overview": {
 			"sales_amount_total": _make_scalar_aggregate(
 				"tabSales Order",
@@ -717,7 +780,9 @@ def _build_business_report_overview_v1_data(*, company: str | None, date_from: s
 				company=company,
 				date_from=date_from,
 				date_to=date_to,
-			),
+			)
+			if visibility["sales"]
+			else None,
 			"purchase_amount_total": _make_scalar_aggregate(
 				"tabPurchase Order",
 				date_field="transaction_date",
@@ -725,7 +790,9 @@ def _build_business_report_overview_v1_data(*, company: str | None, date_from: s
 				company=company,
 				date_from=date_from,
 				date_to=date_to,
-			),
+			)
+			if visibility["purchase"]
+			else None,
 			"received_amount_total": cashflow_overview["received_amount_total"],
 			"paid_amount_total": cashflow_overview["paid_amount_total"],
 			"net_cashflow_total": cashflow_overview["net_cashflow_total"],
@@ -737,7 +804,9 @@ def _build_business_report_overview_v1_data(*, company: str | None, date_from: s
 				date_from=date_from,
 				date_to=date_to,
 				extra_sql="is_return = 0",
-			),
+			)
+			if visibility["receivable"]
+			else None,
 			"payable_outstanding_total": _make_scalar_aggregate(
 				"tabPurchase Invoice",
 				date_field="posting_date",
@@ -746,13 +815,17 @@ def _build_business_report_overview_v1_data(*, company: str | None, date_from: s
 				date_from=date_from,
 				date_to=date_to,
 				extra_sql="is_return = 0",
-			),
+			)
+			if visibility["payable"]
+			else None,
 		},
 	}
 
 
 def _build_receivable_payable_report_v1_data(*, company: str | None, date_from: str, date_to: str, limit: int):
+	visibility = _get_report_visibility()
 	return {
+		"visibility": visibility,
 		"overview": {
 			"receivable_outstanding_total": _make_scalar_aggregate(
 				"tabSales Invoice",
@@ -762,7 +835,9 @@ def _build_receivable_payable_report_v1_data(*, company: str | None, date_from: 
 				date_from=date_from,
 				date_to=date_to,
 				extra_sql="is_return = 0",
-			),
+			)
+			if visibility["receivable"]
+			else None,
 			"payable_outstanding_total": _make_scalar_aggregate(
 				"tabPurchase Invoice",
 				date_field="posting_date",
@@ -771,7 +846,9 @@ def _build_receivable_payable_report_v1_data(*, company: str | None, date_from: 
 				date_from=date_from,
 				date_to=date_to,
 				extra_sql="is_return = 0",
-			),
+			)
+			if visibility["payable"]
+			else None,
 		},
 		"tables": {
 			"receivable_summary": _serialize_invoice_group_rows(
@@ -784,7 +861,9 @@ def _build_receivable_payable_report_v1_data(*, company: str | None, date_from: 
 					date_to=date_to,
 					limit=limit,
 				)
-			),
+			)
+			if visibility["receivable"]
+			else [],
 			"payable_summary": _serialize_invoice_group_rows(
 				_make_invoice_grouped_rows(
 					"tabPurchase Invoice",
@@ -795,7 +874,9 @@ def _build_receivable_payable_report_v1_data(*, company: str | None, date_from: 
 					date_to=date_to,
 					limit=limit,
 				)
-			),
+			)
+			if visibility["payable"]
+			else [],
 		},
 	}
 
@@ -803,10 +884,15 @@ def _build_receivable_payable_report_v1_data(*, company: str | None, date_from: 
 def _build_sales_report_v1_data(*, company: str | None, date_from: str, date_to: str, limit: int):
 	order_amount_expr = "ifnull(rounded_total, ifnull(grand_total, 0))"
 	invoice_outstanding_expr = "ifnull(outstanding_amount, 0)"
-	cashflow_overview = _build_cashflow_overview(
-		company=company,
-		date_from=date_from,
-		date_to=date_to,
+	visibility = _get_report_visibility()
+	cashflow_overview = (
+		_build_cashflow_overview(
+			company=company,
+			date_from=date_from,
+			date_to=date_to,
+		)
+		if visibility["cashflow"]
+		else _empty_cashflow_overview()
 	)
 
 	sales_rows = _serialize_amount_group_rows(
@@ -845,6 +931,7 @@ def _build_sales_report_v1_data(*, company: str | None, date_from: str, date_to:
 	)
 
 	return {
+		"visibility": visibility,
 		"overview": {
 			"sales_amount_total": _make_scalar_aggregate(
 				"tabSales Order",
@@ -863,7 +950,9 @@ def _build_sales_report_v1_data(*, company: str | None, date_from: str, date_to:
 				date_from=date_from,
 				date_to=date_to,
 				extra_sql="is_return = 0",
-			),
+			)
+			if visibility["receivable"]
+			else None,
 		},
 		"tables": {
 			"sales_summary": sales_rows,
@@ -877,10 +966,15 @@ def _build_sales_report_v1_data(*, company: str | None, date_from: str, date_to:
 def _build_purchase_report_v1_data(*, company: str | None, date_from: str, date_to: str, limit: int):
 	order_amount_expr = "ifnull(rounded_total, ifnull(grand_total, 0))"
 	invoice_outstanding_expr = "ifnull(outstanding_amount, 0)"
-	cashflow_overview = _build_cashflow_overview(
-		company=company,
-		date_from=date_from,
-		date_to=date_to,
+	visibility = _get_report_visibility()
+	cashflow_overview = (
+		_build_cashflow_overview(
+			company=company,
+			date_from=date_from,
+			date_to=date_to,
+		)
+		if visibility["cashflow"]
+		else _empty_cashflow_overview()
 	)
 
 	purchase_rows = _serialize_amount_group_rows(
@@ -919,6 +1013,7 @@ def _build_purchase_report_v1_data(*, company: str | None, date_from: str, date_
 	)
 
 	return {
+		"visibility": visibility,
 		"overview": {
 			"purchase_amount_total": _make_scalar_aggregate(
 				"tabPurchase Order",
@@ -937,7 +1032,9 @@ def _build_purchase_report_v1_data(*, company: str | None, date_from: str, date_
 				date_from=date_from,
 				date_to=date_to,
 				extra_sql="is_return = 0",
-			),
+			)
+			if visibility["payable"]
+			else None,
 		},
 		"tables": {
 			"purchase_summary": purchase_rows,
@@ -1191,6 +1288,7 @@ def get_business_report_v1(
 
 	order_amount_expr = "ifnull(rounded_total, ifnull(grand_total, 0))"
 	invoice_outstanding_expr = "ifnull(outstanding_amount, 0)"
+	visibility = _get_report_visibility()
 
 	sales_rows = _serialize_amount_group_rows(
 		_make_grouped_rows(
@@ -1203,7 +1301,7 @@ def get_business_report_v1(
 			limit=resolved_limit,
 			amount_expr=order_amount_expr,
 		)
-	)
+	) if visibility["sales"] else []
 	purchase_rows = _serialize_amount_group_rows(
 		_make_grouped_rows(
 			"tabPurchase Order",
@@ -1215,7 +1313,7 @@ def get_business_report_v1(
 			limit=resolved_limit,
 			amount_expr=order_amount_expr,
 		)
-	)
+	) if visibility["purchase"] else []
 	receivable_rows = _serialize_invoice_group_rows(
 		_make_invoice_grouped_rows(
 			"tabSales Invoice",
@@ -1226,7 +1324,7 @@ def get_business_report_v1(
 			date_to=resolved_date_to,
 			limit=resolved_limit,
 		)
-	)
+	) if visibility["receivable"] else []
 	payable_rows = _serialize_invoice_group_rows(
 		_make_invoice_grouped_rows(
 			"tabPurchase Invoice",
@@ -1237,7 +1335,7 @@ def get_business_report_v1(
 			date_to=resolved_date_to,
 			limit=resolved_limit,
 		)
-	)
+	) if visibility["payable"] else []
 	sales_trend_rows = _serialize_sales_trend_rows(
 		_make_sales_trend_rows(
 			company=resolved_company,
@@ -1245,7 +1343,7 @@ def get_business_report_v1(
 			date_to=resolved_date_to,
 			limit=resolved_limit,
 		)
-	)
+	) if visibility["sales"] else []
 	sales_product_rows = _serialize_sales_product_rows(
 		_make_sales_product_rows(
 			company=resolved_company,
@@ -1253,7 +1351,7 @@ def get_business_report_v1(
 			date_to=resolved_date_to,
 			limit=resolved_limit,
 		)
-	)
+	) if visibility["sales"] else []
 	purchase_trend_rows = _serialize_purchase_trend_rows(
 		_make_purchase_trend_rows(
 			company=resolved_company,
@@ -1261,7 +1359,7 @@ def get_business_report_v1(
 			date_to=resolved_date_to,
 			limit=resolved_limit,
 		)
-	)
+	) if visibility["purchase"] else []
 	purchase_product_rows = _serialize_purchase_product_rows(
 		_make_purchase_product_rows(
 			company=resolved_company,
@@ -1269,19 +1367,19 @@ def get_business_report_v1(
 			date_to=resolved_date_to,
 			limit=resolved_limit,
 		)
-	)
+	) if visibility["purchase"] else []
 	sales_hourly_rows = _serialize_hourly_rows(
 		_make_sales_hourly_rows(
 			company=resolved_company,
 			trend_date=resolved_date_to,
 		)
-	)
+	) if visibility["sales"] else []
 	purchase_hourly_rows = _serialize_hourly_rows(
 		_make_purchase_hourly_rows(
 			company=resolved_company,
 			trend_date=resolved_date_to,
 		)
-	)
+	) if visibility["purchase"] else []
 	cashflow_rows = _serialize_cashflow_rows(
 		_make_recent_cashflow_rows(
 			company=resolved_company,
@@ -1289,14 +1387,14 @@ def get_business_report_v1(
 			date_to=resolved_date_to,
 			limit=resolved_limit,
 		)
-	)
+	) if visibility["cashflow"] else []
 	cashflow_trend_rows = _serialize_cashflow_trend_rows(
 		_make_cashflow_trend_rows(
 			company=resolved_company,
 			date_from=resolved_date_from,
 			date_to=resolved_date_to,
 		)
-	)
+	) if visibility["cashflow"] else []
 
 	sales_amount_total = _make_scalar_aggregate(
 		"tabSales Order",
@@ -1305,7 +1403,7 @@ def get_business_report_v1(
 		company=resolved_company,
 		date_from=resolved_date_from,
 		date_to=resolved_date_to,
-	)
+	) if visibility["sales"] else None
 	purchase_amount_total = _make_scalar_aggregate(
 		"tabPurchase Order",
 		date_field="transaction_date",
@@ -1313,7 +1411,7 @@ def get_business_report_v1(
 		company=resolved_company,
 		date_from=resolved_date_from,
 		date_to=resolved_date_to,
-	)
+	) if visibility["purchase"] else None
 	receivable_outstanding_total = _make_scalar_aggregate(
 		"tabSales Invoice",
 		date_field="posting_date",
@@ -1322,7 +1420,7 @@ def get_business_report_v1(
 		date_from=resolved_date_from,
 		date_to=resolved_date_to,
 		extra_sql="is_return = 0",
-	)
+	) if visibility["receivable"] else None
 	payable_outstanding_total = _make_scalar_aggregate(
 		"tabPurchase Invoice",
 		date_field="posting_date",
@@ -1331,17 +1429,22 @@ def get_business_report_v1(
 		date_from=resolved_date_from,
 		date_to=resolved_date_to,
 		extra_sql="is_return = 0",
-	)
-	cashflow_overview = _build_cashflow_overview(
-		company=resolved_company,
-		date_from=resolved_date_from,
-		date_to=resolved_date_to,
+	) if visibility["payable"] else None
+	cashflow_overview = (
+		_build_cashflow_overview(
+			company=resolved_company,
+			date_from=resolved_date_from,
+			date_to=resolved_date_to,
+		)
+		if visibility["cashflow"]
+		else _empty_cashflow_overview()
 	)
 
 	return {
 		"status": "success",
 		"message": _("经营报表获取成功。"),
 		"data": {
+			"visibility": visibility,
 			"overview": {
 				"sales_amount_total": sales_amount_total,
 				"purchase_amount_total": purchase_amount_total,

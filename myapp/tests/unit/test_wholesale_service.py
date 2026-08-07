@@ -5,6 +5,8 @@ import frappe
 
 from myapp.services.wholesale_service import (
 	_apply_item_uom_updates,
+	_get_multi_price_map,
+	_get_price_map,
 	_list_item_codes_by_filters,
 	_search_item_codes,
 	_validate_mode_default_uoms_against_stock_uom,
@@ -23,6 +25,74 @@ from myapp.services.wholesale_service import (
 
 
 class TestWholesaleService(TestCase):
+	@patch("myapp.services.wholesale_service.frappe.get_all")
+	@patch("myapp.services.wholesale_service.frappe.get_list", return_value=["Standard Selling"])
+	def test_price_lookup_uses_permitted_price_list_without_requiring_item_price_read(
+		self,
+		mock_get_list,
+		mock_get_all,
+	):
+		mock_get_all.return_value = [frappe._dict(item_code="ITEM-001", price_list_rate=12.5)]
+
+		result = _get_price_map(
+			["ITEM-001"],
+			price_list="Standard Selling",
+			currency="CNY",
+		)
+
+		self.assertEqual(result, {"ITEM-001": 12.5})
+		mock_get_list.assert_called_once_with(
+			"Price List",
+			filters={"name": ["in", ["Standard Selling"]]},
+			pluck="name",
+			limit_page_length=0,
+		)
+		mock_get_all.assert_called_once_with(
+			"Item Price",
+			filters={
+				"item_code": ["in", ["ITEM-001"]],
+				"price_list": "Standard Selling",
+				"currency": "CNY",
+			},
+			fields=["item_code", "price_list_rate"],
+		)
+
+	@patch("myapp.services.wholesale_service.frappe.get_all")
+	@patch("myapp.services.wholesale_service.frappe.get_list", return_value=[])
+	def test_price_lookup_returns_empty_when_price_list_is_not_visible(self, _mock_get_list, mock_get_all):
+		result = _get_price_map(
+			["ITEM-001"],
+			price_list="Private Selling",
+			currency=None,
+		)
+
+		self.assertEqual(result, {})
+		mock_get_all.assert_not_called()
+
+	@patch("myapp.services.wholesale_service.frappe.get_all")
+	@patch("myapp.services.wholesale_service.frappe.get_list", return_value=["Standard Selling"])
+	def test_multi_price_lookup_only_reads_visible_price_lists(self, _mock_get_list, mock_get_all):
+		mock_get_all.return_value = [
+			frappe._dict(
+				item_code="ITEM-001",
+				price_list="Standard Selling",
+				price_list_rate=12.5,
+				currency="CNY",
+			)
+		]
+
+		result = _get_multi_price_map(
+			["ITEM-001"],
+			price_lists=["Standard Selling", "Private Selling"],
+			currency="CNY",
+		)
+
+		self.assertEqual(result["ITEM-001"]["Standard Selling"]["rate"], 12.5)
+		self.assertEqual(
+			mock_get_all.call_args.kwargs["filters"]["price_list"],
+			["in", ["Standard Selling"]],
+		)
+
 	@patch("myapp.services.wholesale_service._resolve_default_uom")
 	@patch("myapp.services.wholesale_service.frappe.throw", side_effect=frappe.ValidationError)
 	def test_validate_mode_default_uoms_requires_conversion_mapping(self, _mock_throw, mock_resolve_default_uom):
@@ -502,12 +572,12 @@ class TestWholesaleService(TestCase):
 		self.assertEqual([row["item_code"] for row in disabled_result["data"]], ["ITEM-DISABLED"])
 		self.assertEqual(disabled_result["filters"]["disabled"], 1)
 
-	@patch("myapp.services.wholesale_service.frappe.get_all")
+	@patch("myapp.services.wholesale_service.frappe.get_list")
 	def test_search_item_codes_uses_purchase_context_filters(
 		self,
-		mock_get_all,
+		mock_get_list,
 	):
-		mock_get_all.return_value = ["ITEM-PURCHASE"]
+		mock_get_list.return_value = ["ITEM-PURCHASE"]
 
 		result = _search_item_codes(
 			search_key="采购",
@@ -517,9 +587,9 @@ class TestWholesaleService(TestCase):
 		)
 
 		self.assertEqual(result, ["ITEM-PURCHASE"])
-		mock_get_all.assert_called_once()
+		mock_get_list.assert_called_once()
 		self.assertEqual(
-			mock_get_all.call_args.kwargs["filters"],
+			mock_get_list.call_args.kwargs["filters"],
 			{
 				"disabled": 0,
 				"is_purchase_item": 1,
@@ -527,12 +597,12 @@ class TestWholesaleService(TestCase):
 			},
 		)
 
-	@patch("myapp.services.wholesale_service.frappe.get_all")
+	@patch("myapp.services.wholesale_service.frappe.get_list")
 	def test_search_item_codes_applies_group_and_brand_filters(
 		self,
-		mock_get_all,
+		mock_get_list,
 	):
-		mock_get_all.return_value = ["ITEM-FILTERED"]
+		mock_get_list.return_value = ["ITEM-FILTERED"]
 
 		result = _search_item_codes(
 			search_key="可乐",
@@ -544,9 +614,9 @@ class TestWholesaleService(TestCase):
 		)
 
 		self.assertEqual(result, ["ITEM-FILTERED"])
-		mock_get_all.assert_called_once()
+		mock_get_list.assert_called_once()
 		self.assertEqual(
-			mock_get_all.call_args.kwargs["filters"],
+			mock_get_list.call_args.kwargs["filters"],
 			{
 				"disabled": 0,
 				"is_sales_item": 1,
@@ -556,12 +626,12 @@ class TestWholesaleService(TestCase):
 			},
 		)
 
-	@patch("myapp.services.wholesale_service.frappe.get_all")
+	@patch("myapp.services.wholesale_service.frappe.get_list")
 	def test_list_item_codes_by_filters_applies_group_and_brand_filters(
 		self,
-		mock_get_all,
+		mock_get_list,
 	):
-		mock_get_all.return_value = ["ITEM-FILTERED"]
+		mock_get_list.return_value = ["ITEM-FILTERED"]
 
 		result = _list_item_codes_by_filters(
 			item_context="purchase",
@@ -571,7 +641,7 @@ class TestWholesaleService(TestCase):
 		)
 
 		self.assertEqual(result, ["ITEM-FILTERED"])
-		mock_get_all.assert_called_once_with(
+		mock_get_list.assert_called_once_with(
 			"Item",
 			filters={
 				"disabled": 0,

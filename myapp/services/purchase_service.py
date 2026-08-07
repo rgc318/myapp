@@ -3,6 +3,16 @@ import heapq
 from frappe import _
 from frappe.utils import cint, flt, get_datetime, getdate, nowdate
 
+from myapp.services.data_permission_service import (
+	ensure_user_permission_value,
+	ensure_warehouse_access,
+	filter_permitted_user_default,
+	get_permitted_warehouse_names,
+	has_doctype_permission,
+	require_any_doctype_permission,
+	require_document_permission,
+	require_doctype_permission,
+)
 from myapp.services.order_service import (
 	_build_payment_summary,
 	_document_status_label,
@@ -329,20 +339,41 @@ def _build_supplier_snapshot_for_doc(doc):
 
 
 def _get_purchase_default_warehouse_for_company(company: str | None):
-	company = _normalize_text(company)
+	company = ensure_user_permission_value(
+		"Company",
+		_normalize_text(company),
+		applicable_for="Purchase Order",
+	)
 	if not company:
 		return None
 
 	user_warehouse = _extract_first_non_empty(frappe.defaults.get_user_default("warehouse"))
 	if user_warehouse:
 		try:
+			ensure_warehouse_access(user_warehouse, company=company, applicable_for="Purchase Order")
 			warehouse_row = validate_transaction_warehouse(user_warehouse, company=company)
-		except frappe.ValidationError:
+		except (frappe.PermissionError, frappe.ValidationError):
 			warehouse_row = None
 		if warehouse_row and warehouse_row.company == company:
 			return user_warehouse
 
-	return frappe.db.get_value("Warehouse", {"company": company, "disabled": 0, "is_group": 0}, "name")
+	warehouses = get_permitted_warehouse_names(company=company, applicable_for="Purchase Order")
+	return warehouses[0] if warehouses else None
+
+
+def _resolve_purchase_context_company(company: str | None):
+	resolved_company = _normalize_text(company)
+	if resolved_company:
+		return ensure_user_permission_value(
+			"Company",
+			resolved_company,
+			applicable_for="Purchase Order",
+		)
+	return filter_permitted_user_default(
+		"Company",
+		_extract_first_non_empty(frappe.defaults.get_user_default("company")),
+		applicable_for="Purchase Order",
+	)
 
 
 def _is_purchase_summary_cancelled(summary_row: dict):
@@ -1107,18 +1138,36 @@ def _build_purchase_order_financial_summary(order_items, invoice_names: list[str
 
 def _build_purchase_order_action_flags(receiving: dict, billing: dict, payment: dict, *, invoice_names: list[str], receipt_names: list[str], docstatus: int):
 	is_submitted = cint(docstatus) == 1
-	can_cancel_purchase_order = is_submitted and not invoice_names and not receipt_names
+	can_create_receipt = has_doctype_permission("Purchase Receipt", "create")
+	can_create_invoice = has_doctype_permission("Purchase Invoice", "create")
+	can_create_payment = has_doctype_permission("Payment Entry", "create")
+	can_cancel_permission = has_doctype_permission("Purchase Order", "cancel")
+	can_cancel_purchase_order = (
+		is_submitted
+		and not invoice_names
+		and not receipt_names
+		and can_cancel_permission
+	)
 	cancel_purchase_order_hint = None
 	if is_submitted and not can_cancel_purchase_order:
-		cancel_purchase_order_hint = _("当前采购订单已存在收货或开票记录，请先回退下游单据后再作废订单。")
+		if invoice_names or receipt_names:
+			cancel_purchase_order_hint = _("当前采购订单已存在收货或开票记录，请先回退下游单据后再作废订单。")
+		elif not can_cancel_permission:
+			cancel_purchase_order_hint = _("当前账号没有作废采购订单的权限。")
 	elif cint(docstatus) == 0:
 		cancel_purchase_order_hint = _("只有已提交的采购订单才允许作废。")
 
 	return {
-		"can_receive_purchase_order": is_submitted and not receiving.get("is_fully_received"),
-		"can_create_purchase_invoice": is_submitted and not billing.get("is_fully_billed"),
-		"can_record_supplier_payment": is_submitted and payment.get("outstanding_amount", 0) > 0,
-		"can_process_purchase_return": bool(is_submitted and (invoice_names or receipt_names)),
+		"can_receive_purchase_order": is_submitted and can_create_receipt and not receiving.get("is_fully_received"),
+		"can_create_purchase_invoice": is_submitted and can_create_invoice and not billing.get("is_fully_billed"),
+		"can_record_supplier_payment": is_submitted and can_create_payment and payment.get("outstanding_amount", 0) > 0,
+		"can_process_purchase_return": bool(
+			is_submitted
+			and (
+				(invoice_names and can_create_invoice)
+				or (receipt_names and can_create_receipt)
+			)
+		),
 		"can_cancel_purchase_order": can_cancel_purchase_order,
 		"cancel_purchase_order_hint": cancel_purchase_order_hint,
 	}
@@ -1144,14 +1193,25 @@ def _build_quick_purchase_order_idempotency_payload(supplier: str, items, kwargs
 
 def _build_purchase_receipt_action_flags(*, docstatus: int, purchase_invoices: list[str]):
 	is_submitted = cint(docstatus) == 1
-	can_cancel = is_submitted and not purchase_invoices
-	can_create_invoice = is_submitted and not purchase_invoices
+	can_cancel_permission = has_doctype_permission("Purchase Receipt", "cancel")
+	can_cancel = (
+		is_submitted
+		and not purchase_invoices
+		and can_cancel_permission
+	)
+	can_create_invoice = (
+		is_submitted
+		and not purchase_invoices
+		and has_doctype_permission("Purchase Invoice", "create")
+	)
 	return {
 		"can_cancel_purchase_receipt": can_cancel,
 		"can_create_purchase_invoice": can_create_invoice,
 		"cancel_purchase_receipt_hint": (
 			_("当前收货单已关联采购发票，请先作废采购发票，再回退收货单。")
 			if is_submitted and purchase_invoices
+			else _("当前账号没有作废采购收货单的权限。")
+			if is_submitted and not can_cancel_permission
 			else None
 		),
 	}
@@ -1160,11 +1220,14 @@ def _build_purchase_receipt_action_flags(*, docstatus: int, purchase_invoices: l
 def _build_purchase_invoice_action_flags(*, docstatus: int, latest_payment_entry: str | None, paid_amount: float):
 	is_submitted = cint(docstatus) == 1
 	has_payment = bool(latest_payment_entry) or flt(paid_amount) > 0
+	can_cancel_permission = has_doctype_permission("Purchase Invoice", "cancel")
 	return {
-		"can_cancel_purchase_invoice": is_submitted,
+		"can_cancel_purchase_invoice": is_submitted and can_cancel_permission,
 		"cancel_purchase_invoice_hint": (
 			_("当前采购发票已经存在付款记录；若系统未启用作废时自动解绑付款，将需要先处理付款后才能作废。")
 			if is_submitted and has_payment
+			else _("当前账号没有作废采购发票的权限。")
+			if is_submitted and not can_cancel_permission
 			else None
 		),
 	}
@@ -1912,7 +1975,8 @@ def _build_supplier_payload(supplier_doc, *, include_recent_addresses: bool = Fa
 
 
 def get_purchase_company_context(company: str | None = None):
-	resolved_company = _normalize_text(company) or _extract_first_non_empty(frappe.defaults.get_user_default("company"))
+	require_any_doctype_permission("Purchase Order", ("read", "create"))
+	resolved_company = _resolve_purchase_context_company(company)
 	warehouse = _get_purchase_default_warehouse_for_company(resolved_company)
 	currency = frappe.db.get_value("Company", resolved_company, "default_currency") if resolved_company else None
 
@@ -1967,11 +2031,12 @@ def _resolve_purchase_transaction_currency(supplier: str, company: str | None, r
 
 
 def get_supplier_purchase_context(supplier: str, company: str | None = None):
+	require_doctype_permission("Supplier", "read")
 	supplier = _normalize_text(supplier)
 	if not supplier:
 		frappe.throw(_("supplier 不能为空。"))
 
-	supplier_doc = frappe.get_doc("Supplier", supplier)
+	supplier_doc = require_document_permission("Supplier", supplier, "read")
 	default_contact_name = _extract_first_non_empty(getattr(supplier_doc, "supplier_primary_contact", None))
 	default_address_name = _extract_first_non_empty(getattr(supplier_doc, "supplier_primary_address", None))
 
@@ -1987,7 +2052,7 @@ def get_supplier_purchase_context(supplier: str, company: str | None = None):
 
 	default_contact = _serialize_contact_doc(_get_doc_if_exists("Contact", contact_names[0] if contact_names else None))
 	default_address = _serialize_address_doc(_get_doc_if_exists("Address", address_names[0] if address_names else None))
-	resolved_company = _normalize_text(company) or _extract_first_non_empty(frappe.defaults.get_user_default("company"))
+	resolved_company = _resolve_purchase_context_company(company)
 	warehouse = _get_purchase_default_warehouse_for_company(resolved_company)
 	currency = _resolve_purchase_transaction_currency(supplier_doc.name, resolved_company)
 
@@ -2027,6 +2092,7 @@ def list_suppliers_v2(
 	sort_by: str = "modified",
 	sort_order: str = "desc",
 ):
+	require_doctype_permission("Supplier", "read")
 	limit = _normalize_limit(limit)
 	start = _normalize_start(start)
 	sort_by, sort_order = _normalize_sort(sort_by, sort_order)
@@ -2073,7 +2139,7 @@ def list_suppliers_v2(
 		if _safe_doc_field("Supplier", optional_field):
 			fields.append(optional_field)
 
-	rows = frappe.get_all(
+	rows = frappe.get_list(
 		"Supplier",
 		filters=filters,
 		or_filters=or_filters,
@@ -2083,7 +2149,7 @@ def list_suppliers_v2(
 		limit_page_length=limit,
 	)
 	total_count = len(
-		frappe.get_all(
+		frappe.get_list(
 			"Supplier",
 			filters=filters,
 			or_filters=or_filters,
@@ -2129,7 +2195,7 @@ def get_supplier_detail_v2(supplier: str):
 	if not supplier:
 		frappe.throw(_("supplier 不能为空。"))
 
-	supplier_doc = frappe.get_doc("Supplier", supplier)
+	supplier_doc = require_document_permission("Supplier", supplier, "read")
 	return {
 		"status": "success",
 		"message": _("供应商 {0} 详情获取成功。").format(

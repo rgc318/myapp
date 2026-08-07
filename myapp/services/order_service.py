@@ -9,6 +9,13 @@ from frappe.utils import cint, flt, getdate, nowdate
 from myapp.services.wholesale_service import _get_item_specification_field
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.pagination import build_offset_pagination
+from myapp.services.data_permission_service import (
+	ensure_warehouse_access,
+	filter_permitted_user_default,
+	get_permitted_warehouse_names,
+	has_doctype_permission,
+	require_document_permission,
+)
 from myapp.utils.uom import resolve_item_quantity_to_stock
 from myapp.utils.uom_display import build_uom_display_map
 from myapp.utils.warehouse import validate_transaction_warehouse
@@ -1191,18 +1198,36 @@ def _build_delivery_summary(fulfillment: dict, *, delivery_note_names: list[str]
 
 def _build_action_flags(fulfillment: dict, payment: dict, *, invoice_names: list[str], delivery_note_names: list[str], docstatus: int):
 	is_submitted = cint(docstatus) == 1
-	can_cancel_sales_order = is_submitted and not invoice_names and not delivery_note_names
+	can_create_delivery = has_doctype_permission("Delivery Note", "create")
+	can_create_invoice = has_doctype_permission("Sales Invoice", "create")
+	can_create_payment = has_doctype_permission("Payment Entry", "create")
+	can_cancel_permission = has_doctype_permission("Sales Order", "cancel")
+	can_cancel_sales_order = (
+		is_submitted
+		and not invoice_names
+		and not delivery_note_names
+		and can_cancel_permission
+	)
 	cancel_sales_order_hint = None
 	if is_submitted and not can_cancel_sales_order:
-		cancel_sales_order_hint = _("当前销售订单已存在发货或开票记录，请先回退下游单据后再作废订单。")
+		if invoice_names or delivery_note_names:
+			cancel_sales_order_hint = _("当前销售订单已存在发货或开票记录，请先回退下游单据后再作废订单。")
+		elif not can_cancel_permission:
+			cancel_sales_order_hint = _("当前账号没有作废销售订单的权限。")
 	elif cint(docstatus) == 0:
 		cancel_sales_order_hint = _("只有已提交的销售订单才允许作废。")
 
 	return {
-		"can_submit_delivery": is_submitted and not fulfillment.get("is_fully_delivered"),
-		"can_create_sales_invoice": is_submitted and not invoice_names and not payment.get("is_fully_paid"),
-		"can_record_payment": is_submitted and payment.get("outstanding_amount", 0) > 0,
-		"can_process_return": bool(is_submitted and (invoice_names or delivery_note_names)),
+		"can_submit_delivery": is_submitted and can_create_delivery and not fulfillment.get("is_fully_delivered"),
+		"can_create_sales_invoice": is_submitted and can_create_invoice and not invoice_names and not payment.get("is_fully_paid"),
+		"can_record_payment": is_submitted and can_create_payment and payment.get("outstanding_amount", 0) > 0,
+		"can_process_return": bool(
+			is_submitted
+			and (
+				(invoice_names and can_create_invoice)
+				or (delivery_note_names and can_create_delivery)
+			)
+		),
 		"can_cancel_sales_order": can_cancel_sales_order,
 		"cancel_sales_order_hint": cancel_sales_order_hint,
 	}
@@ -1236,12 +1261,15 @@ def _build_sales_order_risk_flags(*, delivery_date, fulfillment: dict, payment: 
 
 def _build_delivery_note_action_flags(*, docstatus: int, sales_invoices: list[str]):
 	is_submitted = cint(docstatus) == 1
-	can_cancel = is_submitted and not sales_invoices
+	can_cancel_permission = has_doctype_permission("Delivery Note", "cancel")
+	can_cancel = is_submitted and not sales_invoices and can_cancel_permission
 	return {
 		"can_cancel_delivery_note": can_cancel,
 		"cancel_delivery_note_hint": (
 			_("当前发货单已关联销售发票，请先作废销售发票，再回退发货单。")
 			if is_submitted and sales_invoices
+			else _("当前账号没有作废销售发货单的权限。")
+			if is_submitted and not can_cancel_permission
 			else None
 		),
 	}
@@ -1260,18 +1288,29 @@ def _build_sales_invoice_action_flags(
 	return_summary = return_summary or {}
 	return_invoices = return_summary.get("return_invoices") or []
 	is_fully_returned = bool(return_summary.get("is_fully_returned"))
-	can_cancel_sales_invoice = is_submitted and not return_invoices
+	can_cancel_permission = has_doctype_permission("Sales Invoice", "cancel")
+	can_create_payment = has_doctype_permission("Payment Entry", "create")
+	can_cancel_sales_invoice = is_submitted and not return_invoices and can_cancel_permission
 	cancel_sales_invoice_hint = None
 	if is_submitted and return_invoices:
 		cancel_sales_invoice_hint = _("当前发票已关联退货发票，请先处理退货发票，不能直接作废来源发票。")
 	elif is_submitted and has_payment:
 		cancel_sales_invoice_hint = _("当前发票已经存在收款记录；若系统未启用作废时自动解绑收款，将需要先处理收款后才能作废。")
-	can_record_payment = is_submitted and flt(outstanding_amount or 0) > 0 and not is_fully_returned
+	elif is_submitted and not can_cancel_permission:
+		cancel_sales_invoice_hint = _("当前账号没有作废销售发票的权限。")
+	can_record_payment = (
+		is_submitted
+		and can_create_payment
+		and flt(outstanding_amount or 0) > 0
+		and not is_fully_returned
+	)
 	record_payment_hint = None
 	if is_submitted and is_fully_returned:
 		record_payment_hint = _("来源销售发票已被退货发票全额冲回，不能继续登记客户收款；如需重新销售，请重新发货并开票。")
 	elif is_submitted and flt(outstanding_amount or 0) <= 0:
 		record_payment_hint = _("当前销售发票没有可登记的未收金额。")
+	elif is_submitted and not can_create_payment:
+		record_payment_hint = _("当前账号没有创建收款单的权限。")
 
 	return {
 		"can_cancel_sales_invoice": can_cancel_sales_invoice,
@@ -1708,19 +1747,27 @@ def _get_recent_sales_order_shipping_addresses(customer: str, limit: int = 5):
 def _get_default_warehouse_for_context(company: str | None):
 	warehouse = _extract_first_non_empty(frappe.defaults.get_user_default("warehouse"))
 	if warehouse:
-		return warehouse
+		try:
+			return ensure_warehouse_access(
+				warehouse,
+				company=company,
+				applicable_for="Sales Order",
+			)
+		except (frappe.PermissionError, frappe.ValidationError):
+			pass
 
 	if not company:
 		return None
 
-	return frappe.db.get_value("Warehouse", {"company": company, "disabled": 0, "is_group": 0}, "name")
+	warehouses = get_permitted_warehouse_names(company=company, applicable_for="Sales Order")
+	return warehouses[0] if warehouses else None
 
 
 def get_customer_sales_context(customer: str):
 	if not customer:
 		frappe.throw(_("customer 不能为空。"))
 
-	customer_doc = frappe.get_doc("Customer", customer)
+	customer_doc = require_document_permission("Customer", customer, "read")
 	default_contact_name = _extract_first_non_empty(getattr(customer_doc, "customer_primary_contact", None))
 	default_address_name = _extract_first_non_empty(getattr(customer_doc, "customer_primary_address", None))
 
@@ -1738,7 +1785,11 @@ def get_customer_sales_context(customer: str):
 	default_address = _serialize_address_doc(_get_doc_if_exists("Address", address_names[0] if address_names else None))
 	recent_addresses = _get_recent_sales_order_shipping_addresses(customer, limit=5)
 
-	company = _extract_first_non_empty(frappe.defaults.get_user_default("company"))
+	company = filter_permitted_user_default(
+		"Company",
+		_extract_first_non_empty(frappe.defaults.get_user_default("company")),
+		applicable_for="Sales Order",
+	)
 	warehouse = _get_default_warehouse_for_context(company)
 
 	return {

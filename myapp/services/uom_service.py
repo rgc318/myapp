@@ -2,6 +2,10 @@ import frappe
 from frappe import _
 from frappe.utils import cint, getdate
 
+from myapp.services.data_permission_service import (
+	require_document_permission,
+	require_doctype_permission,
+)
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom_display import resolve_uom_display_name
@@ -110,6 +114,10 @@ def _collect_uom_references(uom_name: str, *, max_doctypes: int = 12, max_exampl
 			meta = frappe.get_meta(parent)
 		except Exception:
 			continue
+		try:
+			require_doctype_permission(parent, "read")
+		except frappe.PermissionError:
+			continue
 
 		if meta.issingle:
 			try:
@@ -132,21 +140,18 @@ def _collect_uom_references(uom_name: str, *, max_doctypes: int = 12, max_exampl
 			continue
 
 		try:
-			count = frappe.db.count(parent, {fieldname: uom_name})
-		except Exception:
-			continue
-		if not count:
-			continue
-
-		try:
-			examples = frappe.get_all(
+			visible_names = frappe.get_list(
 				parent,
 				filters={fieldname: uom_name},
 				pluck="name",
-				limit_page_length=max_examples,
+				limit_page_length=0,
 			)
 		except Exception:
-			examples = []
+			continue
+		count = len(visible_names)
+		if not count:
+			continue
+		examples = visible_names[:max_examples]
 
 		results.append(
 			{
@@ -205,6 +210,7 @@ def list_uoms_v2(
 	sort_by: str = "modified",
 	sort_order: str = "desc",
 ):
+	require_doctype_permission("UOM", "read")
 	limit = _normalize_limit(limit)
 	start = _normalize_start(start)
 	sort_by, sort_order = _normalize_sort(sort_by, sort_order)
@@ -232,7 +238,7 @@ def list_uoms_v2(
 			["UOM", "description", "like", f"%{search_key}%"],
 		]
 
-	rows = frappe.get_all(
+	rows = frappe.get_list(
 		"UOM",
 		filters=filters,
 		or_filters=or_filters,
@@ -242,7 +248,7 @@ def list_uoms_v2(
 		limit_page_length=limit,
 	)
 	total = len(
-		frappe.get_all(
+		frappe.get_list(
 			"UOM",
 			filters=filters,
 			or_filters=or_filters,
@@ -286,7 +292,7 @@ def get_uom_detail_v2(uom: str):
 	uom = _normalize_text(uom)
 	if not uom:
 		frappe.throw(_("单位不能为空。"))
-	doc = frappe.get_doc("UOM", uom)
+	doc = require_document_permission("UOM", uom, "read")
 	return {
 		"status": "success",
 		"message": _("单位 {0} 详情获取成功。").format(doc.uom_name or doc.name),
@@ -295,6 +301,7 @@ def get_uom_detail_v2(uom: str):
 
 
 def create_uom_v2(uom_name: str, **kwargs):
+	require_doctype_permission("UOM", "create")
 	uom_name = _normalize_text(uom_name)
 	if not uom_name:
 		frappe.throw(_("单位名称不能为空。"))
@@ -330,7 +337,7 @@ def update_uom_v2(uom: str, **kwargs):
 	request_id = kwargs.get("request_id")
 
 	def _update_uom():
-		doc = frappe.get_doc("UOM", uom)
+		doc = require_document_permission("UOM", uom, "write")
 		next_uom_name = _normalize_text(kwargs.get("uom_name"))
 		if next_uom_name and next_uom_name != doc.name:
 			frappe.throw(
@@ -371,7 +378,7 @@ def disable_uom_v2(uom: str, disabled: bool | int = True, **kwargs):
 	request_id = kwargs.get("request_id")
 
 	def _disable_uom():
-		doc = frappe.get_doc("UOM", uom)
+		doc = require_document_permission("UOM", uom, "write")
 		doc.enabled = 0 if cint(disabled) else 1
 		doc.save()
 		doc.reload()
@@ -395,7 +402,7 @@ def delete_uom_v2(uom: str, **kwargs):
 	request_id = kwargs.get("request_id")
 
 	def _delete_uom():
-		doc = frappe.get_doc("UOM", uom)
+		doc = require_document_permission("UOM", uom, "delete")
 		_ensure_uom_can_be_deleted(doc.name)
 		display_name = doc.uom_name or doc.name
 		doc.delete()

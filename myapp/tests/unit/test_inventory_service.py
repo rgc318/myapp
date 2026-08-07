@@ -15,15 +15,15 @@ from myapp.services.inventory_service import (
 class TestInventoryService(TestCase):
 	@patch("myapp.services.inventory_service.frappe.db", new_callable=MagicMock)
 	@patch("myapp.services.inventory_service.nowdate", return_value="2026-04-30")
-	@patch("myapp.services.inventory_service.frappe.get_all")
+	@patch("myapp.services.inventory_service.frappe.get_list")
 	def test_list_stock_ledger_entries_v1_returns_paginated_rows(
 		self,
-		mock_get_all,
+		mock_get_list,
 		mock_nowdate,
 		mock_db,
 	):
-		mock_db.count.return_value = 11
-		mock_get_all.side_effect = [
+		mock_get_list.side_effect = [
+			[f"SLE-{index:04d}" for index in range(11)],
 			[
 				frappe._dict(
 					{
@@ -64,7 +64,7 @@ class TestInventoryService(TestCase):
 		self.assertEqual(result["data"]["pagination"]["page_size"], 5)
 		self.assertEqual(result["data"]["pagination"]["total_count"], 11)
 		self.assertTrue(result["data"]["pagination"]["has_more"])
-		mock_db.count.assert_called_once_with(
+		mock_get_list.assert_any_call(
 			"Stock Ledger Entry",
 			filters=[
 				["posting_date", "between", ["2026-04-01", "2026-04-30"]],
@@ -74,8 +74,10 @@ class TestInventoryService(TestCase):
 				["voucher_type", "=", "Delivery Note"],
 				["voucher_no", "=", "DN-0001"],
 			],
+			pluck="name",
+			limit_page_length=0,
 		)
-		mock_get_all.assert_any_call(
+		mock_get_list.assert_any_call(
 			"Stock Ledger Entry",
 			filters=[
 				["posting_date", "between", ["2026-04-01", "2026-04-30"]],
@@ -106,36 +108,33 @@ class TestInventoryService(TestCase):
 
 	@patch("myapp.services.inventory_service.frappe.db", new_callable=MagicMock)
 	@patch("myapp.services.inventory_service.nowdate", return_value="2026-04-30")
-	@patch("myapp.services.inventory_service.frappe.get_all")
+	@patch("myapp.services.inventory_service.frappe.get_list")
 	def test_list_stock_ledger_entries_v1_clamps_page_size(
 		self,
-		mock_get_all,
+		mock_get_list,
 		mock_nowdate,
 		mock_db,
 	):
-		mock_db.count.return_value = 0
-		mock_get_all.return_value = []
+		mock_get_list.return_value = []
 
 		result = list_stock_ledger_entries_v1(page=1, page_size=1000)
 
 		self.assertEqual(result["data"]["pagination"]["page_size"], 100)
 		self.assertFalse(result["data"]["pagination"]["has_more"])
 		stock_ledger_calls = [
-			call for call in mock_get_all.call_args_list if call.args[0] == "Stock Ledger Entry"
+			call for call in mock_get_list.call_args_list if call.args[0] == "Stock Ledger Entry"
 		]
-		self.assertEqual(len(stock_ledger_calls), 1)
-		self.assertEqual(stock_ledger_calls[0].kwargs["limit_page_length"], 100)
+		self.assertEqual(len(stock_ledger_calls), 2)
+		self.assertEqual(stock_ledger_calls[1].kwargs["limit_page_length"], 100)
 
-	@patch("myapp.services.inventory_service.frappe.get_all")
+	@patch("myapp.services.inventory_service.get_permitted_warehouse_names", return_value=["Stores - TC", "Overflow - TC"])
+	@patch("myapp.services.inventory_service.frappe.get_list")
 	def test_list_inventory_stock_summary_v1_filters_low_stock_and_paginates(
 		self,
-		mock_get_all,
+		mock_get_list,
+		_mock_get_permitted_warehouse_names,
 	):
-		mock_get_all.side_effect = [
-			[
-				frappe._dict({"name": "Stores - TC", "company": "Test Company"}),
-				frappe._dict({"name": "Overflow - TC", "company": "Test Company"}),
-			],
+		mock_get_list.side_effect = [
 			[
 				frappe._dict(
 					{
@@ -189,7 +188,7 @@ class TestInventoryService(TestCase):
 		self.assertEqual(result["data"]["rows"][0]["actual_qty"], 4)
 		self.assertEqual(result["data"]["summary"]["actual_qty_total"], 4)
 		self.assertFalse(result["data"]["pagination"]["has_more"])
-		mock_get_all.assert_any_call(
+		mock_get_list.assert_any_call(
 			"Bin",
 			filters={"warehouse": ["in", ["Stores - TC", "Overflow - TC"]]},
 			fields=[
@@ -207,9 +206,12 @@ class TestInventoryService(TestCase):
 			limit_page_length=0,
 		)
 
-	@patch("myapp.services.inventory_service.frappe.get_all")
-	def test_list_inventory_stock_summary_v1_searches_item_codes(self, mock_get_all):
-		mock_get_all.side_effect = [
+	@patch("myapp.services.inventory_service.get_permitted_warehouse_names", return_value=["Stores - TC"])
+	@patch("myapp.services.inventory_service.frappe.get_list")
+	def test_list_inventory_stock_summary_v1_searches_item_codes(
+		self, mock_get_list, _mock_get_permitted_warehouse_names
+	):
+		mock_get_list.side_effect = [
 			[frappe._dict({"name": "ITEM-001"})],
 			[
 				frappe._dict(
@@ -235,9 +237,12 @@ class TestInventoryService(TestCase):
 		self.assertEqual(result["data"]["pagination"]["total_count"], 1)
 		self.assertEqual(result["data"]["rows"][0]["item_code"], "ITEM-001")
 		self.assertEqual(result["data"]["summary"]["negative_count"], 1)
-		mock_get_all.assert_any_call(
+		mock_get_list.assert_any_call(
 			"Bin",
-			filters={"item_code": ["in", ["ITEM-001"]]},
+			filters={
+				"warehouse": ["in", ["Stores - TC"]],
+				"item_code": ["in", ["ITEM-001"]],
+			},
 			fields=[
 				"item_code",
 				"warehouse",

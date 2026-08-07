@@ -6,7 +6,11 @@ import frappe
 
 from myapp.services.purchase_service import (
 	_check_doc_permission,
+	_build_purchase_invoice_action_flags,
+	_build_purchase_order_action_flags,
+	_build_purchase_receipt_action_flags,
 	_get_purchase_order_doc_for_update,
+	_resolve_purchase_context_company,
 	_collect_purchase_order_reference_names,
 	_serialize_purchase_invoice_items,
 	_serialize_purchase_order_items,
@@ -16,6 +20,7 @@ from myapp.services.purchase_service import (
 	create_purchase_invoice_from_receipt,
 	create_purchase_order,
 	disable_supplier_v2,
+	get_purchase_company_context,
 	get_supplier_detail_v2,
 	get_supplier_purchase_context,
 	get_purchase_invoice_detail_v2,
@@ -35,6 +40,82 @@ from myapp.services.purchase_service import (
 
 
 class TestPurchaseService(TestCase):
+	@patch("myapp.services.purchase_service.has_doctype_permission")
+	def test_purchase_action_flags_hide_actions_without_target_permissions(self, mock_has_doctype_permission):
+		permissions = {
+			("Purchase Receipt", "create"): True,
+			("Purchase Invoice", "create"): True,
+			("Payment Entry", "create"): False,
+			("Purchase Order", "cancel"): False,
+		}
+		mock_has_doctype_permission.side_effect = lambda doctype, ptype: permissions[(doctype, ptype)]
+
+		result = _build_purchase_order_action_flags(
+			{"is_fully_received": False},
+			{"is_fully_billed": False},
+			{"outstanding_amount": 100},
+			invoice_names=[],
+			receipt_names=[],
+			docstatus=1,
+		)
+
+		self.assertTrue(result["can_receive_purchase_order"])
+		self.assertTrue(result["can_create_purchase_invoice"])
+		self.assertFalse(result["can_record_supplier_payment"])
+		self.assertFalse(result["can_cancel_purchase_order"])
+		self.assertIn("没有作废采购订单", result["cancel_purchase_order_hint"])
+
+	@patch("myapp.services.purchase_service.has_doctype_permission", return_value=False)
+	def test_purchase_document_action_flags_explain_missing_cancel_permission(self, _mock_permission):
+		receipt_actions = _build_purchase_receipt_action_flags(
+			docstatus=1,
+			purchase_invoices=[],
+		)
+		invoice_actions = _build_purchase_invoice_action_flags(
+			docstatus=1,
+			latest_payment_entry=None,
+			paid_amount=0,
+		)
+
+		self.assertFalse(receipt_actions["can_cancel_purchase_receipt"])
+		self.assertFalse(receipt_actions["can_create_purchase_invoice"])
+		self.assertIn("没有作废采购收货单", receipt_actions["cancel_purchase_receipt_hint"])
+		self.assertFalse(invoice_actions["can_cancel_purchase_invoice"])
+		self.assertIn("没有作废采购发票", invoice_actions["cancel_purchase_invoice_hint"])
+
+	@patch("myapp.services.purchase_service.filter_permitted_user_default", return_value=None)
+	@patch("myapp.services.purchase_service.frappe.defaults.get_user_default", return_value="Stale Company")
+	def test_purchase_context_ignores_out_of_scope_saved_company(
+		self,
+		_mock_get_user_default,
+		mock_filter_permitted_user_default,
+	):
+		result = _resolve_purchase_context_company(None)
+
+		self.assertIsNone(result)
+		mock_filter_permitted_user_default.assert_called_once_with(
+			"Company",
+			"Stale Company",
+			applicable_for="Purchase Order",
+		)
+
+	@patch("myapp.services.purchase_service.ensure_user_permission_value")
+	def test_purchase_context_rejects_explicit_out_of_scope_company(self, mock_ensure_user_permission_value):
+		mock_ensure_user_permission_value.side_effect = frappe.PermissionError("denied")
+
+		with self.assertRaises(frappe.PermissionError):
+			_resolve_purchase_context_company("Forbidden Company")
+
+	@patch("myapp.services.purchase_service.require_any_doctype_permission")
+	def test_get_purchase_company_context_requires_purchase_order_access(
+		self,
+		mock_require_any_doctype_permission,
+	):
+		mock_require_any_doctype_permission.side_effect = frappe.PermissionError("denied")
+
+		with self.assertRaises(frappe.PermissionError):
+			get_purchase_company_context()
+
 	def test_check_doc_permission_delegates_to_frappe_document(self):
 		document = MagicMock()
 
@@ -1526,16 +1607,16 @@ class TestPurchaseService(TestCase):
 	@patch("myapp.services.purchase_service._serialize_contact_doc")
 	@patch("myapp.services.purchase_service._get_doc_if_exists")
 	@patch("myapp.services.purchase_service._safe_doc_field", return_value=True)
-	@patch("myapp.services.purchase_service.frappe.get_all")
+	@patch("myapp.services.purchase_service.frappe.get_list")
 	def test_list_suppliers_v2_returns_summaries_with_meta(
 		self,
-		mock_get_all,
+		mock_get_list,
 		_mock_safe_doc_field,
 		mock_get_doc_if_exists,
 		mock_serialize_contact_doc,
 		mock_serialize_address_doc,
 	):
-		mock_get_all.side_effect = [
+		mock_get_list.side_effect = [
 			[
 				frappe._dict(
 					{
@@ -1584,7 +1665,7 @@ class TestPurchaseService(TestCase):
 		self.assertEqual(result["pagination"]["page_size"], 20)
 		self.assertTrue(result["pagination"]["has_more"])
 		self.assertEqual(
-			mock_get_all.call_args_list[0].kwargs["filters"]["creation"],
+			mock_get_list.call_args_list[0].kwargs["filters"]["creation"],
 			["between", ["2026-03-01 00:00:00", "2026-03-31 23:59:59"]],
 		)
 		self.assertEqual(result["meta"]["filters"]["date_from"], "2026-03-01")

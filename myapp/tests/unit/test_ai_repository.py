@@ -509,7 +509,9 @@ class TestAiRepository(TestCase):
 			"working_state_json": '{"active_scenario":"product_search","product":{"query":"Camera"}}',
 			"state_updated_at": "2026-07-26 12:00:00",
 		})
-		with patch.object(ai_repository, "_get_owned_conversation", return_value=conversation) as mock_get:
+		with patch.object(ai_repository, "_get_owned_conversation", return_value=conversation) as mock_get, patch.object(
+			ai_repository, "_conversation_state_is_expired", return_value=False,
+		):
 			result = get_conversation_state(conversation_id="AI-CONV-1", user="user@example.com")
 
 		self.assertEqual(result["version"], 3)
