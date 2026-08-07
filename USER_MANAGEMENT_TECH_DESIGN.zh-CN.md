@@ -11,7 +11,7 @@
 - 安全中心：真实头像上传、Frappe/JWT 会话摘要、全设备注销、标准 Frappe 2FA 状态和 JWT OTP 挑战。
 - 用户管理：分页查询、创建、编辑、启停、角色分配、用户详情和变更记录。
 - 角色治理：角色目录、启停状态、用户数量和权限规则摘要。
-- 数据范围：维护标准 Frappe `User Permission`，支持公司、仓库等任意合法 DocType 的数据授权。
+- 数据范围：维护标准 Frappe `User Permission`。MyApp 管理入口首期只开放 Company、Warehouse、Customer、Supplier 四类业务范围，其他特殊权限继续由 Frappe 系统管理界面治理。
 - 权限边界：普通用户只维护本人资料；只有 `System Manager` 可以管理其他用户、角色和数据权限。
 
 不重复实现 Frappe 已有的 DocPerm、OTP Secret 和 Session 数据模型。当前已经接入标准 Frappe 2FA 状态、JWT OTP 挑战、安全摘要、权限快照和全设备注销；OAuth/LDAP 配置、HR 员工档案及授权审批仍属于后续独立治理能力。
@@ -32,6 +32,9 @@ User（身份与个人主档）
 - `User` 是账号唯一事实来源，邮箱账号不在 myapp 建影子表。
 - `Role` 决定功能权限，页面不保存独立角色副本。
 - `User Permission` 决定记录级数据范围，业务服务仍必须调用 Frappe 权限引擎。
+- 某类型没有 User Permission 表示“不按该维度收窄”，不是“无权限”；首次添加会收窄，删除最后一条会重新扩大。
+- 同类型多条权限按允许值并集生效；Company、Warehouse 等不同维度共同参与最终记录判断。
+- 默认公司与默认仓库只是偏好，不能替代权限；默认值越界时应提示治理冲突。
 - 前端 `access.ts` 只控制菜单和按钮可见性，不能替代后端鉴权。
 - 用户停用后，JWT 鉴权钩子立即拒绝后续访问。
 
@@ -60,6 +63,8 @@ User（身份与个人主档）
 - `add_user_permission_v1`
 - `delete_user_permission_v1`
 - `get_user_permission_snapshot_v1`
+
+权限快照同时返回后端维护的 `permission_catalog`。Web 必须使用该目录生成可选授权类型、定向 DocType 和下级节点开关，不自行复制一套可能漂移的权限组合。
 
 所有管理员接口在服务层再次检查 `System Manager`，不能只依赖路由或按钮隐藏。创建与修改操作使用 Frappe Document API，从而保留标准校验、联系人同步、密码策略与版本记录。
 

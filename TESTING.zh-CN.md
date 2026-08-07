@@ -2139,3 +2139,109 @@ docker cp \
 默认门槛为 Top-1 ≥ 90%、Top-3 = 100%、Provider 错误为 0、排除前缀候选泄漏为 0；任一条件失败退出 `1`，配置或未显式启用退出 `2`。Provider 500/502 时必须保留失败报告，不得以 mock 单测结果替代真实发布证据。
 
 2026-07-15 23:57 CST 最新真实回归：`erp-embedding` 单条字符串、单条数组和两条批量请求均 HTTP 200、1024 维；当前 Orchestrator 通过 `myapp-products-live` 查询“数码相机”返回 `SKU010` Top-1。30 条 `product-retrieval-zh-cn-v1` 门禁通过：Top-1 96.67%、Top-3 100%、Provider error 0、排除候选泄漏 0、p50 145.692ms、p95 211.745ms。唯一 Top-1 未命中为 `sku008-backpack-purpose`，`SKU008` 位于 Top-2。该结果证明当前 v1 可在线使用，但不替代新向量空间发布所需的全量补建、权限、删除、恢复、审批和回滚门禁。
+
+## 25. 业务数据隔离回归（2026-08-05）
+
+本轮为自定义业务服务补齐统一权限门禁，重点验证自定义 API 不会因为使用裸查询或聚合 SQL 而绕过 Frappe 角色权限、文档权限和 User Permission。
+
+覆盖范围：
+
+- Customer、Supplier、Item、UOM、Warehouse 列表与详情
+- Sales Order、Purchase Order、Delivery Note、Purchase Receipt、Sales Invoice、Purchase Invoice 列表与详情
+- 库存汇总、库存流水、默认仓库建议
+- 经营、销售、采购、应收应付和资金报表
+- Payment Entry 详情
+- 当前用户默认公司 / 仓库偏好
+- 商品图片上传、替换、删除、临时文件绑定和清理
+
+推荐聚焦单元测试：
+
+```bash
+docker exec frappe_docker-backend-1 bash -lc '
+  cd /home/frappe/frappe-bench &&
+  env/bin/python -m unittest \
+    apps.myapp.myapp.tests.unit.test_data_permission_service \
+    apps.myapp.myapp.tests.unit.test_customer_service \
+    apps.myapp.myapp.tests.unit.test_warehouse_service \
+    apps.myapp.myapp.tests.unit.test_uom_service \
+    apps.myapp.myapp.tests.unit.test_document_list_service \
+    apps.myapp.myapp.tests.unit.test_inventory_service \
+    apps.myapp.myapp.tests.unit.test_report_service \
+    apps.myapp.myapp.tests.unit.test_media_service \
+    apps.myapp.myapp.tests.unit.test_wholesale_service \
+    apps.myapp.myapp.tests.unit.test_purchase_service \
+    apps.myapp.myapp.tests.unit.test_user_preferences_service
+'
+```
+
+真实站点验证应至少包含两层：
+
+1. 使用不具备业务 DocType 角色权限的登录用户调用客户、供应商、商品、仓库、订单、库存、报表、发票和收付款入口，预期返回 `PermissionError`，不能返回空壳成功响应掩盖权限缺失。
+2. 在数据库事务内为业务用户临时创建单一 Company User Permission，清理用户权限缓存后调用订单、库存和报表服务；所有明细与聚合必须只包含授权公司。测试结束必须执行 `frappe.db.rollback()`，再次确认 `User Permission` 数量恢复，禁止留下测试授权。
+
+2026-08-05 本地验证结果：
+
+- 低权限用户对 12 类核心入口全部得到 `PermissionError`。
+- 完整业务角色用户对相同入口均可正常读取。
+- 临时仅授权 `rgc (Demo)` 后，采购订单可见数为 1601，返回公司仅为 `rgc (Demo)`；显式查询 `_Test Company 2` 可见数为 0。
+- 库存汇总 862 条、库存流水 2765 条，返回公司均仅为 `rgc (Demo)`。
+- 同时增加 Warehouse User Permission、仅授权 `主仓库 - R` 后，库存汇总仅返回该仓库 5 条，库存流水仅返回该仓库 95 条。
+- 显式请求未授权公司的采购报表时，金额指标为 0、明细为空。
+- 测试前后 `User Permission` 数量均为 0，事务回滚成功。
+
+注意：默认公司和默认仓库只用于交互建议，不是权限来源。多公司用户在未指定公司时可以看到其全部授权公司；配置 Company / Warehouse User Permission 后才会进一步收窄。
+
+## 26. User Permission 管理防误配回归（2026-08-05）
+
+在核心业务接口完成权限收口后，用户管理入口增加以下治理约束：
+
+- MyApp Web 管理入口只开放 Company、Warehouse、Customer、Supplier 四类范围。
+- `Administrator` 明确拒绝配置 User Permission，避免管理员误以为该账号会被记录级权限限制。
+- 定向权限必须选择后端目录允许的 `applicable_for`；例如 Customer 不能限定到 Purchase Order。
+- 只有 Company / Warehouse 可以配置 `hide_descendants`。
+- 权限快照返回 `permission_catalog[]`，Web 以该目录生成授权类型、可定向 DocType 和下级节点能力。
+- Web 显示四个维度的当前模式；首次添加全局权限提示会收窄范围，删除最后一条提示会恢复为未按该维度限制。
+- 默认公司 / 仓库在受限值之外时显示冲突警告，不自动扩大权限。
+
+聚焦验证：
+
+```bash
+docker exec frappe_docker-backend-1 bash -lc '
+  cd /home/frappe/frappe-bench &&
+  env/bin/python -m unittest \
+    apps.myapp.myapp.tests.unit.test_user_management_service \
+    apps.myapp.myapp.tests.unit.test_gateway_wrappers \
+    apps.myapp.myapp.tests.unit.test_api_security_contracts
+'
+```
+
+本轮结果：
+
+- Backend 用户管理 / Gateway / 安全契约：159 项通过。
+- Backend 全量单元测试：739 项通过。
+- Web 全量 Jest：44 suites / 291 tests 通过。
+- Web `npm run tsc`、`npm run biome:lint`、`npm run build` 通过。
+- Ruff 0.14.10 与 Backend / Web / Parent `git diff --check` 通过。
+- 真实事务验证中，普通 `System Manager` 可为测试账号创建 Company=`rgc (Demo)` 权限；Administrator 目标与 Customer→Purchase Order 非法组合均被拒绝；回滚后 User Permission 数量恢复为 0。
+
+## 27. 权限兼容性与原有用户体验回归（2026-08-06）
+
+权限收口不能把交易所需的附加信息、失效工作偏好或跨业务域组合页面升级成整页失败。本轮补充以下兼容性门禁：
+
+- 标准 `Sales User` / `Purchase User` 可以继续搜索商品和读取允许的价目表价格，不要求直接具备 `Item Price` DocType read 权限。
+- User Permission 收窄后，历史默认公司 / 仓库越界时，销售 / 采购上下文忽略失效偏好并返回当前可用建议；用户显式请求越权值仍被拒绝。
+- 经营总览和完整经营报表按业务域部分返回。销售、采购、库存、财务经理缺少其他业务域权限时，不再整页 `403`；无权指标为 `null` 并通过 `visibility` 标识。
+- 销售 / 采购详情动作标志校验目标单据 create / cancel 权限。标准销售用户不显示开票 / 收款动作，标准采购用户不显示无权的开票 / 付款动作。
+- Web Dashboard 只调用 `visibility` 允许的子报表；无权指标显示“无查看权限”，不能显示为 `0`。
+- Web 主数据子菜单按 Item、Customer、Supplier、UOM、Warehouse 分别控制；销售用户不再看到供应商入口，采购经理单角色不再被重定向到无权商品页。
+
+2026-08-06 验证结果：
+
+- Backend unit discovery：`754 tests` 通过。
+- Backend 权限、销售、采购、报表、商品聚焦回归：`183 tests` 通过。
+- Web：`44 suites / 292 tests` 通过；`npm run tsc`、`npm run biome:lint`、`npm run build` 通过。
+- Ruff `0.14.10` 全仓检查通过。
+- 真实标准角色事务探针：Sales User、Purchase User、Stock User、Accounts User 的对应列表、商品选择、库存和资金路径正常；销售发票等无权入口保持 `PermissionError`，Web 路由不再暴露该入口。
+- 真实公司隔离：Company=`rgc (Demo)` 后，抽样采购订单、库存汇总和库存流水全部只属于该公司；显式请求 `_Test Company 7` 返回空结果。
+- 真实仓库隔离：Warehouse=`主仓库 - R` 后，库存汇总 `5` 条、库存流水 `95` 条，均只属于该仓库；显式请求其他仓库返回 `PermissionError`。
+- 所有探针均在数据库事务内回滚；测试前后 `User=14`、`User Permission=0`，没有遗留临时账号或授权。

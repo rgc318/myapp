@@ -121,6 +121,28 @@
   - 首期只允许治理 Item 的 `item_name`、`description`、`brand`、`item_group`，禁止价格、库存和正式交易字段。
   - `AI Data Steward` 负责创建/执行，`AI Data Approver` 负责审批，`AI Auditor` 只读，回滚仅 `System Manager`；发起、审批、执行必须职责分离。
 
+### 统一数据权限与用户隔离
+
+所有面向 Web、Mobile 和 AI 工具的业务接口都以当前 Frappe 登录用户为权限主体。默认公司、默认仓库只是工作偏好，不能替代权限授权，也不能扩大用户的数据范围。
+
+统一约束如下：
+
+- 列表接口必须先校验目标 DocType 的角色权限，并使用 `frappe.get_list()` 应用 Frappe 记录级权限、owner 约束和 `User Permission`；不得用 `frappe.get_all()` 直接返回顶层业务数据。
+- 详情接口必须执行文档级 `check_permission`。已知单据名称不能绕过角色、Company、Warehouse 或其他 User Permission。
+- Company 与 Warehouse 参数必须在当前用户授权范围内解析；用户未传公司时可以查询其全部授权公司，不得把“默认公司”错误解释为唯一授权公司。
+- 库存汇总只能聚合当前用户可读仓库；库存流水继续应用 Stock Ledger Entry 的角色与记录权限。
+- 经营、销售、采购、应收应付和资金报表保留聚合 SQL，但 SQL 必须注入 Frappe `DatabaseQuery.build_match_conditions()` 生成的角色、owner 和 User Permission 条件。
+- 通用发货、收货、发票列表和收付款详情执行与正式 DocType 相同的权限判断。
+- 商品图片上传、替换、删除要求 Item 写权限；未绑定的临时商品图片只能由上传者或 `System Manager` 绑定、清理。
+- UOM 列表与详情遵守 UOM 权限；详情中的引用数量和示例只统计当前用户可读记录，不能借主数据详情推断无权业务单据。
+- `get_purchase_company_context` 至少要求 Purchase Order 的读取或创建权限，并只返回授权公司、授权仓库建议。
+- 已保存的默认 Company / Warehouse 如果因后续收窄授权而越界，表单上下文会忽略失效偏好并选择当前可用建议，不会让商品选择或开单页面整页失败；显式传入越权公司 / 仓库仍返回 `PermissionError`。
+- 商品价格是交易选品的受控附加信息。标准 Sales / Purchase 角色无需直接读取 `Item Price` DocType；服务先通过可读 `Price List` 和已权限过滤的 Item 集合限定范围，再读取对应价格，避免因为 ERPNext 标准角色模型导致商品搜索被误拦截。
+- 组合经营报表按 Sales、Purchase、Receivable、Payable、Cashflow 五个业务域返回 `visibility`。无权业务域不执行 SQL，指标返回 `null`，有权业务域继续正常返回；客户端不得把 `null` 渲染成真实业务零值。
+- 销售 / 采购订单、发货 / 收货和发票详情的 `actions` 同时校验目标 DocType 的 create / cancel 权限。无权动作必须返回 `false` 和可理解的原因，不能让用户点击后才遇到权限异常。
+
+统一实现位于 `myapp.services.data_permission_service`。新增业务服务时应复用该模块；页面或 gateway 包装器不得自行推断权限。没有绑定 Frappe Local 的孤立单元测试按 `Administrator` 系统上下文处理，这只是测试兼容策略；真实 HTTP、Worker 和 bench 请求始终使用已绑定的当前用户。
+
 ### AI Copilot 只读聊天
 
 会话接口只返回当前登录用户自己的会话；归档后的会话不能继续追加消息。`list_ai_conversations_v1` 支持 `status`、`search`、`start` 和 `limit`，其中 `search` 最多规范化为 100 个字符，并在当前用户范围内匹配会话标题或消息正文；返回每个会话的 `pending_draft_count` 和当前用户全局 `pending_draft_total`，两者只统计 `draft` 状态。`rename_ai_conversation_v1` 只允许当前用户重命名自己的会话，名称规范化空白后必须为 1～120 个字符，活跃和归档会话均可修改名称，但不改变消息、公司、状态或排序时间。`get_ai_conversation_v1` 额外返回当前用户可见的受控上下文元数据，包括状态、版本、更新时间、过期时间和上下文起始消息序号；不会返回模型原文或完整业务结果。`reset_ai_conversation_context_v1` 只清除工作状态并把后续模型消息窗口切到当前会话末尾，历史消息和审计记录仍保留。工作状态默认 168 小时未更新后在下一次 Chat/SSE 前自动过期；可通过 `MYAPP_AI_CONVERSATION_STATE_TTL_HOURS` 配置 1～720 小时范围。`chat_ai_v1` 是 Web/Mobile 访问 AI Orchestrator 的受控入口。客户端不得直接访问 LiteLLM，也不能传入 `system` / `tool` 消息。
@@ -4820,7 +4842,15 @@ curl -X GET \
 - `create_user_v1`、`update_user_v1`、`set_user_enabled_v1`：管理用户生命周期，不开放硬删除。
 - `update_user_roles_v1`：整体替换可分配角色，并保护最后一个启用的 `System Manager`。
 - `list_roles_v1`：读取启用角色、Desk 访问属性、已分配用户数、DocPerm 规则数、DocType 覆盖数和可写 DocType 数。
-- `add_user_permission_v1`、`delete_user_permission_v1`：维护标准 Frappe 记录级数据权限。
-- `get_user_permission_snapshot_v1`：按指定用户计算核心业务 DocType 的有效角色权限快照。
+- `add_user_permission_v1`、`delete_user_permission_v1`：维护标准 Frappe 记录级数据权限。当前管理入口只允许 Company、Warehouse、Customer、Supplier 四类业务范围；`Administrator` 明确拒绝配置，因为该账号绕过 User Permission。全局权限和定向 `applicable_for` 不能混淆，定向范围必须从后端允许的关联 DocType 目录选择；只有 Company / Warehouse 可配置是否自动包含下级节点。
+- `get_user_permission_snapshot_v1`：按指定用户计算核心业务 DocType 的有效角色权限快照，并返回 `permission_catalog[]` 作为 Web 授权类型、允许的定向 DocType 和树形能力的事实来源。
 
 所有管理接口都在服务层再次检查 `System Manager`；Web 路由和按钮隐藏不构成安全边界。`Administrator`、`Guest`、当前操作者和最后一个启用系统管理员受到额外保护。
+
+User Permission 的范围语义：
+
+- 某一授权类型没有任何记录时，不表示“无权访问”，而是不按该维度进一步收窄，继续以角色权限和其他维度为准。
+- 添加第一条全局 Company / Warehouse / Customer / Supplier 权限，会把该维度从未限制切换为仅允许已授权值。
+- 同类型多条权限按允许值并集生效；Company 与 Warehouse 等不同维度同时存在时共同收窄最终结果。
+- 删除某类型最后一条权限会扩大访问范围，恢复为不按该维度限制。管理端必须在删除前明确警告。
+- 默认公司和默认仓库只是录入偏好。默认值不在授权范围时，管理端显示冲突警告，但不得自动扩大权限。
