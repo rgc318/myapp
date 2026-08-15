@@ -25,6 +25,7 @@ class ImageProfile:
 	quality: int
 	min_source_edge: int
 	preserve_aspect: bool = False
+	allow_upscale: bool = True
 	min_aspect: float | None = None
 	max_aspect: float | None = None
 
@@ -66,6 +67,18 @@ USER_AVATAR_PROFILE = ImageProfile(
 	height=512,
 	quality=85,
 	min_source_edge=128,
+)
+
+AI_VISION_ATTACHMENT_PROFILE = ImageProfile(
+	max_output_bytes=8 * 1024 * 1024,
+	min_quality=60,
+	name="ai-vision-source-v1",
+	width=2400,
+	height=2400,
+	quality=88,
+	min_source_edge=32,
+	preserve_aspect=True,
+	allow_upscale=False,
 )
 
 
@@ -140,6 +153,8 @@ def _prepare_profile_output(image: Image.Image, profile: ImageProfile) -> Image.
 		)
 
 	scale = min(profile.width / width, profile.height / height)
+	if not profile.allow_upscale:
+		scale = min(scale, 1)
 	target_size = (
 		max(1, round(width * scale)),
 		max(1, round(height * scale)),

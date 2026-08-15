@@ -46,6 +46,7 @@ def execute():
 			`scenario` varchar(40) DEFAULT NULL,
 			`run_id` varchar(140) DEFAULT NULL,
 			`citations_json` longtext DEFAULT NULL,
+			`attachments_json` longtext DEFAULT NULL,
 			`prompt_version` varchar(40) DEFAULT NULL,
 			PRIMARY KEY (`name`),
 			UNIQUE KEY `uniq_myapp_ai_message_sequence` (`conversation`, `sequence_no`),

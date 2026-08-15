@@ -5,6 +5,7 @@ import frappe
 from PIL import Image
 
 from myapp.utils.image_processing import (
+	AI_VISION_ATTACHMENT_PROFILE,
 	ITEM_IMAGE_PROFILE,
 	USER_AVATAR_PROFILE,
 	normalize_image_upload,
@@ -54,6 +55,17 @@ class TestImageProcessing(TestCase):
 		self.assertEqual(result.profile, "avatar-square-v1")
 		self.assertEqual((result.width, result.height), (512, 512))
 		self.assertEqual(result.aspect_ratio, 1)
+
+	def test_ai_vision_profile_preserves_small_source_dimensions_without_upscaling(self):
+		result = normalize_image_upload(
+			filename="evidence.png",
+			content=_build_image(size=(96, 64)),
+			profile=AI_VISION_ATTACHMENT_PROFILE,
+		)
+
+		self.assertEqual(result.profile, "ai-vision-source-v1")
+		self.assertEqual((result.width, result.height), (96, 64))
+		self.assertEqual((result.source_width, result.source_height), (96, 64))
 
 	def test_rejects_non_image_content_even_with_image_filename(self):
 		with self.assertRaises(frappe.ValidationError):

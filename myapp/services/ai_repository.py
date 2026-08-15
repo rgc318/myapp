@@ -524,7 +524,7 @@ def get_conversation(
 	rows = frappe.db.sql(
 		f"""
 		SELECT m.name, m.sequence_no, m.role, m.content, m.scenario, m.run_id,
-			m.citations_json, m.prompt_version, m.creation,
+			m.citations_json, m.attachments_json, m.prompt_version, m.creation,
 			r.status AS run_status, r.requested_model_alias, r.model_alias, r.model, r.trace_id,
 			COALESCE(mr.provider_model_display, r.model_alias) AS model_display,
 			COALESCE(requested_mr.provider_model_display, r.requested_model_alias) AS requested_model_display,
@@ -565,6 +565,7 @@ def get_conversation(
 				"citations": _refresh_conversation_citations(
 					_safe_json_loads(row.citations_json, []), user=user,
 				),
+				"attachments": _safe_json_loads(row.attachments_json, []),
 				"prompt_version": row.prompt_version,
 				"creation": str(row.creation or "") or None,
 				"run": _serialize_message_run(
@@ -609,6 +610,7 @@ def append_message(
 	scenario: str,
 	run_id: str | None = None,
 	citations: list[dict] | None = None,
+	attachments: list[dict] | None = None,
 	prompt_version: str | None = None,
 ) -> dict:
 	conversation = _get_owned_conversation(conversation_id, user, for_update=True)
@@ -622,8 +624,8 @@ def append_message(
 		INSERT INTO `{MESSAGE_TABLE}`
 			(name, creation, modified, modified_by, owner, docstatus, idx,
 			 conversation, sequence_no, role, content, content_hash, scenario,
-			 run_id, citations_json, prompt_version)
-		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+			 run_id, citations_json, attachments_json, prompt_version)
+		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 		""",
 		(
 			message_id,
@@ -639,6 +641,7 @@ def append_message(
 			scenario,
 			run_id,
 			frappe.as_json(citations or []),
+			frappe.as_json(attachments or []),
 			prompt_version,
 		),
 	)
@@ -751,7 +754,7 @@ def prepare_failed_run_retry(*, run_id: str, user: str) -> dict:
 	row = rows[0]
 	request_rows = frappe.db.sql(
 		f"""
-		SELECT name, content
+		SELECT name, content, attachments_json
 		FROM `{MESSAGE_TABLE}`
 		WHERE conversation = %s AND role = 'user' AND sequence_no < %s
 		ORDER BY sequence_no DESC
@@ -766,6 +769,11 @@ def prepare_failed_run_retry(*, run_id: str, user: str) -> dict:
 		"conversation_id": row.conversation,
 		"company": row.company_scope,
 		"content": str(request_rows[0].content).strip(),
+		"attachment_ids": [
+			str(item.get("attachment_id"))
+			for item in _safe_json_loads(request_rows[0].attachments_json, [])
+			if isinstance(item, dict) and item.get("attachment_id")
+		],
 		"failed_message_id": row.failed_message_id,
 		"scenario": row.scenario,
 		"source_run_id": row.name,

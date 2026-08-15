@@ -15,6 +15,9 @@ from myapp.api.gateway import (
 	chat_ai_v1,
 	check_ai_model_availability_v1,
 	cleanup_excluded_ai_product_vectors_v1,
+	discard_ai_attachment_v1,
+	generate_ai_purchase_order_draft_v1,
+	generate_ai_sales_order_draft_v1,
 	generate_ai_inventory_adjustment_draft_v1,
 	generate_ai_product_setup_draft_v1,
 	cancel_delivery_note,
@@ -175,6 +178,7 @@ from myapp.api.gateway import (
 	retry_print_batch_failed_v1,
 	revoke_user_sessions_v1,
 	upload_current_user_avatar_v1,
+	upload_ai_image_attachment_v1,
 )
 
 
@@ -273,6 +277,12 @@ class TestGatewayWrappers(TestCase):
 			check_ai_model_availability_v1,
 			cleanup_excluded_ai_product_vectors_v1,
 			create_ai_conversation_v1,
+			upload_ai_image_attachment_v1,
+			discard_ai_attachment_v1,
+			generate_ai_sales_order_draft_v1,
+			generate_ai_purchase_order_draft_v1,
+			generate_ai_inventory_adjustment_draft_v1,
+			generate_ai_product_setup_draft_v1,
 			create_ai_data_task_v1,
 			execute_ai_data_task_v1,
 			get_ai_data_task_v1,
@@ -415,6 +425,7 @@ class TestGatewayWrappers(TestCase):
 			scenario="product_search",
 			company="rgc (Demo)",
 			model_alias="opencode-glm-5.2",
+			attachment_ids=None,
 		)
 
 		mock_chat_service.assert_called_once_with(
@@ -424,6 +435,7 @@ class TestGatewayWrappers(TestCase):
 			scenario="product_search",
 			company="rgc (Demo)",
 			model_alias="opencode-glm-5.2",
+			attachment_ids=None,
 		)
 
 	@patch("myapp.api.gateway.get_ai_conversation_v1_service")
@@ -465,6 +477,28 @@ class TestGatewayWrappers(TestCase):
 		reset_ai_conversation_context_v1(conversation_id="AI-CONV-1")
 
 		mock_service.assert_called_once_with(conversation_id="AI-CONV-1")
+
+	@patch("myapp.api.gateway.upload_ai_image_attachment_v1_service")
+	def test_upload_ai_image_attachment_forwards_validated_input(self, mock_service):
+		mock_service.return_value = {"status": "success", "data": {"attachment_id": "AI-ATT-1"}}
+
+		upload_ai_image_attachment_v1(
+			filename="product.jpg", file_content_base64="base64-data",
+			content_type="image/jpeg",
+		)
+
+		mock_service.assert_called_once_with(
+			filename="product.jpg", file_content_base64="base64-data",
+			content_type="image/jpeg",
+		)
+
+	@patch("myapp.api.gateway.discard_ai_attachment_v1_service")
+	def test_discard_ai_attachment_forwards_attachment_id(self, mock_service):
+		mock_service.return_value = {"status": "success", "data": {"discarded": True}}
+
+		discard_ai_attachment_v1(attachment_id="AI-ATT-1")
+
+		mock_service.assert_called_once_with(attachment_id="AI-ATT-1")
 
 	@patch("myapp.api.gateway.refresh_ai_business_result_v1_service")
 	def test_refresh_ai_business_result_v1_forwards_snapshot(self, mock_service):
@@ -524,6 +558,8 @@ class TestGatewayWrappers(TestCase):
 			company="rgc (Demo)",
 			conversation_id="AI-CONV-1",
 			model_alias=None,
+			attachment_ids=None,
+			retry_run_id=None,
 		)
 
 	@patch("myapp.api.gateway.resolve_ai_scenario_v1_service")
@@ -534,7 +570,9 @@ class TestGatewayWrappers(TestCase):
 
 		resolve_ai_scenario_v1(content="新增商品传承结晶")
 
-		mock_resolve_service.assert_called_once_with(content="新增商品传承结晶")
+		mock_resolve_service.assert_called_once_with(
+			content="新增商品传承结晶", attachment_ids=None, model_alias=None,
+		)
 
 	@patch("myapp.api.gateway.execute_ai_draft_v1_service")
 	def test_execute_ai_draft_passes_confirmation_and_version(self, mock_execute_service):
@@ -593,6 +631,8 @@ class TestGatewayWrappers(TestCase):
 			company="rgc (Demo)",
 			conversation_id="AI-CONV-1",
 			model_alias=None,
+			attachment_ids=None,
+			retry_run_id=None,
 		)
 
 	@patch("myapp.api.gateway.get_ai_product_vector_status_v1_service")

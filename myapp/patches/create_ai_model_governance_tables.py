@@ -64,6 +64,8 @@ def execute():
 			`last_health_at` datetime(6) DEFAULT NULL,
 			`last_health_status` varchar(20) DEFAULT NULL,
 			`last_error_code` varchar(140) DEFAULT NULL,
+			`last_tool_error_code` varchar(140) DEFAULT NULL,
+			`last_vision_error_code` varchar(140) DEFAULT NULL,
 			`registry_version` int(8) NOT NULL DEFAULT 1,
 			`source_hash` varchar(64) NOT NULL,
 			`source_json` longtext DEFAULT NULL,

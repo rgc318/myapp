@@ -64,6 +64,8 @@ Frappe 只保存 LiteLLM 别名和治理元数据。LiteLLM 管理 Key 不得进
 - `status`：`discovered / validated / active / degraded / disabled / retired`。
 - `provider_family`、`provider_model_display`：只用于治理展示，不作为业务调用参数。
 - `supports_streaming`、`supports_tools`、`supports_json_schema`、`supports_vision`。
+- `supports_vision` 必须由红色、蓝色两张合成图片的双挑战真实探测，不能根据模型名称或 `/v1/models` 列表推断。Prompt 不泄漏预期颜色，只要求精确返回实际看到的单个小写英文颜色词；两次都匹配才通过。Provider 异常或答案不匹配必须将本次能力重置为 false，并单独记录 `last_vision_error_code`，但不把仍可处理纯文本的模型整体标为不可用。
+- 图片请求的策略选择只保留 `supports_vision=true` 的主模型和 fallback；固定模型未通过视觉探测时返回 `AI_SELECTED_MODEL_NO_VISION`，策略没有视觉候选时返回 `AI_VISION_MODEL_REQUIRED`。
 - `embedding_dimensions`、`embedding_space_version`：仅向量模型使用。
 - `data_region`、`retention_policy`、`sensitive_data_allowed`。
 - `input_cost`、`output_cost`、`currency`：来自受控同步或人工复核。

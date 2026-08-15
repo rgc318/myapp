@@ -118,6 +118,21 @@ class TestOrderService(TestCase):
 		self.assertIs(result, order)
 		order.check_permission.assert_called_once_with("cancel")
 
+	@patch("myapp.services.order_service.frappe.get_doc")
+	def test_get_sales_order_doc_for_update_rejects_stale_modified_version(self, mock_get_doc):
+		order = MagicMock()
+		order.docstatus = 1
+		order.modified = "2026-08-14 11:00:00"
+		mock_get_doc.return_value = order
+
+		with patch(
+			"myapp.services.order_service.frappe.throw",
+			side_effect=frappe.ValidationError("stale"),
+		), self.assertRaises(frappe.ValidationError):
+			_get_sales_order_doc_for_update(
+				"SO-SECURE-001", expected_modified="2026-08-14 10:00:00",
+			)
+
 	def test_order_action_flags_require_invoice_outstanding_for_payment(self):
 		fulfillment = {"is_fully_delivered": True}
 

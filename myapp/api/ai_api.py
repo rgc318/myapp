@@ -71,6 +71,24 @@ from myapp.services.ai_data_task_service import (
 	review_ai_data_task_v1 as review_ai_data_task_v1_service,
 	rollback_ai_data_task_v1 as rollback_ai_data_task_v1_service,
 )
+from myapp.services.ai_attachment_service import (
+	discard_ai_attachment as discard_ai_attachment_service,
+	upload_ai_image_attachment as upload_ai_image_attachment_service,
+)
+
+
+def upload_ai_image_attachment_v1(
+	filename: str, file_content_base64: str, content_type: str,
+):
+	return upload_ai_image_attachment_service(
+		filename=filename,
+		file_content_base64=file_content_base64,
+		content_type=content_type,
+	)
+
+
+def discard_ai_attachment_v1(attachment_id: str):
+	return discard_ai_attachment_service(attachment_id=attachment_id)
 
 
 def create_ai_conversation_v1(title: str | None = None, company: str | None = None):
@@ -117,6 +135,7 @@ def chat_ai_v1(
 	conversation_id: str | None = None,
 	content: str | None = None,
 	model_alias: str | None = None,
+	attachment_ids=None,
 ):
 	return chat_ai_v1_service(
 		messages=messages,
@@ -125,6 +144,7 @@ def chat_ai_v1(
 		conversation_id=conversation_id,
 		content=content,
 		model_alias=model_alias,
+		attachment_ids=attachment_ids,
 	)
 
 
@@ -135,6 +155,7 @@ def stream_ai_message_v1(
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
 	retry_run_id: str | None = None,
+	attachment_ids=None,
 ):
 	return stream_ai_message_v1_service(
 		content=content,
@@ -143,6 +164,7 @@ def stream_ai_message_v1(
 		conversation_id=conversation_id,
 		model_alias=model_alias,
 		retry_run_id=retry_run_id,
+		attachment_ids=attachment_ids,
 	)
 
 
@@ -183,8 +205,12 @@ def stream_ai_run_resume_v1(run_id: str):
 	return stream_ai_run_resume_v1_service(run_id=run_id)
 
 
-def resolve_ai_scenario_v1(content: str):
-	return resolve_ai_scenario_v1_service(content=content)
+def resolve_ai_scenario_v1(
+	content: str | None = None, attachment_ids=None, model_alias: str | None = None,
+):
+	return resolve_ai_scenario_v1_service(
+		content=content, attachment_ids=attachment_ids, model_alias=model_alias,
+	)
 
 
 def refresh_ai_business_result_v1(result_set):
@@ -210,9 +236,12 @@ def generate_ai_sales_order_draft_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
+	attachment_ids=None,
+	retry_run_id: str | None = None,
 ):
 	return generate_ai_sales_order_draft_v1_service(
-		content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
+		content=content, company=company, conversation_id=conversation_id,
+		model_alias=model_alias, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
 	)
 
 
@@ -221,9 +250,12 @@ def generate_ai_purchase_order_draft_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
+	attachment_ids=None,
+	retry_run_id: str | None = None,
 ):
 	return generate_ai_purchase_order_draft_v1_service(
-		content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
+		content=content, company=company, conversation_id=conversation_id,
+		model_alias=model_alias, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
 	)
 
 
@@ -232,9 +264,12 @@ def generate_ai_inventory_adjustment_draft_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
+	attachment_ids=None,
+	retry_run_id: str | None = None,
 ):
 	return generate_ai_inventory_adjustment_draft_v1_service(
-		content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
+		content=content, company=company, conversation_id=conversation_id,
+		model_alias=model_alias, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
 	)
 
 
@@ -243,9 +278,12 @@ def generate_ai_product_setup_draft_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
+	attachment_ids=None,
+	retry_run_id: str | None = None,
 ):
 	return generate_ai_product_setup_draft_v1_service(
-		content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
+		content=content, company=company, conversation_id=conversation_id,
+		model_alias=model_alias, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
 	)
 
 

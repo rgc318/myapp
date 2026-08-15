@@ -17,10 +17,12 @@ from myapp.services.ai_service import (
 	_build_order_query_dsl,
 	_build_next_conversation_state,
 	_build_product_setup_draft,
+	_rebuild_order_draft_before_execution,
 	_authoritative_reference_price,
 	_refresh_ai_draft_before_execution,
 	_resolve_line_price_intent,
 	_execute_ai_draft_payload,
+	_fail_draft_generation_run,
 	_build_report_query_dsl,
 	_call_ai_orchestrator,
 	_call_ai_orchestrator_product_setup_draft,
@@ -35,11 +37,14 @@ from myapp.services.ai_service import (
 	_infer_ai_scenario,
 	_infer_ai_action_scenario,
 	_prepare_chat_run,
+	_resolve_draft_retry_request,
+	_start_draft_generation_run,
 	_prepare_agent_resume,
 	_query_business_document_entity,
 	_resolve_inventory_draft_item,
 	_resolve_purchase_draft_item,
 	_resolve_prompt_version,
+	_resolve_order_update_source,
 	_resolve_sales_draft_item,
 	_complete_chat_run,
 	_stream_ai_orchestrator,
@@ -75,6 +80,79 @@ class TestAiService(TestCase):
 
 	def tearDown(self):
 		self._agent_runtime_env.stop()
+
+	@patch("myapp.services.ai_service.ai_repository.prepare_failed_run_retry")
+	def test_draft_retry_recovers_original_attachment_ids(self, mock_prepare):
+		mock_prepare.return_value = {
+			"content": "按照照片新增商品",
+			"company": "Demo Company",
+			"conversation_id": "AI-CONV-1",
+			"attachment_ids": ["AI-ATT-1"],
+			"failed_message_id": "AI-MSG-FAILED",
+			"scenario": "product_setup_draft",
+			"source_run_id": "AI-RUN-FAILED",
+		}
+
+		content, company, conversation_id, attachment_ids, retry_context = _resolve_draft_retry_request(
+			scenario="product_setup_draft", user="user@example.com", content="重试",
+			company="Other", conversation_id=None, attachment_ids=[], retry_run_id="AI-RUN-FAILED",
+		)
+
+		self.assertEqual(content, "按照照片新增商品")
+		self.assertEqual(company, "Demo Company")
+		self.assertEqual(conversation_id, "AI-CONV-1")
+		self.assertEqual(attachment_ids, ["AI-ATT-1"])
+		self.assertEqual(retry_context["source_run_id"], "AI-RUN-FAILED")
+
+	@patch("myapp.services.ai_service.resolve_ai_attachments")
+	@patch("myapp.services.ai_service.ai_repository.rebind_failed_run_message_for_retry")
+	@patch("myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-RETRY")
+	@patch("myapp.services.ai_service.ai_repository.append_message")
+	def test_draft_retry_rebinds_failed_assistant_without_duplicate_user_message(
+		self, mock_append, mock_create_run, mock_rebind, mock_resolve,
+	):
+		retry_context = {
+			"failed_message_id": "AI-MSG-FAILED",
+			"source_run_id": "AI-RUN-FAILED",
+		}
+		run_id = _start_draft_generation_run(
+			scenario="product_setup_draft", prompt_version="product-setup-draft-v5",
+			user="user@example.com", content="按照照片新增商品", conversation_id="AI-CONV-1",
+			model_alias="vision-model", attachment_ids=["AI-ATT-1"],
+			attachment_refs=[{"attachment_id": "AI-ATT-1"}],
+			attachment_payloads=[{"attachment_id": "AI-ATT-1"}], retry_context=retry_context,
+		)
+
+		self.assertEqual(run_id, "AI-RUN-RETRY")
+		mock_append.assert_not_called()
+		mock_resolve.assert_not_called()
+		mock_create_run.assert_called_once_with(
+			conversation_id="AI-CONV-1", user="user@example.com", scenario="product_setup_draft",
+			model_alias="vision-model", retry_of_run_id="AI-RUN-FAILED",
+		)
+		mock_rebind.assert_called_once()
+
+	@patch("myapp.services.ai_service.time.perf_counter", return_value=10.25)
+	@patch("myapp.services.ai_service.ai_repository.append_failed_run_message")
+	@patch("myapp.services.ai_service.ai_repository.fail_run")
+	@patch("myapp.services.ai_service.frappe")
+	def test_failed_draft_generation_persists_retryable_assistant_placeholder(
+		self, mock_frappe, mock_fail_run, mock_append_failed, _perf_counter,
+	):
+		error = AiServiceError("vision unavailable", code="AI_SELECTED_MODEL_NO_VISION")
+
+		_fail_draft_generation_run(
+			run_id="AI-RUN-FAILED", user="user@example.com", error=error, started=10,
+		)
+
+		mock_frappe.db.rollback.assert_called_once_with()
+		mock_fail_run.assert_called_once_with(
+			run_id="AI-RUN-FAILED", user="user@example.com", error=error, latency_ms=250,
+		)
+		mock_append_failed.assert_called_once_with(
+			run_id="AI-RUN-FAILED", user="user@example.com",
+		)
+		mock_frappe.db.commit.assert_called_once_with()
 
 	@patch("myapp.services.ai_service._can_view_advanced_diagnostics", return_value=True)
 	@patch("myapp.services.ai_service._current_user", return_value="manager@example.com")
@@ -367,6 +445,119 @@ class TestAiService(TestCase):
 		mock_sales.assert_called_once()
 		mock_purchase.assert_called_once()
 		mock_inventory.assert_called_once()
+
+	@patch("myapp.services.ai_service.create_order_v2")
+	@patch("myapp.services.ai_service.create_purchase_order")
+	@patch("myapp.services.ai_service.update_order_items_v2")
+	@patch("myapp.services.ai_service.update_order_v2")
+	@patch("myapp.services.ai_service.update_purchase_order_items_v2")
+	@patch("myapp.services.ai_service.update_purchase_order_v2")
+	def test_execute_order_update_drafts_never_fall_back_to_create(
+		self, mock_update_purchase, mock_update_purchase_items,
+		mock_update_sales, mock_update_sales_items, mock_create_purchase, mock_create_sales,
+	):
+		mock_update_sales.return_value = {
+			"status": "success", "order": "SO-001", "meta": {"modified": "2026-08-14 10:01:00"},
+		}
+		mock_update_sales_items.return_value = {"status": "success", "order": "SO-001"}
+		mock_update_purchase.return_value = {
+			"status": "success", "purchase_order": "PO-001",
+			"meta": {"modified": "2026-08-14 10:02:00"},
+		}
+		line = {
+			"item_code": "ITEM-001", "qty": 2, "uom": "Unit",
+			"price": 10, "warehouse": "Stores - DC",
+		}
+
+		sales = _execute_ai_draft_payload({
+			"draft_type": "sales_order", "payload": {
+				"operation": "update", "order_number": "SO-001",
+				"source_order_modified": "2026-08-14 10:00:00",
+				"update_items_explicit": True, "company": "Demo Company",
+				"transaction_date": "2026-07-18", "delivery_date": "2026-07-20",
+				"warehouse": "Stores - DC", "default_sales_mode": "wholesale",
+				"remarks": "更新销售订单", "items": [line],
+			},
+		}, request_id="REQ-SU")
+		purchase = _execute_ai_draft_payload({
+			"draft_type": "purchase_order", "payload": {
+				"operation": "update", "order_number": "PO-001",
+				"source_order_modified": "2026-08-14 10:00:00",
+				"update_items_explicit": False, "company": "Demo Company",
+				"transaction_date": "2026-07-18", "schedule_date": "2026-07-20",
+				"warehouse": "Stores - DC", "supplier_ref": "REF-2",
+				"remarks": "仅更新采购订单表头", "items": [line],
+			},
+		}, request_id="REQ-PU")
+
+		self.assertEqual(sales["target_name"], "SO-001")
+		self.assertEqual(purchase["target_name"], "PO-001")
+		mock_update_sales.assert_called_once_with(
+			order_name="SO-001", transaction_date="2026-07-18",
+			delivery_date="2026-07-20", default_sales_mode="wholesale",
+			remarks="更新销售订单", request_id="REQ-SU",
+			expected_modified="2026-08-14 10:00:00",
+		)
+		self.assertEqual(
+			mock_update_sales_items.call_args.kwargs["expected_modified"],
+			"2026-08-14 10:01:00",
+		)
+		mock_update_purchase.assert_called_once_with(
+			order_name="PO-001", transaction_date="2026-07-18",
+			schedule_date="2026-07-20", supplier_ref="REF-2",
+			remarks="仅更新采购订单表头", request_id="REQ-PU",
+			expected_modified="2026-08-14 10:00:00",
+		)
+		mock_update_purchase_items.assert_not_called()
+		mock_create_sales.assert_not_called()
+		mock_create_purchase.assert_not_called()
+
+	@patch("myapp.services.ai_service.get_sales_order_detail")
+	@patch("myapp.services.ai_service._resolve_sales_draft_customer")
+	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - DC")
+	@patch("myapp.services.ai_service._resolve_sales_draft_item")
+	def test_order_execution_refresh_rejects_concurrent_source_order_change(
+		self, mock_item, _warehouse, mock_customer, mock_detail,
+	):
+		mock_detail.return_value = {"data": {"meta": {
+			"company": "Demo Company", "modified": "2026-08-14 11:00:00",
+		}}}
+		mock_customer.return_value = ({"name": "CUST-1", "display_name": "客户A"}, [])
+		mock_item.return_value = {
+			"item_code": "ITEM-001", "qty": 1, "uom": "Unit", "price": 10,
+			"warehouse": "Stores - DC", "warnings": [],
+		}
+		next_payload, validation = _rebuild_order_draft_before_execution({
+			"draft_type": "sales_order",
+			"company": "Demo Company",
+			"payload": {
+				"operation": "update", "order_number": "SO-001",
+				"source_order_modified": "2026-08-14 10:00:00",
+				"customer": "CUST-1", "warehouse": "Stores - DC",
+				"items": [{"item_code": "ITEM-001", "qty": 1}],
+			},
+		})
+
+		self.assertFalse(validation["ready_for_handoff"])
+		self.assertTrue(any("其他用户修改" in error for error in validation["errors"]))
+		self.assertEqual(next_payload["source_order_modified"], "2026-08-14 10:00:00")
+
+	@patch("myapp.services.ai_service.get_sales_order_detail")
+	def test_missing_system_order_stays_an_invalid_update(self, mock_get_detail):
+		mock_get_detail.side_effect = frappe.DoesNotExistError
+
+		operation, order_number, detail, errors = _resolve_order_update_source(
+			{
+				"operation": "auto", "order_number": "SO-MISSING",
+				"source_document_type": "our_system_order",
+			},
+			draft_type="sales_order", company="Demo Company",
+		)
+
+		self.assertEqual(operation, "update")
+		self.assertEqual(order_number, "SO-MISSING")
+		self.assertIsNone(detail)
+		self.assertTrue(errors)
 
 	@patch("myapp.services.ai_service.run_idempotent", side_effect=lambda _namespace, _request_id, callback, **_kwargs: callback())
 	@patch("myapp.services.ai_service.filelock", side_effect=lambda *_args, **_kwargs: nullcontext())
@@ -1043,6 +1234,10 @@ class TestAiService(TestCase):
 			"Stores - TC",
 		)
 		self.assertTrue(mock_create_draft.call_args.kwargs["validation"]["ready_for_handoff"])
+		mock_item.assert_called_once_with(
+			{"item_query": "相机", "qty": 2}, company="Test Company",
+			default_warehouse="Stores - TC", allow_user_price=True,
+		)
 		self.assertEqual(_complete.call_args.kwargs["tool_calls"][0]["risk_level"], "L2_DRAFT_ONLY")
 		expected_prompt_version = _resolve_prompt_version("sales_order_draft")
 		self.assertEqual(mock_call.call_args.args[0]["prompt_version"], expected_prompt_version)
@@ -1051,13 +1246,76 @@ class TestAiService(TestCase):
 			{expected_prompt_version},
 		)
 
+	@patch("myapp.services.ai_service.ai_repository.create_draft")
+	@patch("myapp.services.ai_service.nowdate", return_value="2026-07-13")
+	@patch("myapp.services.ai_service.ai_repository.fail_run")
+	@patch("myapp.services.ai_service.ai_repository.complete_run")
+	@patch("myapp.services.ai_service.ai_repository.load_model_messages")
+	@patch("myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-SALES-UPDATE")
+	@patch("myapp.services.ai_service.ai_repository.append_message")
+	@patch("myapp.services.ai_service.ai_repository.create_conversation")
+	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - TC")
+	@patch("myapp.services.ai_service._resolve_sales_draft_customer", return_value=(None, []))
+	@patch("myapp.services.ai_service.get_sales_order_detail")
+	@patch("myapp.services.ai_service._call_ai_orchestrator_sales_draft")
+	@patch("myapp.services.ai_service._resolve_company_scope", return_value="Test Company")
+	def test_sales_order_update_uses_system_order_as_baseline(
+		self, _company, mock_call, mock_detail, _customer, _warehouse,
+		mock_conversation, _append, _run, mock_messages, _complete, _fail,
+		_nowdate, mock_create_draft,
+	):
+		mock_conversation.return_value = {"name": "AI-CONV-SALES-UPDATE", "company": "Test Company"}
+		mock_messages.return_value = [{"role": "user", "content": "修改图片里的销售订单"}]
+		mock_call.return_value = {
+			"draft": {
+				"operation": "auto", "order_number": "SO-001",
+				"source_document_type": "our_system_order", "items": [],
+			},
+			"model": "vision-model", "model_alias": "erp-vision",
+			"trace_id": "trace-sales-update", "usage": {},
+		}
+		mock_detail.return_value = {"data": {
+			"meta": {
+				"company": "Test Company", "transaction_date": "2026-07-01",
+				"delivery_date": "2026-07-05", "default_sales_mode": "retail",
+				"remarks": "原销售备注",
+			},
+			"customer": {"name": "CUST-1", "display_name": "客户A"},
+			"items": [{
+				"item_code": "ITEM-1", "item_name": "相机", "qty": 2,
+				"uom": "Box", "uom_display": "箱", "rate": 100,
+				"warehouse": "Stores - TC", "conversion_factor": 6,
+			}],
+		}}
+		mock_create_draft.return_value = {
+			"name": "AI-DRAFT-SALES-UPDATE", "title": "修改图片里的销售订单",
+			"validation": {"ready_for_handoff": True},
+		}
+
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.session.user = "user@example.com"
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.has_permission.return_value = True
+			generate_ai_sales_order_draft_v1("修改图片里的销售订单", company="Test Company")
+
+		payload = mock_create_draft.call_args.kwargs["payload"]
+		self.assertEqual(payload["operation"], "update")
+		self.assertEqual(payload["order_number"], "SO-001")
+		self.assertFalse(payload["update_items_explicit"])
+		self.assertEqual(payload["customer"], "CUST-1")
+		self.assertEqual(payload["transaction_date"], "2026-07-01")
+		self.assertEqual(payload["delivery_date"], "2026-07-05")
+		self.assertEqual(payload["remarks"], "原销售备注")
+		self.assertEqual(payload["items"][0]["conversion_factor"], 6)
+		self.assertTrue(mock_create_draft.call_args.kwargs["validation"]["ready_for_handoff"])
+
 	def test_prompt_versions_are_mapped_by_scenario(self):
 		self.assertEqual(_resolve_prompt_version("general"), "erp-readonly-v8")
 		draft_versions = {
-			"sales_order_draft": "sales-order-draft-v2",
-			"purchase_order_draft": "purchase-order-draft-v2",
+			"sales_order_draft": "sales-order-draft-v3",
+			"purchase_order_draft": "purchase-order-draft-v3",
 			"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
-			"product_setup_draft": "product-setup-draft-v4",
+			"product_setup_draft": "product-setup-draft-v5",
 		}
 		for scenario, expected in draft_versions.items():
 			with self.subTest(scenario=scenario):
@@ -1124,10 +1382,77 @@ class TestAiService(TestCase):
 			{expected_prompt_version},
 		)
 		self.assertEqual(mock_run.call_args.kwargs["scenario"], "purchase_order_draft")
+		mock_item.assert_called_once_with(
+			{"item_query": "相机", "qty": 2}, company="Test Company",
+			default_warehouse="Stores - TC", allow_user_price=True,
+		)
 		self.assertEqual(
 			mock_create_draft.call_args.kwargs["payload"]["warehouse_query"],
 			"Stores - TC",
 		)
+
+	@patch("myapp.services.ai_service.ai_repository.create_draft")
+	@patch("myapp.services.ai_service.ai_repository.fail_run")
+	@patch("myapp.services.ai_service.ai_repository.complete_run")
+	@patch("myapp.services.ai_service.ai_repository.load_model_messages")
+	@patch("myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-PURCHASE-UPDATE")
+	@patch("myapp.services.ai_service.ai_repository.append_message")
+	@patch("myapp.services.ai_service.ai_repository.create_conversation")
+	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - TC")
+	@patch("myapp.services.ai_service._resolve_purchase_draft_supplier", return_value=(None, []))
+	@patch("myapp.services.ai_service.get_purchase_order_detail_v2")
+	@patch("myapp.services.ai_service._call_ai_orchestrator_purchase_draft")
+	@patch("myapp.services.ai_service._resolve_company_scope", return_value="Test Company")
+	def test_purchase_order_update_uses_system_order_as_baseline(
+		self, _company, mock_call, mock_detail, _supplier, _warehouse,
+		mock_conversation, _append, _run, mock_messages, _complete, _fail, mock_create_draft,
+	):
+		mock_conversation.return_value = {"name": "AI-CONV-PURCHASE-UPDATE", "company": "Test Company"}
+		mock_messages.return_value = [{"role": "user", "content": "修改图片里的采购订单"}]
+		mock_call.return_value = {
+			"draft": {
+				"operation": "update", "order_number": "PO-001",
+				"source_document_type": "our_system_order", "currency": "CNY",
+				"remarks": "新采购备注", "items": [],
+			},
+			"model": "vision-model", "model_alias": "erp-vision",
+			"trace_id": "trace-purchase-update", "usage": {},
+		}
+		mock_detail.return_value = {"data": {
+			"meta": {
+				"company": "Test Company", "transaction_date": "2026-07-02",
+				"schedule_date": "2026-07-06", "supplier_ref": "REF-OLD",
+				"remarks": "原采购备注",
+			},
+			"supplier": {"name": "SUP-1", "display_name": "供应商A"},
+			"items": [{
+				"item_code": "ITEM-2", "item_name": "镜头", "qty": 3,
+				"uom": "Nos", "uom_display": "个", "rate": 80,
+				"warehouse": "Stores - TC", "conversion_factor": 1,
+			}],
+		}}
+		mock_create_draft.return_value = {
+			"name": "AI-DRAFT-PURCHASE-UPDATE", "title": "修改图片里的采购订单",
+			"validation": {"ready_for_handoff": True},
+		}
+
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.session.user = "user@example.com"
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.has_permission.return_value = True
+			generate_ai_purchase_order_draft_v1("修改图片里的采购订单", company="Test Company")
+
+		payload = mock_create_draft.call_args.kwargs["payload"]
+		self.assertEqual(payload["operation"], "update")
+		self.assertEqual(payload["order_number"], "PO-001")
+		self.assertFalse(payload["update_items_explicit"])
+		self.assertEqual(payload["supplier"], "SUP-1")
+		self.assertEqual(payload["transaction_date"], "2026-07-02")
+		self.assertEqual(payload["schedule_date"], "2026-07-06")
+		self.assertEqual(payload["supplier_ref"], "REF-OLD")
+		self.assertEqual(payload["remarks"], "新采购备注")
+		self.assertEqual(payload["items"][0]["price_source"], "existing_order")
+		self.assertTrue(mock_create_draft.call_args.kwargs["validation"]["ready_for_handoff"])
 
 	@patch("myapp.services.ai_service.ai_repository.create_draft")
 	@patch("myapp.services.ai_service.ai_repository.fail_run")
@@ -1529,8 +1854,9 @@ class TestAiService(TestCase):
 	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - TC")
 	@patch("myapp.services.ai_service._resolve_optional_master_name", return_value=None)
 	@patch("myapp.services.ai_service._resolve_product_setup_uom", return_value=("Unit", [{"name": "Unit"}]))
+	@patch("myapp.services.ai_service._resolve_existing_product_for_setup", return_value=(None, []))
 	def test_product_setup_draft_keeps_selling_price_separate_from_default_buying_price(
-		self, _uom, _master, _warehouse,
+		self, _existing, _uom, _master, _warehouse,
 	):
 		with patch("myapp.services.ai_service.frappe") as mock_frappe:
 			mock_frappe.db.exists.return_value = False
@@ -1551,8 +1877,9 @@ class TestAiService(TestCase):
 	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - TC")
 	@patch("myapp.services.ai_service._resolve_optional_master_name", return_value=None)
 	@patch("myapp.services.ai_service._resolve_product_setup_uom", return_value=("Unit", [{"name": "Unit"}]))
+	@patch("myapp.services.ai_service._resolve_existing_product_for_setup", return_value=(None, []))
 	def test_product_setup_draft_accepts_default_buying_price_for_opening_stock(
-		self, _uom, _master, _warehouse,
+		self, _existing, _uom, _master, _warehouse,
 	):
 		with patch("myapp.services.ai_service.frappe") as mock_frappe:
 			mock_frappe.db.exists.return_value = False
@@ -1616,7 +1943,50 @@ class TestAiService(TestCase):
 		self.assertIsNone(payload["opening_qty"])
 		self.assertEqual(payload["_state"]["context"]["company_total_qty"], 1000)
 		self.assertEqual(payload["_state"]["patch"], {"description": "补充说明"})
-		self.assertTrue(validation["ready_for_handoff"])
+		self.assertFalse(validation["ready_for_handoff"])
+		self.assertTrue(payload["operation_decision_required"])
+		self.assertEqual(payload["duplicate_candidates"][0]["item_code"], "ITEM-DIMO")
+		self.assertTrue(any("明确选择" in error for error in validation["errors"]))
+
+	@patch("myapp.services.ai_service._resolve_existing_product_for_setup")
+	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value=None)
+	@patch("myapp.services.ai_service._resolve_optional_master_name", side_effect=lambda _doctype, value: value)
+	@patch("myapp.services.ai_service._resolve_product_setup_uom", return_value=("Unit", [{"name": "Unit"}]))
+	def test_switching_photo_create_draft_to_update_does_not_replace_existing_image(
+		self, _uom, _master, _warehouse, mock_existing,
+	):
+		existing = {
+			"item_code": "ITEM-EXISTING", "item_name": "已有商品", "item_group": "Products",
+			"brand": None, "stock_uom": "Unit", "stock_uom_display": "个",
+			"description": None, "image": "/files/existing.png", "modified": "2026-08-14 10:00:00",
+			"standard_rate": 0, "total_qty": 0, "warehouse_stock_details": [],
+			"price_summary": {"selling_prices": [], "buying_prices": []},
+		}
+		mock_existing.side_effect = [(None, []), (existing, [{"name": "ITEM-EXISTING"}])]
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.db.get_value.return_value = "CNY"
+			mock_frappe.db.exists.return_value = False
+			mock_frappe.has_permission.return_value = True
+			created, _ = _build_product_setup_draft(
+				{"operation": "create", "item_name": "照片商品", "stock_uom": "Unit"},
+				company="Test Company",
+				default_image_url="/files/from-photo.webp",
+				source_attachments=[{"attachment_id": "AI-ATT-1"}],
+			)
+			updated, _ = _build_product_setup_draft(
+				{
+					**created,
+					"operation": "update",
+					"item_code": "ITEM-EXISTING",
+					"item_name": "已有商品",
+				},
+				company="Test Company",
+				source_attachments=created["source_attachments"],
+			)
+
+		self.assertEqual(created["image"], "/files/from-photo.webp")
+		self.assertEqual(updated["image"], "/files/existing.png")
+		self.assertNotIn("image", updated["_state"]["patch"])
 
 	def test_build_order_query_dsl_supports_multiple_document_types(self):
 		dsl = _build_order_query_dsl(

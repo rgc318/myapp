@@ -2,6 +2,8 @@
 
 > 状态：Phase A 只读纵向链路、Phase B 四类结构化草稿（销售订单、采购订单、库存调整、商品建档）、商品语义检索、模型治理控制面、高并发 P0、OTLP 可观测性、备份恢复演练和首期商品数据治理任务均已实现。2026-07-15 已从在线 `myapp-products-live → myapp-products-v1` 清理 439 个明确 `HTTP-` 测试 points，保留 143 个非排除商品向量 / 1024 维；582 个 ERP Item 和 854 个 Sales Order 未修改。`erp-embedding` 当前单条、批量和在线检索均已恢复，30 条中文门禁 Top-1 96.67%、Top-3 100%、Provider error 0。新的 v2 collection、完整删除/重建/恢复门禁和正式发布回滚尚未执行；生产 Secret Manager、SSO 和正式环境密钥轮换仍属于部署侧待办。
 
+> 多模态扩展：AI 工作台现支持私有短期图片 Attachment、真实视觉能力治理、商品照片创建/完善、销售与采购订单图片创建/修改。模型只负责证据提取和场景规划，Frappe 继续负责权限、重复商品候选、订单 baseline、UOM、价格、草稿版本、人工确认与正式领域服务写入。详细规则见 `../../docs/05-development/06-ai-multimodal-product-and-order.zh-CN.md`。
+
 ## 1. 目标与非目标
 
 ### 1.1 目标

@@ -2141,12 +2141,15 @@ def _apply_sales_invoice_return_adjustments(invoice_rows):
 
 def _get_sales_order_doc_for_update(
 	order_name: str, *, allow_cancelled: bool = False, permission_type: str = "write",
+	expected_modified=None,
 ):
 	if not order_name:
 		frappe.throw(_("order_name 不能为空。"))
 
 	so = frappe.get_doc("Sales Order", order_name)
 	_check_doc_permission(so, permission_type)
+	if expected_modified and str(so.modified) != str(expected_modified):
+		frappe.throw(_("销售订单已被其他用户修改，请刷新后重试。"))
 	if cint(so.docstatus) == 2 and not allow_cancelled:
 		frappe.throw(_("已取消的销售订单不允许继续修改。"))
 	return so
@@ -2311,8 +2314,9 @@ def get_sales_order_detail(order_name: str):
 					"latest_payment_entry": latest_payment_entry.get("payment_entry"),
 				},
 				"timeline": _build_sales_order_timeline(so, delivery_note_names, invoice_names),
-				"meta": {
-					"company": so.company,
+					"meta": {
+						"company": so.company,
+						"modified": so.modified,
 					"currency": so.get("currency"),
 					"transaction_date": so.get("transaction_date"),
 					"delivery_date": so.get("delivery_date"),
@@ -3030,7 +3034,9 @@ def update_order_v2(order_name: str, **kwargs):
 
 	try:
 		def _update_order_v2():
-			so = _get_sales_order_doc_for_update(order_name)
+			so = _get_sales_order_doc_for_update(
+				order_name, expected_modified=kwargs.get("expected_modified"),
+			)
 			default_sales_mode = _normalize_sales_mode(kwargs.get("default_sales_mode"))
 			default_sales_mode_field = _get_order_default_sales_mode_field()
 			if kwargs.get("delivery_date") is not None:
@@ -3079,8 +3085,9 @@ def update_order_v2(order_name: str, **kwargs):
 				"order": so.name,
 				"message": _("销售订单 {0} 已按 v2 模型更新。").format(so.name),
 				"snapshot": snapshot,
-				"meta": {
-					"transaction_date": so.get("transaction_date"),
+					"meta": {
+						"modified": so.modified,
+						"transaction_date": so.get("transaction_date"),
 					"delivery_date": so.get("delivery_date"),
 					"default_sales_mode": (
 						so.get(default_sales_mode_field)
@@ -3105,7 +3112,9 @@ def update_order_items_v2(order_name: str, items: list[dict], **kwargs):
 
 	try:
 		def _update_order_items_v2():
-			so = _get_sales_order_doc_for_update(order_name)
+			so = _get_sales_order_doc_for_update(
+				order_name, expected_modified=kwargs.get("expected_modified"),
+			)
 			_ensure_sales_order_items_editable(so)
 			target_so, source_order_name = _prepare_sales_order_for_item_replacement(so)
 			source_snapshot = {
@@ -3160,8 +3169,9 @@ def update_order_items_v2(order_name: str, items: list[dict], **kwargs):
 				"source_order": source_order_name,
 				"message": _("销售订单 {0} 商品明细已按 v2 模型更新。").format(target_so.name),
 				"items": _serialize_order_items(list(target_so.get("items") or [])),
-				"meta": {
-					"delivery_date": target_so.get("delivery_date"),
+					"meta": {
+						"modified": target_so.modified,
+						"delivery_date": target_so.get("delivery_date"),
 					"company": target_so.company,
 				},
 			}

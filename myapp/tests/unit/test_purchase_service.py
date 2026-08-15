@@ -134,6 +134,21 @@ class TestPurchaseService(TestCase):
 		self.assertIs(result, order)
 		order.check_permission.assert_called_once_with("cancel")
 
+	@patch("myapp.services.purchase_service.frappe.get_doc")
+	def test_get_purchase_order_doc_for_update_rejects_stale_modified_version(self, mock_get_doc):
+		order = MagicMock()
+		order.docstatus = 1
+		order.modified = "2026-08-14 11:00:00"
+		mock_get_doc.return_value = order
+
+		with patch(
+			"myapp.services.purchase_service.frappe.throw",
+			side_effect=frappe.ValidationError("stale"),
+		), self.assertRaises(frappe.ValidationError):
+			_get_purchase_order_doc_for_update(
+				"PO-SECURE-001", expected_modified="2026-08-14 10:00:00",
+			)
+
 	@patch("myapp.services.purchase_service.frappe.get_all")
 	def test_collect_purchase_order_reference_names_excludes_return_documents(self, mock_get_all):
 		mock_get_all.side_effect = [

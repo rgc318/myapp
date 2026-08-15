@@ -258,6 +258,8 @@ def _serialize_registry(row) -> dict:
 		"last_health_at": str(row.last_health_at or "") or None,
 		"last_health_status": row.last_health_status,
 		"last_error_code": row.last_error_code,
+		"last_tool_error_code": getattr(row, "last_tool_error_code", None),
+		"last_vision_error_code": getattr(row, "last_vision_error_code", None),
 		"registry_version": cint(row.registry_version),
 		"modified": str(row.modified or "") or None,
 	}
@@ -635,7 +637,12 @@ def sync_ai_model_registry_v1(*, request_id: str | None = None) -> dict:
 							AND VALUES(last_health_status) = 'listed' THEN supports_tools
 						ELSE VALUES(supports_tools)
 					END,
-					supports_json_schema = VALUES(supports_json_schema), supports_vision = VALUES(supports_vision),
+					supports_json_schema = VALUES(supports_json_schema),
+					supports_vision = CASE
+						WHEN last_health_status IN ('available', 'unavailable')
+							AND VALUES(last_health_status) = 'listed' THEN supports_vision
+						ELSE VALUES(supports_vision)
+					END,
 					embedding_dimensions = VALUES(embedding_dimensions), embedding_space_version = VALUES(embedding_space_version),
 					last_health_at = CASE
 						WHEN last_health_status IN ('available', 'unavailable')
@@ -767,9 +774,10 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 			continue
 		available = bool(item.get("available"))
 		supports_tools = bool(item.get("supports_tools"))
-		error_code = _normalize_text(
-			item.get("error_code") or item.get("tool_error_code"), max_length=140,
-		) or None
+		supports_vision = bool(item.get("supports_vision"))
+		error_code = _normalize_text(item.get("error_code"), max_length=140) or None
+		tool_error_code = _normalize_text(item.get("tool_error_code"), max_length=140) or None
+		vision_error_code = _normalize_text(item.get("vision_error_code"), max_length=140) or None
 		provider_model = _normalize_text(item.get("provider_model"), max_length=255) or None
 		latency_ms = max(0, int(float(item.get("latency_ms") or 0)))
 		frappe.db.sql(
@@ -777,12 +785,14 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 			UPDATE `{REGISTRY_TABLE}`
 			SET last_health_at = %s, last_health_status = %s, last_error_code = %s,
 				provider_model_display = COALESCE(%s, provider_model_display), supports_tools = %s,
+				supports_vision = %s, last_tool_error_code = %s, last_vision_error_code = %s,
 				modified = %s, modified_by = %s
 			WHERE model_alias = %s
 			""",
 			(
 				now, "available" if available else "unavailable", error_code,
-				provider_model, cint(supports_tools), now, actor, model_alias,
+				provider_model, cint(supports_tools), cint(supports_vision),
+				tool_error_code, vision_error_code, now, actor, model_alias,
 			),
 		)
 		normalized_items.append({
@@ -790,9 +800,12 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 			"capability": _normalize_text(item.get("capability"), max_length=30) or None,
 			"available": available,
 			"supports_tools": supports_tools,
+			"supports_vision": supports_vision,
 			"latency_ms": latency_ms,
 			"provider_model": provider_model,
 			"error_code": error_code,
+			"tool_error_code": tool_error_code,
+			"vision_error_code": vision_error_code,
 		})
 
 	available_count = sum(1 for item in normalized_items if item["available"])
@@ -900,7 +913,8 @@ def list_ai_selectable_models_v1() -> dict:
 		rows = frappe.db.sql(
 			f"""
 			SELECT model_alias, capability, provider_model_display, supports_streaming, supports_tools,
-				supports_json_schema, status, last_health_at, last_health_status, last_error_code
+				supports_json_schema, supports_vision, status, last_health_at, last_health_status,
+				last_error_code, last_vision_error_code
 			FROM `{REGISTRY_TABLE}`
 			WHERE status IN ('active', 'validated')
 				AND capability IN ('fast_chat', 'reasoning', 'structured')
@@ -920,10 +934,12 @@ def list_ai_selectable_models_v1() -> dict:
 					"supports_streaming": bool(cint(row.supports_streaming)),
 					"supports_tools": bool(cint(row.supports_tools)),
 					"supports_json_schema": bool(cint(row.supports_json_schema)),
+					"supports_vision": bool(cint(row.supports_vision)),
 					"status": row.status,
 					"last_health_at": str(row.last_health_at or "") or None,
 					"last_health_status": row.last_health_status,
 					"last_error_code": row.last_error_code,
+					"last_vision_error_code": row.last_vision_error_code,
 				}
 				for row in rows
 			],
@@ -1748,7 +1764,8 @@ def get_published_ai_model_policies_for_runtime() -> dict:
 	})
 	model_rows = frappe.db.sql(
 		f"""
-		SELECT model_alias, capability, status, supports_tools, supports_json_schema, input_cost, output_cost, currency,
+		SELECT model_alias, capability, status, supports_tools, supports_json_schema, supports_vision,
+			input_cost, output_cost, currency,
 			data_region, retention_policy, sensitive_data_allowed, registry_version,
 			last_health_at, last_health_status, last_error_code
 		FROM `{REGISTRY_TABLE}`
@@ -1759,7 +1776,8 @@ def get_published_ai_model_policies_for_runtime() -> dict:
 		as_dict=True,
 	) if policy_aliases else frappe.db.sql(
 		f"""
-		SELECT model_alias, capability, status, supports_tools, supports_json_schema, input_cost, output_cost, currency,
+		SELECT model_alias, capability, status, supports_tools, supports_json_schema, supports_vision,
+			input_cost, output_cost, currency,
 			data_region, retention_policy, sensitive_data_allowed, registry_version,
 			last_health_at, last_health_status, last_error_code
 		FROM `{REGISTRY_TABLE}` WHERE status IN ('active', 'validated')
@@ -1774,6 +1792,7 @@ def get_published_ai_model_policies_for_runtime() -> dict:
 				"status": row.status,
 				"supports_json_schema": bool(cint(row.supports_json_schema)),
 				"supports_tools": bool(cint(row.supports_tools)),
+				"supports_vision": bool(cint(row.supports_vision)),
 				"input_cost": str(row.input_cost or 0),
 				"output_cost": str(row.output_cost or 0),
 				"currency": row.currency,

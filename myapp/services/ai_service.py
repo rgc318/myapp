@@ -18,6 +18,10 @@ from frappe.utils.synchronization import filelock
 from werkzeug.wrappers import Response
 
 from myapp.services import ai_repository
+from myapp.services.ai_attachment_service import (
+	resolve_ai_attachments,
+	stage_attachment_as_item_image,
+)
 from myapp.services.ai_vector_service import search_products_semantic
 from myapp.services.customer_service import list_customers_v2
 from myapp.services.document_list_service import list_business_documents_v1
@@ -27,8 +31,21 @@ from myapp.services.ai_model_governance_service import (
 	resolve_ai_agent_runtime_readiness,
 	resolve_ai_selected_model_alias,
 )
-from myapp.services.order_service import create_order_v2, search_sales_orders_v2
-from myapp.services.purchase_service import create_purchase_order, list_suppliers_v2, search_purchase_orders_v2
+from myapp.services.order_service import (
+	create_order_v2,
+	get_sales_order_detail,
+	search_sales_orders_v2,
+	update_order_items_v2,
+	update_order_v2,
+)
+from myapp.services.purchase_service import (
+	create_purchase_order,
+	get_purchase_order_detail_v2,
+	list_suppliers_v2,
+	search_purchase_orders_v2,
+	update_purchase_order_items_v2,
+	update_purchase_order_v2,
+)
 from myapp.services.report_service import (
 	get_business_report_overview_v1,
 	get_cashflow_report_v1,
@@ -69,15 +86,17 @@ PROMPT_VERSION_BY_SCENARIO = {
 	"product_search": "erp-readonly-v8",
 	"order_query": "erp-readonly-v8",
 	"report_summary": "erp-readonly-v8",
-	"sales_order_draft": "sales-order-draft-v2",
-	"purchase_order_draft": "purchase-order-draft-v2",
+	"sales_order_draft": "sales-order-draft-v3",
+	"purchase_order_draft": "purchase-order-draft-v3",
 	"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
-	"product_setup_draft": "product-setup-draft-v4",
+	"product_setup_draft": "product-setup-draft-v5",
 }
 
 PRODUCT_SETUP_EDITABLE_FIELDS = (
 	"item_name",
 	"image",
+	"barcode",
+	"specification",
 	"item_group",
 	"brand",
 	"stock_uom",
@@ -460,6 +479,8 @@ def _call_ai_orchestrator(payload: dict, *, resume: bool = False) -> dict:
 		user = _diagnostic_user()
 		model_display = _public_model_details(model_alias, user=user).get("model_display")
 		message = {
+			"AI_SELECTED_MODEL_NO_VISION": _("当前固定模型不支持图片输入，请切换为自动模型或选择多模态模型。"),
+			"AI_VISION_MODEL_REQUIRED": _("当前策略没有可用的多模态模型，请联系管理员完成视觉能力检测。"),
 			"AI_AGENT_CHECKPOINT_UNAVAILABLE": _("Agent 运行状态暂时无法保存，请稍后重试。"),
 			"AI_DAILY_BUDGET_EXCEEDED": _("今日 AI 使用预算已达到上限。"),
 			"AI_LOCAL_CONCURRENCY_LIMITED": _("当前 AI 请求较多，请稍后重试。"),
@@ -500,7 +521,7 @@ def _call_ai_orchestrator(payload: dict, *, resume: bool = False) -> dict:
 
 def _call_ai_intent_orchestrator(
 	*, content: str, user: str, company: str | None, conversation_state: dict | None = None,
-	model_alias: str | None = None,
+	model_alias: str | None = None, attachments: list[dict] | None = None,
 ) -> dict:
 	try:
 		base_url, service_token = _get_ai_orchestrator_settings()
@@ -510,9 +531,11 @@ def _call_ai_intent_orchestrator(
 			"user": user,
 			"company": company,
 			"locale": getattr(frappe.local, "lang", None) or "zh-CN",
-			"prompt_version": "erp-intent-v3",
+			"prompt_version": "erp-intent-v4",
 			"context": {"conversation_state": _conversation_state_for_intent(conversation_state)},
 		}
+		if attachments:
+			payload["attachments"] = attachments
 		if model_alias:
 			payload["model_alias"] = model_alias
 		request = urllib.request.Request(
@@ -579,11 +602,15 @@ def _draft_provider_error(error: urllib.error.HTTPError, *, payload: dict) -> Ai
 	if code == "MODEL_PROVIDER_REJECTED":
 		model_display = _public_model_details(model_alias, user=user).get("model_display") or _("当前自动模型")
 		message = _("模型 {0} 暂时不可用，请更换模型或稍后重试。").format(model_display)
+	elif code == "AI_SELECTED_MODEL_NO_VISION":
+		message = _("当前固定模型不支持图片输入，请切换为自动模型或选择多模态模型。")
+	elif code == "AI_VISION_MODEL_REQUIRED":
+		message = _("当前策略没有可用的多模态模型，请联系管理员完成视觉能力检测。")
 	else:
 		message = _("AI 草稿服务暂时不可用，请稍后重试。")
 	public_data = {
 		**_public_model_details(model_alias, user=user),
-		"retryable": True,
+		"retryable": code not in {"AI_SELECTED_MODEL_NO_VISION", "AI_VISION_MODEL_REQUIRED"},
 	}
 	if provider_error_code and _can_view_advanced_diagnostics(user):
 		public_data["provider_error_code"] = provider_error_code
@@ -1830,12 +1857,39 @@ def reset_ai_conversation_context_v1(conversation_id: str):
 	}
 
 
-def resolve_ai_scenario_v1(content: str):
+def resolve_ai_scenario_v1(
+	content: str | None = None, attachment_ids=None, model_alias: str | None = None,
+):
+	user = _current_user()
+	_attachment_refs, attachment_payloads = resolve_ai_attachments(attachment_ids, user=user)
+	if content in (None, "") and attachment_payloads:
+		content = _("请识别附件图片对应的业务场景；无法确定时返回 general。")
 	resolved_content = _normalize_content(content)
+	local_scenario = _infer_ai_action_scenario(resolved_content)
+	resolved_scenario = local_scenario
+	if attachment_payloads:
+		intent = _call_ai_intent_orchestrator(
+			content=resolved_content,
+			user=user,
+			company=None,
+			model_alias=resolve_ai_selected_model_alias(model_alias),
+			attachments=attachment_payloads,
+		)
+		candidate = str(intent.get("intent") or "").strip()
+		try:
+			confidence = float(intent.get("confidence") or 0)
+		except (TypeError, ValueError):
+			confidence = 0
+		if candidate in {
+			"general", "product_search", "order_query", "report_summary",
+			"sales_order_draft", "purchase_order_draft", "inventory_adjustment_draft",
+			"product_setup_draft",
+		} and confidence >= 0.6:
+			resolved_scenario = candidate
 	return {
 		"status": "success",
 		"message": _("AI 场景识别完成。"),
-		"data": {"scenario": _infer_ai_action_scenario(resolved_content)},
+		"data": {"scenario": resolved_scenario},
 	}
 
 
@@ -2378,20 +2432,168 @@ def _resolve_sales_draft_item(
 	}
 
 
+def _resolve_order_update_source(
+	candidate: dict, *, draft_type: str, company: str,
+) -> tuple[str, str | None, dict | None, list[str]]:
+	requested_operation = str(candidate.get("operation") or "auto").strip().lower()
+	if requested_operation not in {"auto", "create", "update"}:
+		requested_operation = "auto"
+	order_number = str(candidate.get("order_number") or "").strip()[:140] or None
+	source_document_type = str(candidate.get("source_document_type") or "unstructured").strip()
+	operation = requested_operation
+	if operation == "auto":
+		operation = "update" if order_number and source_document_type == "our_system_order" else "create"
+	if operation != "update":
+		return operation, order_number, None, []
+	errors = []
+	if not order_number:
+		return operation, None, None, [_('修改订单时必须提供可识别的本系统订单号。')]
+	try:
+		response = (
+			get_sales_order_detail(order_number)
+			if draft_type == "sales_order"
+			else get_purchase_order_detail_v2(order_number)
+		)
+		detail = (response or {}).get("data") or {}
+	except frappe.DoesNotExistError:
+		return operation, order_number, None, [_('未找到订单 {0}，请核对订单号。').format(order_number)]
+	meta = detail.get("meta") if isinstance(detail.get("meta"), dict) else {}
+	if str(meta.get("company") or "").strip() != company:
+		errors.append(_("订单 {0} 不属于当前公司范围。" ).format(order_number))
+	return operation, order_number, detail, errors
+
+
+def _existing_order_draft_items(detail: dict) -> list[dict]:
+	return [
+		{
+			"item_query": row.get("item_code"),
+			"item_code": row.get("item_code"),
+			"item_name": row.get("item_name"),
+			"qty": row.get("qty"),
+			"uom": row.get("uom"),
+			"uom_display": row.get("uom_display"),
+			"price": row.get("rate"),
+			"reference_price": row.get("rate"),
+			"price_source": "existing_order",
+			"warehouse": row.get("warehouse"),
+			"warehouse_query": row.get("warehouse"),
+			"conversion_factor": row.get("conversion_factor") or 1,
+			"candidates": [],
+			"warnings": [],
+		}
+		for row in detail.get("items") or []
+		if isinstance(row, dict)
+	]
+
+
+def _resolve_draft_retry_request(
+	*, scenario: str, user: str, content, company, conversation_id, attachment_ids, retry_run_id,
+) -> tuple[object, object, object, object, dict | None]:
+	if not retry_run_id:
+		return content, company, conversation_id, attachment_ids, None
+	retry_context = ai_repository.prepare_failed_run_retry(
+		run_id=str(retry_run_id).strip(), user=user,
+	)
+	if str(retry_context.get("scenario") or "") != scenario:
+		frappe.throw(_("失败 Run 的业务场景与当前草稿类型不一致，不能重试。"))
+	return (
+		retry_context.get("content"),
+		retry_context.get("company"),
+		retry_context.get("conversation_id"),
+		retry_context.get("attachment_ids") or [],
+		retry_context,
+	)
+
+
+def _start_draft_generation_run(
+	*, scenario: str, prompt_version: str, user: str, content: str,
+	conversation_id: str, model_alias: str | None, attachment_ids,
+	attachment_refs: list[dict], attachment_payloads: list[dict], retry_context: dict | None,
+) -> str:
+	user_message = None
+	if not retry_context:
+		user_message = ai_repository.append_message(
+			conversation_id=conversation_id, user=user, role="user", content=content,
+			scenario=scenario, attachments=attachment_refs, prompt_version=prompt_version,
+		)
+	run_id = ai_repository.create_run(
+		conversation_id=conversation_id,
+		user=user,
+		scenario=scenario,
+		model_alias=model_alias,
+		retry_of_run_id=retry_context.get("source_run_id") if retry_context else None,
+	)
+	if attachment_payloads and not retry_context:
+		resolve_ai_attachments(
+			attachment_ids, user=user, conversation_id=conversation_id,
+			message_id=user_message["name"], run_id=run_id,
+		)
+	if retry_context:
+		ai_repository.rebind_failed_run_message_for_retry(
+			message_id=retry_context["failed_message_id"],
+			source_run_id=retry_context["source_run_id"],
+			retry_run_id=run_id,
+			user=user,
+			scenario=scenario,
+			prompt_version=prompt_version,
+		)
+	return run_id
+
+
+def _save_draft_generation_assistant_message(
+	*, retry_context: dict | None, conversation_id: str, user: str, content: str,
+	scenario: str, run_id: str, citations: list[dict], prompt_version: str,
+) -> None:
+	if retry_context:
+		ai_repository.complete_retried_run_message(
+			run_id=run_id, user=user, content=content, scenario=scenario,
+			citations=citations, prompt_version=prompt_version,
+		)
+		return
+	ai_repository.append_message(
+		conversation_id=conversation_id, user=user, role="assistant", content=content,
+		scenario=scenario, run_id=run_id, citations=citations, prompt_version=prompt_version,
+	)
+
+
+def _fail_draft_generation_run(*, run_id: str, user: str, error: Exception, started: float) -> None:
+	frappe.db.rollback()
+	ai_repository.fail_run(
+		run_id=run_id,
+		user=user,
+		error=error,
+		latency_ms=int((time.perf_counter() - started) * 1000),
+	)
+	ai_repository.append_failed_run_message(run_id=run_id, user=user)
+	frappe.db.commit()
+
+
 def generate_ai_sales_order_draft_v1(
 	content: str,
 	company: str | None = None,
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
+	attachment_ids=None,
+	retry_run_id: str | None = None,
 ):
 	scenario = "sales_order_draft"
 	prompt_version = _resolve_prompt_version(scenario)
 	user = _current_user()
+	content, company, conversation_id, attachment_ids, retry_context = _resolve_draft_retry_request(
+		scenario=scenario, user=user, content=content, company=company,
+		conversation_id=conversation_id, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
+	)
+	attachment_refs, attachment_payloads = resolve_ai_attachments(attachment_ids, user=user)
 	model_alias = resolve_ai_selected_model_alias(model_alias)
+	if not str(content or "").strip() and attachment_payloads:
+		content = _("请根据图片中明确可见的订单信息生成销售订单草稿，缺失字段保持为空。")
 	content = _normalize_content(content)
 	company = _resolve_company_scope(company, required=True)
-	if not frappe.has_permission("Sales Order", ptype="create"):
-		raise frappe.PermissionError(_("无权创建销售订单草稿。"))
+	if not (
+		frappe.has_permission("Sales Order", ptype="create")
+		or frappe.has_permission("Sales Order", ptype="write")
+	):
+		raise frappe.PermissionError(_("无权创建或修改销售订单草稿。"))
 	if not conversation_id:
 		conversation = ai_repository.create_conversation(user=user, title=content, company=company)
 		conversation_id = conversation["name"]
@@ -2399,12 +2601,11 @@ def generate_ai_sales_order_draft_v1(
 		conversation = ai_repository.get_conversation(conversation_id=conversation_id, user=user)["conversation"]
 		if conversation.get("company") and conversation.get("company") != company:
 			frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
-	ai_repository.append_message(
-		conversation_id=conversation_id, user=user, role="user", content=content,
-		scenario=scenario, prompt_version=prompt_version,
-	)
-	run_id = ai_repository.create_run(
-		conversation_id=conversation_id, user=user, scenario=scenario, model_alias=model_alias,
+	run_id = _start_draft_generation_run(
+		scenario=scenario, prompt_version=prompt_version, user=user, content=content,
+		conversation_id=conversation_id, model_alias=model_alias, attachment_ids=attachment_ids,
+		attachment_refs=attachment_refs, attachment_payloads=attachment_payloads,
+		retry_context=retry_context,
 	)
 	frappe.db.commit()
 	started = time.perf_counter()
@@ -2415,32 +2616,71 @@ def generate_ai_sales_order_draft_v1(
 				"messages": model_messages, "scenario": scenario, "user": user,
 				"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
 				"prompt_version": prompt_version, "conversation_id": conversation_id, "run_id": run_id,
-				"model_alias": model_alias,
+				"model_alias": model_alias, "attachments": attachment_payloads,
 			}
 		)
 		candidate = result["draft"]
+		operation, order_number, existing_order, errors = _resolve_order_update_source(
+			candidate, draft_type="sales_order", company=company,
+		)
+		if operation == "create" and not frappe.has_permission("Sales Order", ptype="create"):
+			errors.append(_("当前账号无权创建销售订单。"))
+		if operation == "update" and not frappe.has_permission("Sales Order", ptype="write"):
+			errors.append(_("当前账号无权修改销售订单。"))
+		existing_customer = (
+			existing_order.get("customer")
+			if existing_order and isinstance(existing_order.get("customer"), dict)
+			else {}
+		)
 		customer, customer_candidates = _resolve_sales_draft_customer(candidate.get("customer_query"))
+		if operation == "update" and not candidate.get("customer_query") and existing_customer:
+			customer = existing_customer
+			customer_candidates = []
 		default_warehouse = _resolve_sales_draft_warehouse(candidate.get("warehouse_query"), company)
-		items = [
-			_resolve_sales_draft_item(row, company=company, default_warehouse=default_warehouse)
+		extracted_items = [
+			_resolve_sales_draft_item(
+				row, company=company, default_warehouse=default_warehouse,
+				allow_user_price=True,
+			)
 			for row in candidate.get("items") or []
 		]
-		errors = []
+		items = extracted_items or (
+			_existing_order_draft_items(existing_order) if operation == "update" and existing_order else []
+		)
 		if not customer:
 			errors.append(_("客户无法唯一匹配，请人工选择。"))
-		if not items:
+		if operation == "create" and not items:
 			errors.append(_("草稿没有有效商品明细。"))
 		for index, row in enumerate(items, 1):
 			if not row.get("item_code") or row.get("qty", 0) <= 0 or not row.get("warehouse"):
 				errors.append(_("第 {0} 行需要人工补充商品、数量或仓库。" ).format(index))
-		transaction_date = str(candidate.get("transaction_date") or nowdate())
-		delivery_date = str(candidate.get("delivery_date") or transaction_date)
+		existing_meta = (
+			existing_order.get("meta")
+			if existing_order and isinstance(existing_order.get("meta"), dict)
+			else {}
+		)
+		transaction_date = str(
+			candidate.get("transaction_date")
+			or existing_meta.get("transaction_date")
+			or nowdate()
+		)
+		delivery_date = str(
+			candidate.get("delivery_date")
+			or existing_meta.get("delivery_date")
+			or transaction_date
+		)
 		try:
 			transaction_date = str(getdate(transaction_date))
 			delivery_date = str(getdate(delivery_date))
 		except Exception:
 			errors.append(_("订单日期或交货日期格式不正确。"))
 		payload = {
+			"source_attachments": attachment_refs,
+			"operation": operation,
+			"order_number": order_number,
+			"source_order_modified": existing_meta.get("modified") if operation == "update" else None,
+			"source_document_type": candidate.get("source_document_type") or "unstructured",
+			"update_items_explicit": bool(extracted_items),
 			"company": company,
 			"customer_query": candidate.get("customer_query"),
 			"customer": customer.get("name") if customer else None,
@@ -2448,10 +2688,10 @@ def generate_ai_sales_order_draft_v1(
 			"customer_candidates": customer_candidates,
 			"transaction_date": transaction_date,
 			"delivery_date": delivery_date,
-			"default_sales_mode": candidate.get("default_sales_mode") or "wholesale",
+			"default_sales_mode": candidate.get("default_sales_mode") or existing_meta.get("default_sales_mode") or "wholesale",
 			"warehouse_query": candidate.get("warehouse_query"),
 			"warehouse": default_warehouse,
-			"remarks": candidate.get("remarks"),
+			"remarks": candidate.get("remarks") if candidate.get("remarks") is not None else existing_meta.get("remarks"),
 			"items": items,
 		}
 		validation = {
@@ -2468,9 +2708,10 @@ def generate_ai_sales_order_draft_v1(
 			_("可以进入销售订单编辑器继续复核。") if validation["ready_for_handoff"] else _("仍有字段需要人工确认。")
 		)
 		citation = {"type": "ai_draft", "id": draft["name"], "label": draft["title"], "href": None, "data": draft}
-		ai_repository.append_message(
-			conversation_id=conversation_id, user=user, role="assistant", content=assistant_content,
-			scenario=scenario, run_id=run_id, citations=[citation], prompt_version=prompt_version,
+		_save_draft_generation_assistant_message(
+			retry_context=retry_context, conversation_id=conversation_id, user=user,
+			content=assistant_content, scenario=scenario, run_id=run_id,
+			citations=[citation], prompt_version=prompt_version,
 		)
 		latency_ms = int((time.perf_counter() - started) * 1000)
 		ai_repository.complete_run(
@@ -2490,9 +2731,7 @@ def generate_ai_sales_order_draft_v1(
 				)},
 		}
 	except Exception as error:
-		frappe.db.rollback()
-		ai_repository.fail_run(run_id=run_id, user=user, error=error, latency_ms=int((time.perf_counter() - started) * 1000))
-		frappe.db.commit()
+		_fail_draft_generation_run(run_id=run_id, user=user, error=error, started=started)
 		raise
 
 
@@ -2501,15 +2740,27 @@ def generate_ai_purchase_order_draft_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
+	attachment_ids=None,
+	retry_run_id: str | None = None,
 ):
 	scenario = "purchase_order_draft"
 	prompt_version = _resolve_prompt_version(scenario)
 	user = _current_user()
+	content, company, conversation_id, attachment_ids, retry_context = _resolve_draft_retry_request(
+		scenario=scenario, user=user, content=content, company=company,
+		conversation_id=conversation_id, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
+	)
+	attachment_refs, attachment_payloads = resolve_ai_attachments(attachment_ids, user=user)
 	model_alias = resolve_ai_selected_model_alias(model_alias)
+	if not str(content or "").strip() and attachment_payloads:
+		content = _("请根据图片中明确可见的订单信息生成采购订单草稿，缺失字段保持为空。")
 	content = _normalize_content(content)
 	company = _resolve_company_scope(company, required=True)
-	if not frappe.has_permission("Purchase Order", ptype="create"):
-		raise frappe.PermissionError(_("无权创建采购订单草稿。"))
+	if not (
+		frappe.has_permission("Purchase Order", ptype="create")
+		or frappe.has_permission("Purchase Order", ptype="write")
+	):
+		raise frappe.PermissionError(_("无权创建或修改采购订单草稿。"))
 	if not conversation_id:
 		conversation = ai_repository.create_conversation(user=user, title=content, company=company)
 		conversation_id = conversation["name"]
@@ -2517,12 +2768,11 @@ def generate_ai_purchase_order_draft_v1(
 		conversation = ai_repository.get_conversation(conversation_id=conversation_id, user=user)["conversation"]
 		if conversation.get("company") and conversation.get("company") != company:
 			frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
-	ai_repository.append_message(
-		conversation_id=conversation_id, user=user, role="user", content=content,
-		scenario=scenario, prompt_version=prompt_version,
-	)
-	run_id = ai_repository.create_run(
-		conversation_id=conversation_id, user=user, scenario=scenario, model_alias=model_alias,
+	run_id = _start_draft_generation_run(
+		scenario=scenario, prompt_version=prompt_version, user=user, content=content,
+		conversation_id=conversation_id, model_alias=model_alias, attachment_ids=attachment_ids,
+		attachment_refs=attachment_refs, attachment_payloads=attachment_payloads,
+		retry_context=retry_context,
 	)
 	frappe.db.commit()
 	started = time.perf_counter()
@@ -2532,25 +2782,54 @@ def generate_ai_purchase_order_draft_v1(
 			"messages": model_messages, "scenario": scenario, "user": user,
 			"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
 			"prompt_version": prompt_version, "conversation_id": conversation_id, "run_id": run_id,
-			"model_alias": model_alias,
+			"model_alias": model_alias, "attachments": attachment_payloads,
 		})
 		candidate = result["draft"]
+		operation, order_number, existing_order, errors = _resolve_order_update_source(
+			candidate, draft_type="purchase_order", company=company,
+		)
+		if operation == "create" and not frappe.has_permission("Purchase Order", ptype="create"):
+			errors.append(_("当前账号无权创建采购订单。"))
+		if operation == "update" and not frappe.has_permission("Purchase Order", ptype="write"):
+			errors.append(_("当前账号无权修改采购订单。"))
+		existing_supplier = (
+			existing_order.get("supplier")
+			if existing_order and isinstance(existing_order.get("supplier"), dict)
+			else {}
+		)
 		supplier, supplier_candidates = _resolve_purchase_draft_supplier(candidate.get("supplier_query"))
+		if operation == "update" and not candidate.get("supplier_query") and existing_supplier:
+			supplier = existing_supplier
+			supplier_candidates = []
 		default_warehouse = _resolve_sales_draft_warehouse(candidate.get("warehouse_query"), company)
-		items = [
-			_resolve_purchase_draft_item(row, company=company, default_warehouse=default_warehouse)
+		extracted_items = [
+			_resolve_purchase_draft_item(
+				row, company=company, default_warehouse=default_warehouse,
+				allow_user_price=True,
+			)
 			for row in candidate.get("items") or []
 		]
-		errors = []
+		items = extracted_items or (
+			_existing_order_draft_items(existing_order) if operation == "update" and existing_order else []
+		)
 		if not supplier:
 			errors.append(_("供应商无法唯一匹配，请人工选择。"))
-		if not items:
+		if operation == "create" and not items:
 			errors.append(_("草稿没有有效商品明细。"))
 		for index, row in enumerate(items, 1):
 			if not row.get("item_code") or row.get("qty", 0) <= 0 or not row.get("warehouse"):
 				errors.append(_("第 {0} 行需要人工补充商品、数量或收货仓库。" ).format(index))
-		transaction_date = str(getdate(candidate.get("transaction_date") or nowdate()))
-		schedule_date = str(getdate(candidate.get("schedule_date") or transaction_date))
+		existing_meta = (
+			existing_order.get("meta")
+			if existing_order and isinstance(existing_order.get("meta"), dict)
+			else {}
+		)
+		transaction_date = str(getdate(
+			candidate.get("transaction_date") or existing_meta.get("transaction_date") or nowdate()
+		))
+		schedule_date = str(getdate(
+			candidate.get("schedule_date") or existing_meta.get("schedule_date") or transaction_date
+		))
 		supplier_name = supplier.get("name") if supplier else None
 		currency = str(candidate.get("currency") or "").strip() or None
 		if supplier_name and not currency:
@@ -2558,6 +2837,12 @@ def generate_ai_purchase_order_draft_v1(
 		if not currency:
 			currency = frappe.db.get_value("Company", company, "default_currency") or None
 		payload = {
+			"source_attachments": attachment_refs,
+			"operation": operation,
+			"order_number": order_number,
+			"source_order_modified": existing_meta.get("modified") if operation == "update" else None,
+			"source_document_type": candidate.get("source_document_type") or "unstructured",
+			"update_items_explicit": bool(extracted_items),
 			"company": company, "supplier_query": candidate.get("supplier_query"),
 			"supplier": supplier_name,
 			"supplier_display_name": supplier.get("display_name") if supplier else None,
@@ -2566,7 +2851,8 @@ def generate_ai_purchase_order_draft_v1(
 			"default_purchase_mode": candidate.get("default_purchase_mode") or "wholesale",
 			"warehouse_query": candidate.get("warehouse_query"),
 			"warehouse": default_warehouse, "currency": currency,
-			"supplier_ref": candidate.get("supplier_ref"), "remarks": candidate.get("remarks"),
+			"supplier_ref": candidate.get("supplier_ref") if candidate.get("supplier_ref") is not None else existing_meta.get("supplier_ref"),
+			"remarks": candidate.get("remarks") if candidate.get("remarks") is not None else existing_meta.get("remarks"),
 			"items": items,
 		}
 		validation = {
@@ -2582,9 +2868,10 @@ def generate_ai_purchase_order_draft_v1(
 			_("可以进入采购订单编辑器继续复核。") if validation["ready_for_handoff"] else _("仍有字段需要人工确认。")
 		)
 		citation = {"type": "ai_draft", "id": draft["name"], "label": draft["title"], "href": None, "data": draft}
-		ai_repository.append_message(
-			conversation_id=conversation_id, user=user, role="assistant", content=assistant_content,
-			scenario=scenario, run_id=run_id, citations=[citation], prompt_version=prompt_version,
+		_save_draft_generation_assistant_message(
+			retry_context=retry_context, conversation_id=conversation_id, user=user,
+			content=assistant_content, scenario=scenario, run_id=run_id,
+			citations=[citation], prompt_version=prompt_version,
 		)
 		latency_ms = int((time.perf_counter() - started) * 1000)
 		ai_repository.complete_run(
@@ -2604,9 +2891,7 @@ def generate_ai_purchase_order_draft_v1(
 				)},
 		}
 	except Exception as error:
-		frappe.db.rollback()
-		ai_repository.fail_run(run_id=run_id, user=user, error=error, latency_ms=int((time.perf_counter() - started) * 1000))
-		frappe.db.commit()
+		_fail_draft_generation_run(run_id=run_id, user=user, error=error, started=started)
 		raise
 
 
@@ -2615,11 +2900,20 @@ def generate_ai_inventory_adjustment_draft_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
+	attachment_ids=None,
+	retry_run_id: str | None = None,
 ):
 	scenario = "inventory_adjustment_draft"
 	prompt_version = _resolve_prompt_version(scenario)
 	user = _current_user()
+	content, company, conversation_id, attachment_ids, retry_context = _resolve_draft_retry_request(
+		scenario=scenario, user=user, content=content, company=company,
+		conversation_id=conversation_id, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
+	)
+	attachment_refs, attachment_payloads = resolve_ai_attachments(attachment_ids, user=user)
 	model_alias = resolve_ai_selected_model_alias(model_alias)
+	if not str(content or "").strip() and attachment_payloads:
+		content = _("请根据图片中明确可见的信息生成库存调整草稿，缺失字段保持为空。")
 	content = _normalize_content(content)
 	company = _resolve_company_scope(company, required=True)
 	if not frappe.has_permission("Stock Entry", ptype="create"):
@@ -2631,19 +2925,11 @@ def generate_ai_inventory_adjustment_draft_v1(
 		conversation = ai_repository.get_conversation(conversation_id=conversation_id, user=user)["conversation"]
 		if conversation.get("company") and conversation.get("company") != company:
 			frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
-	ai_repository.append_message(
-		conversation_id=conversation_id,
-		user=user,
-		role="user",
-		content=content,
-		scenario=scenario,
-		prompt_version=prompt_version,
-	)
-	run_id = ai_repository.create_run(
-		conversation_id=conversation_id,
-		user=user,
-		scenario=scenario,
-		model_alias=model_alias,
+	run_id = _start_draft_generation_run(
+		scenario=scenario, prompt_version=prompt_version, user=user, content=content,
+		conversation_id=conversation_id, model_alias=model_alias, attachment_ids=attachment_ids,
+		attachment_refs=attachment_refs, attachment_payloads=attachment_payloads,
+		retry_context=retry_context,
 	)
 	frappe.db.commit()
 	started = time.perf_counter()
@@ -2663,10 +2949,11 @@ def generate_ai_inventory_adjustment_draft_v1(
 				"prompt_version": prompt_version,
 				"conversation_id": conversation_id,
 				"run_id": run_id,
-				"model_alias": model_alias,
+				"model_alias": model_alias, "attachments": attachment_payloads,
 			}
 		)
 		payload, validation = _build_inventory_adjustment_draft(result["draft"], company=company)
+		payload["source_attachments"] = attachment_refs
 		draft = ai_repository.create_draft(
 			user=user,
 			conversation_id=conversation_id,
@@ -2689,15 +2976,10 @@ def generate_ai_inventory_adjustment_draft_v1(
 			"href": None,
 			"data": draft,
 		}
-		ai_repository.append_message(
-			conversation_id=conversation_id,
-			user=user,
-			role="assistant",
-			content=assistant_content,
-			scenario=scenario,
-			run_id=run_id,
-			citations=[citation],
-			prompt_version=prompt_version,
+		_save_draft_generation_assistant_message(
+			retry_context=retry_context, conversation_id=conversation_id, user=user,
+			content=assistant_content, scenario=scenario, run_id=run_id,
+			citations=[citation], prompt_version=prompt_version,
 		)
 		latency_ms = int((time.perf_counter() - started) * 1000)
 		ai_repository.complete_run(
@@ -2730,14 +3012,7 @@ def generate_ai_inventory_adjustment_draft_v1(
 			},
 		}
 	except Exception as error:
-		frappe.db.rollback()
-		ai_repository.fail_run(
-			run_id=run_id,
-			user=user,
-			error=error,
-			latency_ms=int((time.perf_counter() - started) * 1000),
-		)
-		frappe.db.commit()
+		_fail_draft_generation_run(run_id=run_id, user=user, error=error, started=started)
 		raise
 
 
@@ -2810,6 +3085,7 @@ def _resolve_existing_product_for_setup(candidate: dict) -> tuple[dict | None, l
 	state_entity = state.get("entity") if isinstance(state.get("entity"), dict) else {}
 	item_code = str(state_entity.get("name") or candidate.get("item_code") or "").strip()
 	item_name = str(candidate.get("item_name") or "").strip()
+	barcode = str(candidate.get("barcode") or "").strip()
 	matches: dict[str, dict] = {}
 	if item_code:
 		for row in frappe.get_list(
@@ -2821,13 +3097,44 @@ def _resolve_existing_product_for_setup(candidate: dict) -> tuple[dict | None, l
 			"Item", filters={"item_name": item_name}, fields=["name", "item_name", "modified"], limit_page_length=5,
 		):
 			matches[str(row.get("name"))] = dict(row)
+	if barcode:
+		barcode_parent = frappe.db.get_value("Item Barcode", {"barcode": barcode}, "parent")
+		if barcode_parent:
+			for row in frappe.get_list(
+				"Item", filters={"name": barcode_parent},
+				fields=["name", "item_name", "modified"], limit_page_length=1,
+			):
+				matches[str(row.get("name"))] = dict(row)
 	rows = list(matches.values())
-	if len(rows) != 1:
+	if len(rows) == 1:
+		detail = (get_product_detail_v2(
+			item_code=rows[0]["name"], company=candidate.get("company"),
+		) or {}).get("data") or {}
+		return detail, rows
+	if rows:
 		return None, rows
-	detail = (get_product_detail_v2(
-		item_code=rows[0]["name"], company=candidate.get("company"),
-	) or {}).get("data") or {}
-	return detail, rows
+	query = " ".join(
+		value for value in (
+			item_name,
+			str(candidate.get("brand") or candidate.get("brand_query") or "").strip(),
+			str(candidate.get("specification") or "").strip(),
+		) if value
+	).strip()
+	if not query:
+		return None, []
+	resolution = _resolve_item_candidates(
+		query, company=candidate.get("company"), context="sales", limit=5,
+	)
+	return None, [
+		{
+			"name": row.get("item_code"),
+			"item_name": row.get("item_name"),
+			"brand": row.get("brand"),
+			"specification": row.get("specification"),
+			"match_method": resolution.get("match_method"),
+		}
+		for row in resolution.get("candidates") or []
+	]
 
 
 def _product_price_fact(detail: dict, price_list: str, *, buying: bool = False) -> tuple[float | None, str]:
@@ -2855,6 +3162,8 @@ def _build_existing_product_baseline(detail: dict, *, company: str) -> tuple[dic
 	baseline = {
 		"item_name": detail.get("item_name"),
 		"image": detail.get("image") or None,
+		"barcode": detail.get("barcode") or None,
+		"specification": detail.get("specification") or None,
 		"item_code": detail.get("item_code"),
 		"item_group": detail.get("item_group"),
 		"brand": detail.get("brand"),
@@ -2869,6 +3178,8 @@ def _build_existing_product_baseline(detail: dict, *, company: str) -> tuple[dic
 	sources = {
 		"item_name": "Item/item_name",
 		"image": "Item/image",
+		"barcode": "Item Barcode/barcode",
+		"specification": "Item/specification",
 		"item_code": "Item/name",
 		"item_group": "Item/item_group",
 		"brand": "Item/brand",
@@ -2914,7 +3225,10 @@ def _initial_product_patch(candidate: dict, normalized: dict, *, operation: str)
 	return patch
 
 
-def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, dict]:
+def _build_product_setup_draft(
+	candidate: dict, *, company: str, default_image_url: str | None = None,
+	source_attachments: list[dict] | None = None,
+) -> tuple[dict, dict]:
 	candidate = dict(candidate or {})
 	candidate["company"] = company
 	previous_state = candidate.get("_state") if isinstance(candidate.get("_state"), dict) else {}
@@ -2925,6 +3239,7 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 		requested_operation = "auto"
 	existing_detail, existing_matches = _resolve_existing_product_for_setup(candidate)
 	operation = requested_operation
+	operation_decision_required = bool(requested_operation == "auto" and existing_matches)
 	if operation == "auto":
 		operation = "update" if existing_detail else "create"
 	item_name = str(candidate.get("item_name") or "").strip()[:140] or None
@@ -2974,17 +3289,25 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 		else:
 			invalid_currency = True
 	description = str(candidate.get("description") or "").strip()[:2000] or None
+	barcode = str(candidate.get("barcode") or "").strip()[:140] or None
+	specification = str(candidate.get("specification") or "").strip()[:500] or None
 	image = str(candidate.get("image") or "").strip() or None
+	if operation == "create" and not image:
+		image = str(default_image_url or "").strip() or None
 	errors = []
 	warnings = []
+	if operation_decision_required:
+		errors.append(_("发现疑似相同商品，请明确选择新增商品或完善某个现有商品。"))
 	if operation == "update" and not existing_detail:
 		errors.append(_("未找到唯一的现有商品，请补充准确商品名称或编码。"))
 	elif operation == "create" and existing_detail:
-		errors.append(_("商品 {0} 已存在；如需完善资料，请将操作改为“完善现有商品”。").format(
+		warnings.append(_("商品 {0} 已存在；已按用户明确的新增选择保留创建草稿，请确认新商品编码。").format(
 			existing_detail.get("item_name") or existing_detail.get("item_code")
 		))
-	elif len(existing_matches) > 1:
-		errors.append(_("商品名称匹配到多条记录，请使用商品编码明确选择。"))
+	elif operation == "create" and existing_matches:
+		warnings.append(_("存在疑似相同商品；已按用户明确的新增选择保留创建草稿。"))
+	elif operation == "update" and len(existing_matches) > 1:
+		errors.append(_("商品信息匹配到多条记录，请使用商品编码明确选择。"))
 	if not item_name and operation == "create":
 		errors.append(_("请填写商品名称。"))
 	if operation == "create" and item_code and frappe.db.exists("Item", item_code):
@@ -3026,6 +3349,8 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 	normalized = {
 		"item_name": item_name,
 		"image": image,
+		"barcode": barcode,
+		"specification": specification,
 		"item_code": item_code,
 		"item_group": item_group,
 		"brand": brand,
@@ -3044,7 +3369,18 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 		baseline, field_sources, inventory_context = _build_existing_product_baseline(
 			existing_detail, company=company,
 		)
-		if previous_state.get("schema_version") == AI_DRAFT_STATE_SCHEMA_VERSION:
+		previous_entity = (
+			previous_state.get("entity")
+			if isinstance(previous_state.get("entity"), dict)
+			else {}
+		)
+		state_matches_target = bool(
+			previous_state.get("schema_version") == AI_DRAFT_STATE_SCHEMA_VERSION
+			and previous_state.get("operation") == operation
+			and str(previous_entity.get("name") or "")
+			== str(existing_detail.get("item_code") or "")
+		)
+		if state_matches_target:
 			patch = derive_patch_from_submission(
 				baseline=previous_state.get("baseline"),
 				previous_patch=previous_state.get("patch"),
@@ -3054,6 +3390,13 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 			)
 		else:
 			patch = _initial_product_patch(candidate, normalized, operation=operation)
+			previous_effective = (
+				previous_state.get("effective")
+				if isinstance(previous_state.get("effective"), dict)
+				else {}
+			)
+			if normalized.get("image") == previous_effective.get("image"):
+				patch.pop("image", None)
 	else:
 		patch = _initial_product_patch(candidate, normalized, operation=operation)
 	price_patch_fields = {
@@ -3105,10 +3448,24 @@ def _build_product_setup_draft(candidate: dict, *, company: str) -> tuple[dict, 
 	)
 	state["context"] = inventory_context
 	payload = {
+		"source_attachments": source_attachments or [],
+		"operation_decision_required": operation_decision_required,
+		"duplicate_candidates": [
+			{
+				"item_code": row.get("name") or row.get("item_code"),
+				"item_name": row.get("item_name"),
+				"brand": row.get("brand"),
+				"specification": row.get("specification"),
+				"match_method": row.get("match_method") or "exact",
+			}
+			for row in existing_matches
+		],
 		"company": company,
 		"operation": operation,
 		"item_name": effective.get("item_name"),
 		"image": effective.get("image"),
+		"barcode": effective.get("barcode"),
+		"specification": effective.get("specification"),
 		"item_code": effective.get("item_code") or item_code,
 		"item_group_query": item_group_query,
 		"item_group": effective.get("item_group"),
@@ -3140,11 +3497,20 @@ def generate_ai_product_setup_draft_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
+	attachment_ids=None,
+	retry_run_id: str | None = None,
 ):
 	scenario = "product_setup_draft"
 	prompt_version = _resolve_prompt_version(scenario)
 	user = _current_user()
+	content, company, conversation_id, attachment_ids, retry_context = _resolve_draft_retry_request(
+		scenario=scenario, user=user, content=content, company=company,
+		conversation_id=conversation_id, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
+	)
+	attachment_refs, attachment_payloads = resolve_ai_attachments(attachment_ids, user=user)
 	model_alias = resolve_ai_selected_model_alias(model_alias)
+	if not str(content or "").strip() and attachment_payloads:
+		content = _("请根据图片中明确可见的商品信息创建或完善商品草稿，缺失字段保持为空。")
 	content = _normalize_content(content)
 	company = _resolve_company_scope(company, required=True)
 	if not (
@@ -3159,12 +3525,11 @@ def generate_ai_product_setup_draft_v1(
 		conversation = ai_repository.get_conversation(conversation_id=conversation_id, user=user)["conversation"]
 		if conversation.get("company") and conversation.get("company") != company:
 			frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
-	ai_repository.append_message(
-		conversation_id=conversation_id, user=user, role="user", content=content,
-		scenario=scenario, prompt_version=prompt_version,
-	)
-	run_id = ai_repository.create_run(
-		conversation_id=conversation_id, user=user, scenario=scenario, model_alias=model_alias,
+	run_id = _start_draft_generation_run(
+		scenario=scenario, prompt_version=prompt_version, user=user, content=content,
+		conversation_id=conversation_id, model_alias=model_alias, attachment_ids=attachment_ids,
+		attachment_refs=attachment_refs, attachment_payloads=attachment_payloads,
+		retry_context=retry_context,
 	)
 	frappe.db.commit()
 	started = time.perf_counter()
@@ -3176,9 +3541,35 @@ def generate_ai_product_setup_draft_v1(
 			"messages": model_messages, "scenario": scenario, "user": user,
 			"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
 			"prompt_version": prompt_version, "conversation_id": conversation_id, "run_id": run_id,
-			"model_alias": model_alias,
+			"model_alias": model_alias, "attachments": attachment_payloads,
 		})
-		payload, validation = _build_product_setup_draft(result["draft"], company=company)
+		candidate = dict(result["draft"] or {})
+		candidate["company"] = company
+		existing_detail, existing_matches = _resolve_existing_product_for_setup(candidate)
+		requested_operation = str(candidate.get("operation") or "auto").strip().lower()
+		resolved_operation = (
+			"update" if requested_operation == "auto" and existing_detail
+			else "create" if requested_operation == "auto"
+			else requested_operation
+		)
+		default_image_url = None
+		should_stage_default_image = bool(
+			attachment_refs
+			and resolved_operation == "create"
+			and (requested_operation == "create" or not existing_matches)
+		)
+		if should_stage_default_image:
+			default_image_url = stage_attachment_as_item_image(
+				attachment_id=attachment_refs[0]["attachment_id"], user=user,
+			)
+		payload, validation = _build_product_setup_draft(
+			candidate,
+			company=company,
+			default_image_url=default_image_url,
+			source_attachments=attachment_refs,
+		)
+		if should_stage_default_image and not default_image_url:
+			validation["warnings"].append(_("来源图片不符合商品封面要求，草稿未自动设置封面。"))
 		draft = ai_repository.create_draft(
 			user=user, conversation_id=conversation_id, source_run=run_id,
 			draft_type="product_setup", company=company, title=content,
@@ -3189,9 +3580,10 @@ def generate_ai_product_setup_draft_v1(
 			else _("仍有商品、价格或初始库存字段需要人工确认。")
 		)
 		citation = {"type": "ai_draft", "id": draft["name"], "label": draft["title"], "href": None, "data": draft}
-		ai_repository.append_message(
-			conversation_id=conversation_id, user=user, role="assistant", content=assistant_content,
-			scenario=scenario, run_id=run_id, citations=[citation], prompt_version=prompt_version,
+		_save_draft_generation_assistant_message(
+			retry_context=retry_context, conversation_id=conversation_id, user=user,
+			content=assistant_content, scenario=scenario, run_id=run_id,
+			citations=[citation], prompt_version=prompt_version,
 		)
 		latency_ms = int((time.perf_counter() - started) * 1000)
 		ai_repository.complete_run(
@@ -3212,12 +3604,7 @@ def generate_ai_product_setup_draft_v1(
 			},
 		}
 	except Exception as error:
-		frappe.db.rollback()
-		ai_repository.fail_run(
-			run_id=run_id, user=user, error=error,
-			latency_ms=int((time.perf_counter() - started) * 1000),
-		)
-		frappe.db.commit()
+		_fail_draft_generation_run(run_id=run_id, user=user, error=error, started=started)
 		raise
 
 
@@ -3239,6 +3626,23 @@ def list_ai_drafts_v1(
 	}
 
 
+def _order_draft_items_signature(items) -> tuple:
+	result = []
+	for row in items or []:
+		if not isinstance(row, dict):
+			continue
+		qty = None if row.get("qty") in (None, "") else flt(row.get("qty"))
+		price = None if row.get("price") in (None, "") else flt(row.get("price"))
+		result.append((
+			str(row.get("item_code") or row.get("item_query") or "").strip(),
+			qty,
+			str(row.get("uom") or "").strip(),
+			price,
+			str(row.get("warehouse") or row.get("warehouse_query") or "").strip(),
+		))
+	return tuple(result)
+
+
 def _update_ai_draft_once(
 	draft_id: str, payload, *, expected_version: int, change_source: str = "user_edit",
 ):
@@ -3248,6 +3652,7 @@ def _update_ai_draft_once(
 		payload = frappe.parse_json(payload)
 	if not isinstance(payload, dict):
 		frappe.throw(_("草稿 payload 格式不正确。"))
+	original_payload = draft.get("payload") if isinstance(draft.get("payload"), dict) else {}
 	if draft["draft_type"] == "inventory_adjustment":
 		next_payload, validation = _build_inventory_adjustment_draft(payload, company=draft["company"])
 		updated = ai_repository.update_draft(
@@ -3264,7 +3669,26 @@ def _update_ai_draft_once(
 			"data": updated,
 		}
 	if draft["draft_type"] == "product_setup":
-		next_payload, validation = _build_product_setup_draft(payload, company=draft["company"])
+		source_attachments = (
+			payload.get("source_attachments")
+			if isinstance(payload.get("source_attachments"), list)
+			else original_payload.get("source_attachments") or []
+		)
+		requested_operation = str(payload.get("operation") or "auto").strip().lower()
+		default_image_url = None
+		if requested_operation == "create" and not str(payload.get("image") or "").strip():
+			first_attachment = source_attachments[0] if source_attachments else {}
+			attachment_id = str(first_attachment.get("attachment_id") or "").strip()
+			if attachment_id:
+				default_image_url = stage_attachment_as_item_image(
+					attachment_id=attachment_id, user=user,
+				)
+		next_payload, validation = _build_product_setup_draft(
+			payload,
+			company=draft["company"],
+			default_image_url=default_image_url,
+			source_attachments=source_attachments,
+		)
 		updated = ai_repository.update_draft(
 			draft_id=draft_id,
 			user=user,
@@ -3280,6 +3704,9 @@ def _update_ai_draft_once(
 		}
 	if draft["draft_type"] == "purchase_order":
 		company = draft["company"]
+		items_changed = _order_draft_items_signature(original_payload.get("items")) != (
+			_order_draft_items_signature(payload.get("items"))
+		)
 		supplier_query = payload.get("supplier") or payload.get("supplier_query")
 		supplier, supplier_candidates = _resolve_purchase_draft_supplier(supplier_query)
 		warehouse_query = payload.get("warehouse") or payload.get("warehouse_query")
@@ -3310,6 +3737,15 @@ def _update_ai_draft_once(
 		if not currency:
 			currency = frappe.db.get_value("Company", company, "default_currency") or None
 		next_payload = {
+			"source_attachments": payload.get("source_attachments") or original_payload.get("source_attachments") or [],
+			"operation": payload.get("operation") or original_payload.get("operation") or "create",
+			"order_number": payload.get("order_number") or original_payload.get("order_number"),
+			"source_order_modified": original_payload.get("source_order_modified"),
+			"source_document_type": payload.get("source_document_type") or original_payload.get("source_document_type") or "unstructured",
+			"update_items_explicit": bool(
+				(payload.get("operation") or original_payload.get("operation")) == "update"
+				and (original_payload.get("update_items_explicit") or items_changed)
+			),
 			"company": company, "supplier_query": supplier_query, "supplier": supplier_name,
 			"supplier_display_name": supplier.get("display_name") if supplier else None,
 			"supplier_candidates": supplier_candidates,
@@ -3331,6 +3767,9 @@ def _update_ai_draft_once(
 	if draft["draft_type"] != "sales_order":
 		frappe.throw(_("不支持的 AI 草稿类型。"))
 	company = draft["company"]
+	items_changed = _order_draft_items_signature(original_payload.get("items")) != (
+		_order_draft_items_signature(payload.get("items"))
+	)
 	customer_query = payload.get("customer") or payload.get("customer_query")
 	customer, customer_candidates = _resolve_sales_draft_customer(customer_query)
 	warehouse_query = payload.get("warehouse") or payload.get("warehouse_query")
@@ -3359,6 +3798,15 @@ def _update_ai_draft_once(
 	transaction_date = str(getdate(payload.get("transaction_date") or nowdate()))
 	delivery_date = str(getdate(payload.get("delivery_date") or transaction_date))
 	next_payload = {
+		"source_attachments": payload.get("source_attachments") or original_payload.get("source_attachments") or [],
+		"operation": payload.get("operation") or original_payload.get("operation") or "create",
+		"order_number": payload.get("order_number") or original_payload.get("order_number"),
+		"source_order_modified": original_payload.get("source_order_modified"),
+		"source_document_type": payload.get("source_document_type") or original_payload.get("source_document_type") or "unstructured",
+		"update_items_explicit": bool(
+			(payload.get("operation") or original_payload.get("operation")) == "update"
+			and (original_payload.get("update_items_explicit") or items_changed)
+		),
 		"company": company, "customer_query": customer_query,
 		"customer": customer.get("name") if customer else None,
 		"customer_display_name": customer.get("display_name") if customer else None,
@@ -3439,6 +3887,8 @@ def _build_draft_version_diff(previous: dict | None, current: dict) -> dict:
 		"remarks",
 		"item_name",
 		"image",
+		"barcode",
+		"specification",
 		"item_code",
 		"item_group",
 		"brand",
@@ -3543,6 +3993,8 @@ def prepare_ai_draft_handoff_v1(draft_id: str):
 			"company": payload.get("company"),
 			"item_name": payload.get("item_name"),
 			"image": payload.get("image"),
+			"barcode": payload.get("barcode"),
+			"specification": payload.get("specification"),
 			"item_code": payload.get("item_code"),
 			"item_group": payload.get("item_group"),
 			"brand": payload.get("brand"),
@@ -3578,6 +4030,7 @@ def prepare_ai_draft_handoff_v1(draft_id: str):
 		}
 	elif draft["draft_type"] == "purchase_order":
 		handoff_payload = {
+			"operation": payload.get("operation"), "order_number": payload.get("order_number"),
 			"company": payload.get("company"), "supplier": payload.get("supplier"),
 			"transaction_date": payload.get("transaction_date"), "schedule_date": payload.get("schedule_date"),
 			"default_purchase_mode": payload.get("default_purchase_mode"), "warehouse": payload.get("warehouse"),
@@ -3587,6 +4040,7 @@ def prepare_ai_draft_handoff_v1(draft_id: str):
 		}
 	else:
 		handoff_payload = {
+			"operation": payload.get("operation"), "order_number": payload.get("order_number"),
 			"company": payload.get("company"), "customer": payload.get("customer"),
 			"transaction_date": payload.get("transaction_date"), "delivery_date": payload.get("delivery_date"),
 			"default_sales_mode": payload.get("default_sales_mode"), "warehouse": payload.get("warehouse"),
@@ -3647,10 +4101,15 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 			item_code = str(entity.get("name") or payload.get("item_code") or "").strip()
 			patch = state.get("patch") if isinstance(state.get("patch"), dict) else {}
 			update_kwargs = {}
-			for field in ("item_name", "image", "item_group", "brand", "stock_uom", "description"):
+			for field in (
+				"item_name", "image", "barcode", "specification", "item_group",
+				"brand", "stock_uom", "description",
+			):
 				if field in patch:
 					update_kwargs[field] = (
-						"" if field in {"brand", "description", "image"} and patch.get(field) is None
+						"" if field in {
+							"brand", "description", "image", "barcode", "specification",
+						} and patch.get(field) is None
 						else patch.get(field)
 					)
 			if "currency" in patch:
@@ -3704,6 +4163,8 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 		result = create_product_v2(
 			item_name=payload.get("item_name"), item_code=payload.get("item_code"),
 			**({"image": payload.get("image")} if payload.get("image") else {}),
+			**({"barcode": payload.get("barcode")} if payload.get("barcode") else {}),
+			**({"specification": payload.get("specification")} if payload.get("specification") else {}),
 			item_group=payload.get("item_group"), brand=payload.get("brand"),
 			stock_uom=payload.get("stock_uom"), standard_rate=payload.get("standard_selling_rate"),
 			valuation_rate=standard_buying_rate, currency=payload.get("currency"),
@@ -3736,6 +4197,33 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 		for row in payload.get("items") or []
 	]
 	if draft_type == "purchase_order":
+		if payload.get("operation") == "update":
+			order_number = str(payload.get("order_number") or "").strip()
+			header_result = update_purchase_order_v2(
+				order_name=order_number,
+				transaction_date=payload.get("transaction_date"),
+				schedule_date=payload.get("schedule_date"),
+				supplier_ref=payload.get("supplier_ref"),
+				remarks=payload.get("remarks"),
+				expected_modified=payload.get("source_order_modified"),
+				request_id=request_id,
+			)
+			result = header_result
+			if payload.get("update_items_explicit"):
+				header_modified = (header_result.get("meta") or {}).get("modified")
+				result = update_purchase_order_items_v2(
+					order_name=order_number,
+					items=items,
+					company=payload.get("company"),
+					schedule_date=payload.get("schedule_date"),
+					default_warehouse=payload.get("warehouse"),
+					expected_modified=header_modified,
+					request_id=request_id,
+				)
+			target_name = str(
+				result.get("purchase_order") or header_result.get("purchase_order") or order_number
+			)
+			return {"target_doctype": "Purchase Order", "target_name": target_name, "result": result}
 		result = create_purchase_order(
 			supplier=payload.get("supplier"), items=items, company=payload.get("company"),
 			transaction_date=payload.get("transaction_date"), schedule_date=payload.get("schedule_date"),
@@ -3745,6 +4233,31 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 		target_name = str(result.get("purchase_order") or "")
 		return {"target_doctype": "Purchase Order", "target_name": target_name, "result": result}
 	if draft_type == "sales_order":
+		if payload.get("operation") == "update":
+			order_number = str(payload.get("order_number") or "").strip()
+			header_result = update_order_v2(
+				order_name=order_number,
+				transaction_date=payload.get("transaction_date"),
+				delivery_date=payload.get("delivery_date"),
+				default_sales_mode=payload.get("default_sales_mode"),
+				remarks=payload.get("remarks"),
+				expected_modified=payload.get("source_order_modified"),
+				request_id=request_id,
+			)
+			result = header_result
+			if payload.get("update_items_explicit"):
+				header_modified = (header_result.get("meta") or {}).get("modified")
+				result = update_order_items_v2(
+					order_name=order_number,
+					items=items,
+					company=payload.get("company"),
+					delivery_date=payload.get("delivery_date"),
+					default_warehouse=payload.get("warehouse"),
+					expected_modified=header_modified,
+					request_id=request_id,
+				)
+			target_name = str(result.get("order") or header_result.get("order") or order_number)
+			return {"target_doctype": "Sales Order", "target_name": target_name, "result": result}
 		result = create_order_v2(
 			customer=payload.get("customer"), items=items, immediate=False, company=payload.get("company"),
 			transaction_date=payload.get("transaction_date"), delivery_date=payload.get("delivery_date"),
@@ -3758,6 +4271,8 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 
 def _draft_source_hashes(payload: dict) -> list[str]:
 	hashes = []
+	if payload.get("source_order_modified"):
+		hashes.append(f"order:{payload['source_order_modified']}")
 	state = payload.get("_state") if isinstance(payload.get("_state"), dict) else {}
 	if state.get("source_hash"):
 		hashes.append(str(state["source_hash"]))
@@ -3776,6 +4291,28 @@ def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
 	draft_type = draft.get("draft_type")
 	warehouse_query = payload.get("warehouse") or payload.get("warehouse_query")
 	default_warehouse = _resolve_sales_draft_warehouse(warehouse_query, company)
+	source_order_modified = payload.get("source_order_modified")
+	current_order_modified = None
+	order_source_errors = []
+	if payload.get("operation") == "update":
+		order_number = str(payload.get("order_number") or "").strip()
+		try:
+			response = (
+				get_sales_order_detail(order_number)
+				if draft_type == "sales_order"
+				else get_purchase_order_detail_v2(order_number)
+			)
+			detail = (response or {}).get("data") or {}
+			meta = detail.get("meta") if isinstance(detail.get("meta"), dict) else {}
+			current_order_modified = meta.get("modified")
+			if str(meta.get("company") or "").strip() != str(company or "").strip():
+				order_source_errors.append(_("来源订单不属于当前公司范围。"))
+		except frappe.DoesNotExistError:
+			order_source_errors.append(_("来源订单已不存在，不能继续执行修改草稿。"))
+		if source_order_modified and current_order_modified and (
+			str(source_order_modified) != str(current_order_modified)
+		):
+			order_source_errors.append(_("来源订单已被其他用户修改，请重新生成修改草稿。"))
 	if draft_type == "purchase_order":
 		supplier_query = payload.get("supplier") or payload.get("supplier_query")
 		supplier, supplier_candidates = _resolve_purchase_draft_supplier(supplier_query)
@@ -3796,11 +4333,12 @@ def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
 			for row in payload.get("items") or []
 			if isinstance(row, dict)
 		]
-		errors = []
+		errors = list(order_source_errors)
 		if not supplier:
 			errors.append(_("供应商当前无法唯一匹配。"))
 		next_payload = {
 			**payload,
+			"source_order_modified": source_order_modified or current_order_modified,
 			"supplier": supplier.get("name") if supplier else None,
 			"supplier_display_name": supplier.get("display_name") if supplier else None,
 			"supplier_candidates": supplier_candidates,
@@ -3827,11 +4365,12 @@ def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
 			for row in payload.get("items") or []
 			if isinstance(row, dict)
 		]
-		errors = []
+		errors = list(order_source_errors)
 		if not customer:
 			errors.append(_("客户当前无法唯一匹配。"))
 		next_payload = {
 			**payload,
+			"source_order_modified": source_order_modified or current_order_modified,
 			"customer": customer.get("name") if customer else None,
 			"customer_display_name": customer.get("display_name") if customer else None,
 			"customer_candidates": customer_candidates,
@@ -4068,11 +4607,15 @@ def _prepare_chat_run(
 	content: str | None = None,
 	model_alias: str | None = None,
 	retry_run_id: str | None = None,
+	attachment_ids=None,
 ):
 	user = _current_user()
+	attachment_refs, attachment_payloads = resolve_ai_attachments(attachment_ids, user=user)
 	model_alias = resolve_ai_selected_model_alias(model_alias)
 	requested_scenario = _resolve_scenario(scenario)
 	legacy_messages = _normalize_messages(messages) if messages not in (None, "", []) else []
+	if content in (None, "") and attachment_payloads:
+		content = _("请分析我上传的图片，并根据明确可见的信息处理当前业务需求；不确定的字段不要猜测。")
 	current_content = _normalize_content(content) if content not in (None, "") else None
 	retry_context = None
 	if retry_run_id:
@@ -4084,6 +4627,9 @@ def _prepare_chat_run(
 		current_content = retry_context["content"]
 		company = retry_context.get("company")
 		legacy_messages = []
+		attachment_refs, attachment_payloads = resolve_ai_attachments(
+			retry_context.get("attachment_ids"), user=user,
+		)
 	if not current_content:
 		if legacy_messages and legacy_messages[-1]["role"] != "user":
 			frappe.throw(_("messages 最后一条必须是 user 消息。"))
@@ -4127,6 +4673,7 @@ def _prepare_chat_run(
 	agent_runtime_candidate = bool(
 		agent_runtime_requested
 		and intent_company
+		and not attachment_payloads
 		and requested_action_scenario not in {
 			"sales_order_draft", "purchase_order_draft", "inventory_adjustment_draft", "product_setup_draft",
 		}
@@ -4236,12 +4783,13 @@ def _prepare_chat_run(
 				prompt_version=prompt_version,
 			)
 	else:
-		ai_repository.append_message(
+		user_message = ai_repository.append_message(
 			conversation_id=conversation_id,
 			user=user,
 			role="user",
 			content=current_content,
 			scenario=resolved_scenario,
+			attachments=attachment_refs,
 			prompt_version=prompt_version,
 		)
 	run_id = ai_repository.create_run(
@@ -4251,6 +4799,14 @@ def _prepare_chat_run(
 		model_alias=model_alias,
 		retry_of_run_id=retry_context.get("source_run_id") if retry_context else None,
 	)
+	if attachment_payloads and not retry_context:
+		resolve_ai_attachments(
+			attachment_ids,
+			user=user,
+			conversation_id=conversation_id,
+			message_id=user_message["name"],
+			run_id=run_id,
+		)
 	if retry_context:
 		ai_repository.rebind_failed_run_message_for_retry(
 			message_id=retry_context["failed_message_id"],
@@ -4363,6 +4919,7 @@ def _prepare_chat_run(
 		"requested_model_alias": model_alias,
 		"payload": {
 			"messages": model_messages,
+			"attachments": attachment_payloads,
 			"scenario": resolved_scenario,
 			"user": user,
 			"company": resolved_company,
@@ -4669,6 +5226,7 @@ def chat_ai_v1(
 	conversation_id: str | None = None,
 	content: str | None = None,
 	model_alias: str | None = None,
+	attachment_ids=None,
 ):
 	prepared = _prepare_chat_run(
 		messages=messages,
@@ -4677,6 +5235,7 @@ def chat_ai_v1(
 		conversation_id=conversation_id,
 		content=content,
 		model_alias=model_alias,
+		attachment_ids=attachment_ids,
 	)
 	try:
 		result = _call_ai_orchestrator(prepared["payload"])
@@ -4886,6 +5445,7 @@ def stream_ai_message_v1(
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
 	retry_run_id: str | None = None,
+	attachment_ids=None,
 ):
 	prepared = _prepare_chat_run(
 		scenario=scenario,
@@ -4894,6 +5454,7 @@ def stream_ai_message_v1(
 		content=content,
 		model_alias=model_alias,
 		retry_run_id=retry_run_id,
+		attachment_ids=attachment_ids,
 	)
 	return _stream_prepared_ai_run(prepared)
 

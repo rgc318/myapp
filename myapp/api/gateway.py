@@ -50,6 +50,8 @@ from .ai_api import save_ai_model_policy_draft_v1 as save_ai_model_policy_draft_
 from .ai_api import sync_ai_model_registry_v1 as sync_ai_model_registry_v1_service
 from .ai_api import check_ai_model_availability_v1 as check_ai_model_availability_v1_service
 from .ai_api import update_ai_model_registry_v1 as update_ai_model_registry_v1_service
+from .ai_api import upload_ai_image_attachment_v1 as upload_ai_image_attachment_v1_service
+from .ai_api import discard_ai_attachment_v1 as discard_ai_attachment_v1_service
 from .ai_api import validate_ai_model_policy_v1 as validate_ai_model_policy_v1_service
 from .ai_api import approve_ai_vector_release_v1 as approve_ai_vector_release_v1_service
 from .ai_api import create_ai_vector_release_v1 as create_ai_vector_release_v1_service
@@ -338,6 +340,28 @@ def reset_ai_conversation_context_v1(conversation_id: str):
 
 
 @frappe.whitelist(methods=["POST"])
+def upload_ai_image_attachment_v1(
+	filename: str, file_content_base64: str, content_type: str,
+):
+	return _handle_gateway_call(
+		lambda: upload_ai_image_attachment_v1_service(
+			filename=filename,
+			file_content_base64=file_content_base64,
+			content_type=content_type,
+		),
+		success_code="AI_ATTACHMENT_UPLOADED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def discard_ai_attachment_v1(attachment_id: str):
+	return _handle_gateway_call(
+		lambda: discard_ai_attachment_v1_service(attachment_id=attachment_id),
+		success_code="AI_ATTACHMENT_DISCARDED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
 def chat_ai_v1(
 	messages=None,
 	scenario: str | None = None,
@@ -345,6 +369,7 @@ def chat_ai_v1(
 	conversation_id: str | None = None,
 	content: str | None = None,
 	model_alias: str | None = None,
+	attachment_ids=None,
 ):
 	return _handle_gateway_call(
 		lambda: chat_ai_v1_service(
@@ -354,6 +379,7 @@ def chat_ai_v1(
 			conversation_id=conversation_id,
 			content=content,
 			model_alias=model_alias,
+			attachment_ids=attachment_ids,
 		),
 		success_code="AI_CHAT_COMPLETED",
 	)
@@ -367,6 +393,7 @@ def stream_ai_message_v1(
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
 	retry_run_id: str | None = None,
+	attachment_ids=None,
 ):
 	return stream_ai_message_v1_service(
 		content=content,
@@ -375,6 +402,7 @@ def stream_ai_message_v1(
 		conversation_id=conversation_id,
 		model_alias=model_alias,
 		retry_run_id=retry_run_id,
+		attachment_ids=attachment_ids,
 	)
 
 
@@ -418,9 +446,13 @@ def submit_ai_feedback_v1(
 
 
 @frappe.whitelist(methods=["POST"])
-def resolve_ai_scenario_v1(content: str):
+def resolve_ai_scenario_v1(
+	content: str | None = None, attachment_ids=None, model_alias: str | None = None,
+):
 	return _handle_gateway_call(
-		lambda: resolve_ai_scenario_v1_service(content=content),
+		lambda: resolve_ai_scenario_v1_service(
+			content=content, attachment_ids=attachment_ids, model_alias=model_alias,
+		),
 		success_code="AI_SCENARIO_RESOLVED",
 	)
 
@@ -439,10 +471,13 @@ def generate_ai_sales_order_draft_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
+	attachment_ids=None,
+	retry_run_id: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: generate_ai_sales_order_draft_v1_service(
-			content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
+			content=content, company=company, conversation_id=conversation_id,
+			model_alias=model_alias, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
 		),
 		success_code="AI_SALES_ORDER_DRAFT_CREATED",
 	)
@@ -454,10 +489,13 @@ def generate_ai_purchase_order_draft_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
+	attachment_ids=None,
+	retry_run_id: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: generate_ai_purchase_order_draft_v1_service(
-			content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
+			content=content, company=company, conversation_id=conversation_id,
+			model_alias=model_alias, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
 		),
 		success_code="AI_PURCHASE_ORDER_DRAFT_CREATED",
 	)
@@ -469,10 +507,13 @@ def generate_ai_inventory_adjustment_draft_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
+	attachment_ids=None,
+	retry_run_id: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: generate_ai_inventory_adjustment_draft_v1_service(
-			content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
+			content=content, company=company, conversation_id=conversation_id,
+			model_alias=model_alias, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
 		),
 		success_code="AI_INVENTORY_ADJUSTMENT_DRAFT_CREATED",
 	)
@@ -484,10 +525,13 @@ def generate_ai_product_setup_draft_v1(
 	company: str | None = None,
 	conversation_id: str | None = None,
 	model_alias: str | None = None,
+	attachment_ids=None,
+	retry_run_id: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: generate_ai_product_setup_draft_v1_service(
-			content=content, company=company, conversation_id=conversation_id, model_alias=model_alias,
+			content=content, company=company, conversation_id=conversation_id,
+			model_alias=model_alias, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
 		),
 		success_code="AI_PRODUCT_SETUP_DRAFT_CREATED",
 	)

@@ -1542,8 +1542,9 @@ def get_purchase_order_detail_v2(order_name: str):
 					"latest_payment_entry": latest_payment_entry.get("payment_entry"),
 				},
 				"timeline": _build_purchase_order_timeline(po, receipt_names, invoice_names),
-				"meta": {
-					"company": po.company,
+					"meta": {
+						"company": po.company,
+						"modified": po.modified,
 					"currency": po.get("currency"),
 					"transaction_date": po.get("transaction_date"),
 					"schedule_date": po.get("schedule_date"),
@@ -2351,12 +2352,15 @@ def disable_supplier_v2(supplier: str, disabled: bool | int = True, **kwargs):
 
 def _get_purchase_order_doc_for_update(
 	order_name: str, *, allow_cancelled: bool = False, permission_type: str = "write",
+	expected_modified=None,
 ):
 	if not order_name:
 		frappe.throw(_("order_name 不能为空。"))
 
 	po = frappe.get_doc("Purchase Order", order_name)
 	_check_doc_permission(po, permission_type)
+	if expected_modified and str(po.modified) != str(expected_modified):
+		frappe.throw(_("采购订单已被其他用户修改，请刷新后重试。"))
 	if cint(po.docstatus) == 2 and not allow_cancelled:
 		frappe.throw(_("已取消的采购订单不允许继续修改。"))
 	return po
@@ -2405,7 +2409,9 @@ def update_purchase_order_v2(order_name: str, **kwargs):
 
 	try:
 		def _update_purchase_order_v2():
-			po = _get_purchase_order_doc_for_update(order_name)
+			po = _get_purchase_order_doc_for_update(
+				order_name, expected_modified=kwargs.get("expected_modified"),
+			)
 			if kwargs.get("transaction_date") is not None:
 				po.transaction_date = kwargs.get("transaction_date") or None
 			if kwargs.get("schedule_date") is not None:
@@ -2432,8 +2438,9 @@ def update_purchase_order_v2(order_name: str, **kwargs):
 				"status": "success",
 				"purchase_order": po.name,
 				"message": _("采购订单 {0} 已按 v2 模型更新。").format(po.name),
-				"meta": {
-					"transaction_date": po.get("transaction_date"),
+					"meta": {
+						"modified": po.modified,
+						"transaction_date": po.get("transaction_date"),
 					"schedule_date": po.get("schedule_date"),
 					"remarks": _get_purchase_order_remark(po),
 					"supplier_ref": po.get("supplier_ref"),
@@ -2454,7 +2461,9 @@ def update_purchase_order_items_v2(order_name: str, items, **kwargs):
 
 	try:
 		def _update_purchase_order_items_v2():
-			po = _get_purchase_order_doc_for_update(order_name)
+			po = _get_purchase_order_doc_for_update(
+				order_name, expected_modified=kwargs.get("expected_modified"),
+			)
 			_ensure_purchase_order_items_editable(po)
 			target_po, source_order_name = _prepare_purchase_order_for_item_replacement(po)
 
@@ -2485,8 +2494,9 @@ def update_purchase_order_items_v2(order_name: str, items, **kwargs):
 				"source_purchase_order": source_order_name,
 				"message": _("采购订单 {0} 商品明细已按 v2 模型更新。").format(target_po.name),
 				"items": _serialize_purchase_order_items(list(target_po.get("items") or [])),
-				"meta": {
-					"schedule_date": target_po.get("schedule_date"),
+					"meta": {
+						"modified": target_po.modified,
+						"schedule_date": target_po.get("schedule_date"),
 					"company": target_po.company,
 				},
 			}
