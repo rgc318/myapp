@@ -19,6 +19,7 @@ from werkzeug.wrappers import Response
 
 from myapp.services import ai_repository
 from myapp.services.ai_attachment_service import (
+	hydrate_ai_message_attachments,
 	resolve_ai_attachments,
 	stage_attachment_as_item_image,
 )
@@ -264,6 +265,17 @@ def _normalize_messages(messages):
 			frappe.throw(_("AI 消息 role 只支持 user 或 assistant。"))
 		normalized.append({"role": role, "content": _normalize_content(row.get("content"))})
 	return normalized
+
+
+def _load_model_messages(*, conversation_id: str, user: str) -> list[dict]:
+	return hydrate_ai_message_attachments(
+		ai_repository.load_model_messages(
+			conversation_id=conversation_id,
+			user=user,
+			limit=MAX_AI_MESSAGES,
+		),
+		user=user,
+	)
 
 
 def _resolve_scenario(scenario: str | None) -> str:
@@ -2610,13 +2622,13 @@ def generate_ai_sales_order_draft_v1(
 	frappe.db.commit()
 	started = time.perf_counter()
 	try:
-		model_messages = ai_repository.load_model_messages(conversation_id=conversation_id, user=user, limit=MAX_AI_MESSAGES)
+		model_messages = _load_model_messages(conversation_id=conversation_id, user=user)
 		result = _call_ai_orchestrator_sales_draft(
 			{
 				"messages": model_messages, "scenario": scenario, "user": user,
 				"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
 				"prompt_version": prompt_version, "conversation_id": conversation_id, "run_id": run_id,
-				"model_alias": model_alias, "attachments": attachment_payloads,
+				"model_alias": model_alias,
 			}
 		)
 		candidate = result["draft"]
@@ -2777,12 +2789,12 @@ def generate_ai_purchase_order_draft_v1(
 	frappe.db.commit()
 	started = time.perf_counter()
 	try:
-		model_messages = ai_repository.load_model_messages(conversation_id=conversation_id, user=user, limit=MAX_AI_MESSAGES)
+		model_messages = _load_model_messages(conversation_id=conversation_id, user=user)
 		result = _call_ai_orchestrator_purchase_draft({
 			"messages": model_messages, "scenario": scenario, "user": user,
 			"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
 			"prompt_version": prompt_version, "conversation_id": conversation_id, "run_id": run_id,
-			"model_alias": model_alias, "attachments": attachment_payloads,
+			"model_alias": model_alias,
 		})
 		candidate = result["draft"]
 		operation, order_number, existing_order, errors = _resolve_order_update_source(
@@ -2934,11 +2946,7 @@ def generate_ai_inventory_adjustment_draft_v1(
 	frappe.db.commit()
 	started = time.perf_counter()
 	try:
-		model_messages = ai_repository.load_model_messages(
-			conversation_id=conversation_id,
-			user=user,
-			limit=MAX_AI_MESSAGES,
-		)
+		model_messages = _load_model_messages(conversation_id=conversation_id, user=user)
 		result = _call_ai_orchestrator_inventory_adjustment_draft(
 			{
 				"messages": model_messages,
@@ -2949,7 +2957,7 @@ def generate_ai_inventory_adjustment_draft_v1(
 				"prompt_version": prompt_version,
 				"conversation_id": conversation_id,
 				"run_id": run_id,
-				"model_alias": model_alias, "attachments": attachment_payloads,
+				"model_alias": model_alias,
 			}
 		)
 		payload, validation = _build_inventory_adjustment_draft(result["draft"], company=company)
@@ -3534,14 +3542,12 @@ def generate_ai_product_setup_draft_v1(
 	frappe.db.commit()
 	started = time.perf_counter()
 	try:
-		model_messages = ai_repository.load_model_messages(
-			conversation_id=conversation_id, user=user, limit=MAX_AI_MESSAGES,
-		)
+		model_messages = _load_model_messages(conversation_id=conversation_id, user=user)
 		result = _call_ai_orchestrator_product_setup_draft({
 			"messages": model_messages, "scenario": scenario, "user": user,
 			"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
 			"prompt_version": prompt_version, "conversation_id": conversation_id, "run_id": run_id,
-			"model_alias": model_alias, "attachments": attachment_payloads,
+			"model_alias": model_alias,
 		})
 		candidate = dict(result["draft"] or {})
 		candidate["company"] = company
@@ -4878,11 +4884,7 @@ def _prepare_chat_run(
 				"policy_code": agent_runtime_readiness.get("policy_code"),
 				"event_visible": False,
 			})
-		model_messages = ai_repository.load_model_messages(
-			conversation_id=conversation_id,
-			user=user,
-			limit=MAX_AI_MESSAGES,
-		)
+		model_messages = _load_model_messages(conversation_id=conversation_id, user=user)
 		next_conversation_state = (
 			conversation_state
 			if agent_mode
@@ -4919,7 +4921,6 @@ def _prepare_chat_run(
 		"requested_model_alias": model_alias,
 		"payload": {
 			"messages": model_messages,
-			"attachments": attachment_payloads,
 			"scenario": resolved_scenario,
 			"user": user,
 			"company": resolved_company,
@@ -4968,9 +4969,7 @@ def _prepare_agent_resume(run_id: str) -> dict:
 			frappe.throw(_("AI Run 使用的 Prompt 版本已不可用，不能安全恢复。"))
 		model_alias = resolve_ai_selected_model_alias(resume_context.get("model_alias"))
 		company = _resolve_company_scope(resume_context.get("company"), required=True)
-		model_messages = ai_repository.load_model_messages(
-			conversation_id=conversation_id, user=user, limit=MAX_AI_MESSAGES,
-		)
+		model_messages = _load_model_messages(conversation_id=conversation_id, user=user)
 		if not model_messages:
 			frappe.throw(_("AI Run 所属会话没有可恢复的消息。"))
 		frappe.db.commit()
@@ -5037,9 +5036,7 @@ def _prepare_agent_approval_resume(approval_id: str) -> dict:
 			frappe.throw(_("AI Run 使用的 Prompt 版本已不可用，不能安全恢复。"))
 		model_alias = resolve_ai_selected_model_alias(resume_context.get("model_alias"))
 		company = _resolve_company_scope(resume_context.get("company"), required=True)
-		model_messages = ai_repository.load_model_messages(
-			conversation_id=conversation_id, user=user, limit=MAX_AI_MESSAGES,
-		)
+		model_messages = _load_model_messages(conversation_id=conversation_id, user=user)
 		if not model_messages:
 			frappe.throw(_("AI Run 所属会话没有可恢复的消息。"))
 		frappe.db.commit()

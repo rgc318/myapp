@@ -662,7 +662,7 @@ def load_model_messages(*, conversation_id: str, user: str, limit: int = 20) -> 
 	context_start_sequence = max(1, cint(getattr(conversation, "context_start_sequence", 1)) or 1)
 	rows = frappe.db.sql(
 		f"""
-		SELECT m.role, m.content
+		SELECT m.role, m.content, m.attachments_json
 		FROM `{MESSAGE_TABLE}` m
 		LEFT JOIN `{RUN_TABLE}` r ON r.name = m.run_id
 		WHERE m.conversation = %s AND m.sequence_no >= %s
@@ -679,7 +679,14 @@ def load_model_messages(*, conversation_id: str, user: str, limit: int = 20) -> 
 		(conversation_id, context_start_sequence, max(1, min(20, cint(limit) or 20))),
 		as_dict=True,
 	)
-	return [{"role": row.role, "content": row.content or ""} for row in reversed(rows)]
+	return [
+		{
+			"role": row.role,
+			"content": row.content or "",
+			"attachments": _safe_json_loads(row.attachments_json, []),
+		}
+		for row in reversed(rows)
+	]
 
 
 def create_run(

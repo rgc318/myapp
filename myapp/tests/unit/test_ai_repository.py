@@ -605,12 +605,18 @@ class TestAiRepository(TestCase):
 		with patch.object(ai_repository, "_get_owned_conversation", return_value=conversation), patch.object(
 			ai_repository, "frappe",
 		) as mock_frappe:
-			mock_frappe.db.sql.return_value = [frappe._dict({"role": "user", "content": "新问题"})]
+			mock_frappe.db.sql.return_value = [frappe._dict({
+				"role": "user", "content": "新问题",
+				"attachments_json": '[{"attachment_id":"AI-ATT-1"}]',
+			})]
 			result = load_model_messages(
 				conversation_id="AI-CONV-1", user="user@example.com", limit=20,
 			)
 
-		self.assertEqual(result, [{"role": "user", "content": "新问题"}])
+		self.assertEqual(result, [{
+			"role": "user", "content": "新问题",
+			"attachments": [{"attachment_id": "AI-ATT-1"}],
+		}])
 		self.assertIn("sequence_no >= %s", mock_frappe.db.sql.call_args.args[0])
 		self.assertEqual(mock_frappe.db.sql.call_args.args[1], ("AI-CONV-1", 7, 20))
 	def test_refresh_conversation_citations_uses_latest_draft_state(self):

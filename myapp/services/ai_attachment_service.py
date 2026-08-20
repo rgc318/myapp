@@ -169,14 +169,36 @@ def resolve_ai_attachments(
 	_ensure_table()
 	user = user or current_user()
 	placeholders = ", ".join(["%s"] * len(ids))
+	now = now_datetime()
 	rows = frappe.db.sql(
 		f"""
-		SELECT * FROM `{ATTACHMENT_TABLE}`
-		WHERE name IN ({placeholders}) AND owner = %s AND status IN ('uploaded', 'bound')
-			AND (retention_until IS NULL OR retention_until >= %s)
+		SELECT a.* FROM `{ATTACHMENT_TABLE}` a
+		LEFT JOIN `tabMyApp AI Conversation` c ON c.name = a.conversation
+		WHERE a.name IN ({placeholders}) AND a.owner = %s
+			AND (
+				(a.status = 'uploaded' AND (a.retention_until IS NULL OR a.retention_until >= %s))
+				OR (
+					a.status = 'bound' AND (
+						(a.conversation IS NOT NULL AND c.name IS NOT NULL
+							AND (
+								COALESCE(
+									GREATEST(c.retention_until, a.retention_until),
+									c.retention_until,
+									a.retention_until
+								) IS NULL
+								OR COALESCE(
+									GREATEST(c.retention_until, a.retention_until),
+									c.retention_until,
+									a.retention_until
+								) >= %s
+							))
+						OR (a.conversation IS NULL AND (a.retention_until IS NULL OR a.retention_until >= %s))
+					)
+				)
+			)
 		FOR UPDATE
 		""",
-		(*ids, user, now_datetime()),
+		(*ids, user, now, now, now),
 		as_dict=True,
 	)
 	by_id = {row.name: row for row in rows}
@@ -184,6 +206,16 @@ def resolve_ai_attachments(
 		raise frappe.PermissionError(_("AI 附件不存在、已过期或不属于当前账号。"))
 	refs = []
 	model_payloads = []
+	conversation_retention_until = None
+	if conversation_id:
+		retention_rows = frappe.db.sql(
+			"SELECT retention_until FROM `tabMyApp AI Conversation` WHERE name = %s LIMIT 1",
+			(conversation_id,),
+			as_dict=True,
+		)
+		conversation_retention_until = (
+			retention_rows[0].retention_until if retention_rows else None
+		)
 	for attachment_id in ids:
 		row = by_id[attachment_id]
 		if conversation_id and row.conversation and row.conversation != conversation_id:
@@ -213,12 +245,40 @@ def resolve_ai_attachments(
 				UPDATE `{ATTACHMENT_TABLE}`
 				SET status = 'bound', conversation = COALESCE(conversation, %s),
 					message_id = COALESCE(message_id, %s), source_run = COALESCE(source_run, %s),
+					retention_until = CASE
+						WHEN %s IS NULL THEN retention_until
+						WHEN retention_until IS NULL OR retention_until < %s THEN %s
+						ELSE retention_until
+					END,
 					modified = %s, modified_by = %s
 				WHERE name = %s AND owner = %s
 				""",
-				(conversation_id, message_id, run_id, now_datetime(), user, attachment_id, user),
+				(
+					conversation_id, message_id, run_id,
+					conversation_retention_until, conversation_retention_until,
+					conversation_retention_until, now_datetime(), user, attachment_id, user,
+				),
 			)
 	return refs, model_payloads
+
+
+def hydrate_ai_message_attachments(messages: list[dict], *, user: str) -> list[dict]:
+	"""Resolve persisted message attachment references into private model payloads."""
+	hydrated = []
+	for message in messages:
+		row = dict(message)
+		attachment_ids = [
+			str(item.get("attachment_id") or "").strip()
+			for item in row.get("attachments") or []
+			if isinstance(item, dict) and str(item.get("attachment_id") or "").strip()
+		]
+		if attachment_ids:
+			_refs, payloads = resolve_ai_attachments(attachment_ids, user=user)
+			row["attachments"] = payloads
+		else:
+			row.pop("attachments", None)
+		hydrated.append(row)
+	return hydrated
 
 
 def stage_attachment_as_item_image(*, attachment_id: str, user: str | None = None) -> str | None:
@@ -281,8 +341,23 @@ def discard_ai_attachment(*, attachment_id: str) -> dict:
 def cleanup_expired_ai_attachments() -> dict:
 	_ensure_table()
 	rows = frappe.db.sql(
-		f"SELECT * FROM `{ATTACHMENT_TABLE}` WHERE retention_until < %s AND status <> 'expired' LIMIT 200",
-		(now_datetime(),),
+		f"""
+		SELECT a.* FROM `{ATTACHMENT_TABLE}` a
+		LEFT JOIN `tabMyApp AI Conversation` c ON c.name = a.conversation
+		WHERE a.status <> 'expired' AND (
+			(a.status = 'uploaded' AND a.retention_until < %s)
+			OR (
+				a.status = 'bound'
+				AND COALESCE(
+					GREATEST(c.retention_until, a.retention_until),
+					c.retention_until,
+					a.retention_until
+				) < %s
+			)
+		)
+		LIMIT 200
+		""",
+		(now_datetime(), now_datetime()),
 		as_dict=True,
 	)
 	deleted = 0

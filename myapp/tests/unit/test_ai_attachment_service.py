@@ -8,6 +8,7 @@ from myapp.services.ai_attachment_service import (
 	_decode_content,
 	_normalize_ids,
 	_validate_source_content_type,
+	hydrate_ai_message_attachments,
 )
 
 
@@ -38,3 +39,27 @@ class TestAiAttachmentService(TestCase):
 		_validate_source_content_type(source_format="png", content_type="image/png")
 		with self.assertRaises(frappe.ValidationError):
 			_validate_source_content_type(source_format="gif", content_type="image/png")
+
+	@patch("myapp.services.ai_attachment_service.resolve_ai_attachments")
+	def test_hydrate_message_attachments_preserves_message_ownership(self, mock_resolve):
+		mock_resolve.side_effect = [
+			([{"attachment_id": "AI-ATT-1"}], [{"attachment_id": "AI-ATT-1", "data_base64": "aW1nMQ=="}]),
+			([{"attachment_id": "AI-ATT-2"}], [{"attachment_id": "AI-ATT-2", "data_base64": "aW1nMg=="}]),
+		]
+
+		result = hydrate_ai_message_attachments([
+			{
+				"role": "user", "content": "第一张图",
+				"attachments": [{"attachment_id": "AI-ATT-1"}],
+			},
+			{"role": "assistant", "content": "已看到"},
+			{
+				"role": "user", "content": "第二张图",
+				"attachments": [{"attachment_id": "AI-ATT-2"}],
+			},
+		], user="user@example.com")
+
+		self.assertEqual(result[0]["attachments"][0]["attachment_id"], "AI-ATT-1")
+		self.assertNotIn("attachments", result[1])
+		self.assertEqual(result[2]["attachments"][0]["attachment_id"], "AI-ATT-2")
+		self.assertEqual(mock_resolve.call_count, 2)
