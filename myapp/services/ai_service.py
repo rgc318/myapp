@@ -90,7 +90,7 @@ PROMPT_VERSION_BY_SCENARIO = {
 	"sales_order_draft": "sales-order-draft-v3",
 	"purchase_order_draft": "purchase-order-draft-v3",
 	"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
-	"product_setup_draft": "product-setup-draft-v5",
+	"product_setup_draft": "product-setup-draft-v6",
 }
 
 PRODUCT_SETUP_EDITABLE_FIELDS = (
@@ -114,6 +114,21 @@ PRODUCT_SEARCH_PREFIX_PATTERN = re.compile(
 PRODUCT_SEARCH_STATUS_SUFFIX_PATTERN = re.compile(
 	r"(?:现在|目前)?(?:是否|有没有|有无)?(?:已|已经)?(?:正常)?(?:有)?(?:入库|到货|有货|现货|库存)"
 	r"(?:情况|状态|数量)?(?:了)?(?:吗)?$"
+)
+PRODUCT_IMAGE_REFERENCE_PATTERN = re.compile(
+	r"(?:之前|刚才|前面|上面|上一(?:张|个)|那(?:张|个)|这(?:张|个)|我(?:给你)?(?:发|上传|提供))"
+	r".{0,12}(?:图片|照片|图)"
+	"|"
+	r"(?:图片|照片|图).{0,12}(?:之前|刚才|前面|上面|上一(?:张|个)|那(?:张|个)|这(?:张|个)|我(?:给你)?(?:发|上传|提供))"
+)
+PRODUCT_IMAGE_TARGET_PATTERN = re.compile(r"(?:商品图片|商品图|主图|封面|图片字段)")
+PRODUCT_IMAGE_APPLY_ACTION_PATTERN = re.compile(
+	r"(?:使用|采用|沿用|设为|设置为|作为|用作|替换|换成|改成|更新成|放进|加入|添加)"
+)
+PRODUCT_IMAGE_NEGATION_PATTERN = re.compile(
+	r"(?:不要|别|无需|不用|不再|不需要).{0,10}(?:使用|采用|沿用|替换|更新|修改|设置)?.{0,8}(?:图片|照片|图)"
+	"|"
+	r"(?:保留|沿用).{0,8}(?:现有|原有|当前).{0,8}(?:图片|照片|图|主图|封面)"
 )
 
 
@@ -3233,6 +3248,167 @@ def _initial_product_patch(candidate: dict, normalized: dict, *, operation: str)
 	return patch
 
 
+def _references_prior_product_image(content: str) -> bool:
+	compact = re.sub(r"\s+", "", str(content or "")).lower()
+	return bool(compact and PRODUCT_IMAGE_REFERENCE_PATTERN.search(compact))
+
+
+def _requests_product_image_application(content: str) -> bool:
+	compact = re.sub(r"\s+", "", str(content or "")).lower()
+	if not compact or PRODUCT_IMAGE_NEGATION_PATTERN.search(compact):
+		return False
+	if not PRODUCT_IMAGE_APPLY_ACTION_PATTERN.search(compact):
+		return False
+	return bool(
+		PRODUCT_IMAGE_TARGET_PATTERN.search(compact)
+		or PRODUCT_IMAGE_REFERENCE_PATTERN.search(compact)
+	)
+
+
+def _safe_attachment_ref(attachment: dict) -> dict | None:
+	attachment_id = str(attachment.get("attachment_id") or "").strip()
+	if not attachment_id:
+		return None
+	return {
+		"attachment_id": attachment_id,
+		"filename": attachment.get("filename"),
+		"content_type": attachment.get("content_type") or attachment.get("mime_type"),
+		"file_size": attachment.get("file_size"),
+		"width": attachment.get("width"),
+		"height": attachment.get("height"),
+		"sha256": attachment.get("sha256"),
+		"preview_url": attachment.get("preview_url"),
+		"status": attachment.get("status"),
+		"retention_until": attachment.get("retention_until"),
+	}
+
+
+def _deduplicate_attachment_refs(refs) -> list[dict]:
+	result = []
+	seen = set()
+	for item in refs or []:
+		if not isinstance(item, dict):
+			continue
+		ref = _safe_attachment_ref(item)
+		if not ref or ref["attachment_id"] in seen:
+			continue
+		seen.add(ref["attachment_id"])
+		result.append(ref)
+	return result
+
+
+def _candidate_evidence_attachment_ids(candidate: dict) -> list[str]:
+	image_result = []
+	result = []
+	for evidence in candidate.get("evidence") or []:
+		if not isinstance(evidence, dict):
+			continue
+		attachment_id = str(evidence.get("attachment_id") or "").strip()
+		if attachment_id and attachment_id not in result:
+			result.append(attachment_id)
+			if str(evidence.get("field") or "").strip().lower() == "image":
+				image_result.append(attachment_id)
+	return image_result or result
+
+
+def _candidate_requests_product_image_application(candidate: dict) -> bool:
+	return any(
+		isinstance(evidence, dict)
+		and str(evidence.get("field") or "").strip().lower() == "image"
+		and str(evidence.get("value") or "").strip().lower() == "use_as_product_image"
+		and str(evidence.get("attachment_id") or "").strip()
+		for evidence in candidate.get("evidence") or []
+	)
+
+
+def _resolve_product_setup_source_attachments(
+	*, candidate: dict, model_messages: list[dict], current_attachment_refs: list[dict], content: str,
+) -> list[dict]:
+	"""Resolve only attachments that are valid in this conversation's current model window."""
+	current_refs = _deduplicate_attachment_refs(current_attachment_refs)
+	message_ref_groups = []
+	available_refs = []
+	for message in model_messages or []:
+		if not isinstance(message, dict) or message.get("role") != "user":
+			continue
+		refs = _deduplicate_attachment_refs(message.get("attachments"))
+		if refs:
+			message_ref_groups.append(refs)
+			available_refs.extend(refs)
+	available_refs = _deduplicate_attachment_refs([*available_refs, *current_refs])
+	available_by_id = {ref["attachment_id"]: ref for ref in available_refs}
+	evidence_refs = [
+		available_by_id[attachment_id]
+		for attachment_id in _candidate_evidence_attachment_ids(candidate)
+		if attachment_id in available_by_id
+	]
+	if evidence_refs:
+		return _deduplicate_attachment_refs(evidence_refs)
+	if current_refs:
+		return current_refs
+	if _references_prior_product_image(content) and message_ref_groups:
+		# 商品封面只有一个主图字段；没有精确 evidence 时只回退到最近带图消息的第一张图。
+		return message_ref_groups[-1][:1]
+	return []
+
+
+def _prepare_product_setup_image_binding(
+	*, candidate: dict, model_messages: list[dict], current_attachment_refs: list[dict],
+	content: str, user: str, resolved_operation: str, requested_operation: str,
+	existing_matches: list[dict],
+) -> tuple[dict, list[dict], str | None, bool, bool]:
+	candidate = dict(candidate or {})
+	source_attachments = _resolve_product_setup_source_attachments(
+		candidate=candidate,
+		model_messages=model_messages,
+		current_attachment_refs=current_attachment_refs,
+		content=content,
+	)
+	source_attachment_ids = {
+		str(item.get("attachment_id") or "").strip()
+		for item in source_attachments
+		if isinstance(item, dict)
+	}
+	candidate_image_attachment_ids = {
+		str(evidence.get("attachment_id") or "").strip()
+		for evidence in candidate.get("evidence") or []
+		if isinstance(evidence, dict)
+		and str(evidence.get("field") or "").strip().lower() == "image"
+		and str(evidence.get("value") or "").strip().lower() == "use_as_product_image"
+	}
+	apply_source_image = (
+		_requests_product_image_application(content)
+		or (
+			_candidate_requests_product_image_application(candidate)
+			and bool(source_attachment_ids & candidate_image_attachment_ids)
+		)
+	)
+	should_stage_default_image = bool(
+		source_attachments
+		and (
+			(
+				resolved_operation == "create"
+				and (requested_operation == "create" or not existing_matches)
+			)
+			or (resolved_operation == "update" and apply_source_image)
+		)
+	)
+	default_image_url = None
+	if should_stage_default_image:
+		default_image_url = stage_attachment_as_item_image(
+			attachment_id=source_attachments[0]["attachment_id"], user=user,
+		)
+	if resolved_operation == "update" and apply_source_image and default_image_url:
+		candidate["image"] = default_image_url
+	return (
+		candidate,
+		source_attachments,
+		default_image_url,
+		should_stage_default_image,
+		apply_source_image,
+	)
+
+
 def _build_product_setup_draft(
 	candidate: dict, *, company: str, default_image_url: str | None = None,
 	source_attachments: list[dict] | None = None,
@@ -3558,24 +3734,40 @@ def generate_ai_product_setup_draft_v1(
 			else "create" if requested_operation == "auto"
 			else requested_operation
 		)
-		default_image_url = None
-		should_stage_default_image = bool(
-			attachment_refs
-			and resolved_operation == "create"
-			and (requested_operation == "create" or not existing_matches)
+		(
+			candidate,
+			source_attachments,
+			default_image_url,
+			should_stage_default_image,
+			apply_source_image,
+		) = _prepare_product_setup_image_binding(
+			candidate=candidate,
+			model_messages=model_messages,
+			current_attachment_refs=attachment_refs,
+			content=content,
+			user=user,
+			resolved_operation=resolved_operation,
+			requested_operation=requested_operation,
+			existing_matches=existing_matches,
 		)
-		if should_stage_default_image:
-			default_image_url = stage_attachment_as_item_image(
-				attachment_id=attachment_refs[0]["attachment_id"], user=user,
-			)
 		payload, validation = _build_product_setup_draft(
 			candidate,
 			company=company,
 			default_image_url=default_image_url,
-			source_attachments=attachment_refs,
+			source_attachments=source_attachments,
 		)
 		if should_stage_default_image and not default_image_url:
-			validation["warnings"].append(_("来源图片不符合商品封面要求，草稿未自动设置封面。"))
+			message = _("来源图片不符合商品封面要求，草稿未自动设置封面。")
+			if apply_source_image:
+				validation["errors"].append(message)
+				validation["ready_for_handoff"] = False
+			else:
+				validation["warnings"].append(message)
+		elif apply_source_image and not source_attachments:
+			validation["errors"].append(_(
+				"未在当前有效会话上下文中找到用户指定的图片，请重新上传或明确选择图片。"
+			))
+			validation["ready_for_handoff"] = False
 		draft = ai_repository.create_draft(
 			user=user, conversation_id=conversation_id, source_run=run_id,
 			draft_type="product_setup", company=company, title=content,

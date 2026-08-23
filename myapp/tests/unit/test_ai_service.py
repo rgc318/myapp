@@ -17,6 +17,7 @@ from myapp.services.ai_service import (
 	_build_order_query_dsl,
 	_build_next_conversation_state,
 	_build_product_setup_draft,
+	_candidate_requests_product_image_application,
 	_rebuild_order_draft_before_execution,
 	_authoritative_reference_price,
 	_refresh_ai_draft_before_execution,
@@ -37,15 +38,18 @@ from myapp.services.ai_service import (
 	_infer_ai_scenario,
 	_infer_ai_action_scenario,
 	_prepare_chat_run,
+	_prepare_product_setup_image_binding,
 	_resolve_draft_retry_request,
 	_start_draft_generation_run,
 	_prepare_agent_resume,
 	_query_business_document_entity,
 	_resolve_inventory_draft_item,
 	_resolve_purchase_draft_item,
+	_resolve_product_setup_source_attachments,
 	_resolve_prompt_version,
 	_resolve_order_update_source,
 	_resolve_sales_draft_item,
+	_requests_product_image_application,
 	_complete_chat_run,
 	_stream_ai_orchestrator,
 	chat_ai_v1,
@@ -104,6 +108,95 @@ class TestAiService(TestCase):
 		self.assertEqual(attachment_ids, ["AI-ATT-1"])
 		self.assertEqual(retry_context["source_run_id"], "AI-RUN-FAILED")
 
+	def test_product_image_application_requires_explicit_non_negated_intent(self):
+		self.assertTrue(_requests_product_image_application("图片就使用我给你发的图片"))
+		self.assertTrue(_requests_product_image_application("把刚才那张图设为商品主图"))
+		self.assertFalse(_requests_product_image_application("根据刚才图片完善商品资料"))
+		self.assertFalse(_requests_product_image_application("不要使用之前图片，保留现有主图"))
+
+	def test_product_image_evidence_declares_explicit_application(self):
+		self.assertTrue(_candidate_requests_product_image_application({
+			"evidence": [{
+				"field": "image", "value": "use_as_product_image",
+				"attachment_id": "AI-ATT-1", "confidence": 1,
+			}],
+		}))
+		self.assertFalse(_candidate_requests_product_image_application({
+			"evidence": [{
+				"field": "item_name", "value": "相机",
+				"attachment_id": "AI-ATT-1", "confidence": 0.9,
+			}],
+		}))
+
+	def test_product_source_attachment_prefers_valid_image_evidence(self):
+		messages = [
+			{"role": "user", "content": "第一张", "attachments": [{
+				"attachment_id": "AI-ATT-1", "mime_type": "image/webp", "data_base64": "first",
+			}]},
+			{"role": "assistant", "content": "已看到"},
+			{"role": "user", "content": "第二张", "attachments": [{
+				"attachment_id": "AI-ATT-2", "mime_type": "image/webp", "data_base64": "second",
+			}]},
+		]
+		result = _resolve_product_setup_source_attachments(
+			candidate={"evidence": [{
+				"field": "image", "value": "use_as_product_image",
+				"attachment_id": "AI-ATT-1", "confidence": 1,
+			}]},
+			model_messages=messages,
+			current_attachment_refs=[],
+			content="把第一张图片设为商品主图",
+		)
+
+		self.assertEqual([row["attachment_id"] for row in result], ["AI-ATT-1"])
+		self.assertNotIn("data_base64", result[0])
+
+	def test_product_source_attachment_falls_back_only_for_explicit_history_reference(self):
+		messages = [
+			{"role": "user", "content": "订单截图", "attachments": [{"attachment_id": "AI-ATT-ORDER"}]},
+			{"role": "assistant", "content": "已看到"},
+			{"role": "user", "content": "商品照片", "attachments": [{"attachment_id": "AI-ATT-PRODUCT"}]},
+			{"role": "user", "content": "完善商品"},
+		]
+		selected = _resolve_product_setup_source_attachments(
+			candidate={}, model_messages=messages, current_attachment_refs=[],
+			content="完善商品，图片使用我刚才发的图片",
+		)
+		ignored = _resolve_product_setup_source_attachments(
+			candidate={}, model_messages=messages, current_attachment_refs=[],
+			content="完善这个商品的说明",
+		)
+
+		self.assertEqual([row["attachment_id"] for row in selected], ["AI-ATT-PRODUCT"])
+		self.assertEqual(ignored, [])
+
+	@patch("myapp.services.ai_service.stage_attachment_as_item_image", return_value="/files/history.webp")
+	def test_product_image_binding_stages_explicit_history_image_for_update(self, mock_stage):
+		candidate, sources, image_url, should_stage, apply_image = _prepare_product_setup_image_binding(
+			candidate={"operation": "update", "item_code": "ITEM-1"},
+			model_messages=[
+				{"role": "user", "content": "商品照片", "attachments": [{
+					"attachment_id": "AI-ATT-HISTORY", "mime_type": "image/webp",
+				}]},
+				{"role": "user", "content": "完善商品，图片使用我发的图片"},
+			],
+			current_attachment_refs=[],
+			content="完善商品，图片使用我发的图片",
+			user="user@example.com",
+			resolved_operation="update",
+			requested_operation="update",
+			existing_matches=[{"name": "ITEM-1"}],
+		)
+
+		self.assertTrue(should_stage)
+		self.assertTrue(apply_image)
+		self.assertEqual(image_url, "/files/history.webp")
+		self.assertEqual(candidate["image"], "/files/history.webp")
+		self.assertEqual([row["attachment_id"] for row in sources], ["AI-ATT-HISTORY"])
+		mock_stage.assert_called_once_with(
+			attachment_id="AI-ATT-HISTORY", user="user@example.com",
+		)
+
 	@patch("myapp.services.ai_service.resolve_ai_attachments")
 	@patch("myapp.services.ai_service.ai_repository.rebind_failed_run_message_for_retry")
 	@patch("myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-RETRY")
@@ -116,7 +209,7 @@ class TestAiService(TestCase):
 			"source_run_id": "AI-RUN-FAILED",
 		}
 		run_id = _start_draft_generation_run(
-			scenario="product_setup_draft", prompt_version="product-setup-draft-v5",
+			scenario="product_setup_draft", prompt_version="product-setup-draft-v6",
 			user="user@example.com", content="按照照片新增商品", conversation_id="AI-CONV-1",
 			model_alias="vision-model", attachment_ids=["AI-ATT-1"],
 			attachment_refs=[{"attachment_id": "AI-ATT-1"}],
@@ -1315,7 +1408,7 @@ class TestAiService(TestCase):
 			"sales_order_draft": "sales-order-draft-v3",
 			"purchase_order_draft": "purchase-order-draft-v3",
 			"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
-			"product_setup_draft": "product-setup-draft-v5",
+			"product_setup_draft": "product-setup-draft-v6",
 		}
 		for scenario, expected in draft_versions.items():
 			with self.subTest(scenario=scenario):
@@ -1987,6 +2080,37 @@ class TestAiService(TestCase):
 		self.assertEqual(created["image"], "/files/from-photo.webp")
 		self.assertEqual(updated["image"], "/files/existing.png")
 		self.assertNotIn("image", updated["_state"]["patch"])
+
+	@patch("myapp.services.ai_service._resolve_existing_product_for_setup")
+	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value=None)
+	@patch("myapp.services.ai_service._resolve_optional_master_name", side_effect=lambda _doctype, value: value)
+	@patch("myapp.services.ai_service._resolve_product_setup_uom", return_value=("Unit", [{"name": "Unit"}]))
+	def test_explicit_photo_update_replaces_existing_image_in_patch(
+		self, _uom, _master, _warehouse, mock_existing,
+	):
+		mock_existing.return_value = ({
+			"item_code": "ITEM-EXISTING", "item_name": "已有商品", "item_group": "Products",
+			"brand": None, "stock_uom": "Unit", "stock_uom_display": "个",
+			"description": None, "image": "/files/existing.png", "modified": "2026-08-14 10:00:00",
+			"standard_rate": 0, "total_qty": 0, "warehouse_stock_details": [],
+			"price_summary": {"selling_prices": [], "buying_prices": []},
+		}, [{"name": "ITEM-EXISTING"}])
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.db.get_value.return_value = "CNY"
+			mock_frappe.has_permission.return_value = True
+			payload, validation = _build_product_setup_draft(
+				{
+					"operation": "update", "item_code": "ITEM-EXISTING",
+					"item_name": "已有商品", "image": "/files/from-history.webp",
+				},
+				company="Test Company",
+				source_attachments=[{"attachment_id": "AI-ATT-HISTORY"}],
+			)
+
+		self.assertEqual(payload["image"], "/files/from-history.webp")
+		self.assertEqual(payload["_state"]["patch"]["image"], "/files/from-history.webp")
+		self.assertEqual(payload["source_attachments"][0]["attachment_id"], "AI-ATT-HISTORY")
+		self.assertTrue(validation["ready_for_handoff"])
 
 	def test_build_order_query_dsl_supports_multiple_document_types(self):
 		dsl = _build_order_query_dsl(
