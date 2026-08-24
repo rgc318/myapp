@@ -115,6 +115,12 @@ PRODUCT_SEARCH_STATUS_SUFFIX_PATTERN = re.compile(
 	r"(?:现在|目前)?(?:是否|有没有|有无)?(?:已|已经)?(?:正常)?(?:有)?(?:入库|到货|有货|现货|库存)"
 	r"(?:情况|状态|数量)?(?:了)?(?:吗)?$"
 )
+PRODUCT_CONTEXT_TARGET_PATTERN = re.compile(
+	r"(?:这|该|那)(?:一个|个|款|件)?商品"
+	r"|(?:它|刚才那个|上面那个|前面那个)(?:商品)?"
+	r"|(?:刚才|之前|前面|上面|上一(?:条|个)|查询到|查到|找到)(?:的)?(?:这|该|那)?(?:一个|个|款|件)?商品"
+)
+PRODUCT_UPDATE_ACTION_PATTERN = re.compile(r"(?:修改|更新|完善|补充|调整|改成|改为|替换)")
 PRODUCT_IMAGE_REFERENCE_PATTERN = re.compile(
 	r"(?:之前|刚才|前面|上面|上一(?:张|个)|那(?:张|个)|这(?:张|个)|我(?:给你)?(?:发|上传|提供))"
 	r".{0,12}(?:图片|照片|图)"
@@ -3111,10 +3117,17 @@ def _resolve_existing_product_for_setup(candidate: dict) -> tuple[dict | None, l
 	barcode = str(candidate.get("barcode") or "").strip()
 	matches: dict[str, dict] = {}
 	if item_code:
-		for row in frappe.get_list(
+		rows = frappe.get_list(
 			"Item", filters={"name": item_code}, fields=["name", "item_name", "modified"], limit_page_length=2,
-		):
-			matches[str(row.get("name"))] = dict(row)
+		)
+		if len(rows) == 1:
+			detail = (get_product_detail_v2(
+				item_code=rows[0]["name"], company=candidate.get("company"),
+			) or {}).get("data") or {}
+			return detail, [dict(rows[0])]
+		# An explicit or state-bound item code is authoritative. Never fall back
+		# to a same-name item when that code is missing or invalid.
+		return None, []
 	if item_name:
 		for row in frappe.get_list(
 			"Item", filters={"item_name": item_name}, fields=["name", "item_name", "modified"], limit_page_length=5,
@@ -3158,6 +3171,48 @@ def _resolve_existing_product_for_setup(candidate: dict) -> tuple[dict | None, l
 		}
 		for row in resolution.get("candidates") or []
 	]
+
+
+def _resolve_product_setup_context_target(
+	*, content: str, candidate: dict, conversation_state: dict | None,
+) -> dict | None:
+	"""Resolve a deictic product reference from bounded, server-owned conversation state."""
+	operation = str(candidate.get("operation") or "auto").strip().lower()
+	if operation == "create" or str(candidate.get("item_code") or "").strip():
+		return None
+	compact = re.sub(r"\s+", "", str(content or ""))
+	if (
+		not compact
+		or not PRODUCT_CONTEXT_TARGET_PATTERN.search(compact)
+		or (operation == "auto" and not PRODUCT_UPDATE_ACTION_PATTERN.search(compact))
+	):
+		return None
+	state = _conversation_state_for_intent(conversation_state)
+	product = state.get("product") if isinstance(state.get("product"), dict) else {}
+	item_code = str(product.get("item_code") or "").strip()
+	if item_code and product.get("resolution_status") == "resolved":
+		return {
+			"item_code": item_code,
+			"item_name": str(product.get("item_name") or "").strip() or None,
+			"source": "conversation_product",
+		}
+	last_result_set = (
+		state.get("last_result_set")
+		if isinstance(state.get("last_result_set"), dict)
+		else {}
+	)
+	entity_ids = [
+		str(value or "").strip()
+		for value in last_result_set.get("entity_ids") or []
+		if str(value or "").strip()
+	]
+	if last_result_set.get("type") == "products" and len(entity_ids) == 1:
+		return {
+			"item_code": entity_ids[0],
+			"item_name": None,
+			"source": "conversation_result_set",
+		}
+	return None
 
 
 def _product_price_fact(detail: dict, price_list: str, *, buying: bool = False) -> tuple[float | None, str]:
@@ -3709,6 +3764,9 @@ def generate_ai_product_setup_draft_v1(
 		conversation = ai_repository.get_conversation(conversation_id=conversation_id, user=user)["conversation"]
 		if conversation.get("company") and conversation.get("company") != company:
 			frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
+	conversation_state_record = ai_repository.get_conversation_state(
+		conversation_id=conversation_id, user=user, expire_if_needed=True,
+	)
 	run_id = _start_draft_generation_run(
 		scenario=scenario, prompt_version=prompt_version, user=user, content=content,
 		conversation_id=conversation_id, model_alias=model_alias, attachment_ids=attachment_ids,
@@ -3727,6 +3785,14 @@ def generate_ai_product_setup_draft_v1(
 		})
 		candidate = dict(result["draft"] or {})
 		candidate["company"] = company
+		context_target = _resolve_product_setup_context_target(
+			content=content,
+			candidate=candidate,
+			conversation_state=conversation_state_record.get("state") or {},
+		)
+		if context_target:
+			candidate["item_code"] = context_target["item_code"]
+			candidate["operation"] = "update"
 		existing_detail, existing_matches = _resolve_existing_product_for_setup(candidate)
 		requested_operation = str(candidate.get("operation") or "auto").strip().lower()
 		resolved_operation = (
@@ -3786,7 +3852,12 @@ def generate_ai_product_setup_draft_v1(
 		latency_ms = int((time.perf_counter() - started) * 1000)
 		ai_repository.complete_run(
 			run_id=run_id, user=user, result=result, latency_ms=latency_ms,
-			tool_calls=[{"tool": "build_product_setup_draft", "risk_level": "L2_DRAFT_ONLY", "draft_id": draft["name"]}],
+			tool_calls=[{
+				"tool": "build_product_setup_draft", "risk_level": "L2_DRAFT_ONLY",
+				"draft_id": draft["name"],
+				"target_item_code": payload.get("item_code"),
+				"target_source": context_target.get("source") if context_target else "model_or_user",
+			}],
 		)
 		frappe.db.commit()
 		return {

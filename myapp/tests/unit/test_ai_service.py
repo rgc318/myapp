@@ -40,12 +40,14 @@ from myapp.services.ai_service import (
 	_prepare_chat_run,
 	_prepare_product_setup_image_binding,
 	_resolve_draft_retry_request,
+	_resolve_existing_product_for_setup,
 	_start_draft_generation_run,
 	_prepare_agent_resume,
 	_query_business_document_entity,
 	_resolve_inventory_draft_item,
 	_resolve_purchase_draft_item,
 	_resolve_product_setup_source_attachments,
+	_resolve_product_setup_context_target,
 	_resolve_prompt_version,
 	_resolve_order_update_source,
 	_resolve_sales_draft_item,
@@ -56,6 +58,7 @@ from myapp.services.ai_service import (
 	execute_ai_draft_v1,
 	generate_ai_inventory_adjustment_draft_v1,
 	generate_ai_purchase_order_draft_v1,
+	generate_ai_product_setup_draft_v1,
 	generate_ai_sales_order_draft_v1,
 	get_ai_conversation_v1,
 	list_ai_conversations_v1,
@@ -1719,6 +1722,207 @@ class TestAiService(TestCase):
 		)
 
 		self.assertEqual(merged["product_query"], "SKU010")
+
+	def test_product_setup_context_target_uses_unique_resolved_product(self):
+		target = _resolve_product_setup_context_target(
+			content="修改这个商品，规格改成500ml",
+			candidate={"operation": "update", "specification": "500ml"},
+			conversation_state={
+				"active_scenario": "product_search",
+				"product": {
+					"item_code": "ITEM-COLA-5000ML",
+					"item_name": "可口可乐 5000ml",
+					"query": "可口可乐",
+					"resolution_status": "resolved",
+				},
+			},
+		)
+
+		self.assertEqual(target["item_code"], "ITEM-COLA-5000ML")
+		self.assertEqual(target["source"], "conversation_product")
+
+	def test_product_setup_context_target_recovers_model_auto_for_explicit_update_intent(self):
+		target = _resolve_product_setup_context_target(
+			content="把这个商品的规格修改为500ml",
+			candidate={"operation": "auto", "specification": "500ml"},
+			conversation_state={
+				"product": {
+					"item_code": "ITEM-COLA-5000ML",
+					"resolution_status": "resolved",
+				},
+			},
+		)
+
+		self.assertEqual(target["item_code"], "ITEM-COLA-5000ML")
+
+	def test_product_setup_context_target_uses_single_product_result_set(self):
+		target = _resolve_product_setup_context_target(
+			content="把刚才查询到的商品售价改成52",
+			candidate={"operation": "update", "standard_selling_rate": 52},
+			conversation_state={
+				"active_scenario": "product_search",
+				"product": {"resolution_status": "ambiguous"},
+				"last_result_set": {
+					"type": "products",
+					"entity_ids": ["ITEM-COLA-5000ML"],
+				},
+			},
+		)
+
+		self.assertEqual(target["item_code"], "ITEM-COLA-5000ML")
+		self.assertEqual(target["source"], "conversation_result_set")
+
+	def test_product_setup_context_target_fails_closed_for_ambiguous_results(self):
+		target = _resolve_product_setup_context_target(
+			content="修改这个商品",
+			candidate={"operation": "update"},
+			conversation_state={
+				"active_scenario": "product_search",
+				"product": {"resolution_status": "ambiguous"},
+				"last_result_set": {
+					"type": "products",
+					"entity_ids": ["ITEM-001", "ITEM-002"],
+				},
+			},
+		)
+
+		self.assertIsNone(target)
+
+	def test_product_setup_context_target_does_not_override_explicit_item_code(self):
+		target = _resolve_product_setup_context_target(
+			content="修改这个商品",
+			candidate={"operation": "update", "item_code": "ITEM-EXPLICIT"},
+			conversation_state={
+				"product": {
+					"item_code": "ITEM-CONTEXT",
+					"resolution_status": "resolved",
+				},
+			},
+		)
+
+		self.assertIsNone(target)
+
+	@patch("myapp.services.ai_service.get_product_detail_v2")
+	def test_product_setup_explicit_item_code_is_authoritative(self, mock_detail):
+		mock_detail.return_value = {
+			"data": {"item_code": "ITEM-001", "item_name": "重复名称"},
+		}
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.get_list.return_value = [
+				{"name": "ITEM-001", "item_name": "重复名称", "modified": "2026-08-21"},
+			]
+			detail, matches = _resolve_existing_product_for_setup({
+				"company": "Demo Company",
+				"item_code": "ITEM-001",
+				"item_name": "重复名称",
+			})
+
+		self.assertEqual(detail["item_code"], "ITEM-001")
+		self.assertEqual(matches, [
+			{"name": "ITEM-001", "item_name": "重复名称", "modified": "2026-08-21"},
+		])
+		mock_frappe.get_list.assert_called_once_with(
+			"Item",
+			filters={"name": "ITEM-001"},
+			fields=["name", "item_name", "modified"],
+			limit_page_length=2,
+		)
+
+	@patch("myapp.services.ai_service.get_product_detail_v2")
+	def test_product_setup_missing_explicit_item_code_does_not_fall_back_to_name(self, mock_detail):
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.get_list.return_value = []
+			detail, matches = _resolve_existing_product_for_setup({
+				"company": "Demo Company",
+				"item_code": "ITEM-MISSING",
+				"item_name": "其他现有商品",
+			})
+
+		self.assertIsNone(detail)
+		self.assertEqual(matches, [])
+		mock_frappe.get_list.assert_called_once()
+		mock_detail.assert_not_called()
+
+	@patch("myapp.services.ai_service._public_ai_result_details", return_value={})
+	@patch("myapp.services.ai_service._save_draft_generation_assistant_message")
+	@patch("myapp.services.ai_service.ai_repository.complete_run")
+	@patch("myapp.services.ai_service.ai_repository.create_draft")
+	@patch("myapp.services.ai_service._build_product_setup_draft")
+	@patch("myapp.services.ai_service._resolve_existing_product_for_setup")
+	@patch("myapp.services.ai_service._call_ai_orchestrator_product_setup_draft")
+	@patch("myapp.services.ai_service._load_model_messages", return_value=[])
+	@patch("myapp.services.ai_service._start_draft_generation_run", return_value="AI-RUN-1")
+	@patch("myapp.services.ai_service.ai_repository.get_conversation_state")
+	@patch("myapp.services.ai_service.ai_repository.get_conversation")
+	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="gpt-5.6-luna")
+	@patch("myapp.services.ai_service.resolve_ai_attachments", return_value=([], []))
+	@patch("myapp.services.ai_service._resolve_company_scope", return_value="Demo Company")
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_generate_product_setup_draft_binds_unique_conversation_product(
+		self, _user, _company, _attachments, _model, mock_conversation,
+		mock_state, _start_run, _messages, mock_orchestrator, mock_existing,
+		mock_build, mock_create_draft, _complete, _save_message, _public_details,
+	):
+		mock_conversation.return_value = {
+			"conversation": {"name": "AI-CONV-1", "company": "Demo Company"},
+		}
+		mock_state.return_value = {
+			"version": 2,
+			"status": "active",
+			"state": {
+				"active_scenario": "product_search",
+				"product": {
+					"item_code": "ITEM-COLA-5000ML",
+					"item_name": "可口可乐 5000ml",
+					"query": "可口可乐",
+					"resolution_status": "resolved",
+				},
+			},
+		}
+		mock_orchestrator.return_value = {
+			"draft": {
+				"operation": "update",
+				"specification": "500ml",
+				"standard_selling_rate": 52,
+			},
+			"model": "gpt-5.6-luna",
+			"model_alias": "gpt-5.6-luna",
+			"trace_id": "TRACE-1",
+			"usage": {},
+			"warnings": [],
+		}
+		mock_existing.return_value = (
+			{"item_code": "ITEM-COLA-5000ML", "item_name": "可口可乐 5000ml"},
+			[{"name": "ITEM-COLA-5000ML"}],
+		)
+
+		def build(candidate, **_kwargs):
+			self.assertEqual(candidate["item_code"], "ITEM-COLA-5000ML")
+			return (
+				{"item_code": candidate["item_code"], "operation": "update"},
+				{"ready_for_handoff": True, "errors": [], "warnings": []},
+			)
+
+		mock_build.side_effect = build
+		mock_create_draft.return_value = {
+			"name": "AI-DRAFT-1",
+			"title": "修改这个商品",
+		}
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.has_permission.return_value = True
+			result = generate_ai_product_setup_draft_v1(
+				"修改这个商品，规格改为500ml",
+				company="Demo Company",
+				conversation_id="AI-CONV-1",
+			)
+
+		self.assertEqual(result["data"]["draft"]["name"], "AI-DRAFT-1")
+		mock_state.assert_called_once_with(
+			conversation_id="AI-CONV-1",
+			user="user@example.com",
+			expire_if_needed=True,
+		)
 
 	def test_next_conversation_state_keeps_only_compact_product_and_result_references(self):
 		state = _build_next_conversation_state(

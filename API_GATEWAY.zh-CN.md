@@ -239,6 +239,8 @@ Run 摘要返回 `model_selection=auto/fixed`、安全的 `requested_model_displ
 
 商品草稿类型为 `product_setup`，`operation` 为 `create` 或 `update`。创建模式承载 Item 主数据、商品图片、条码、规格、四类价格和可选初始库存，复用幂等 `create_product_v2`；完善模式读取现有商品、图片和价格作为 baseline，只把 `_state.patch` 交给 `update_product_v2`。AI 来源图片通过私有短期 Attachment 发送给经过视觉探测的模型；只有明确创建且草稿未指定图片时，第一张来源图片才派生暂存封面。完善现有商品绝不自动覆盖图片。完善模式不接受初始库存，当前库存仅在 `_state.context` 中只读展示；库存变化必须使用库存调整。旧草稿的 `valuation_rate` 仅作为兼容输入读取。用户可在 AI 工作台确认当前版本后原地执行，也可选择进入 `/master-data/products` 处理复杂字段。
 
+商品查询后的指代表达使用服务端受控业务上下文，不依赖模型从助手文字猜测商品。`generate_ai_product_setup_draft_v1` 在本轮未提供 `item_code`，且用户明确表达修改/完善意图并使用“这个商品、刚才查询到的商品、它”等指代时，只允许继承当前有效会话中 `resolution_status=resolved` 的唯一商品，或最近商品结果集中唯一的 `entity_id`；即使结构化模型把操作降级为 `auto`，Backend 也只在该明确更新条件下纠正为 `update`。显式商品编码优先；多个候选、过期或已清除上下文、非商品结果集均不自动绑定。绑定后 Backend 仍按当前用户、公司和 Item 权限重新读取正式商品，并把不可变目标写入 `_state.entity`；Run 工具审计记录目标编码和来源。Web 商品卡片的“完善此商品”会把明确编码写入待发送文字，草稿仍须经过人工复核。
+
 `upload_ai_image_attachment_v1(filename, file_content_base64, content_type)` 只接受 JPG、PNG、WebP，后端真实解码并校验实际格式与声明 MIME 一致，再执行 EXIF 修正并转为受控 WebP；单张来源图片最多 20MB。视觉证据图最长边最多 2400 像素，只等比缩小、不放大小图；商品封面派生仍使用独立商品图片规则。`discard_ai_attachment_v1` 只允许删除当前用户尚未随消息提交的附件。Chat、SSE、场景识别及四类草稿端点的 `attachment_ids` 最多 4 个，只能引用当前用户未过期附件。会话消息仅返回安全元数据和预览 URL，不返回 base64。
 
 销售/采购草稿返回 `operation=create|update`、`order_number`、`source_document_type`、`source_order_modified` 和 `update_items_explicit`。识别为本系统订单修改时，Backend 先按当前账号权限读取真实订单并补齐未在图片中出现的 baseline；是否替换明细由 Backend 根据原草稿与用户提交明细的实际差异重新计算，不能信任浏览器布尔值。执行前再次读取订单并比较 `source_order_modified`，来源版本变化时失败关闭；表头更新成功后再把最新 `modified` 作为 `expected_modified` 传给正式明细替换服务。执行阶段分别复用 `update_order_v2` / `update_order_items_v2` 或 `update_purchase_order_v2` / `update_purchase_order_items_v2`，不会把修改请求误建成新订单，也不会静默覆盖其他用户的并发修改。
