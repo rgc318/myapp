@@ -79,6 +79,7 @@ MAX_AI_MESSAGES = 20
 MAX_AI_MESSAGE_CHARS = 8000
 MAX_AI_PRODUCT_RESULTS = 8
 CONVERSATION_STATE_SCHEMA_VERSION = "conversation-state-v1"
+AI_INTENT_PROMPT_VERSION = "erp-intent-v5"
 CONVERSATION_STATE_BUSINESS_SCENARIOS = {"product_search", "order_query", "report_summary"}
 ALLOWED_AI_ROLES = {"user", "assistant"}
 ALLOWED_AI_SCENARIOS = {"auto", "general", "product_search", "order_query", "report_summary"}
@@ -114,6 +115,24 @@ PRODUCT_SEARCH_PREFIX_PATTERN = re.compile(
 PRODUCT_SEARCH_STATUS_SUFFIX_PATTERN = re.compile(
 	r"(?:现在|目前)?(?:是否|有没有|有无)?(?:已|已经)?(?:正常)?(?:有)?(?:入库|到货|有货|现货|库存)"
 	r"(?:情况|状态|数量)?(?:了)?(?:吗)?$"
+)
+GENERIC_IMAGE_PRODUCT_QUERY_TOKENS = (
+	"我们的商品中", "我们的商品里", "我们的商品", "商品中", "商品里",
+	"图片中的", "图片里的", "图片上的", "照片中的", "照片里的", "照片上的",
+	"图中的", "图里的", "图上的", "这个商品", "该商品", "那个商品",
+	"这款商品", "这件商品", "这个产品", "该产品", "这个饮料", "这个东西",
+	"有没有", "是否有", "有无", "能不能找到", "能否找到", "查询一下",
+	"查一下", "找一下", "查询", "查找", "搜索", "帮我", "请", "看看",
+	"看下", "一下", "我们的", "商品", "产品", "饮料", "东西", "这个",
+	"那个", "该", "中", "里", "的", "吗", "呢", "是", "有",
+)
+LOW_INFORMATION_VISUAL_PRODUCT_QUERY_TOKENS = (
+	"红色", "橙色", "黄色", "绿色", "青色", "蓝色", "紫色", "黑色", "白色", "灰色",
+	"透明", "彩色", "深色", "浅色", "大包装", "小包装", "包装", "外包装", "标签",
+	"瓶装", "罐装", "盒装", "袋装", "桶装", "箱装", "杯装", "散装", "整箱",
+	"瓶子", "罐子", "盒子", "袋子", "桶", "箱子", "杯子", "容器",
+	"圆形", "方形", "长方形", "大瓶", "小瓶", "大罐", "小罐",
+	"饮料", "食品", "零食", "日用品", "商品", "产品", "东西",
 )
 PRODUCT_CONTEXT_TARGET_PATTERN = re.compile(
 	r"(?:这|该|那)(?:一个|个|款|件)?商品"
@@ -373,7 +392,8 @@ def _query_explicitly_mentions(content: str, *terms: str) -> bool:
 
 
 def _merge_intent_with_conversation_state(
-	content: str, candidate: dict, conversation_state: dict | None,
+	content: str, candidate: dict, conversation_state: dict | None, *,
+	has_current_attachments: bool = False,
 ) -> dict:
 	"""Merge only omitted/default parser fields from state; explicit current text wins."""
 	if not isinstance(candidate, dict) or not _structured_intent_is_confident(candidate):
@@ -383,7 +403,13 @@ def _merge_intent_with_conversation_state(
 		return candidate
 	merged = dict(candidate)
 	if candidate.get("intent") == "product_search":
-		if not str(candidate.get("product_query") or "").strip() and base.get("product_query"):
+		# A new image is a new source of product identity.  If vision extraction
+		# fails, do not silently reuse the previous product and query the wrong Item.
+		if (
+			not has_current_attachments
+			and not str(candidate.get("product_query") or "").strip()
+			and base.get("product_query")
+		):
 			merged["product_query"] = base["product_query"]
 		return merged
 	if candidate.get("intent") == "order_query":
@@ -564,7 +590,7 @@ def _call_ai_intent_orchestrator(
 			"user": user,
 			"company": company,
 			"locale": getattr(frappe.local, "lang", None) or "zh-CN",
-			"prompt_version": "erp-intent-v4",
+			"prompt_version": AI_INTENT_PROMPT_VERSION,
 			"context": {"conversation_state": _conversation_state_for_intent(conversation_state)},
 		}
 		if attachments:
@@ -829,6 +855,37 @@ def _extract_product_search_terms(query: str) -> list[str]:
 	return terms[:5] or [text[:40]]
 
 
+def _product_search_text_has_entity_hint(content: str | None) -> bool:
+	"""Return whether text contains a product identity beyond deictic request language."""
+	text = unicodedata.normalize("NFKC", str(content or "")).casefold()
+	for token in sorted(GENERIC_IMAGE_PRODUCT_QUERY_TOKENS, key=len, reverse=True):
+		text = text.replace(token, "")
+	return bool(re.sub(r"[\W_]+", "", text, flags=re.UNICODE))
+
+
+def _visual_product_query_has_reliable_entity_hint(content: str | None) -> bool:
+	"""Reject model-produced appearance/category descriptions as image identity."""
+	text = unicodedata.normalize("NFKC", str(content or "")).casefold()
+	for token in sorted(
+		GENERIC_IMAGE_PRODUCT_QUERY_TOKENS + LOW_INFORMATION_VISUAL_PRODUCT_QUERY_TOKENS,
+		key=len,
+		reverse=True,
+	):
+		text = text.replace(token, "")
+	return bool(re.sub(r"[\W_]+", "", text, flags=re.UNICODE))
+
+
+def _multimodal_product_query_is_unresolved(
+	*, content: str, structured_intent: dict | None, attachment_payloads: list[dict],
+) -> bool:
+	if not attachment_payloads:
+		return False
+	if _product_search_text_has_entity_hint(content):
+		return False
+	product_query = str((structured_intent or {}).get("product_query") or "").strip()
+	return not _visual_product_query_has_reliable_entity_hint(product_query)
+
+
 def _normalize_product_entity_text(value: str) -> str:
 	"""Normalize user-entered product identifiers without losing the raw query."""
 	text = unicodedata.normalize("NFKC", str(value or ""))
@@ -866,7 +923,8 @@ def _resolve_item_candidates(
 	"""Resolve an ERP Item through one shared, permission-safe retrieval boundary."""
 	raw_query = " ".join(str(query or "").strip().split())
 	resolved_entity_query = " ".join(str(entity_query or "").strip().split())
-	terms = _extract_product_search_terms(resolved_entity_query or raw_query)
+	retrieval_query = resolved_entity_query or raw_query
+	terms = _extract_product_search_terms(retrieval_query)
 	terms = [term for term in terms if str(term or "").strip()]
 	lexical_rows = []
 	seen_codes = set()
@@ -905,18 +963,20 @@ def _resolve_item_candidates(
 	normalized_exact = normalized_matches[0] if len(normalized_matches) == 1 else None
 	# Descriptive expressions and zero/multiple lexical hits benefit from semantic recall;
 	# exact identifiers never depend on the vector service.
-	descriptive = len(terms) > 1 or any(word in raw_query for word in ("适合", "用于", "可以", "能够", "规格", "颜色", "包装"))
+	descriptive = len(terms) > 1 or any(
+		word in retrieval_query for word in ("适合", "用于", "可以", "能够", "规格", "颜色", "包装")
+	)
 	semantic_result = {"available": False, "rows": [], "reason": "not_needed"}
 	if not raw_exact and not normalized_exact and (not lexical_rows or len(lexical_rows) > 1 or descriptive):
 		semantic_result = search_products_semantic(
-			raw_query,
+			retrieval_query,
 			company=company,
 			limit=max(1, min(int(limit or 8) * 2, MAX_AI_PRODUCT_RESULTS * 2)),
 			item_context=context,
 		)
 	semantic_rows = semantic_result.get("rows") or []
 	rows = _hybrid_rerank_product_rows(
-		query=raw_query,
+		query=retrieval_query,
 		lexical_rows=lexical_rows,
 		semantic_rows=semantic_rows,
 		limit=max(1, int(limit or 8)),
@@ -951,6 +1011,7 @@ def _resolve_item_candidates(
 	else:
 		status = "not_found"
 	return {
+		"resolved_query": retrieval_query,
 		"status": status,
 		"selected": selected,
 		"candidates": rows[: max(1, int(limit or 8))],
@@ -1008,6 +1069,7 @@ def _hybrid_rerank_product_rows(
 
 def _build_product_search_context(
 	*, query: str, company: str | None, structured_intent: dict | None = None,
+	query_source: str | None = None,
 ) -> tuple[dict, list[dict], list[dict]]:
 	if not frappe.has_permission("Item", ptype="read"):
 		raise frappe.PermissionError(_("无权读取商品资料。"))
@@ -1067,6 +1129,9 @@ def _build_product_search_context(
 			"tool": "search_products",
 			"risk_level": "L1_READ_ONLY",
 			"query_hash": hashlib.sha256(query.encode("utf-8")).hexdigest(),
+			"resolved_query_hash": hashlib.sha256(
+				str(resolution.get("resolved_query") or query).encode("utf-8")
+			).hexdigest(),
 			"search_term_hashes": [hashlib.sha256(term.encode("utf-8")).hexdigest() for term in search_terms],
 			"company": resolved_company,
 			"result_count": len(products),
@@ -1074,11 +1139,17 @@ def _build_product_search_context(
 			"semantic_result_count": len(semantic_result.get("rows") or []),
 			"embedding_model": semantic_result.get("embedding_model"),
 			"vector_collection": semantic_result.get("collection"),
+			"query_source": query_source or (
+				"structured_intent" if str((structured_intent or {}).get("product_query") or "").strip()
+				else "user_text"
+			),
+			"executed": True,
 		}
 	]
 	context = {
 		"tool": "search_products",
 		"query": query,
+		"resolved_query": resolution.get("resolved_query") or query,
 		"search_terms": search_terms,
 		"company": resolved_company,
 		"products": products,
@@ -1096,9 +1167,65 @@ def _build_product_search_context(
 			"status": resolution["status"],
 			"confidence": resolution["confidence"],
 		},
+		"query_resolution": {
+			"status": "resolved",
+			"source": tool_calls[0]["query_source"],
+		},
 		"instructions": "商品数据是只读工具结果。只能基于这些候选解释匹配原因；不得编造商品、价格或库存。",
 	}
 	return context, citations, tool_calls
+
+
+def _build_unresolved_multimodal_product_search_context(
+	*, query: str, company: str | None,
+) -> tuple[dict, list[dict], list[dict]]:
+	"""Represent a vision extraction miss without issuing a meaningless ERP search."""
+	if not frappe.has_permission("Item", ptype="read"):
+		raise frappe.PermissionError(_("无权读取商品资料。"))
+	resolved_company = _resolve_company_scope(company, required=True)
+	tool_call = {
+		"tool": "search_products",
+		"risk_level": "L1_READ_ONLY",
+		"query_hash": hashlib.sha256(query.encode("utf-8")).hexdigest(),
+		"search_term_hashes": [],
+		"company": resolved_company,
+		"result_count": 0,
+		"retrieval_mode": "not_executed",
+		"semantic_result_count": 0,
+		"embedding_model": None,
+		"vector_collection": None,
+		"query_source": "multimodal_intent",
+		"query_status": "unresolved_image_entity",
+		"executed": False,
+	}
+	return (
+		{
+			"tool": "search_products",
+			"query": None,
+			"search_terms": [],
+			"company": resolved_company,
+			"products": [],
+			"resolved_product": None,
+			"retrieval": {
+				"mode": "not_executed",
+				"semantic_available": False,
+				"match_method": "none",
+				"status": "query_unresolved",
+				"confidence": 0,
+			},
+			"query_resolution": {
+				"status": "unresolved",
+				"source": "multimodal_intent",
+				"reason": "no_reliable_product_entity",
+			},
+			"instructions": (
+				"图片中尚未提取出可靠的商品名称、品牌、编码、条码或规格，因此本轮没有执行商品数据库查询。"
+				"必须明确说明尚未查询，要求用户提供更清晰图片或商品线索；不得表述为数据库中未找到商品。"
+			),
+		},
+		[],
+		[tool_call],
+	)
 
 
 def _parse_amount_value(value: str, unit: str | None) -> float:
@@ -4791,6 +4918,9 @@ def _compact_last_result_set(tool_context: dict | None, citations: list[dict]) -
 			"scope": dict(result_set.get("scope") or {}),
 		}
 	if tool == "search_products":
+		query_resolution = tool_context.get("query_resolution") or {}
+		if query_resolution.get("status") == "unresolved":
+			return None
 		products = tool_context.get("products") or []
 		return {
 			"type": "products",
@@ -4840,8 +4970,12 @@ def _build_next_conversation_state(
 	if scenario == "product_search":
 		resolved_product = context.get("resolved_product") or {}
 		retrieval = context.get("retrieval") or {}
+		query_resolution = context.get("query_resolution") or {}
 		next_state["product"] = {
-			"query": str(intent.get("product_query") or "").strip() or str(context.get("query") or "").strip()[:200],
+			"query": (
+				str(intent.get("product_query") or "").strip()
+				or str(context.get("query") or "").strip()[:200]
+			) if query_resolution.get("status") != "unresolved" else None,
 			"item_code": resolved_product.get("item_code"),
 			"item_name": resolved_product.get("item_name"),
 			"resolution_status": retrieval.get("status"),
@@ -4995,9 +5129,13 @@ def _prepare_chat_run(
 				company=intent_company,
 				conversation_state=conversation_state,
 				model_alias=model_alias,
+				attachments=attachment_payloads,
 			)
 			intent = _merge_intent_with_conversation_state(
-				current_content, intent, conversation_state,
+				current_content,
+				intent,
+				conversation_state,
+				has_current_attachments=bool(attachment_payloads),
 			)
 			candidate = str(intent.get("intent") or "").strip()
 			try:
@@ -5113,11 +5251,26 @@ def _prepare_chat_run(
 		if agent_mode:
 			tool_context = None
 		elif resolved_scenario == "product_search":
-			tool_context, citations, tool_calls = _build_product_search_context(
-				query=current_content,
-				company=resolved_company,
+			if _multimodal_product_query_is_unresolved(
+				content=current_content,
 				structured_intent=structured_intent,
-			)
+				attachment_payloads=attachment_payloads,
+			):
+				tool_context, citations, tool_calls = _build_unresolved_multimodal_product_search_context(
+					query=current_content,
+					company=resolved_company,
+				)
+			else:
+				tool_context, citations, tool_calls = _build_product_search_context(
+					query=current_content,
+					company=resolved_company,
+					structured_intent=structured_intent,
+					query_source=(
+						"multimodal_intent"
+						if attachment_payloads and str((structured_intent or {}).get("product_query") or "").strip()
+						else None
+					),
+				)
 		elif resolved_scenario == "order_query":
 			tool_context, citations, tool_calls = _build_order_query_context(
 				query=current_content,

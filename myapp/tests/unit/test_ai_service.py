@@ -16,6 +16,7 @@ from myapp.services.ai_service import (
 	_build_order_query_context,
 	_build_order_query_dsl,
 	_build_next_conversation_state,
+	_build_unresolved_multimodal_product_search_context,
 	_build_product_setup_draft,
 	_candidate_requests_product_image_application,
 	_rebuild_order_draft_before_execution,
@@ -48,6 +49,9 @@ from myapp.services.ai_service import (
 	_resolve_purchase_draft_item,
 	_resolve_product_setup_source_attachments,
 	_resolve_product_setup_context_target,
+	_multimodal_product_query_is_unresolved,
+	_product_search_text_has_entity_hint,
+	_visual_product_query_has_reliable_entity_hint,
 	_resolve_prompt_version,
 	_resolve_order_update_source,
 	_resolve_sales_draft_item,
@@ -959,6 +963,97 @@ class TestAiService(TestCase):
 		self.assertEqual(mock_intent.call_args.kwargs["model_alias"], "erp-fast-chat")
 
 	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
+		"intent": "product_search", "confidence": 0.98, "product_query": "可口可乐",
+		"entities": [], "report_type": None, "date_preset": "all",
+		"date_from": None, "date_to": None, "status": "all", "sort": "latest",
+		"min_amount": None, "limit": 10,
+	})
+	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="gpt-5.6-luna")
+	@patch("myapp.services.ai_service.resolve_ai_attachments")
+	def test_multimodal_product_search_forwards_image_to_intent_and_uses_visual_query(
+		self, mock_attachments, _resolve_model, _current_user, _resolve_company, mock_intent,
+	):
+		attachment_ref = {"attachment_id": "AI-ATT-1", "filename": "cola.webp"}
+		attachment_payload = {
+			"attachment_id": "AI-ATT-1", "mime_type": "image/webp", "data_base64": "aW1hZ2U=",
+		}
+		mock_attachments.return_value = ([attachment_ref], [attachment_payload])
+		with patch.dict(os.environ, {"MYAPP_AI_AGENT_RUNTIME_ENABLED": "1"}, clear=False), patch(
+			"myapp.services.ai_service.ai_repository.create_conversation",
+			return_value={"name": "AI-CONV-IMAGE", "company": "Demo Company"},
+		), patch("myapp.services.ai_service.ai_repository.append_message"), patch(
+			"myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-IMAGE",
+		), patch("myapp.services.ai_service.ai_repository.load_model_messages", return_value=[]), patch(
+			"myapp.services.ai_service._build_product_search_context",
+			return_value=({
+				"tool": "search_products", "products": [],
+				"query_resolution": {"status": "resolved"},
+			}, [], []),
+		) as build_context, patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.get_roles.return_value = []
+			prepared = _prepare_chat_run(
+				content="我们的商品中有没有这个商品",
+				scenario="auto",
+				company="Demo Company",
+				attachment_ids=["AI-ATT-1"],
+			)
+
+		self.assertFalse(prepared["agent_mode"])
+		self.assertEqual(prepared["scenario"], "product_search")
+		self.assertEqual(mock_intent.call_args.kwargs["attachments"], [attachment_payload])
+		self.assertEqual(
+			build_context.call_args.kwargs["structured_intent"]["product_query"],
+			"可口可乐",
+		)
+		self.assertEqual(build_context.call_args.kwargs["query_source"], "multimodal_intent")
+
+	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
+		"intent": "product_search", "confidence": 0.82, "product_query": None,
+		"entities": [], "report_type": None, "date_preset": "all",
+		"date_from": None, "date_to": None, "status": "all", "sort": "latest",
+		"min_amount": None, "limit": 10,
+	})
+	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="gpt-5.6-luna")
+	@patch("myapp.services.ai_service.resolve_ai_attachments")
+	def test_multimodal_product_search_skips_generic_query_when_image_entity_is_unresolved(
+		self, mock_attachments, _resolve_model, _current_user, _resolve_company, _intent,
+	):
+		mock_attachments.return_value = (
+			[{"attachment_id": "AI-ATT-1"}],
+			[{"attachment_id": "AI-ATT-1", "mime_type": "image/webp", "data_base64": "aW1hZ2U="}],
+		)
+		with patch.dict(os.environ, {"MYAPP_AI_AGENT_RUNTIME_ENABLED": "0"}, clear=False), patch(
+			"myapp.services.ai_service.ai_repository.create_conversation",
+			return_value={"name": "AI-CONV-IMAGE", "company": "Demo Company"},
+		), patch("myapp.services.ai_service.ai_repository.append_message"), patch(
+			"myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-IMAGE",
+		), patch("myapp.services.ai_service.ai_repository.load_model_messages", return_value=[]), patch(
+			"myapp.services.ai_service._build_product_search_context",
+		) as build_context, patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.get_roles.return_value = []
+			mock_frappe.has_permission.return_value = True
+			prepared = _prepare_chat_run(
+				content="我们的商品中有没有这个商品",
+				scenario="auto",
+				company="Demo Company",
+				attachment_ids=["AI-ATT-1"],
+			)
+
+		build_context.assert_not_called()
+		self.assertEqual(prepared["payload"]["context"]["retrieval"]["status"], "query_unresolved")
+		self.assertIsNone(prepared["next_conversation_state"]["product"]["query"])
+		self.assertNotIn("last_result_set", prepared["next_conversation_state"])
+		search_call = next(call for call in prepared["tool_calls"] if call["tool"] == "search_products")
+		self.assertFalse(search_call["executed"])
+		self.assertEqual(search_call["query_status"], "unresolved_image_entity")
+
+	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
 		"intent": "order_query", "confidence": 0.99, "product_query": None,
 		"entities": ["sales_order"], "report_type": None, "date_preset": "all",
 		"date_from": None, "date_to": None, "status": "all", "sort": "latest",
@@ -1671,12 +1766,15 @@ class TestAiService(TestCase):
 				user="user@example.com",
 				company="Demo Company",
 				model_alias="gpt-5.5",
+				attachments=[{"attachment_id": "AI-ATT-1", "data_base64": "aW1hZ2U="}],
 			)
 
 		request = mock_urlopen.call_args.args[0]
 		payload = json.loads(request.data.decode("utf-8"))
 		self.assertEqual(result["intent"], "general")
 		self.assertEqual(payload["model_alias"], "gpt-5.5")
+		self.assertEqual(payload["prompt_version"], "erp-intent-v5")
+		self.assertEqual(payload["attachments"][0]["attachment_id"], "AI-ATT-1")
 		self.assertEqual(request.full_url, "http://ai/internal/v1/intent/parse")
 
 	def test_context_merge_inherits_order_filters_and_applies_current_status(self):
@@ -2493,6 +2591,73 @@ class TestAiService(TestCase):
 		self.assertEqual(_extract_product_search_terms("商品迪莫"), ["迪莫"])
 		self.assertEqual(_extract_product_search_terms("迪莫商品"), ["迪莫"])
 
+	def test_multimodal_product_query_requires_a_real_entity_hint(self):
+		self.assertFalse(_product_search_text_has_entity_hint("我们的商品中有没有这个商品"))
+		self.assertFalse(_product_search_text_has_entity_hint("帮我查一下图中的商品"))
+		self.assertTrue(_product_search_text_has_entity_hint("这个是可口可乐吗，查一下"))
+		self.assertTrue(_product_search_text_has_entity_hint("查询 SKU-001"))
+		self.assertTrue(_multimodal_product_query_is_unresolved(
+			content="商品中有没有这个商品",
+			structured_intent={"product_query": None},
+			attachment_payloads=[{"attachment_id": "AI-ATT-1"}],
+		))
+		self.assertFalse(_multimodal_product_query_is_unresolved(
+			content="商品中有没有这个商品",
+			structured_intent={"product_query": "可口可乐"},
+			attachment_payloads=[{"attachment_id": "AI-ATT-1"}],
+		))
+		self.assertFalse(_visual_product_query_has_reliable_entity_hint("红色罐装饮料"))
+		self.assertFalse(_visual_product_query_has_reliable_entity_hint("蓝色小瓶包装"))
+		self.assertTrue(_visual_product_query_has_reliable_entity_hint("红牛饮料"))
+		self.assertTrue(_visual_product_query_has_reliable_entity_hint("罐装可口可乐"))
+		self.assertTrue(_multimodal_product_query_is_unresolved(
+			content="帮我看看图里的商品",
+			structured_intent={"product_query": "红色罐装饮料"},
+			attachment_payloads=[{"attachment_id": "AI-ATT-1"}],
+		))
+		self.assertFalse(_multimodal_product_query_is_unresolved(
+			content="帮我查询矿泉水",
+			structured_intent={"product_query": "瓶装饮料"},
+			attachment_payloads=[{"attachment_id": "AI-ATT-1"}],
+		))
+
+	def test_new_product_image_does_not_inherit_previous_product_query(self):
+		previous_state = {
+			"schema_version": "conversation-state-v1",
+			"active_scenario": "product_search",
+			"product": {"query": "旧商品", "resolution_status": "resolved"},
+		}
+		candidate = {
+			"intent": "product_search", "confidence": 0.9, "product_query": None,
+			"entities": [], "report_type": None, "date_preset": "all",
+			"date_from": None, "date_to": None, "status": "all", "sort": "latest",
+			"min_amount": None, "limit": 10,
+		}
+
+		without_image = _merge_intent_with_conversation_state(
+			"继续查这个商品", candidate, previous_state,
+		)
+		with_image = _merge_intent_with_conversation_state(
+			"查询图片里的商品", candidate, previous_state, has_current_attachments=True,
+		)
+
+		self.assertEqual(without_image["product_query"], "旧商品")
+		self.assertIsNone(with_image["product_query"])
+
+	def test_unresolved_multimodal_search_context_never_claims_database_not_found(self):
+		with patch("myapp.services.ai_service._resolve_company_scope", return_value="Demo Company"), patch(
+			"myapp.services.ai_service.frappe",
+		) as mock_frappe:
+			mock_frappe.has_permission.return_value = True
+			context, citations, tool_calls = _build_unresolved_multimodal_product_search_context(
+				query="有没有这个商品", company="Demo Company",
+			)
+
+		self.assertEqual(citations, [])
+		self.assertEqual(context["retrieval"]["status"], "query_unresolved")
+		self.assertIn("没有执行商品数据库查询", context["instructions"])
+		self.assertFalse(tool_calls[0]["executed"])
+
 	def test_product_entity_normalization_handles_full_width_and_whitespace(self):
 		self.assertEqual(_normalize_product_entity_text(" 商品：Ｃａｍｅｒａ  "), "商品:camera")
 
@@ -2531,6 +2696,23 @@ class TestAiService(TestCase):
 		self.assertEqual(result["candidates"][0]["item_name"], "迪莫")
 		self.assertEqual(mock_search.call_args.kwargs["search_key"], "莫")
 		mock_semantic.assert_not_called()
+
+	@patch("myapp.services.ai_service.search_products_semantic", return_value={"available": True, "rows": []})
+	@patch("myapp.services.ai_service.search_product_v2", return_value={"data": []})
+	def test_structured_product_query_is_used_for_semantic_retrieval(
+		self, _mock_search, mock_semantic,
+	):
+		with patch("myapp.services.ai_service.frappe"):
+			result = _resolve_item_candidates(
+				"我们的商品中有没有这个商品",
+				company="Demo Company",
+				entity_query="可口可乐",
+			)
+
+		self.assertEqual(result["resolved_query"], "可口可乐")
+		mock_semantic.assert_called_once_with(
+			"可口可乐", company="Demo Company", limit=16, item_context="sales",
+		)
 
 	@patch("myapp.services.ai_service.search_products_semantic", return_value={"available": True, "rows": []})
 	@patch("myapp.services.ai_service.search_product_v2", return_value={"data": []})
