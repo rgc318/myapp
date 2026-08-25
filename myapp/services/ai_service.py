@@ -88,7 +88,7 @@ PROMPT_VERSION_BY_SCENARIO = {
 	"product_search": "erp-readonly-v8",
 	"order_query": "erp-readonly-v8",
 	"report_summary": "erp-readonly-v8",
-	"sales_order_draft": "sales-order-draft-v3",
+	"sales_order_draft": "sales-order-draft-v4",
 	"purchase_order_draft": "purchase-order-draft-v3",
 	"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
 	"product_setup_draft": "product-setup-draft-v6",
@@ -2521,7 +2521,7 @@ def _resolve_sales_draft_warehouse(query: str | None, company: str) -> str | Non
 
 def _resolve_sales_draft_item(
 	candidate: dict, *, company: str, default_warehouse: str | None,
-	allow_user_price: bool = False,
+	default_sales_mode: str = "wholesale", allow_user_price: bool = False,
 ) -> dict:
 	query = str(candidate.get("item_query") or "").strip()
 	qty = float(candidate.get("qty") or 0)
@@ -2551,7 +2551,18 @@ def _resolve_sales_draft_item(
 	uom_row = next((row for row in all_uoms if str(row.get("uom") or "") == requested_uom), None)
 	if requested_uom and not uom_row:
 		warnings.append(_("商品 {0} 未配置单位 {1}，已改用默认单位。" ).format(selected.get("item_code"), requested_uom))
-	resolved_uom = (uom_row or {}).get("uom") or selected.get("wholesale_default_uom") or selected.get("uom")
+	resolved_sales_mode = "retail" if default_sales_mode == "retail" else "wholesale"
+	mode_default_uom = (
+		selected.get("retail_default_uom")
+		if resolved_sales_mode == "retail"
+		else selected.get("wholesale_default_uom")
+	)
+	if not uom_row and mode_default_uom:
+		uom_row = next(
+			(row for row in all_uoms if str(row.get("uom") or "") == mode_default_uom),
+			None,
+		)
+	resolved_uom = (uom_row or {}).get("uom") or mode_default_uom or selected.get("uom")
 	reference_price, reference_source = _authoritative_reference_price(selected, buying=False)
 	user_price = None if candidate.get("price") in (None, "") else flt(candidate.get("price"))
 	if allow_user_price and user_price is not None and user_price < 0:
@@ -2796,11 +2807,25 @@ def generate_ai_sales_order_draft_v1(
 		if operation == "update" and not candidate.get("customer_query") and existing_customer:
 			customer = existing_customer
 			customer_candidates = []
+		existing_meta = (
+			existing_order.get("meta")
+			if existing_order and isinstance(existing_order.get("meta"), dict)
+			else {}
+		)
+		default_sales_mode = (
+			"retail"
+			if candidate.get("default_sales_mode") == "retail"
+			or (
+				candidate.get("default_sales_mode") in (None, "")
+				and existing_meta.get("default_sales_mode") == "retail"
+			)
+			else "wholesale"
+		)
 		default_warehouse = _resolve_sales_draft_warehouse(candidate.get("warehouse_query"), company)
 		extracted_items = [
 			_resolve_sales_draft_item(
 				row, company=company, default_warehouse=default_warehouse,
-				allow_user_price=True,
+				default_sales_mode=default_sales_mode, allow_user_price=True,
 			)
 			for row in candidate.get("items") or []
 		]
@@ -2814,11 +2839,6 @@ def generate_ai_sales_order_draft_v1(
 		for index, row in enumerate(items, 1):
 			if not row.get("item_code") or row.get("qty", 0) <= 0 or not row.get("warehouse"):
 				errors.append(_("第 {0} 行需要人工补充商品、数量或仓库。" ).format(index))
-		existing_meta = (
-			existing_order.get("meta")
-			if existing_order and isinstance(existing_order.get("meta"), dict)
-			else {}
-		)
 		transaction_date = str(
 			candidate.get("transaction_date")
 			or existing_meta.get("transaction_date")
@@ -2848,7 +2868,7 @@ def generate_ai_sales_order_draft_v1(
 			"customer_candidates": customer_candidates,
 			"transaction_date": transaction_date,
 			"delivery_date": delivery_date,
-			"default_sales_mode": candidate.get("default_sales_mode") or existing_meta.get("default_sales_mode") or "wholesale",
+			"default_sales_mode": default_sales_mode,
 			"warehouse_query": candidate.get("warehouse_query"),
 			"warehouse": default_warehouse,
 			"remarks": candidate.get("remarks") if candidate.get("remarks") is not None else existing_meta.get("remarks"),
@@ -4170,6 +4190,7 @@ def _update_ai_draft_once(
 	customer, customer_candidates = _resolve_sales_draft_customer(customer_query)
 	warehouse_query = payload.get("warehouse") or payload.get("warehouse_query")
 	default_warehouse = _resolve_sales_draft_warehouse(warehouse_query, company)
+	default_sales_mode = "retail" if payload.get("default_sales_mode") == "retail" else "wholesale"
 	items = [
 		_resolve_sales_draft_item(
 			{
@@ -4179,6 +4200,7 @@ def _update_ai_draft_once(
 				"_state": row.get("_state"),
 			},
 			company=company, default_warehouse=default_warehouse,
+			default_sales_mode=default_sales_mode,
 			allow_user_price=True,
 		)
 		for row in (payload.get("items") or []) if isinstance(row, dict)
@@ -4208,7 +4230,7 @@ def _update_ai_draft_once(
 		"customer_display_name": customer.get("display_name") if customer else None,
 		"customer_candidates": customer_candidates, "transaction_date": transaction_date,
 		"delivery_date": delivery_date,
-		"default_sales_mode": "retail" if payload.get("default_sales_mode") == "retail" else "wholesale",
+		"default_sales_mode": default_sales_mode,
 		"warehouse_query": warehouse_query, "warehouse": default_warehouse,
 		"remarks": str(payload.get("remarks") or "")[:1000] or None,
 		"items": items,
@@ -4744,6 +4766,7 @@ def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
 	else:
 		customer_query = payload.get("customer") or payload.get("customer_query")
 		customer, customer_candidates = _resolve_sales_draft_customer(customer_query)
+		default_sales_mode = "retail" if payload.get("default_sales_mode") == "retail" else "wholesale"
 		items = [
 			_resolve_sales_draft_item(
 				{
@@ -4756,6 +4779,7 @@ def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
 				},
 				company=company,
 				default_warehouse=default_warehouse,
+				default_sales_mode=default_sales_mode,
 				allow_user_price=True,
 			)
 			for row in payload.get("items") or []

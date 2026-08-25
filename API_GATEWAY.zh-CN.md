@@ -235,7 +235,7 @@ Run 摘要返回 `model_selection=auto/fixed`、安全的 `requested_model_displ
 
 ### AI Copilot 结构化草稿
 
-销售订单、采购订单、库存调整和商品创建/完善分别通过 `generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1` 生成严格结构化候选。模型只负责提取用户原文和操作意图；Frappe 重新按当前用户权限解析真实 Customer / Supplier / Item / Warehouse、商品分类、品牌、UOM、价格或实时库存，并持久化为 `MyApp AI Draft`。权威业务事实、用户补丁和字段来源保存在 `_state`，价格状态区分未配置与明确零价。`resolve_ai_scenario_v1` 是 Web 自动识别的后端事实来源，写意图可以返回上述四类草稿场景，商品是否入库、到货、现货或库存状态等问法返回 `product_search`；Web 不复制关键词规则。
+销售订单、采购订单、库存调整和商品创建/完善分别通过 `generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1` 生成严格结构化候选。模型只负责提取用户原文和操作意图；销售模式未明确时候选返回空值，Frappe 对更新草稿继承现有订单模式、对新建草稿使用批发默认模式，并按最终销售模式选择商品的 `wholesale_default_uom` 或 `retail_default_uom`。Frappe 重新按当前用户权限解析真实 Customer / Supplier / Item / Warehouse、商品分类、品牌、UOM、价格或实时库存，并持久化为 `MyApp AI Draft`。权威业务事实、用户补丁和字段来源保存在 `_state`，价格状态区分未配置与明确零价。`resolve_ai_scenario_v1` 是 Web 自动识别的后端事实来源，写意图可以返回上述四类草稿场景，商品是否入库、到货、现货或库存状态等问法返回 `product_search`；Web 不复制关键词规则。
 
 商品草稿类型为 `product_setup`，`operation` 为 `create` 或 `update`。创建模式承载 Item 主数据、商品图片、条码、规格、四类价格和可选初始库存，复用幂等 `create_product_v2`；完善模式读取现有商品、图片和价格作为 baseline，只把 `_state.patch` 交给 `update_product_v2`。AI 来源图片通过私有短期 Attachment 发送给经过视觉探测的模型；只有明确创建且草稿未指定图片时，第一张来源图片才派生暂存封面。完善现有商品绝不自动覆盖图片。完善模式不接受初始库存，当前库存仅在 `_state.context` 中只读展示；库存变化必须使用库存调整。旧草稿的 `valuation_rate` 仅作为兼容输入读取。用户可在 AI 工作台确认当前版本后原地执行，也可选择进入 `/master-data/products` 处理复杂字段。
 

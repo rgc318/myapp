@@ -392,6 +392,46 @@ class TestAiService(TestCase):
 		self.assertEqual(user_sales["price"], 88)
 		self.assertEqual(user_purchase["price"], 88)
 
+	@patch("myapp.services.ai_service.search_product_v2")
+	@patch("myapp.services.ai_service.frappe.get_list")
+	def test_sales_draft_missing_uom_uses_default_for_resolved_sales_mode(
+		self, mock_allowed, mock_search,
+	):
+		mock_allowed.return_value = ["ITEM-001"]
+		mock_search.return_value = {"data": [{
+			"item_code": "ITEM-001", "item_name": "演示饮料", "uom": "Unit",
+			"uom_display": "个", "wholesale_default_uom": "Box",
+			"retail_default_uom": "Unit", "all_uoms": [
+				{"uom": "Unit", "conversion_factor": 1, "uom_display": "个"},
+				{"uom": "Box", "conversion_factor": 12, "uom_display": "箱"},
+			],
+			"price": 100, "price_summary": {"selling_prices": []},
+		}]}
+		candidate = {
+			"item_query": "ITEM-001", "qty": 3, "uom": None,
+			"warehouse_query": "Stores - DC",
+		}
+
+		wholesale = _resolve_sales_draft_item(
+			candidate, company="Demo Company", default_warehouse="Stores - DC",
+			default_sales_mode="wholesale",
+		)
+		retail = _resolve_sales_draft_item(
+			candidate, company="Demo Company", default_warehouse="Stores - DC",
+			default_sales_mode="retail",
+		)
+		explicit = _resolve_sales_draft_item(
+			{**candidate, "uom": "Box"}, company="Demo Company",
+			default_warehouse="Stores - DC", default_sales_mode="retail",
+		)
+
+		self.assertEqual(wholesale["uom"], "Box")
+		self.assertEqual(wholesale["conversion_factor"], 12)
+		self.assertEqual(retail["uom"], "Unit")
+		self.assertEqual(retail["conversion_factor"], 1)
+		self.assertEqual(explicit["uom"], "Box")
+		self.assertEqual(explicit["conversion_factor"], 12)
+
 	def test_reference_price_distinguishes_missing_from_explicit_zero(self):
 		missing, missing_source = _authoritative_reference_price(
 			{"price_list": "Standard Selling", "price_summary": {"selling_prices": []}},
@@ -1427,7 +1467,8 @@ class TestAiService(TestCase):
 		self.assertTrue(mock_create_draft.call_args.kwargs["validation"]["ready_for_handoff"])
 		mock_item.assert_called_once_with(
 			{"item_query": "相机", "qty": 2}, company="Test Company",
-			default_warehouse="Stores - TC", allow_user_price=True,
+			default_warehouse="Stores - TC", default_sales_mode="wholesale",
+			allow_user_price=True,
 		)
 		self.assertEqual(_complete.call_args.kwargs["tool_calls"][0]["risk_level"], "L2_DRAFT_ONLY")
 		expected_prompt_version = _resolve_prompt_version("sales_order_draft")
@@ -1496,6 +1537,7 @@ class TestAiService(TestCase):
 		self.assertEqual(payload["customer"], "CUST-1")
 		self.assertEqual(payload["transaction_date"], "2026-07-01")
 		self.assertEqual(payload["delivery_date"], "2026-07-05")
+		self.assertEqual(payload["default_sales_mode"], "retail")
 		self.assertEqual(payload["remarks"], "原销售备注")
 		self.assertEqual(payload["items"][0]["conversion_factor"], 6)
 		self.assertTrue(mock_create_draft.call_args.kwargs["validation"]["ready_for_handoff"])
@@ -1503,7 +1545,7 @@ class TestAiService(TestCase):
 	def test_prompt_versions_are_mapped_by_scenario(self):
 		self.assertEqual(_resolve_prompt_version("general"), "erp-readonly-v8")
 		draft_versions = {
-			"sales_order_draft": "sales-order-draft-v3",
+			"sales_order_draft": "sales-order-draft-v4",
 			"purchase_order_draft": "purchase-order-draft-v3",
 			"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
 			"product_setup_draft": "product-setup-draft-v6",
