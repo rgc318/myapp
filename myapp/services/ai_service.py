@@ -1711,7 +1711,7 @@ def _build_order_query_dsl(
 		limit = 1
 		limit_explicit = True
 
-	return {
+	dsl = {
 		"entity": entity,
 		"entities": entities,
 		"company": company,
@@ -1722,9 +1722,13 @@ def _build_order_query_dsl(
 		"min_amount": min_amount,
 		"limit": limit,
 		"limit_explicit": limit_explicit,
-		"target_document_entity": target_document_entity,
-		"target_document_name": target_document_name,
 	}
+	if target_document_entity and target_document_name:
+		dsl.update({
+			"target_document_entity": target_document_entity,
+			"target_document_name": target_document_name,
+		})
+	return dsl
 
 
 BUSINESS_DOCUMENT_QUERY_CONFIG = {
