@@ -447,11 +447,16 @@ def submit_ai_feedback_v1(
 
 @frappe.whitelist(methods=["POST"])
 def resolve_ai_scenario_v1(
-	content: str | None = None, attachment_ids=None, model_alias: str | None = None,
+	content: str | None = None,
+	attachment_ids=None,
+	model_alias: str | None = None,
+	company: str | None = None,
+	conversation_id: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: resolve_ai_scenario_v1_service(
 			content=content, attachment_ids=attachment_ids, model_alias=model_alias,
+			company=company, conversation_id=conversation_id,
 		),
 		success_code="AI_SCENARIO_RESOLVED",
 	)

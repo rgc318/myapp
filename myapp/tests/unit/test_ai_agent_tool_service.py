@@ -30,11 +30,53 @@ class TestAiAgentToolService(TestCase):
 				"entities": ["sales_order", "sales_invoice"],
 				"date_from": None, "date_to": None, "status": "all",
 				"sort": "latest", "min_amount": None, "limit": 10,
+				"document_name": None,
 			},
 			company="Demo Company",
 		)
 
 		self.assertEqual(status, "ok")
+		self.assertIsNone(build_context.call_args.kwargs["structured_intent"]["document_name"])
+
+	@patch("myapp.services.ai_service._build_order_query_context")
+	def test_exact_business_document_tool_requires_one_entity(self, build_context):
+		build_context.return_value = (
+			{
+				"tool": "query_business_documents",
+				"result_set": {"groups": [{"entity": "sales_order", "returned_count": 1}]},
+			},
+			[{"type": "sales_order", "id": "SO-001"}],
+			[],
+		)
+
+		_context, _citations, status = _execute_business_documents(
+			{
+				"entities": ["sales_order"],
+				"date_from": None, "date_to": None, "status": "all",
+				"sort": "latest", "min_amount": None, "limit": 1,
+				"document_name": "SO-001",
+			},
+			company="Demo Company",
+		)
+
+		self.assertEqual(status, "ok")
+		self.assertEqual(
+			build_context.call_args.kwargs["structured_intent"]["document_name"],
+			"SO-001",
+		)
+
+	def test_exact_business_document_tool_rejects_multiple_entities(self):
+		with patch("myapp.services.ai_agent_tool_service.frappe.throw", side_effect=ValueError):
+			with self.assertRaises(ValueError):
+				_execute_business_documents(
+					{
+						"entities": ["sales_order", "sales_invoice"],
+						"date_from": None, "date_to": None, "status": "all",
+						"sort": "latest", "min_amount": None, "limit": 1,
+						"document_name": "SO-001",
+					},
+					company="Demo Company",
+				)
 
 	@patch("myapp.services.ai_service._build_order_query_context")
 	def test_business_document_tool_reports_not_found_when_all_groups_are_empty(self, build_context):
@@ -55,6 +97,7 @@ class TestAiAgentToolService(TestCase):
 				"entities": ["sales_order", "sales_invoice"],
 				"date_from": None, "date_to": None, "status": "all",
 				"sort": "latest", "min_amount": None, "limit": 10,
+				"document_name": None,
 			},
 			company="Demo Company",
 		)

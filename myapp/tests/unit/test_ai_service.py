@@ -16,6 +16,10 @@ from myapp.services.ai_service import (
 	_build_order_query_context,
 	_build_order_query_dsl,
 	_build_next_conversation_state,
+	_build_draft_conversation_state,
+	_bind_context_business_partner_candidate,
+	_bind_context_order_candidate,
+	_bind_context_product_candidates,
 	_build_unresolved_multimodal_product_search_context,
 	_build_product_setup_draft,
 	_candidate_requests_product_image_application,
@@ -49,14 +53,17 @@ from myapp.services.ai_service import (
 	_resolve_purchase_draft_item,
 	_resolve_product_setup_source_attachments,
 	_resolve_product_setup_context_target,
+	_resolved_conversation_entity,
 	_multimodal_product_query_is_unresolved,
 	_product_search_text_has_entity_hint,
 	_visual_product_query_has_reliable_entity_hint,
 	_resolve_prompt_version,
 	_resolve_order_update_source,
+	_resolve_ai_action_scenario,
 	_resolve_sales_draft_item,
 	_requests_product_image_application,
 	_complete_chat_run,
+	_apply_agent_result,
 	_stream_ai_orchestrator,
 	chat_ai_v1,
 	execute_ai_draft_v1,
@@ -710,7 +717,8 @@ class TestAiService(TestCase):
 	):
 		draft = {
 			"name": "AI-DRAFT-1", "draft_type": "sales_order", "status": "draft", "version": 3,
-			"payload": {}, "validation": {"ready_for_handoff": True}, "execution": None,
+			"conversation": "AI-CONV-1", "payload": {},
+			"validation": {"ready_for_handoff": True}, "execution": None,
 		}
 		mock_execute.return_value = {
 			"target_doctype": "Sales Order", "target_name": "SO-001",
@@ -719,7 +727,13 @@ class TestAiService(TestCase):
 		executed = {**draft, "status": "executed", "execution": {"target_name": "SO-001"}}
 		with patch("myapp.services.ai_service.ai_repository.get_draft", return_value=draft), patch(
 			"myapp.services.ai_service.ai_repository.mark_draft_executed", return_value=executed,
-		) as mock_mark, patch("myapp.services.ai_service.frappe") as mock_frappe:
+		) as mock_mark, patch(
+			"myapp.services.ai_service.ai_repository.get_conversation_state",
+			return_value={"version": 2, "state": {}},
+		), patch(
+			"myapp.services.ai_service._persist_draft_conversation_state",
+			return_value={"tool": "update_conversation_state", "mode": "state_updated"},
+		), patch("myapp.services.ai_service.frappe") as mock_frappe:
 			result = execute_ai_draft_v1(
 				draft_id="AI-DRAFT-1", expected_version=3, confirmed=True, request_id="REQ-1",
 			)
@@ -919,6 +933,58 @@ class TestAiService(TestCase):
 					draft_id="AI-DRAFT-1", payload={}, expected_version=2,
 				)
 				self.assertEqual(mock_update.call_args.kwargs["expected_version"], 2)
+
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_user_edited_draft_reprojects_conversation_entities(self, _user):
+		updated = {
+			"name": "AI-DRAFT-1",
+			"payload": {"items": [{"item_code": "ITEM-NEW", "item_name": "新商品"}]},
+		}
+		with patch(
+			"myapp.services.ai_service.ai_repository.get_draft",
+			return_value={
+				"draft_type": "inventory_adjustment", "company": "Demo Company",
+				"conversation": "AI-CONV-1", "payload": {},
+			},
+		), patch(
+			"myapp.services.ai_service._build_inventory_adjustment_draft",
+			return_value=(updated["payload"], {"ready_for_handoff": True}),
+		), patch(
+			"myapp.services.ai_service.ai_repository.update_draft", return_value=updated,
+		), patch(
+			"myapp.services.ai_service.ai_repository.get_conversation",
+			return_value={"conversation": {"status": "active"}},
+		), patch(
+			"myapp.services.ai_service.ai_repository.get_conversation_state",
+			return_value={"version": 4, "state": {}},
+		), patch(
+			"myapp.services.ai_service._persist_draft_conversation_state",
+		) as persist_state:
+			result = _update_ai_draft_once(
+				draft_id="AI-DRAFT-1", payload={}, expected_version=2,
+			)
+
+		self.assertEqual(result["data"], updated)
+		self.assertEqual(persist_state.call_args.kwargs["payload"], updated["payload"])
+		self.assertEqual(persist_state.call_args.kwargs["draft_type"], "inventory_adjustment")
+
+	def test_semantic_router_leads_and_deterministic_rules_only_guard_writes(self):
+		resolved, mode, confidence = _resolve_ai_action_scenario(
+			"帮我看看迪莫还有没有",
+			{},
+			{"intent": "product_search", "confidence": 0.94},
+		)
+		guarded, guard_mode, _ = _resolve_ai_action_scenario(
+			"修改这个商品，把价格设为 12 元",
+			{"active_entities": {"product": {
+				"entity_type": "product", "entity_id": "ITEM-1", "resolution_status": "resolved",
+			}}},
+			{"intent": "general", "confidence": 0.91},
+		)
+
+		self.assertEqual((resolved, mode, confidence), ("product_search", "structured_intent", 0.94))
+		self.assertEqual(guarded, "product_setup_draft")
+		self.assertEqual(guard_mode, "structured_intent_write_guard")
 	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
 		"intent": "product_search", "confidence": 0.96, "product_query": "莫",
 		"entities": [], "report_type": None, "date_preset": "all",
@@ -1154,6 +1220,10 @@ class TestAiService(TestCase):
 		self.assertEqual(prepared["payload"]["capability_token"], "capability-token")
 		self.assertEqual(prepared["payload"]["policy_code"], "general-staging")
 		self.assertEqual(prepared["payload"]["policy_version"], 4)
+		self.assertEqual(
+			prepared["payload"]["context"]["conversation_state"]["schema_version"],
+			"conversation-state-v2",
+		)
 		self.assertEqual(prepared["warnings"], [])
 		issue_capability.assert_called_once()
 
@@ -1308,7 +1378,16 @@ class TestAiService(TestCase):
 			return_value={"conversation": {"name": "AI-CONV-1", "status": "active"}},
 		), patch(
 			"myapp.services.ai_service.ai_repository.get_conversation_state",
-			return_value={"version": 2, "state": {"schema_version": "conversation-state-v1"}},
+			return_value={
+				"version": 2,
+				"state": {
+					"schema_version": "conversation-state-v2",
+					"active_entities": {"product": {
+						"entity_type": "product", "entity_id": "ITEM-1",
+						"resolution_status": "resolved",
+					}},
+				},
+			},
 		), patch(
 			"myapp.services.ai_service.ai_repository.load_model_messages",
 			return_value=[{"role": "user", "content": "查询商品"}],
@@ -1321,6 +1400,11 @@ class TestAiService(TestCase):
 		self.assertEqual(prepared["payload"]["capability_token"], "new-capability-token")
 		self.assertEqual(prepared["payload"]["model_alias"], "erp-fast-chat")
 		self.assertEqual(prepared["payload"]["prompt_version"], "erp-readonly-v8")
+		self.assertEqual(
+			prepared["payload"]["context"]["conversation_state"]["active_entities"]
+			["product"]["entity_id"],
+			"ITEM-1",
+		)
 		mock_frappe.db.commit.assert_called_once()
 
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
@@ -1414,6 +1498,7 @@ class TestAiService(TestCase):
 		self.assertEqual(diff["items"][0]["fields"], ["qty"])
 		self.assertEqual(diff["items"][1]["change"], "added")
 
+	@patch("myapp.services.ai_service._persist_draft_conversation_state", return_value={"tool": "update_conversation_state"})
 	@patch("myapp.services.ai_service.ai_repository.create_draft")
 	@patch("myapp.services.ai_service.nowdate", return_value="2026-07-13")
 	@patch("myapp.services.ai_service.ai_repository.fail_run")
@@ -1430,6 +1515,7 @@ class TestAiService(TestCase):
 	def test_generate_sales_order_draft_persists_validated_draft(
 		self, _company, mock_call, mock_customer, _warehouse, mock_item,
 		mock_conversation, _append, _run, mock_messages, _complete, _fail, _nowdate, mock_create_draft,
+		_persist_state,
 	):
 		mock_conversation.return_value = {"name": "AI-CONV-DRAFT", "company": "Test Company"}
 		mock_messages.return_value = [{"role": "user", "content": "给客户A开2箱相机"}]
@@ -1478,6 +1564,7 @@ class TestAiService(TestCase):
 			{expected_prompt_version},
 		)
 
+	@patch("myapp.services.ai_service._persist_draft_conversation_state", return_value={"tool": "update_conversation_state"})
 	@patch("myapp.services.ai_service.ai_repository.create_draft")
 	@patch("myapp.services.ai_service.nowdate", return_value="2026-07-13")
 	@patch("myapp.services.ai_service.ai_repository.fail_run")
@@ -1494,7 +1581,7 @@ class TestAiService(TestCase):
 	def test_sales_order_update_uses_system_order_as_baseline(
 		self, _company, mock_call, mock_detail, _customer, _warehouse,
 		mock_conversation, _append, _run, mock_messages, _complete, _fail,
-		_nowdate, mock_create_draft,
+		_nowdate, mock_create_draft, _persist_state,
 	):
 		mock_conversation.return_value = {"name": "AI-CONV-SALES-UPDATE", "company": "Test Company"}
 		mock_messages.return_value = [{"role": "user", "content": "修改图片里的销售订单"}]
@@ -1555,6 +1642,7 @@ class TestAiService(TestCase):
 				self.assertEqual(_resolve_prompt_version(scenario), expected)
 				self.assertNotEqual(expected, "erp-readonly-v8")
 
+	@patch("myapp.services.ai_service._persist_draft_conversation_state", return_value={"tool": "update_conversation_state"})
 	@patch("myapp.services.ai_service.ai_repository.create_draft")
 	@patch("myapp.services.ai_service.ai_repository.fail_run")
 	@patch("myapp.services.ai_service.ai_repository.complete_run")
@@ -1570,6 +1658,7 @@ class TestAiService(TestCase):
 	def test_purchase_draft_uses_purchase_prompt_version_for_request_and_audit(
 		self, _company, mock_call, mock_supplier, _warehouse, mock_item,
 		mock_conversation, mock_append, mock_run, mock_messages, _complete, _fail, mock_create_draft,
+		_persist_state,
 	):
 		mock_conversation.return_value = {"name": "AI-CONV-PURCHASE", "company": "Test Company"}
 		mock_messages.return_value = [{"role": "user", "content": "向供应商A采购2箱相机"}]
@@ -1624,6 +1713,7 @@ class TestAiService(TestCase):
 			"Stores - TC",
 		)
 
+	@patch("myapp.services.ai_service._persist_draft_conversation_state", return_value={"tool": "update_conversation_state"})
 	@patch("myapp.services.ai_service.ai_repository.create_draft")
 	@patch("myapp.services.ai_service.ai_repository.fail_run")
 	@patch("myapp.services.ai_service.ai_repository.complete_run")
@@ -1639,6 +1729,7 @@ class TestAiService(TestCase):
 	def test_purchase_order_update_uses_system_order_as_baseline(
 		self, _company, mock_call, mock_detail, _supplier, _warehouse,
 		mock_conversation, _append, _run, mock_messages, _complete, _fail, mock_create_draft,
+		_persist_state,
 	):
 		mock_conversation.return_value = {"name": "AI-CONV-PURCHASE-UPDATE", "company": "Test Company"}
 		mock_messages.return_value = [{"role": "user", "content": "修改图片里的采购订单"}]
@@ -1687,6 +1778,7 @@ class TestAiService(TestCase):
 		self.assertEqual(payload["items"][0]["price_source"], "existing_order")
 		self.assertTrue(mock_create_draft.call_args.kwargs["validation"]["ready_for_handoff"])
 
+	@patch("myapp.services.ai_service._persist_draft_conversation_state", return_value={"tool": "update_conversation_state"})
 	@patch("myapp.services.ai_service.ai_repository.create_draft")
 	@patch("myapp.services.ai_service.ai_repository.fail_run")
 	@patch("myapp.services.ai_service.ai_repository.complete_run")
@@ -1699,7 +1791,7 @@ class TestAiService(TestCase):
 	@patch("myapp.services.ai_service._resolve_company_scope", return_value="Test Company")
 	def test_inventory_draft_uses_inventory_prompt_version_for_request_and_audit(
 		self, _company, mock_call, mock_build_draft, mock_conversation, mock_append,
-		mock_run, mock_messages, _complete, _fail, mock_create_draft,
+		mock_run, mock_messages, _complete, _fail, mock_create_draft, _persist_state,
 	):
 		mock_conversation.return_value = {"name": "AI-CONV-INVENTORY", "company": "Test Company"}
 		mock_messages.return_value = [{"role": "user", "content": "把相机库存调整到8个"}]
@@ -1942,6 +2034,240 @@ class TestAiService(TestCase):
 
 		self.assertIsNone(target)
 
+	def test_shared_product_context_binding_covers_inventory_sales_and_purchase_candidates(self):
+		state = {
+			"schema_version": "conversation-state-v2",
+			"active_entities": {
+				"product": {
+					"entity_type": "product", "entity_id": "ITEM-COLA-5000ML",
+					"display_name": "可口可乐 5000ml", "resolution_status": "resolved",
+				},
+			},
+		}
+		cases = [
+			{"item_query": "这个商品", "quantity": 10000, "uom": "箱"},
+			{"items": [{"item_query": "这个商品", "qty": 2, "uom": "箱"}]},
+			{"items": [{"item_query": "它", "qty": 3, "uom": "箱"}]},
+		]
+		for candidate in cases:
+			with self.subTest(candidate=candidate):
+				bound, targets = _bind_context_product_candidates(
+					candidate,
+					content="给这个商品增加库存或开单",
+					conversation_state=state,
+				)
+				row = (bound.get("items") or [bound])[0]
+				self.assertEqual(row["item_query"], "ITEM-COLA-5000ML")
+				self.assertEqual(row["_target_source"], "conversation_active_entity")
+				self.assertEqual(targets[0]["context_ref"], "active_entities.product")
+
+	def test_shared_product_context_binding_never_overrides_current_explicit_product(self):
+		bound, targets = _bind_context_product_candidates(
+			{"item_query": "百事可乐", "quantity": 2},
+			content="给百事可乐增加库存，不是刚才那个商品",
+			conversation_state={
+				"active_entities": {"product": {
+					"entity_type": "product", "entity_id": "ITEM-COLA",
+					"resolution_status": "resolved",
+				}},
+			},
+		)
+
+		self.assertEqual(bound["item_query"], "百事可乐")
+		self.assertEqual(targets, [])
+
+	def test_shared_product_context_binding_fails_closed_for_ambiguous_state(self):
+		bound, targets = _bind_context_product_candidates(
+			{"item_query": "这个商品", "quantity": 2},
+			content="给这个商品增加库存",
+			conversation_state={
+				"active_entities": {"product": {
+					"entity_type": "product", "entity_id": None,
+					"resolution_status": "ambiguous",
+				}},
+				"last_result_set": {
+					"type": "products",
+					"entity_refs": [
+						{"entity_type": "product", "entity_id": "ITEM-1"},
+						{"entity_type": "product", "entity_id": "ITEM-2"},
+					],
+				},
+			},
+		)
+
+		self.assertEqual(bound["item_query"], "这个商品")
+		self.assertEqual(targets, [])
+
+	def test_contextual_order_update_uses_unique_typed_business_document(self):
+		state = {
+			"active_entities": {"business_document": {
+				"entity_type": "sales_order", "entity_id": "SO-0001",
+				"display_name": "SO-0001", "resolution_status": "resolved",
+			}},
+		}
+		bound, target = _bind_context_order_candidate(
+			{"operation": "auto", "order_number": None},
+			content="修改这个订单的交货日期",
+			conversation_state=state,
+			draft_type="sales_order",
+		)
+
+		self.assertEqual(bound["operation"], "update")
+		self.assertEqual(bound["order_number"], "SO-0001")
+		self.assertEqual(target["source"], "conversation_active_entity")
+		self.assertEqual(_infer_ai_action_scenario("修改这个订单", state), "sales_order_draft")
+
+	def test_contextual_order_update_rejects_wrong_document_type(self):
+		state = {
+			"active_entities": {"business_document": {
+				"entity_type": "purchase_order", "entity_id": "PO-0001",
+				"resolution_status": "resolved",
+			}},
+		}
+		bound, target = _bind_context_order_candidate(
+			{"operation": "auto", "order_number": None},
+			content="修改这个订单",
+			conversation_state=state,
+			draft_type="sales_order",
+		)
+
+		self.assertIsNone(target)
+		self.assertIsNone(bound["order_number"])
+		self.assertEqual(_infer_ai_action_scenario("修改这个订单", state), "purchase_order_draft")
+
+	def test_resolved_conversation_entity_uses_unique_typed_result_set_fallback(self):
+		target = _resolved_conversation_entity(
+			{
+				"last_result_set": {
+					"id": "RESULT-1",
+					"entity_refs": [{
+						"entity_type": "sales_order", "entity_id": "SO-0002",
+						"display_name": "SO-0002",
+					}],
+				},
+			},
+			slot="business_document",
+			allowed_entity_types={"sales_order"},
+		)
+
+		self.assertEqual(target["entity_id"], "SO-0002")
+		self.assertEqual(target["source"], "conversation_result_set")
+
+	def test_authoritative_ambiguous_slot_does_not_resurrect_stale_result_set(self):
+		target = _resolved_conversation_entity(
+			{
+				"active_entities": {"product": {
+					"entity_type": "product", "entity_id": None,
+					"resolution_status": "ambiguous",
+				}},
+				"last_result_set": {"entity_refs": [{
+					"entity_type": "product", "entity_id": "OLD-ITEM",
+				}]},
+			},
+			slot="product",
+			allowed_entity_types={"product"},
+		)
+
+		self.assertIsNone(target)
+
+	def test_contextual_business_partner_binding_is_typed(self):
+		state = {"active_entities": {"business_partner": {
+			"entity_type": "customer", "entity_id": "CUST-001",
+			"display_name": "客户甲", "resolution_status": "resolved",
+		}}}
+		bound, target = _bind_context_business_partner_candidate(
+			{"customer_query": "这个客户"},
+			content="再给这个客户开一张销售订单",
+			conversation_state=state,
+			draft_type="sales_order",
+		)
+		wrong_type, wrong_target = _bind_context_business_partner_candidate(
+			{"supplier_query": "这个供应商"},
+			content="再向这个供应商采购",
+			conversation_state=state,
+			draft_type="purchase_order",
+		)
+
+		self.assertEqual(bound["customer_query"], "CUST-001")
+		self.assertEqual(target["context_ref"], "active_entities.business_partner")
+		self.assertEqual(wrong_type["supplier_query"], "这个供应商")
+		self.assertIsNone(wrong_target)
+
+	def test_draft_state_tracks_product_partner_and_only_formal_created_order(self):
+		payload = {
+			"operation": "create",
+			"customer": "CUST-001",
+			"customer_display_name": "客户甲",
+			"items": [{"item_code": "ITEM-COLA", "item_name": "可口可乐"}],
+		}
+		draft_state = _build_draft_conversation_state(
+			previous_state={"active_scenario": "order_query"},
+			draft_type="sales_order",
+			payload=payload,
+		)
+		executed_state = _build_draft_conversation_state(
+			previous_state=draft_state,
+			draft_type="sales_order",
+			payload=payload,
+			formal_target={"target_doctype": "Sales Order", "target_name": "SO-0009"},
+		)
+
+		self.assertEqual(draft_state["active_scenario"], "general")
+		self.assertEqual(draft_state["active_entities"]["product"]["entity_id"], "ITEM-COLA")
+		self.assertEqual(draft_state["active_entities"]["business_partner"]["entity_id"], "CUST-001")
+		self.assertEqual(
+			draft_state["active_entities"]["business_document"]["resolution_status"],
+			"not_found",
+		)
+		self.assertEqual(
+			executed_state["active_entities"]["business_document"]["entity_id"],
+			"SO-0009",
+		)
+
+	def test_product_create_draft_does_not_activate_nonexistent_item_until_execution(self):
+		payload = {"operation": "create", "item_code": "NEW-ITEM", "item_name": "新品"}
+		draft_state = _build_draft_conversation_state(
+			previous_state={"active_entities": {"product": {
+				"entity_type": "product", "entity_id": "OLD-ITEM",
+				"resolution_status": "resolved",
+			}}},
+			draft_type="product_setup",
+			payload=payload,
+		)
+		executed_state = _build_draft_conversation_state(
+			previous_state=draft_state,
+			draft_type="product_setup",
+			payload=payload,
+			formal_target={"target_doctype": "Item", "target_name": "NEW-ITEM"},
+		)
+
+		self.assertEqual(
+			draft_state["active_entities"]["product"]["resolution_status"], "not_found",
+		)
+		self.assertEqual(executed_state["active_entities"]["product"]["entity_id"], "NEW-ITEM")
+
+	@patch("myapp.services.ai_service.get_sales_order_detail")
+	def test_cross_company_order_is_not_used_as_draft_baseline(self, mock_detail):
+		mock_detail.return_value = {"data": {
+			"meta": {"company": "Other Company"},
+			"customer": {"name": "CUST-SECRET"},
+			"items": [{"item_code": "SECRET-ITEM"}],
+		}}
+
+		operation, order_number, detail, errors = _resolve_order_update_source(
+			{
+				"operation": "update", "order_number": "SO-OTHER",
+				"source_document_type": "our_system_order",
+			},
+			draft_type="sales_order",
+			company="Demo Company",
+		)
+
+		self.assertEqual(operation, "update")
+		self.assertEqual(order_number, "SO-OTHER")
+		self.assertIsNone(detail)
+		self.assertTrue(any("不属于当前公司" in error for error in errors))
+
 	@patch("myapp.services.ai_service.get_product_detail_v2")
 	def test_product_setup_explicit_item_code_is_authoritative(self, mock_detail):
 		mock_detail.return_value = {
@@ -1983,6 +2309,7 @@ class TestAiService(TestCase):
 		mock_frappe.get_list.assert_called_once()
 		mock_detail.assert_not_called()
 
+	@patch("myapp.services.ai_service._persist_draft_conversation_state", return_value={"tool": "update_conversation_state"})
 	@patch("myapp.services.ai_service._public_ai_result_details", return_value={})
 	@patch("myapp.services.ai_service._save_draft_generation_assistant_message")
 	@patch("myapp.services.ai_service.ai_repository.complete_run")
@@ -2001,7 +2328,7 @@ class TestAiService(TestCase):
 	def test_generate_product_setup_draft_binds_unique_conversation_product(
 		self, _user, _company, _attachments, _model, mock_conversation,
 		mock_state, _start_run, _messages, mock_orchestrator, mock_existing,
-		mock_build, mock_create_draft, _complete, _save_message, _public_details,
+		mock_build, mock_create_draft, _complete, _save_message, _public_details, _persist_state,
 	):
 		mock_conversation.return_value = {
 			"conversation": {"name": "AI-CONV-1", "company": "Demo Company"},
@@ -2080,8 +2407,116 @@ class TestAiService(TestCase):
 
 		self.assertEqual(state["product"]["item_code"], "SKU010")
 		self.assertEqual(state["last_result_set"]["entity_ids"], ["SKU010"])
+		self.assertEqual(state["schema_version"], "conversation-state-v2")
+		self.assertEqual(state["active_entities"]["product"]["entity_id"], "SKU010")
+		self.assertEqual(state["last_result_set"]["entity_refs"][0]["entity_type"], "product")
 		self.assertNotIn("price", state["product"])
 		self.assertNotIn("qty", state["product"])
+
+	def test_next_conversation_state_tracks_unique_typed_order_reference(self):
+		state = _build_next_conversation_state(
+			previous_state={"active_scenario": "general"},
+			scenario="order_query",
+			structured_intent={"entities": ["sales_order"]},
+			tool_context={
+				"tool": "query_business_documents",
+				"dsl": {
+					"entities": ["sales_order"], "date_range": "all",
+					"status_filter": "all", "sort_by": "latest", "limit": 10,
+				},
+				"result_set": {"scope": {"company": "Demo Company"}},
+			},
+			citations=[
+				{"type": "business_result_set", "id": "RESULT-ORDER-1"},
+				{"type": "sales_order", "id": "SO-0001", "label": "SO-0001"},
+			],
+		)
+
+		active = state["active_entities"]["business_document"]
+		self.assertEqual(active["entity_type"], "sales_order")
+		self.assertEqual(active["entity_id"], "SO-0001")
+		self.assertEqual(active["resolution_status"], "resolved")
+		self.assertEqual(state["last_result_set"]["entity_refs"][0]["entity_id"], "SO-0001")
+
+	def test_order_result_projects_unique_typed_business_partner(self):
+		state = _build_next_conversation_state(
+			previous_state={"active_scenario": "general"},
+			scenario="order_query",
+			structured_intent={"entities": ["sales_order"]},
+			tool_context={
+				"tool": "query_business_documents",
+				"dsl": {
+					"entities": ["sales_order"], "date_range": "all",
+					"status_filter": "all", "sort_by": "latest", "limit": 10,
+				},
+				"result_set": {"scope": {"company": "Demo Company"}},
+			},
+			citations=[
+				{"type": "business_result_set", "id": "RESULT-ORDER-1"},
+				{
+					"type": "sales_order", "id": "SO-0001", "label": "SO-0001",
+					"data": {
+						"party_id": "CUST-001", "party_display_name": "客户甲",
+					},
+				},
+			],
+		)
+
+		partner = state["active_entities"]["business_partner"]
+		self.assertEqual(partner["entity_type"], "customer")
+		self.assertEqual(partner["entity_id"], "CUST-001")
+		self.assertEqual(partner["display_name"], "客户甲")
+
+	def test_agent_result_merges_all_successful_tools_and_ignores_failed_context(self):
+		prepared = {
+			"agent_mode": True,
+			"scenario": "general",
+			"citations": [],
+			"tool_calls": [],
+			"next_conversation_state": {"active_scenario": "general"},
+		}
+		_apply_agent_result(prepared, {
+			"citations": [],
+			"tool_calls": [],
+			"tool_results": [
+				{
+					"tool": "search_products", "status": "resolved",
+					"model_context": {
+						"tool": "search_products", "query": "可口可乐",
+						"resolved_product": {"item_code": "ITEM-COLA", "item_name": "可口可乐"},
+						"retrieval": {"status": "resolved"},
+						"products": [{"item_code": "ITEM-COLA", "item_name": "可口可乐"}],
+					},
+					"citations": [{"type": "product", "id": "ITEM-COLA"}],
+				},
+				{
+					"tool": "query_business_documents", "status": "ok",
+					"model_context": {
+						"tool": "query_business_documents",
+						"dsl": {
+							"entities": ["sales_order"], "date_range": "all",
+							"status_filter": "all", "sort_by": "latest", "limit": 10,
+						},
+						"result_set": {"scope": {"company": "Demo Company"}},
+					},
+					"citations": [
+						{"type": "business_result_set", "id": "RESULT-1"},
+						{"type": "sales_order", "id": "SO-1", "data": {
+							"party_id": "CUST-1", "party_display_name": "客户甲",
+						}},
+					],
+				},
+				{
+					"tool": "search_products", "status": "retryable_error",
+					"model_context": {}, "citations": [],
+				},
+			],
+		})
+
+		active = prepared["next_conversation_state"]["active_entities"]
+		self.assertEqual(active["product"]["entity_id"], "ITEM-COLA")
+		self.assertEqual(active["business_document"]["entity_id"], "SO-1")
+		self.assertEqual(active["business_partner"]["entity_id"], "CUST-1")
 
 	@patch("myapp.services.ai_service.ai_repository.complete_run")
 	@patch("myapp.services.ai_service.ai_repository.update_conversation_state")
@@ -2170,6 +2605,56 @@ class TestAiService(TestCase):
 		self.assertEqual(dsl["status_filter"], "unfinished")
 		self.assertEqual(dsl["sort_by"], "amount_desc")
 		self.assertEqual(dsl["limit"], 3)
+
+	def test_order_dsl_resolves_deictic_unique_document_as_exact_target(self):
+		dsl = _build_order_query_dsl(
+			"查看这个订单的状态",
+			company="Demo Company",
+			conversation_state={"active_entities": {"business_document": {
+				"entity_type": "sales_order", "entity_id": "SO-0007",
+				"resolution_status": "resolved",
+			}}},
+		)
+
+		self.assertEqual(dsl["entities"], ["sales_order"])
+		self.assertEqual(dsl["target_document_entity"], "sales_order")
+		self.assertEqual(dsl["target_document_name"], "SO-0007")
+		self.assertEqual(dsl["limit"], 1)
+		self.assertFalse(dsl["exclude_cancelled"])
+
+	@patch("myapp.services.ai_service._filter_allowed_document_names", return_value={"SO-0007"})
+	@patch("myapp.services.ai_service.search_sales_orders_v2")
+	def test_exact_order_query_passes_search_key_and_rejects_partial_matches(
+		self, search_orders, _allowed_names,
+	):
+		search_orders.return_value = {"data": {
+			"items": [
+				{
+					"order_name": "SO-0007", "customer": "CUST-1", "customer_name": "客户甲",
+					"company": "Demo Company", "transaction_date": "2026-08-01",
+					"order_amount_estimate": 100, "document_status": "Submitted",
+				},
+				{
+					"order_name": "SO-00070", "customer": "CUST-2", "customer_name": "客户乙",
+					"company": "Demo Company", "transaction_date": "2026-08-02",
+					"order_amount_estimate": 200, "document_status": "Submitted",
+				},
+			],
+			"summary": {},
+		}}
+		dsl = {
+			"company": "Demo Company", "date_from": None, "date_to": None,
+			"status_filter": "all", "exclude_cancelled": False, "sort_by": "latest",
+			"min_amount": None, "limit": 1,
+			"target_document_entity": "sales_order", "target_document_name": "SO-0007",
+		}
+
+		with patch("myapp.services.ai_service.frappe.has_permission", return_value=True):
+			items, _summary = _query_business_document_entity(entity="sales_order", dsl=dsl)
+
+		self.assertEqual(search_orders.call_args.kwargs["search_key"], "SO-0007")
+		self.assertEqual([row["name"] for row in items], ["SO-0007"])
+		self.assertEqual(items[0]["party_id"], "CUST-1")
 
 	def test_order_dsl_applies_structured_entities_amount_and_custom_dates(self):
 		dsl = _build_order_query_dsl(

@@ -568,10 +568,15 @@ class TestGatewayWrappers(TestCase):
 			"status": "success", "data": {"scenario": "product_setup_draft"},
 		}
 
-		resolve_ai_scenario_v1(content="新增商品传承结晶")
+		resolve_ai_scenario_v1(
+			content="新增商品传承结晶",
+			company="Demo Company",
+			conversation_id="AI-CONV-1",
+		)
 
 		mock_resolve_service.assert_called_once_with(
 			content="新增商品传承结晶", attachment_ids=None, model_alias=None,
+			company="Demo Company", conversation_id="AI-CONV-1",
 		)
 
 	@patch("myapp.api.gateway.execute_ai_draft_v1_service")

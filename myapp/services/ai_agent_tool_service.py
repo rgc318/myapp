@@ -49,6 +49,7 @@ TOOL_ARGUMENT_SCHEMAS = {
 					"type": "string",
 					"enum": ["sales_order", "sales_invoice", "purchase_order", "purchase_invoice"],
 				},
+				"minItems": 1,
 				"maxItems": 4,
 			},
 			"date_from": {"type": ["string", "null"], "pattern": r"^\d{4}-\d{2}-\d{2}$"},
@@ -60,8 +61,12 @@ TOOL_ARGUMENT_SCHEMAS = {
 			"sort": {"type": "string", "enum": ["latest", "oldest", "amount_desc", "amount_asc"]},
 			"min_amount": {"type": ["number", "null"], "minimum": 0},
 			"limit": {"type": "integer", "minimum": 1, "maximum": 20},
+			"document_name": {"type": ["string", "null"], "maxLength": 140},
 		},
-		"required": ["entities", "date_from", "date_to", "status", "sort", "min_amount", "limit"],
+		"required": [
+			"entities", "date_from", "date_to", "status", "sort", "min_amount", "limit",
+			"document_name",
+		],
 		"additionalProperties": False,
 	},
 	"get_business_report": {
@@ -139,6 +144,8 @@ def _validate_schema(value, schema: dict, *, path: str) -> None:
 		if schema.get("maximum") is not None and value > schema["maximum"]:
 			frappe.throw(_("工具参数 {0} 大于允许值。").format(path))
 	if isinstance(value, list):
+		if schema.get("minItems") is not None and len(value) < int(schema["minItems"]):
+			frappe.throw(_("工具参数 {0} 项目过少。").format(path))
 		if schema.get("maxItems") is not None and len(value) > int(schema["maxItems"]):
 			frappe.throw(_("工具参数 {0} 项目过多。").format(path))
 		for index, child in enumerate(value):
@@ -203,8 +210,15 @@ def _execute_business_documents(arguments: dict, *, company: str) -> tuple[dict,
 
 	entities = arguments.get("entities") or []
 	allowed_entities = {"sales_order", "sales_invoice", "purchase_order", "purchase_invoice"}
-	if not isinstance(entities, list) or any(str(entity) not in allowed_entities for entity in entities):
+	if (
+		not isinstance(entities, list)
+		or not entities
+		or any(str(entity) not in allowed_entities for entity in entities)
+	):
 		frappe.throw(_("业务单据类型不受支持。"))
+	document_name = _bounded_text(arguments.get("document_name"), limit=140)
+	if document_name and len(entities) != 1:
+		frappe.throw(_("精确单据查询必须且只能指定一种单据类型。"))
 	status = str(arguments.get("status") or "all").strip()
 	if status not in {"all", "unfinished", "completed", "cancelled", "delivering", "receiving", "paying"}:
 		frappe.throw(_("业务单据状态不受支持。"))
@@ -223,6 +237,7 @@ def _execute_business_documents(arguments: dict, *, company: str) -> tuple[dict,
 		"sort": sort,
 		"min_amount": arguments.get("min_amount"),
 		"limit": limit,
+		"document_name": document_name,
 	}
 	context, citations, _audit = _build_order_query_context(
 		query="", company=company, structured_intent=intent,

@@ -173,11 +173,15 @@
 
 未明确日期的“最新/最近”单据查询默认覆盖全部日期并按最新排序，不再隐式限制最近 30 天；用户明确说今天、本周、本月、上月或近 N 天时才应用对应日期范围。混合查询按每种单据类型分别应用数量上限和权限过滤，例如“最新 5 条销售订单、销售发票和采购订单”最多返回 5 + 5 + 5 条结构化引用。Agent 单据工具的结构化明细只通过 citation 交给 Web；发送给模型的上下文只包含查询范围和各组请求/返回数量，不包含逐单据字段，因此 `erp-readonly-v8` 仍只概括查询范围、数量不足和空结果。其他受控上下文若没有声明界面承担明细展示，而用户明确询问金额最高、最近或唯一结果，则 v8 会简要返回与问题直接相关的受控标识、金额和状态。
 
+`query_business_documents` 工具版本为 `v2`，严格参数新增必填可空 `document_name`。只有用户明确给出单据号，或当前 `business_document` slot 唯一 `resolved` 时才填写；列表查询必须传 `null`。非空 `document_name` 必须且只能搭配一种 `entities` 类型，Backend 将其作为 `search_key` 传给正式查询服务，并在权限过滤后再次要求单据名称完全相同；精确查询自动移除旧日期、状态、金额和取消排除条件，避免目标单据被历史筛选隐藏。`entities` 至少包含一项，Orchestrator 和 Backend 两端都执行同一 `minItems` 校验。
+
 同步接口对所有账号返回 `conversation`、`run_id`、带 `citations` 的 `message`、安全警告、`events[]` 和持久 Run 摘要；基础 Run 摘要包含 `status`、后端 `latency_ms`、`model_selection`、安全的请求/实际模型展示名与稳定错误信息。具备高级诊断权限时，响应才额外包含请求/实际模型 alias、策略信息、trace、Token 和 `first_token_ms`。`stream_ai_message_v1` 返回真正 `text/event-stream`，事件包含 `run_started`、`run_progress`、`tool_started`、`tool_completed`、`citation`、`message_delta`、`warning`、`completed` 和 `error`；普通业务账号的事件不返回模型 alias、Provider 模型、trace、Token、首 Token 或流式统计。`get_ai_conversation_v1` 使用同一服务端权限规则恢复历史 Run；普通账号得到状态、总耗时、安全模型展示、稳定错误和反馈，治理角色才能得到技术 alias、trace、Token 与首 Token。接口仍支持 `before_sequence` + `limit` 向前游标分页；未传游标时返回最近一页，响应 `pagination` 包含 `total`、`returned_count`、`has_more` 和 `next_before_sequence`。客户端加载更早消息时必须传上一页的 `next_before_sequence`，避免会话末尾新增消息导致 offset 重复或跳页。`submit_ai_feedback_v1` 对本人已完成 Run 记录 `positive` / `negative` 反馈。正式单据创建、提交、取消、收付款和库存变更不属于这些接口能力。
 
-会话现在同时维护短期消息历史和受控的 `conversation-state-v1` 工作状态。状态只保存当前业务场景、唯一商品实体、订单/报表筛选、结果集 ID 及少量权限过滤后的实体摘要，不保存完整业务结果、模型原文或凭据；状态由服务端 owner 校验、字段白名单、大小限制和 `state_version` 乐观并发控制保护。每轮业务工具调用前重新读取状态，当前用户明确表达优先于历史状态；业务工具仍必须按当前请求重新执行公司范围、DocType 和记录权限校验。回答成功后才写回状态，版本冲突时跳过写回并审计，不影响当前只读回答。用户清除上下文或状态自动过期时，服务端同时更新 `context_start_sequence`，旧消息仍可在历史中查看但不会继续发送给模型；状态损坏会在下一次发送前恢复为空上下文并记录审计原因。
+会话现在同时维护短期消息历史和受控的 `conversation-state-v2` 工作状态。状态通过 `active_entities` 维护 `product`、`business_document`、`business_partner` 三个 typed slot，可引用商品、销售/采购订单、销售/采购发票、客户和供应商；同时保留订单/报表筛选、结果集 ID 及少量权限过滤后的实体摘要，不保存完整业务结果、模型原文或凭据。唯一查询结果写为 `resolved`，多候选写为 `ambiguous`，空结果写为 `not_found`；后两种状态是权威清空信号，不能回退并“复活”旧结果集。状态由服务端 owner 校验、字段白名单、大小限制和 `state_version` 乐观并发控制保护。每轮业务工具调用前重新读取状态，当前用户明确表达优先于历史状态；业务工具仍必须按当前请求重新执行公司范围、DocType 和记录权限校验。回答成功后才写回状态，版本冲突时跳过写回并审计，不影响当前只读回答。用户清除上下文或状态自动过期时，服务端同时更新 `context_start_sequence`，旧消息仍可在历史中查看但不会继续发送给模型；状态损坏会在下一次发送前恢复为空上下文并记录审计原因。
 
-`auto` 场景在已有业务状态时会继续调用结构化意图解析器，因此“它”“刚才那个”“只看未完成的”“换成上个月”等自然语言省略表达可以继承上一轮实体和筛选。Orchestrator 的意图 Prompt 版本为 `erp-intent-v3`；它只输出完整的当前有效意图，不能把历史业务事实当作实时事实。状态只是解析辅助，不能替代本轮 Frappe 查询。
+`auto` 场景统一先调用结构化意图解析器，因此“它”“刚才那个”“这个商品”“这个订单”“这个客户/供应商”“只看未完成的”“换成上个月”等自然语言省略表达可以继承上一轮 typed entity 和筛选。Orchestrator 的意图 Prompt 版本为 `erp-intent-v5`；语义路由优先决定当前场景，本地规则只在模型不可用、低置信度、输出非法，或需要防止明确写操作被降级到只读 Agent 路径时兜底。状态只用于解析辅助，不能把历史业务事实当作实时事实，也不能替代本轮 Frappe 查询。
+
+Agent Runtime 会按实际成功工具结果的顺序合并会话状态，而不是只读取最后一个工具结果。失败、拒绝或可重试错误信封没有 typed `model_context.tool`，不得清空先前已解析实体；成功的空查询仍会写入 `not_found`。订单查询结果会从权限过滤后的 citation 投影唯一客户/供应商；多工具 Run 可以同时保留商品、单据和往来单位槽位。草稿生成、人工编辑和正式执行都会重新投影相同槽位；新建商品和新建订单只有正式执行成功后才成为活动正式实体。
 
 AI 同步、流式失败事件和持久化 Run 必须保留稳定 `error_code`。运行时限流、预算、并发、模型熔断、配置版本、检查点持久化、内部认证和服务不可用等错误不得统一折叠为 Python 异常类名或通用文案；同步异常、SSE `error.code` 与 Run `error_code` 应保持一致，供 Web 区分“使用当前模型重试、修改输入、权限拒绝和系统/治理故障”。未知异常统一记录为 `AI_RUN_FAILED`，不得把堆栈或供应商原始错误正文暴露给普通用户。
 

@@ -78,11 +78,20 @@ from myapp.utils.standard_uoms import STANDARD_UOMS
 MAX_AI_MESSAGES = 20
 MAX_AI_MESSAGE_CHARS = 8000
 MAX_AI_PRODUCT_RESULTS = 8
-CONVERSATION_STATE_SCHEMA_VERSION = "conversation-state-v1"
+CONVERSATION_STATE_SCHEMA_VERSION = "conversation-state-v2"
 AI_INTENT_PROMPT_VERSION = "erp-intent-v5"
 CONVERSATION_STATE_BUSINESS_SCENARIOS = {"product_search", "order_query", "report_summary"}
 ALLOWED_AI_ROLES = {"user", "assistant"}
 ALLOWED_AI_SCENARIOS = {"auto", "general", "product_search", "order_query", "report_summary"}
+AI_ACTION_SCENARIOS = {
+	"general", "product_search", "order_query", "report_summary",
+	"sales_order_draft", "purchase_order_draft", "inventory_adjustment_draft",
+	"product_setup_draft",
+}
+AI_DRAFT_SCENARIOS = {
+	"sales_order_draft", "purchase_order_draft", "inventory_adjustment_draft",
+	"product_setup_draft",
+}
 PROMPT_VERSION_BY_SCENARIO = {
 	"general": "erp-readonly-v8",
 	"product_search": "erp-readonly-v8",
@@ -139,7 +148,26 @@ PRODUCT_CONTEXT_TARGET_PATTERN = re.compile(
 	r"|(?:它|刚才那个|上面那个|前面那个)(?:商品)?"
 	r"|(?:刚才|之前|前面|上面|上一(?:条|个)|查询到|查到|找到)(?:的)?(?:这|该|那)?(?:一个|个|款|件)?商品"
 )
-PRODUCT_UPDATE_ACTION_PATTERN = re.compile(r"(?:修改|更新|完善|补充|调整|改成|改为|替换)")
+ORDER_CONTEXT_TARGET_PATTERN = re.compile(
+	r"(?:这|该|那)(?:一个|个|张|笔|份)?(?:订单|单据)"
+	r"|(?:它|刚才那个|上面那个|前面那个)(?:订单|单据)?"
+	r"|(?:刚才|之前|前面|上面|上一(?:条|个|张|笔|份)|查询到|查到|找到)(?:的)?"
+	r"(?:这|该|那)?(?:一个|个|张|笔|份)?(?:订单|单据)"
+)
+BUSINESS_PARTNER_CONTEXT_TARGET_PATTERN = re.compile(
+	r"(?:这|该|那)(?:一个|个|位|家)?(?:客户|供应商)"
+	r"|(?:刚才那个|上面那个|前面那个)(?:客户|供应商)"
+	r"|(?:刚才|之前|前面|上面|上一(?:个|位|家)|查询到|查到|找到)(?:的)?"
+	r"(?:这|该|那)?(?:一个|个|位|家)?(?:客户|供应商)"
+)
+PRODUCT_UPDATE_ACTION_PATTERN = re.compile(
+	r"(?:修改|更新|完善|补充|调整|改成|改为|替换|设置|设为|变更)"
+	r"|(?:添加|增加|删除|移除).{0,8}(?:条码|规格|品牌|名称|描述|价格|单位|图片|主图|封面)"
+)
+ORDER_UPDATE_ACTION_PATTERN = re.compile(
+	r"(?:修改|更新|完善|补充|调整|改成|改为|替换|设置|设为|变更)"
+	r"|(?:添加|增加|删除|移除).{0,8}(?:商品|明细|行项目|订单项)"
+)
 PRODUCT_IMAGE_REFERENCE_PATTERN = re.compile(
 	r"(?:之前|刚才|前面|上面|上一(?:张|个)|那(?:张|个)|这(?:张|个)|我(?:给你)?(?:发|上传|提供))"
 	r".{0,12}(?:图片|照片|图)"
@@ -346,11 +374,185 @@ def _conversation_state_for_intent(state: dict | None) -> dict:
 	"""Return only the bounded, non-sensitive working state sent to the parser."""
 	if not isinstance(state, dict):
 		return {"schema_version": CONVERSATION_STATE_SCHEMA_VERSION, "active_scenario": "general"}
-	allowed = {"schema_version", "active_scenario", "product", "order", "report", "last_result_set"}
+	allowed = {
+		"schema_version", "active_scenario", "product", "order", "report",
+		"active_entities", "last_result_set",
+	}
 	result = {key: state[key] for key in allowed if key in state}
 	result["schema_version"] = CONVERSATION_STATE_SCHEMA_VERSION
 	result.setdefault("active_scenario", "general")
 	return result
+
+
+def _resolved_conversation_entity(
+	conversation_state: dict | None,
+	*,
+	slot: str,
+	allowed_entity_types: set[str],
+) -> dict | None:
+	"""Resolve one server-owned entity reference without treating it as live ERP data."""
+	state = _conversation_state_for_intent(conversation_state)
+	active_entities = state.get("active_entities") if isinstance(state.get("active_entities"), dict) else {}
+	has_active_slot = slot in active_entities and isinstance(active_entities.get(slot), dict)
+	active = active_entities.get(slot) if has_active_slot else {}
+	entity_type = str(active.get("entity_type") or "").strip()
+	entity_id = str(active.get("entity_id") or "").strip()
+	if (
+		active.get("resolution_status") == "resolved"
+		and entity_type in allowed_entity_types
+		and entity_id
+	):
+		return {
+			"entity_type": entity_type,
+			"entity_id": entity_id,
+			"display_name": str(active.get("display_name") or "").strip() or None,
+			"source": "conversation_active_entity",
+			"context_ref": f"active_entities.{slot}",
+		}
+	# An explicit ambiguous/not-found slot is authoritative.  Falling back to an
+	# older result set here would silently resurrect a stale entity.
+	if has_active_slot:
+		return None
+
+	# Read legacy product state during the rolling migration to conversation-state-v2.
+	if slot == "product" and "product" in allowed_entity_types:
+		product = state.get("product") if isinstance(state.get("product"), dict) else {}
+		item_code = str(product.get("item_code") or "").strip()
+		if item_code and product.get("resolution_status") == "resolved":
+			return {
+				"entity_type": "product",
+				"entity_id": item_code,
+				"display_name": str(product.get("item_name") or "").strip() or None,
+				"source": "conversation_product",
+				"context_ref": "product",
+			}
+
+	last_result_set = (
+		state.get("last_result_set")
+		if isinstance(state.get("last_result_set"), dict)
+		else {}
+	)
+	entity_refs = [
+		row for row in last_result_set.get("entity_refs") or []
+		if isinstance(row, dict)
+		and str(row.get("entity_type") or "").strip() in allowed_entity_types
+		and str(row.get("entity_id") or "").strip()
+	]
+	if len(entity_refs) == 1:
+		row = entity_refs[0]
+		return {
+			"entity_type": str(row.get("entity_type") or "").strip(),
+			"entity_id": str(row.get("entity_id") or "").strip(),
+			"display_name": str(row.get("display_name") or "").strip() or None,
+			"source": "conversation_result_set",
+			"context_ref": f"last_result_set:{last_result_set.get('id') or 'latest'}",
+		}
+
+	# Legacy product result sets only carried entity_ids.
+	legacy_ids = [
+		str(value or "").strip()
+		for value in last_result_set.get("entity_ids") or []
+		if str(value or "").strip()
+	]
+	if (
+		slot == "product"
+		and "product" in allowed_entity_types
+		and last_result_set.get("type") == "products"
+		and len(legacy_ids) == 1
+	):
+		return {
+			"entity_type": "product",
+			"entity_id": legacy_ids[0],
+			"display_name": None,
+			"source": "conversation_result_set",
+			"context_ref": f"last_result_set:{last_result_set.get('id') or 'latest'}",
+		}
+	return None
+
+
+def _candidate_uses_context_reference(
+	*, content: str, candidate_value: str | None, pattern: re.Pattern,
+) -> bool:
+	"""Return true only when the current request is deictic rather than explicitly named."""
+	compact_content = re.sub(r"\s+", "", str(content or ""))
+	compact_candidate = re.sub(r"\s+", "", str(candidate_value or ""))
+	if not compact_content:
+		return False
+	if compact_candidate and pattern.search(compact_candidate):
+		return True
+	if not pattern.search(compact_content):
+		return False
+	# An explicit entity appearing in the current message always wins over old state.
+	if compact_candidate and compact_candidate in compact_content:
+		return False
+	return True
+
+
+def _resolve_conversation_product_target(
+	*, content: str, item_query: str | None, conversation_state: dict | None,
+) -> dict | None:
+	if not _candidate_uses_context_reference(
+		content=content, candidate_value=item_query, pattern=PRODUCT_CONTEXT_TARGET_PATTERN,
+	):
+		return None
+	target = _resolved_conversation_entity(
+		conversation_state, slot="product", allowed_entity_types={"product"},
+	)
+	if not target:
+		return None
+	return {
+		"item_code": target["entity_id"],
+		"item_name": target.get("display_name"),
+		"source": target["source"],
+		"context_ref": target["context_ref"],
+	}
+
+
+def _resolve_conversation_order_target(
+	*, content: str, order_number: str | None, conversation_state: dict | None,
+	allowed_entity_type: str,
+) -> dict | None:
+	if not _candidate_uses_context_reference(
+		content=content, candidate_value=order_number, pattern=ORDER_CONTEXT_TARGET_PATTERN,
+	):
+		return None
+	target = _resolved_conversation_entity(
+		conversation_state,
+		slot="business_document",
+		allowed_entity_types={allowed_entity_type},
+	)
+	if not target:
+		return None
+	return {
+		"order_number": target["entity_id"],
+		"source": target["source"],
+		"context_ref": target["context_ref"],
+	}
+
+
+def _resolve_conversation_business_partner_target(
+	*, content: str, party_query: str | None, conversation_state: dict | None,
+	allowed_entity_type: str,
+) -> dict | None:
+	if not _candidate_uses_context_reference(
+		content=content,
+		candidate_value=party_query,
+		pattern=BUSINESS_PARTNER_CONTEXT_TARGET_PATTERN,
+	):
+		return None
+	target = _resolved_conversation_entity(
+		conversation_state,
+		slot="business_partner",
+		allowed_entity_types={allowed_entity_type},
+	)
+	if not target:
+		return None
+	return {
+		"party_name": target["entity_id"],
+		"display_name": target.get("display_name"),
+		"source": target["source"],
+		"context_ref": target["context_ref"],
+	}
 
 
 def _state_intent_defaults(state: dict | None) -> dict:
@@ -450,7 +652,7 @@ def _merge_intent_with_conversation_state(
 	return merged
 
 
-def _infer_ai_action_scenario(content: str) -> str:
+def _infer_ai_action_scenario(content: str, conversation_state: dict | None = None) -> str:
 	text = " ".join((content or "").strip().split())
 	write_words = ("创建", "新增", "添加", "生成", "新建", "建档", "录入")
 	product_write_words = write_words + ("完善", "修改", "补充", "维护", "更新")
@@ -466,15 +668,56 @@ def _infer_ai_action_scenario(content: str) -> str:
 		word in text for word in write_words + ("向供应商", "进货",)
 	):
 		return "purchase_order_draft"
+	if any(word in text for word in ("采购这个商品", "采购该商品", "购买这个商品", "购买该商品")):
+		return "purchase_order_draft"
 	if any(word in text for word in ("销售订单", "销售单", "给客户", "卖给")) and any(
 		word in text for word in write_words + ("给客户", "卖给", "开",)
 	):
 		return "sales_order_draft"
+	if any(word in text for word in ("销售这个商品", "销售该商品", "出售这个商品", "出售该商品")):
+		return "sales_order_draft"
+	if ORDER_UPDATE_ACTION_PATTERN.search(text) and ORDER_CONTEXT_TARGET_PATTERN.search(text):
+		target = _resolved_conversation_entity(
+			conversation_state,
+			slot="business_document",
+			allowed_entity_types={"sales_order", "purchase_order"},
+		)
+		if target and target.get("entity_type") == "sales_order":
+			return "sales_order_draft"
+		if target and target.get("entity_type") == "purchase_order":
+			return "purchase_order_draft"
 	if any(word in text for word in ("商品", "产品", "SKU")) and any(
 		word in text for word in product_write_words
 	):
 		return "product_setup_draft"
 	return _infer_ai_scenario(text)
+
+
+def _resolve_ai_action_scenario(
+	content: str,
+	conversation_state: dict | None,
+	semantic_intent: dict | None,
+) -> tuple[str, str, float | None]:
+	"""Resolve semantic routing first while keeping deterministic write safety."""
+	local_scenario = _infer_ai_action_scenario(content, conversation_state)
+	intent = semantic_intent if isinstance(semantic_intent, dict) else {}
+	candidate = str(intent.get("intent") or "").strip()
+	try:
+		confidence = min(1.0, max(0.0, float(intent.get("confidence") or 0)))
+	except (TypeError, ValueError):
+		confidence = 0
+	if candidate not in AI_ACTION_SCENARIOS or confidence < 0.6:
+		return local_scenario, "local_rules", None
+
+	# A confident semantic router is authoritative for normal routing.  The
+	# deterministic layer only prevents an explicit write request from being
+	# downgraded into a read-only Agent path, and preserves the typed document
+	# target when both layers identify different draft workflows.
+	if local_scenario in AI_DRAFT_SCENARIOS and (
+		candidate not in AI_DRAFT_SCENARIOS or candidate != local_scenario
+	):
+		return local_scenario, "structured_intent_write_guard", confidence
+	return candidate, "structured_intent", confidence
 
 
 def _resolve_prompt_version(scenario: str) -> str:
@@ -1321,7 +1564,8 @@ def _structured_intent_is_confident(intent: dict) -> bool:
 
 
 def _build_order_query_dsl(
-	query: str, *, company: str, as_of: date | None = None, structured_intent: dict | None = None,
+	query: str, *, company: str, as_of: date | None = None,
+	structured_intent: dict | None = None, conversation_state: dict | None = None,
 ) -> dict:
 	text = " ".join((query or "").strip().split())
 	mentions_sales = any(word in text for word in ("销售", "客户", "收款", "发货"))
@@ -1440,17 +1684,46 @@ def _build_order_query_dsl(
 		if min_amount is None and isinstance(candidate_min_amount, (int, float)) and not isinstance(candidate_min_amount, bool):
 			min_amount = max(0, min(float(candidate_min_amount), 1000000000000000))
 
+	target_document_name = str(structured_intent.get("document_name") or "").strip()[:140] or None
+	target_document_entity = None
+	if target_document_name and len(entities) == 1:
+		target_document_entity = entities[0]
+	elif ORDER_CONTEXT_TARGET_PATTERN.search(text):
+		target = _resolved_conversation_entity(
+			conversation_state,
+			slot="business_document",
+			allowed_entity_types={
+				"sales_order", "sales_invoice", "purchase_order", "purchase_invoice",
+			},
+		)
+		if target:
+			target_document_entity = target["entity_type"]
+			target_document_name = target["entity_id"]
+	exclude_cancelled = status_filter != "cancelled"
+	if target_document_entity and target_document_name:
+		entity = target_document_entity
+		entities = [target_document_entity]
+		date_filter = {"date_range": "all", "date_from": None, "date_to": None}
+		status_filter = "all"
+		exclude_cancelled = False
+		sort_by = "latest"
+		min_amount = None
+		limit = 1
+		limit_explicit = True
+
 	return {
 		"entity": entity,
 		"entities": entities,
 		"company": company,
 		**date_filter,
 		"status_filter": status_filter,
-		"exclude_cancelled": status_filter != "cancelled",
+		"exclude_cancelled": exclude_cancelled,
 		"sort_by": sort_by,
 		"min_amount": min_amount,
 		"limit": limit,
 		"limit_explicit": limit_explicit,
+		"target_document_entity": target_document_entity,
+		"target_document_name": target_document_name,
 	}
 
 
@@ -1506,10 +1779,16 @@ def _query_business_document_entity(*, entity: str, dsl: dict) -> tuple[list[dic
 	if not frappe.has_permission(doctype, ptype="read"):
 		raise frappe.PermissionError(_("无权读取{0}。").format(config["label"]))
 	query_limit = 50 if dsl.get("min_amount") is not None else dsl["limit"]
+	target_document_name = (
+		str(dsl.get("target_document_name") or "").strip()
+		if dsl.get("target_document_entity") == entity
+		else ""
+	)
 	if entity in {"sales_order", "purchase_order"}:
 		is_sales = entity == "sales_order"
 		search = search_sales_orders_v2 if is_sales else search_purchase_orders_v2
 		result = search(
+			search_key=target_document_name or None,
 			company=dsl["company"],
 			date_from=dsl["date_from"],
 			date_to=dsl["date_to"],
@@ -1526,6 +1805,8 @@ def _query_business_document_entity(*, entity: str, dsl: dict) -> tuple[list[dic
 		items = []
 		for row in rows:
 			name = row.get(name_field)
+			if target_document_name and name != target_document_name:
+				continue
 			amount = float(row.get("order_amount_estimate") or 0)
 			if name not in allowed_names:
 				continue
@@ -1536,6 +1817,10 @@ def _query_business_document_entity(*, entity: str, dsl: dict) -> tuple[list[dic
 					"document_type": entity,
 					"name": name,
 					"party": row.get("customer_name") if is_sales else row.get("supplier_name"),
+					"party_id": row.get("customer") if is_sales else row.get("supplier"),
+					"party_display_name": (
+						row.get("customer_name") if is_sales else row.get("supplier_name")
+					),
 					"company": row.get("company"),
 					"transaction_date": str(row.get("transaction_date") or ""),
 					"delivery_date": str(row.get("delivery_date") or "") or None,
@@ -1553,6 +1838,7 @@ def _query_business_document_entity(*, entity: str, dsl: dict) -> tuple[list[dic
 	docstatus = 2 if dsl["status_filter"] == "cancelled" else 1 if dsl["status_filter"] == "completed" else None
 	result = list_business_documents_v1(
 		doctype=doctype,
+		search_key=target_document_name or None,
 		company=dsl["company"],
 		date_from=dsl["date_from"],
 		date_to=dsl["date_to"],
@@ -1566,6 +1852,8 @@ def _query_business_document_entity(*, entity: str, dsl: dict) -> tuple[list[dic
 	allowed_names = _filter_allowed_document_names(doctype, rows, "name")
 	items = []
 	for row in rows:
+		if target_document_name and row.get("name") != target_document_name:
+			continue
 		amount = float(row.get("amount") or 0)
 		if row.get("name") not in allowed_names:
 			continue
@@ -1578,6 +1866,8 @@ def _query_business_document_entity(*, entity: str, dsl: dict) -> tuple[list[dic
 				"document_type": entity,
 				"name": row.get("name"),
 				"party": row.get("party_name") or row.get("party"),
+				"party_id": row.get("party"),
+				"party_display_name": row.get("party_name") or row.get("party"),
 				"company": row.get("company"),
 				"transaction_date": str(row.get("posting_date") or ""),
 				"due_date": str(row.get("due_date") or "") or None,
@@ -1595,9 +1885,13 @@ def _query_business_document_entity(*, entity: str, dsl: dict) -> tuple[list[dic
 
 def _build_order_query_context(
 	*, query: str, company: str | None, structured_intent: dict | None = None,
+	conversation_state: dict | None = None,
 ) -> tuple[dict, list[dict], list[dict]]:
 	resolved_company = _resolve_company_scope(company, required=True)
-	dsl = _build_order_query_dsl(query, company=resolved_company, structured_intent=structured_intent)
+	dsl = _build_order_query_dsl(
+		query, company=resolved_company, structured_intent=structured_intent,
+		conversation_state=conversation_state,
+	)
 	result_set, citations, tool_calls = _build_order_query_result(dsl=dsl)
 	context = {
 		"tool": "query_business_documents",
@@ -2018,34 +2312,49 @@ def reset_ai_conversation_context_v1(conversation_id: str):
 
 
 def resolve_ai_scenario_v1(
-	content: str | None = None, attachment_ids=None, model_alias: str | None = None,
+	content: str | None = None,
+	attachment_ids=None,
+	model_alias: str | None = None,
+	company: str | None = None,
+	conversation_id: str | None = None,
 ):
 	user = _current_user()
 	_attachment_refs, attachment_payloads = resolve_ai_attachments(attachment_ids, user=user)
 	if content in (None, "") and attachment_payloads:
 		content = _("请识别附件图片对应的业务场景；无法确定时返回 general。")
 	resolved_content = _normalize_content(content)
-	local_scenario = _infer_ai_action_scenario(resolved_content)
-	resolved_scenario = local_scenario
-	if attachment_payloads:
-		intent = _call_ai_intent_orchestrator(
-			content=resolved_content,
-			user=user,
-			company=None,
-			model_alias=resolve_ai_selected_model_alias(model_alias),
-			attachments=attachment_payloads,
+	conversation_state = {
+		"schema_version": CONVERSATION_STATE_SCHEMA_VERSION,
+		"active_scenario": "general",
+	}
+	conversation_company = None
+	if conversation_id:
+		conversation = ai_repository.get_conversation(
+			conversation_id=str(conversation_id).strip(), user=user,
+		)["conversation"]
+		conversation_company = str(conversation.get("company") or "").strip() or None
+		state_record = ai_repository.get_conversation_state(
+			conversation_id=str(conversation_id).strip(), user=user,
+			expire_if_needed=conversation.get("status") == "active",
 		)
-		candidate = str(intent.get("intent") or "").strip()
-		try:
-			confidence = float(intent.get("confidence") or 0)
-		except (TypeError, ValueError):
-			confidence = 0
-		if candidate in {
-			"general", "product_search", "order_query", "report_summary",
-			"sales_order_draft", "purchase_order_draft", "inventory_adjustment_draft",
-			"product_setup_draft",
-		} and confidence >= 0.6:
-			resolved_scenario = candidate
+		conversation_state = state_record.get("state") or conversation_state
+	requested_company = str(company or "").strip() or None
+	if requested_company and conversation_company and requested_company != conversation_company:
+		frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
+	resolved_company = _resolve_company_scope(
+		requested_company or conversation_company, required=False,
+	)
+	intent = _call_ai_intent_orchestrator(
+		content=resolved_content,
+		user=user,
+		company=resolved_company,
+		conversation_state=conversation_state,
+		model_alias=resolve_ai_selected_model_alias(model_alias),
+		attachments=attachment_payloads,
+	)
+	resolved_scenario, _resolution_mode, _confidence = _resolve_ai_action_scenario(
+		resolved_content, conversation_state, intent,
+	)
 	return {
 		"status": "success",
 		"message": _("AI 场景识别完成。"),
@@ -2228,6 +2537,8 @@ def _resolve_purchase_draft_item(
 	allow_user_price: bool = False,
 ) -> dict:
 	query = str(candidate.get("item_query") or "").strip()
+	target_source = str(candidate.get("_target_source") or "").strip() or "explicit_or_model_query"
+	target_context_ref = str(candidate.get("_target_context_ref") or "").strip() or None
 	qty = float(candidate.get("qty") or 0)
 	resolution = _resolve_item_candidates(query, company=company, context="purchase", limit=5)
 	rows = resolution["candidates"]
@@ -2243,6 +2554,7 @@ def _resolve_purchase_draft_item(
 		warnings.append(_("商品“{0}”无法唯一匹配，请人工选择。" ).format(query))
 		return {
 			"item_query": query, "item_code": None, "item_name": None, "qty": qty,
+			"target_source": target_source, "target_context_ref": target_context_ref,
 			"uom": candidate.get("uom"), "uom_display": None, "stock_uom": None,
 			"stock_uom_display": None, "price": None, "warehouse_query": warehouse_query,
 			"warehouse": warehouse,
@@ -2270,6 +2582,7 @@ def _resolve_purchase_draft_item(
 	conversion_factor = float((uom_row or {}).get("conversion_factor") or 1)
 	return {
 		"item_query": query, "item_code": selected.get("item_code"), "item_name": selected.get("item_name"),
+		"target_source": target_source, "target_context_ref": target_context_ref,
 		"qty": qty, "uom": resolved_uom,
 		"uom_display": (uom_row or {}).get("uom_display") or resolve_uom_display_name(resolved_uom),
 		"stock_uom": selected.get("uom"), "stock_uom_display": selected.get("uom_display"),
@@ -2327,6 +2640,8 @@ def _resolve_inventory_draft_item(
 	warehouse: str | None,
 ) -> dict:
 	query = str(candidate.get("item_query") or "").strip()
+	target_source = str(candidate.get("_target_source") or "").strip() or "explicit_or_model_query"
+	target_context_ref = str(candidate.get("_target_context_ref") or "").strip() or None
 	adjustment_type = str(candidate.get("adjustment_type") or "set_target").strip()
 	quantity_value = candidate.get("quantity")
 	input_qty = None if quantity_value in (None, "") else flt(quantity_value)
@@ -2342,6 +2657,8 @@ def _resolve_inventory_draft_item(
 			"item_query": query,
 			"item_code": None,
 			"item_name": None,
+			"target_source": target_source,
+			"target_context_ref": target_context_ref,
 			"qty": input_qty,
 			"uom": candidate.get("uom"),
 			"uom_display": None,
@@ -2424,6 +2741,8 @@ def _resolve_inventory_draft_item(
 		"item_query": query,
 		"item_code": selected.get("item_code"),
 		"item_name": selected.get("item_name"),
+		"target_source": target_source,
+		"target_context_ref": target_context_ref,
 		"qty": input_qty,
 		"uom": resolved_uom,
 		"uom_display": (uom_row or {}).get("uom_display") or resolve_uom_display_name(resolved_uom),
@@ -2459,6 +2778,10 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 		{
 			"item_query": candidate.get("item_code") or candidate.get("item_query")
 				or source_item.get("item_code") or source_item.get("item_query"),
+			"_target_source": candidate.get("_target_source") or source_item.get("_target_source"),
+			"_target_context_ref": (
+				candidate.get("_target_context_ref") or source_item.get("_target_context_ref")
+			),
 			"adjustment_type": adjustment_type,
 			"quantity": quantity,
 			"uom": candidate.get("uom") or source_item.get("uom"),
@@ -2524,6 +2847,8 @@ def _resolve_sales_draft_item(
 	default_sales_mode: str = "wholesale", allow_user_price: bool = False,
 ) -> dict:
 	query = str(candidate.get("item_query") or "").strip()
+	target_source = str(candidate.get("_target_source") or "").strip() or "explicit_or_model_query"
+	target_context_ref = str(candidate.get("_target_context_ref") or "").strip() or None
 	qty = float(candidate.get("qty") or 0)
 	resolution = _resolve_item_candidates(query, company=company, context="sales", limit=5)
 	rows = resolution["candidates"]
@@ -2539,6 +2864,7 @@ def _resolve_sales_draft_item(
 		warnings.append(_("商品“{0}”无法唯一匹配，请人工选择。" ).format(query))
 		return {
 			"item_query": query, "item_code": None, "item_name": None, "qty": qty,
+			"target_source": target_source, "target_context_ref": target_context_ref,
 			"uom": candidate.get("uom"), "uom_display": None, "price": None,
 			"stock_uom": None, "stock_uom_display": None,
 			"warehouse_query": warehouse_query, "warehouse": warehouse,
@@ -2579,6 +2905,8 @@ def _resolve_sales_draft_item(
 		"item_query": query,
 		"item_code": selected.get("item_code"),
 		"item_name": selected.get("item_name"),
+		"target_source": target_source,
+		"target_context_ref": target_context_ref,
 		"qty": qty,
 		"uom": resolved_uom,
 		"uom_display": (uom_row or {}).get("uom_display") or resolve_uom_display_name(resolved_uom),
@@ -2631,6 +2959,7 @@ def _resolve_order_update_source(
 	meta = detail.get("meta") if isinstance(detail.get("meta"), dict) else {}
 	if str(meta.get("company") or "").strip() != company:
 		errors.append(_("订单 {0} 不属于当前公司范围。" ).format(order_number))
+		return operation, order_number, None, errors
 	return operation, order_number, detail, errors
 
 
@@ -2739,6 +3068,250 @@ def _fail_draft_generation_run(*, run_id: str, user: str, error: Exception, star
 	frappe.db.commit()
 
 
+def _bind_context_product_candidates(
+	candidate: dict,
+	*,
+	content: str,
+	conversation_state: dict | None,
+) -> tuple[dict, list[dict]]:
+	"""Bind deictic product mentions in any draft candidate to one server-owned Item reference."""
+	bound = dict(candidate or {})
+	targets = []
+	rows = bound.get("items") if isinstance(bound.get("items"), list) else None
+	if rows is None:
+		rows = [bound]
+		root_candidate = True
+	else:
+		root_candidate = False
+	bound_rows = []
+	for row in rows:
+		resolved_row = dict(row) if isinstance(row, dict) else {}
+		explicit_item_code = str(resolved_row.get("item_code") or "").strip()
+		target = None if explicit_item_code else _resolve_conversation_product_target(
+			content=content,
+			item_query=resolved_row.get("item_query"),
+			conversation_state=conversation_state,
+		)
+		if target:
+			resolved_row["item_query"] = target["item_code"]
+			resolved_row["_target_source"] = target["source"]
+			resolved_row["_target_context_ref"] = target["context_ref"]
+			targets.append(target)
+		bound_rows.append(resolved_row)
+	if root_candidate:
+		bound = bound_rows[0]
+	else:
+		bound["items"] = bound_rows
+	return bound, targets
+
+
+def _bind_context_order_candidate(
+	candidate: dict,
+	*,
+	content: str,
+	conversation_state: dict | None,
+	draft_type: str,
+) -> tuple[dict, dict | None]:
+	bound = dict(candidate or {})
+	if str(bound.get("order_number") or "").strip():
+		return bound, None
+	if not ORDER_UPDATE_ACTION_PATTERN.search(str(content or "")):
+		return bound, None
+	entity_type = "sales_order" if draft_type == "sales_order" else "purchase_order"
+	target = _resolve_conversation_order_target(
+		content=content,
+		order_number=bound.get("order_number"),
+		conversation_state=conversation_state,
+		allowed_entity_type=entity_type,
+	)
+	if not target:
+		return bound, None
+	bound["order_number"] = target["order_number"]
+	bound["operation"] = "update"
+	bound["_target_order_source"] = target["source"]
+	bound["_target_order_context_ref"] = target["context_ref"]
+	return bound, target
+
+
+def _bind_context_business_partner_candidate(
+	candidate: dict,
+	*,
+	content: str,
+	conversation_state: dict | None,
+	draft_type: str,
+) -> tuple[dict, dict | None]:
+	bound = dict(candidate or {})
+	if draft_type == "sales_order":
+		query_field = "customer_query"
+		entity_type = "customer"
+	else:
+		query_field = "supplier_query"
+		entity_type = "supplier"
+	target = _resolve_conversation_business_partner_target(
+		content=content,
+		party_query=bound.get(query_field),
+		conversation_state=conversation_state,
+		allowed_entity_type=entity_type,
+	)
+	if not target:
+		return bound, None
+	bound[query_field] = target["party_name"]
+	bound["_target_party_source"] = target["source"]
+	bound["_target_party_context_ref"] = target["context_ref"]
+	return bound, target
+
+
+def _load_draft_conversation_state(
+	*, conversation_id: str, user: str, has_existing_conversation: bool,
+) -> dict:
+	if not has_existing_conversation:
+		return {
+			"version": 0,
+			"state": {
+				"schema_version": CONVERSATION_STATE_SCHEMA_VERSION,
+				"active_scenario": "general",
+			},
+			"status": "empty",
+		}
+	return ai_repository.get_conversation_state(
+		conversation_id=conversation_id, user=user, expire_if_needed=True,
+	)
+
+
+def _draft_entity_state(
+	*, entity_type: str, entity_id: str | None, display_name: str | None,
+	resolution_status: str, source: str,
+) -> dict:
+	return {
+		"entity_type": entity_type,
+		"entity_id": str(entity_id or "").strip() or None,
+		"display_name": str(display_name or "").strip() or None,
+		"resolution_status": resolution_status,
+		"source": source,
+		"source_result_set_id": None,
+	}
+
+
+def _build_draft_conversation_state(
+	*, previous_state: dict | None, draft_type: str, payload: dict,
+	formal_target: dict | None = None,
+) -> dict:
+	"""Project a validated draft/execution into bounded server-owned entity slots."""
+	previous = _conversation_state_for_intent(previous_state)
+	next_state = {
+		key: value for key, value in previous.items()
+		if key in {"product", "order", "report", "active_entities", "last_result_set"}
+	}
+	next_state.update({
+		"schema_version": CONVERSATION_STATE_SCHEMA_VERSION,
+		# Draft scenarios must not inherit read-query filters into the next turn.
+		"active_scenario": "general",
+	})
+	active_entities = (
+		dict(next_state.get("active_entities"))
+		if isinstance(next_state.get("active_entities"), dict)
+		else {}
+	)
+	source = "draft_execution" if formal_target else f"{draft_type}_draft"
+	formal_doctype = str((formal_target or {}).get("target_doctype") or "").strip()
+	formal_name = str((formal_target or {}).get("target_name") or "").strip() or None
+
+	product_rows = []
+	if draft_type == "product_setup":
+		item_code = str(payload.get("item_code") or "").strip() or None
+		is_existing_item = payload.get("operation") == "update"
+		if formal_doctype == "Item" and formal_name:
+			item_code = formal_name
+			is_existing_item = True
+		if item_code and is_existing_item:
+			product_rows.append({"item_code": item_code, "item_name": payload.get("item_name")})
+	else:
+		product_rows.extend(
+			row for row in (payload.get("items") or [])
+			if isinstance(row, dict) and str(row.get("item_code") or "").strip()
+		)
+	unique_products = {}
+	for row in product_rows:
+		item_code = str(row.get("item_code") or "").strip()
+		if item_code:
+			unique_products.setdefault(item_code, str(row.get("item_name") or "").strip() or None)
+	if len(unique_products) == 1:
+		item_code, item_name = next(iter(unique_products.items()))
+		active_entities["product"] = _draft_entity_state(
+			entity_type="product", entity_id=item_code, display_name=item_name,
+			resolution_status="resolved", source=source,
+		)
+		next_state["product"] = {
+			"query": item_code, "item_code": item_code, "item_name": item_name,
+			"resolution_status": "resolved",
+		}
+	elif draft_type in {"product_setup", "inventory_adjustment", "sales_order", "purchase_order"}:
+		status = "ambiguous" if len(unique_products) > 1 else "not_found"
+		active_entities["product"] = _draft_entity_state(
+			entity_type="product", entity_id=None, display_name=None,
+			resolution_status=status, source=source,
+		)
+		next_state["product"] = {
+			"query": None, "item_code": None, "item_name": None,
+			"resolution_status": status,
+		}
+
+	if draft_type in {"sales_order", "purchase_order"}:
+		entity_type = "sales_order" if draft_type == "sales_order" else "purchase_order"
+		expected_doctype = "Sales Order" if draft_type == "sales_order" else "Purchase Order"
+		order_number = None
+		if formal_doctype == expected_doctype and formal_name:
+			order_number = formal_name
+		elif payload.get("operation") == "update" and payload.get("source_order_modified"):
+			order_number = str(payload.get("order_number") or "").strip() or None
+		active_entities["business_document"] = _draft_entity_state(
+			entity_type=entity_type,
+			entity_id=order_number,
+			display_name=order_number,
+			resolution_status="resolved" if order_number else "not_found",
+			source=source,
+		)
+		party_field = "customer" if draft_type == "sales_order" else "supplier"
+		party_display_field = f"{party_field}_display_name"
+		party_name = str(payload.get(party_field) or "").strip() or None
+		active_entities["business_partner"] = _draft_entity_state(
+			entity_type=party_field,
+			entity_id=party_name,
+			display_name=payload.get(party_display_field),
+			resolution_status="resolved" if party_name else "not_found",
+			source=source,
+		)
+
+	next_state["active_entities"] = active_entities
+	return next_state
+
+
+def _persist_draft_conversation_state(
+	*, conversation_id: str, user: str, state_record: dict, draft_type: str,
+	payload: dict, formal_target: dict | None = None,
+) -> dict:
+	next_state = _build_draft_conversation_state(
+		previous_state=state_record.get("state") or {},
+		draft_type=draft_type,
+		payload=payload,
+		formal_target=formal_target,
+	)
+	result = ai_repository.update_conversation_state(
+		conversation_id=conversation_id,
+		user=user,
+		state=next_state,
+		expected_version=cint(state_record.get("version")),
+	)
+	return {
+		"tool": "update_conversation_state",
+		"risk_level": "L0_INTERNAL_STATE",
+		"mode": "state_updated" if result.get("updated") else "state_update_skipped",
+		"previous_version": cint(state_record.get("version")),
+		"next_version": result.get("version"),
+		"reason": result.get("reason"),
+	}
+
+
 def generate_ai_sales_order_draft_v1(
 	content: str,
 	company: str | None = None,
@@ -2765,13 +3338,20 @@ def generate_ai_sales_order_draft_v1(
 		or frappe.has_permission("Sales Order", ptype="write")
 	):
 		raise frappe.PermissionError(_("无权创建或修改销售订单草稿。"))
+	has_existing_conversation = bool(conversation_id)
 	if not conversation_id:
 		conversation = ai_repository.create_conversation(user=user, title=content, company=company)
 		conversation_id = conversation["name"]
 	else:
 		conversation = ai_repository.get_conversation(conversation_id=conversation_id, user=user)["conversation"]
+		if conversation.get("status") != "active":
+			frappe.throw(_("已归档的 AI 会话为只读状态，请新建会话后继续操作。"))
 		if conversation.get("company") and conversation.get("company") != company:
 			frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
+	conversation_state_record = _load_draft_conversation_state(
+		conversation_id=conversation_id, user=user,
+		has_existing_conversation=has_existing_conversation,
+	)
 	run_id = _start_draft_generation_run(
 		scenario=scenario, prompt_version=prompt_version, user=user, content=content,
 		conversation_id=conversation_id, model_alias=model_alias, attachment_ids=attachment_ids,
@@ -2788,9 +3368,25 @@ def generate_ai_sales_order_draft_v1(
 				"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
 				"prompt_version": prompt_version, "conversation_id": conversation_id, "run_id": run_id,
 				"model_alias": model_alias,
+				"context": {"conversation_state": _conversation_state_for_intent(
+					conversation_state_record.get("state") or {},
+				)},
 			}
 		)
-		candidate = result["draft"]
+		candidate, order_context_target = _bind_context_order_candidate(
+			result["draft"], content=content,
+			conversation_state=conversation_state_record.get("state") or {},
+			draft_type="sales_order",
+		)
+		candidate, party_context_target = _bind_context_business_partner_candidate(
+			candidate, content=content,
+			conversation_state=conversation_state_record.get("state") or {},
+			draft_type="sales_order",
+		)
+		candidate, product_context_targets = _bind_context_product_candidates(
+			candidate, content=content,
+			conversation_state=conversation_state_record.get("state") or {},
+		)
 		operation, order_number, existing_order, errors = _resolve_order_update_source(
 			candidate, draft_type="sales_order", company=company,
 		)
@@ -2858,6 +3454,12 @@ def generate_ai_sales_order_draft_v1(
 			"source_attachments": attachment_refs,
 			"operation": operation,
 			"order_number": order_number,
+			"target_order_source": (
+				order_context_target.get("source") if order_context_target else "explicit_or_model_query"
+			),
+			"target_order_context_ref": (
+				order_context_target.get("context_ref") if order_context_target else None
+			),
 			"source_order_modified": existing_meta.get("modified") if operation == "update" else None,
 			"source_document_type": candidate.get("source_document_type") or "unstructured",
 			"update_items_explicit": bool(extracted_items),
@@ -2893,11 +3495,35 @@ def generate_ai_sales_order_draft_v1(
 			content=assistant_content, scenario=scenario, run_id=run_id,
 			citations=[citation], prompt_version=prompt_version,
 		)
+		state_tool_call = _persist_draft_conversation_state(
+			conversation_id=conversation_id, user=user,
+			state_record=conversation_state_record,
+			draft_type="sales_order", payload=payload,
+		)
 		latency_ms = int((time.perf_counter() - started) * 1000)
 		ai_repository.complete_run(
 			run_id=run_id, user=user, result=result,
 			latency_ms=latency_ms,
-			tool_calls=[{"tool": "build_sales_order_draft", "risk_level": "L2_DRAFT_ONLY", "draft_id": draft["name"]}],
+			tool_calls=[{
+				"tool": "build_sales_order_draft", "risk_level": "L2_DRAFT_ONLY",
+				"draft_id": draft["name"],
+				"conversation_state_version": conversation_state_record.get("version"),
+				"target_order_number": order_number,
+				"target_order_source": (
+					order_context_target.get("source") if order_context_target else "explicit_or_model_query"
+				),
+				"target_party_source": (
+					party_context_target.get("source") if party_context_target else "explicit_or_model_query"
+				),
+				"target_party_context_ref": (
+					party_context_target.get("context_ref") if party_context_target else None
+				),
+				"context_product_targets": [
+					{"item_code": target.get("item_code"), "source": target.get("source"),
+						"context_ref": target.get("context_ref")}
+					for target in product_context_targets
+				],
+			}, state_tool_call],
 		)
 		frappe.db.commit()
 		return {
@@ -2941,13 +3567,20 @@ def generate_ai_purchase_order_draft_v1(
 		or frappe.has_permission("Purchase Order", ptype="write")
 	):
 		raise frappe.PermissionError(_("无权创建或修改采购订单草稿。"))
+	has_existing_conversation = bool(conversation_id)
 	if not conversation_id:
 		conversation = ai_repository.create_conversation(user=user, title=content, company=company)
 		conversation_id = conversation["name"]
 	else:
 		conversation = ai_repository.get_conversation(conversation_id=conversation_id, user=user)["conversation"]
+		if conversation.get("status") != "active":
+			frappe.throw(_("已归档的 AI 会话为只读状态，请新建会话后继续操作。"))
 		if conversation.get("company") and conversation.get("company") != company:
 			frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
+	conversation_state_record = _load_draft_conversation_state(
+		conversation_id=conversation_id, user=user,
+		has_existing_conversation=has_existing_conversation,
+	)
 	run_id = _start_draft_generation_run(
 		scenario=scenario, prompt_version=prompt_version, user=user, content=content,
 		conversation_id=conversation_id, model_alias=model_alias, attachment_ids=attachment_ids,
@@ -2963,8 +3596,24 @@ def generate_ai_purchase_order_draft_v1(
 			"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
 			"prompt_version": prompt_version, "conversation_id": conversation_id, "run_id": run_id,
 			"model_alias": model_alias,
+			"context": {"conversation_state": _conversation_state_for_intent(
+				conversation_state_record.get("state") or {},
+			)},
 		})
-		candidate = result["draft"]
+		candidate, order_context_target = _bind_context_order_candidate(
+			result["draft"], content=content,
+			conversation_state=conversation_state_record.get("state") or {},
+			draft_type="purchase_order",
+		)
+		candidate, party_context_target = _bind_context_business_partner_candidate(
+			candidate, content=content,
+			conversation_state=conversation_state_record.get("state") or {},
+			draft_type="purchase_order",
+		)
+		candidate, product_context_targets = _bind_context_product_candidates(
+			candidate, content=content,
+			conversation_state=conversation_state_record.get("state") or {},
+		)
 		operation, order_number, existing_order, errors = _resolve_order_update_source(
 			candidate, draft_type="purchase_order", company=company,
 		)
@@ -3020,6 +3669,12 @@ def generate_ai_purchase_order_draft_v1(
 			"source_attachments": attachment_refs,
 			"operation": operation,
 			"order_number": order_number,
+			"target_order_source": (
+				order_context_target.get("source") if order_context_target else "explicit_or_model_query"
+			),
+			"target_order_context_ref": (
+				order_context_target.get("context_ref") if order_context_target else None
+			),
 			"source_order_modified": existing_meta.get("modified") if operation == "update" else None,
 			"source_document_type": candidate.get("source_document_type") or "unstructured",
 			"update_items_explicit": bool(extracted_items),
@@ -3053,11 +3708,35 @@ def generate_ai_purchase_order_draft_v1(
 			content=assistant_content, scenario=scenario, run_id=run_id,
 			citations=[citation], prompt_version=prompt_version,
 		)
+		state_tool_call = _persist_draft_conversation_state(
+			conversation_id=conversation_id, user=user,
+			state_record=conversation_state_record,
+			draft_type="purchase_order", payload=payload,
+		)
 		latency_ms = int((time.perf_counter() - started) * 1000)
 		ai_repository.complete_run(
 			run_id=run_id, user=user, result=result,
 			latency_ms=latency_ms,
-			tool_calls=[{"tool": "build_purchase_order_draft", "risk_level": "L2_DRAFT_ONLY", "draft_id": draft["name"]}],
+			tool_calls=[{
+				"tool": "build_purchase_order_draft", "risk_level": "L2_DRAFT_ONLY",
+				"draft_id": draft["name"],
+				"conversation_state_version": conversation_state_record.get("version"),
+				"target_order_number": order_number,
+				"target_order_source": (
+					order_context_target.get("source") if order_context_target else "explicit_or_model_query"
+				),
+				"target_party_source": (
+					party_context_target.get("source") if party_context_target else "explicit_or_model_query"
+				),
+				"target_party_context_ref": (
+					party_context_target.get("context_ref") if party_context_target else None
+				),
+				"context_product_targets": [
+					{"item_code": target.get("item_code"), "source": target.get("source"),
+						"context_ref": target.get("context_ref")}
+					for target in product_context_targets
+				],
+			}, state_tool_call],
 		)
 		frappe.db.commit()
 		return {
@@ -3098,13 +3777,20 @@ def generate_ai_inventory_adjustment_draft_v1(
 	company = _resolve_company_scope(company, required=True)
 	if not frappe.has_permission("Stock Entry", ptype="create"):
 		raise frappe.PermissionError(_("无权创建库存调整草稿。"))
+	has_existing_conversation = bool(conversation_id)
 	if not conversation_id:
 		conversation = ai_repository.create_conversation(user=user, title=content, company=company)
 		conversation_id = conversation["name"]
 	else:
 		conversation = ai_repository.get_conversation(conversation_id=conversation_id, user=user)["conversation"]
+		if conversation.get("status") != "active":
+			frappe.throw(_("已归档的 AI 会话为只读状态，请新建会话后继续操作。"))
 		if conversation.get("company") and conversation.get("company") != company:
 			frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
+	conversation_state_record = _load_draft_conversation_state(
+		conversation_id=conversation_id, user=user,
+		has_existing_conversation=has_existing_conversation,
+	)
 	run_id = _start_draft_generation_run(
 		scenario=scenario, prompt_version=prompt_version, user=user, content=content,
 		conversation_id=conversation_id, model_alias=model_alias, attachment_ids=attachment_ids,
@@ -3126,9 +3812,16 @@ def generate_ai_inventory_adjustment_draft_v1(
 				"conversation_id": conversation_id,
 				"run_id": run_id,
 				"model_alias": model_alias,
+				"context": {"conversation_state": _conversation_state_for_intent(
+					conversation_state_record.get("state") or {},
+				)},
 			}
 		)
-		payload, validation = _build_inventory_adjustment_draft(result["draft"], company=company)
+		candidate, product_context_targets = _bind_context_product_candidates(
+			result["draft"], content=content,
+			conversation_state=conversation_state_record.get("state") or {},
+		)
+		payload, validation = _build_inventory_adjustment_draft(candidate, company=company)
 		payload["source_attachments"] = attachment_refs
 		draft = ai_repository.create_draft(
 			user=user,
@@ -3157,6 +3850,11 @@ def generate_ai_inventory_adjustment_draft_v1(
 			content=assistant_content, scenario=scenario, run_id=run_id,
 			citations=[citation], prompt_version=prompt_version,
 		)
+		state_tool_call = _persist_draft_conversation_state(
+			conversation_id=conversation_id, user=user,
+			state_record=conversation_state_record,
+			draft_type="inventory_adjustment", payload=payload,
+		)
 		latency_ms = int((time.perf_counter() - started) * 1000)
 		ai_repository.complete_run(
 			run_id=run_id,
@@ -3168,7 +3866,17 @@ def generate_ai_inventory_adjustment_draft_v1(
 					"tool": "build_inventory_adjustment_draft",
 					"risk_level": "L2_DRAFT_ONLY",
 					"draft_id": draft["name"],
-				}
+					"conversation_state_version": conversation_state_record.get("version"),
+					"target_item_code": (payload.get("items") or [{}])[0].get("item_code"),
+					"target_source": (payload.get("items") or [{}])[0].get("target_source"),
+					"target_context_ref": (payload.get("items") or [{}])[0].get("target_context_ref"),
+					"context_product_targets": [
+						{"item_code": target.get("item_code"), "source": target.get("source"),
+							"context_ref": target.get("context_ref")}
+						for target in product_context_targets
+					],
+				},
+				state_tool_call,
 			],
 		)
 		frappe.db.commit()
@@ -3334,32 +4042,9 @@ def _resolve_product_setup_context_target(
 		or (operation == "auto" and not PRODUCT_UPDATE_ACTION_PATTERN.search(compact))
 	):
 		return None
-	state = _conversation_state_for_intent(conversation_state)
-	product = state.get("product") if isinstance(state.get("product"), dict) else {}
-	item_code = str(product.get("item_code") or "").strip()
-	if item_code and product.get("resolution_status") == "resolved":
-		return {
-			"item_code": item_code,
-			"item_name": str(product.get("item_name") or "").strip() or None,
-			"source": "conversation_product",
-		}
-	last_result_set = (
-		state.get("last_result_set")
-		if isinstance(state.get("last_result_set"), dict)
-		else {}
+	return _resolve_conversation_product_target(
+		content=content, item_query=None, conversation_state=conversation_state,
 	)
-	entity_ids = [
-		str(value or "").strip()
-		for value in last_result_set.get("entity_ids") or []
-		if str(value or "").strip()
-	]
-	if last_result_set.get("type") == "products" and len(entity_ids) == 1:
-		return {
-			"item_code": entity_ids[0],
-			"item_name": None,
-			"source": "conversation_result_set",
-		}
-	return None
 
 
 def _product_price_fact(detail: dict, price_list: str, *, buying: bool = False) -> tuple[float | None, str]:
@@ -3904,15 +4589,19 @@ def generate_ai_product_setup_draft_v1(
 		or frappe.has_permission("Item", ptype="write")
 	):
 		raise frappe.PermissionError(_("无权创建或完善商品草稿。"))
+	has_existing_conversation = bool(conversation_id)
 	if not conversation_id:
 		conversation = ai_repository.create_conversation(user=user, title=content, company=company)
 		conversation_id = conversation["name"]
 	else:
 		conversation = ai_repository.get_conversation(conversation_id=conversation_id, user=user)["conversation"]
+		if conversation.get("status") != "active":
+			frappe.throw(_("已归档的 AI 会话为只读状态，请新建会话后继续操作。"))
 		if conversation.get("company") and conversation.get("company") != company:
 			frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
-	conversation_state_record = ai_repository.get_conversation_state(
-		conversation_id=conversation_id, user=user, expire_if_needed=True,
+	conversation_state_record = _load_draft_conversation_state(
+		conversation_id=conversation_id, user=user,
+		has_existing_conversation=has_existing_conversation,
 	)
 	run_id = _start_draft_generation_run(
 		scenario=scenario, prompt_version=prompt_version, user=user, content=content,
@@ -3929,6 +4618,9 @@ def generate_ai_product_setup_draft_v1(
 			"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
 			"prompt_version": prompt_version, "conversation_id": conversation_id, "run_id": run_id,
 			"model_alias": model_alias,
+			"context": {"conversation_state": _conversation_state_for_intent(
+				conversation_state_record.get("state") or {},
+			)},
 		})
 		candidate = dict(result["draft"] or {})
 		candidate["company"] = company
@@ -3969,6 +4661,8 @@ def generate_ai_product_setup_draft_v1(
 			default_image_url=default_image_url,
 			source_attachments=source_attachments,
 		)
+		payload["target_source"] = context_target.get("source") if context_target else "explicit_or_model_query"
+		payload["target_context_ref"] = context_target.get("context_ref") if context_target else None
 		if should_stage_default_image and not default_image_url:
 			message = _("来源图片不符合商品封面要求，草稿未自动设置封面。")
 			if apply_source_image:
@@ -3996,6 +4690,11 @@ def generate_ai_product_setup_draft_v1(
 			content=assistant_content, scenario=scenario, run_id=run_id,
 			citations=[citation], prompt_version=prompt_version,
 		)
+		state_tool_call = _persist_draft_conversation_state(
+			conversation_id=conversation_id, user=user,
+			state_record=conversation_state_record,
+			draft_type="product_setup", payload=payload,
+		)
 		latency_ms = int((time.perf_counter() - started) * 1000)
 		ai_repository.complete_run(
 			run_id=run_id, user=user, result=result, latency_ms=latency_ms,
@@ -4004,7 +4703,9 @@ def generate_ai_product_setup_draft_v1(
 				"draft_id": draft["name"],
 				"target_item_code": payload.get("item_code"),
 				"target_source": context_target.get("source") if context_target else "model_or_user",
-			}],
+				"target_context_ref": context_target.get("context_ref") if context_target else None,
+				"conversation_state_version": conversation_state_record.get("version"),
+			}, state_tool_call],
 		)
 		frappe.db.commit()
 		return {
@@ -4069,6 +4770,31 @@ def _update_ai_draft_once(
 	if not isinstance(payload, dict):
 		frappe.throw(_("草稿 payload 格式不正确。"))
 	original_payload = draft.get("payload") if isinstance(draft.get("payload"), dict) else {}
+
+	def finish(updated: dict, *, message: str) -> dict:
+		conversation_id = str(draft.get("conversation") or "").strip()
+		if conversation_id:
+			try:
+				conversation = ai_repository.get_conversation(
+					conversation_id=conversation_id, user=user,
+				)["conversation"]
+				if conversation.get("status") == "active":
+					state_record = ai_repository.get_conversation_state(
+						conversation_id=conversation_id, user=user, expire_if_needed=True,
+					)
+					_persist_draft_conversation_state(
+						conversation_id=conversation_id,
+						user=user,
+						state_record=state_record,
+						draft_type=draft["draft_type"],
+						payload=updated.get("payload") or {},
+					)
+			except Exception:
+				# Draft persistence is authoritative.  Context projection is a bounded
+				# continuity optimization and must not turn a valid user edit into a failure.
+				frappe.log_error(frappe.get_traceback(), _("AI 草稿编辑后的会话状态同步失败"))
+		return {"status": "success", "message": message, "data": updated}
+
 	if draft["draft_type"] == "inventory_adjustment":
 		next_payload, validation = _build_inventory_adjustment_draft(payload, company=draft["company"])
 		updated = ai_repository.update_draft(
@@ -4079,11 +4805,7 @@ def _update_ai_draft_once(
 			expected_version=expected_version,
 			change_source=change_source,
 		)
-		return {
-			"status": "success",
-			"message": _("AI 库存调整草稿已更新并按实时库存重新校验。"),
-			"data": updated,
-		}
+		return finish(updated, message=_("AI 库存调整草稿已更新并按实时库存重新校验。"))
 	if draft["draft_type"] == "product_setup":
 		source_attachments = (
 			payload.get("source_attachments")
@@ -4113,11 +4835,7 @@ def _update_ai_draft_once(
 			expected_version=expected_version,
 			change_source=change_source,
 		)
-		return {
-			"status": "success",
-			"message": _("AI 商品建档草稿已更新并重新校验。"),
-			"data": updated,
-		}
+		return finish(updated, message=_("AI 商品建档草稿已更新并重新校验。"))
 	if draft["draft_type"] == "purchase_order":
 		company = draft["company"]
 		items_changed = _order_draft_items_signature(original_payload.get("items")) != (
@@ -4179,7 +4897,7 @@ def _update_ai_draft_once(
 			draft_id=draft_id, user=user, payload=next_payload, validation=validation,
 			expected_version=expected_version, change_source=change_source,
 		)
-		return {"status": "success", "message": _("AI 采购草稿已更新并重新校验。"), "data": updated}
+		return finish(updated, message=_("AI 采购草稿已更新并重新校验。"))
 	if draft["draft_type"] != "sales_order":
 		frappe.throw(_("不支持的 AI 草稿类型。"))
 	company = draft["company"]
@@ -4243,7 +4961,7 @@ def _update_ai_draft_once(
 		draft_id=draft_id, user=user, payload=next_payload, validation=validation,
 		expected_version=expected_version, change_source=change_source,
 	)
-	return {"status": "success", "message": _("AI 草稿已更新并重新校验。"), "data": updated}
+	return finish(updated, message=_("AI 草稿已更新并重新校验。"))
 
 
 def update_ai_draft_v1(
@@ -4880,14 +5598,29 @@ def execute_ai_draft_v1(
 					target_doctype=execution_result["target_doctype"],
 					target_name=execution_result["target_name"], result=execution_result["result"],
 				)
+				state_record = ai_repository.get_conversation_state(
+					conversation_id=draft["conversation"], user=user, expire_if_needed=False,
+				)
+				state_tool_call = _persist_draft_conversation_state(
+					conversation_id=draft["conversation"], user=user,
+					state_record=state_record,
+					draft_type=draft["draft_type"], payload=draft.get("payload") or {},
+					formal_target=execution_result,
+				)
 				_record_ai_draft_execution_audit(
 					user=user, draft=draft, action="execute_ai_draft_succeeded",
 					request_id=resolved_request_id,
-					result={"status": "succeeded", **execution_result},
+					result={
+						"status": "succeeded", **execution_result,
+						"conversation_state": state_tool_call,
+					},
 				)
 				return {
 					"status": "success", "message": _("AI 草稿已由当前用户确认并执行。"),
-					"data": {"draft": updated, "execution": updated["execution"], "replayed": False},
+					"data": {
+						"draft": updated, "execution": updated["execution"], "replayed": False,
+						"conversation_state": state_tool_call,
+					},
 				}
 			except Exception as error:
 				frappe.db.rollback()
@@ -4935,10 +5668,23 @@ def _compact_last_result_set(tool_context: dict | None, citations: list[dict]) -
 			if citation.get("type") in {"sales_order", "sales_invoice", "purchase_order", "purchase_invoice"}
 			and citation.get("id")
 		]
+		entity_refs = [
+			{
+				"entity_type": str(citation.get("type") or ""),
+				"entity_id": str(citation.get("id") or ""),
+				"display_name": str(citation.get("label") or "").strip() or None,
+			}
+			for citation in citations
+			if citation.get("type") in {
+				"sales_order", "sales_invoice", "purchase_order", "purchase_invoice",
+			}
+			and citation.get("id")
+		]
 		return {
 			"type": "business_documents",
 			"id": result_citation.get("id"),
 			"entity_ids": entity_ids[:20],
+			"entity_refs": entity_refs[:20],
 			"scope": dict(result_set.get("scope") or {}),
 		}
 	if tool == "search_products":
@@ -4955,6 +5701,14 @@ def _compact_last_result_set(tool_context: dict | None, citations: list[dict]) -
 				).encode("utf-8")
 			).hexdigest()[:24],
 			"entity_ids": [row.get("item_code") for row in products if row.get("item_code")][:20],
+			"entity_refs": [
+				{
+					"entity_type": "product",
+					"entity_id": row.get("item_code"),
+					"display_name": row.get("item_name"),
+				}
+				for row in products if row.get("item_code")
+			][:20],
 			"scope": {"company": tool_context.get("company")},
 		}
 	if tool == "get_business_report":
@@ -4967,6 +5721,7 @@ def _compact_last_result_set(tool_context: dict | None, citations: list[dict]) -
 			"type": "business_report",
 			"id": report_citation.get("id"),
 			"entity_ids": [],
+			"entity_refs": [],
 			"scope": {
 				"company": dsl.get("company"), "report_type": dsl.get("report_type"),
 				"date_range": dsl.get("date_range"), "date_from": dsl.get("date_from"),
@@ -4983,7 +5738,7 @@ def _build_next_conversation_state(
 	previous = _conversation_state_for_intent(previous_state)
 	next_state = {
 		key: value for key, value in previous.items()
-		if key in {"product", "order", "report", "last_result_set"}
+		if key in {"product", "order", "report", "active_entities", "last_result_set"}
 	}
 	next_state.update({
 		"schema_version": CONVERSATION_STATE_SCHEMA_VERSION,
@@ -4991,6 +5746,12 @@ def _build_next_conversation_state(
 	})
 	context = tool_context if isinstance(tool_context, dict) else {}
 	intent = structured_intent if isinstance(structured_intent, dict) else {}
+	last_result_set = _compact_last_result_set(context, citations)
+	active_entities = (
+		dict(next_state.get("active_entities"))
+		if isinstance(next_state.get("active_entities"), dict)
+		else {}
+	)
 	if scenario == "product_search":
 		resolved_product = context.get("resolved_product") or {}
 		retrieval = context.get("retrieval") or {}
@@ -5004,6 +5765,22 @@ def _build_next_conversation_state(
 			"item_name": resolved_product.get("item_name"),
 			"resolution_status": retrieval.get("status"),
 		}
+		product_status = str(retrieval.get("status") or "").strip()
+		product_id = str(resolved_product.get("item_code") or "").strip() or None
+		active_entities["product"] = {
+			"entity_type": "product",
+			"entity_id": product_id if product_status == "resolved" else None,
+			"display_name": (
+				str(resolved_product.get("item_name") or "").strip() or None
+				if product_status == "resolved" else None
+			),
+			"resolution_status": (
+				product_status if product_status in {"resolved", "ambiguous", "not_found"}
+				else "not_found"
+			),
+			"source": "product_search",
+			"source_result_set_id": (last_result_set or {}).get("id"),
+		}
 	elif scenario == "order_query":
 		dsl = context.get("dsl") or {}
 		next_state["order"] = {
@@ -5014,13 +5791,64 @@ def _build_next_conversation_state(
 			"min_amount": dsl.get("min_amount"),
 			"limit": dsl.get("limit") or 10,
 		}
+		order_refs = [
+			row for row in (last_result_set or {}).get("entity_refs") or []
+			if isinstance(row, dict)
+			and row.get("entity_type") in {
+				"sales_order", "sales_invoice", "purchase_order", "purchase_invoice",
+			}
+		]
+		resolved_order = order_refs[0] if len(order_refs) == 1 else {}
+		active_entities["business_document"] = {
+			"entity_type": resolved_order.get("entity_type") or (dsl.get("entities") or [None])[0],
+			"entity_id": resolved_order.get("entity_id") if len(order_refs) == 1 else None,
+			"display_name": resolved_order.get("display_name") if len(order_refs) == 1 else None,
+			"resolution_status": "resolved" if len(order_refs) == 1 else (
+				"ambiguous" if order_refs else "not_found"
+			),
+			"source": "order_query",
+			"source_result_set_id": (last_result_set or {}).get("id"),
+		}
+		party_refs = {}
+		party_type_by_document = {
+			"sales_order": "customer", "sales_invoice": "customer",
+			"purchase_order": "supplier", "purchase_invoice": "supplier",
+		}
+		for citation in citations:
+			if not isinstance(citation, dict):
+				continue
+			party_type = party_type_by_document.get(str(citation.get("type") or ""))
+			data = citation.get("data") if isinstance(citation.get("data"), dict) else {}
+			party_id = str(data.get("party_id") or "").strip()
+			if party_type and party_id:
+				party_refs.setdefault(
+					(party_type, party_id),
+					str(data.get("party_display_name") or data.get("party") or "").strip() or None,
+				)
+		resolved_party = next(iter(party_refs.items())) if len(party_refs) == 1 else None
+		document_entities = set(dsl.get("entities") or [])
+		active_entities["business_partner"] = {
+			"entity_type": resolved_party[0][0] if resolved_party else (
+				"customer" if document_entities and document_entities <= {"sales_order", "sales_invoice"}
+				else "supplier" if document_entities and document_entities <= {"purchase_order", "purchase_invoice"}
+				else None
+			),
+			"entity_id": resolved_party[0][1] if resolved_party else None,
+			"display_name": resolved_party[1] if resolved_party else None,
+			"resolution_status": "resolved" if resolved_party else (
+				"ambiguous" if party_refs else "not_found"
+			),
+			"source": "order_query",
+			"source_result_set_id": (last_result_set or {}).get("id"),
+		}
 	elif scenario == "report_summary":
 		dsl = context.get("dsl") or {}
 		next_state["report"] = {
 			"report_type": dsl.get("report_type") or "overview",
 			**_working_state_date_fields(dsl),
 		}
-	last_result_set = _compact_last_result_set(context, citations)
+	if active_entities:
+		next_state["active_entities"] = active_entities
 	if last_result_set:
 		next_state["last_result_set"] = last_result_set
 	return next_state
@@ -5084,16 +5912,32 @@ def _prepare_chat_run(
 	conversation_company = str((conversation or {}).get("company") or "").strip() or None
 	requested_company = str(company or "").strip() or None
 	intent_company = requested_company or conversation_company
-	# Keep the established draft workflow outside the read-only Agent Runtime.
-	# The Agent tool registry deliberately contains no write tools, so routing a
-	# write intent into it would silently turn a structured draft request into a
-	# generic "I cannot do that" answer.  Deterministic action classification is
-	# a safety boundary here, not a replacement for model tool selection.
-	requested_action_scenario = (
-		_infer_ai_action_scenario(current_content)
-		if requested_scenario == "auto"
-		else requested_scenario
-	)
+	preparsed_intent = {}
+	route_mode = "scenario_locked"
+	route_confidence = None
+	if requested_scenario == "auto":
+		preparsed_intent = _call_ai_intent_orchestrator(
+			content=current_content,
+			user=user,
+			company=intent_company,
+			conversation_state=conversation_state,
+			model_alias=model_alias,
+			attachments=attachment_payloads,
+		)
+		preparsed_intent = _merge_intent_with_conversation_state(
+			current_content,
+			preparsed_intent,
+			conversation_state,
+			has_current_attachments=bool(attachment_payloads),
+		)
+		requested_action_scenario, route_mode, route_confidence = _resolve_ai_action_scenario(
+			current_content, conversation_state, preparsed_intent,
+		)
+	else:
+		requested_action_scenario = requested_scenario
+	# Keep established draft workflows outside the read-only Agent Runtime.  The
+	# semantic router proposes the workflow; deterministic rules only fail closed
+	# when an explicit write would otherwise be downgraded to a read-only path.
 	agent_runtime_requested = os.environ.get("MYAPP_AI_AGENT_RUNTIME_ENABLED", "1").strip().lower() in {
 		"1", "true", "yes",
 	}
@@ -5129,7 +5973,18 @@ def _prepare_chat_run(
 		)
 
 	resolved_scenario = requested_scenario
-	intent_resolution = None
+	intent_resolution = (
+		{
+			"mode": route_mode,
+			"resolved_scenario": requested_action_scenario,
+			"confidence": route_confidence,
+			"scenario_locked": False,
+			"structured_filters_used": requested_action_scenario in {
+				"product_search", "order_query", "report_summary",
+			},
+		}
+		if requested_scenario == "auto" else None
+	)
 	structured_intent = None
 	if agent_mode:
 		# The model selects a typed tool. Local routing remains available only as
@@ -5138,7 +5993,6 @@ def _prepare_chat_run(
 	else:
 		if requested_scenario == "auto":
 			resolved_scenario = requested_action_scenario
-			intent_resolution = {"mode": "local_rules", "resolved_scenario": resolved_scenario}
 		if resolved_scenario not in {
 			"sales_order_draft", "purchase_order_draft", "inventory_adjustment_draft", "product_setup_draft",
 		}:
@@ -5147,20 +6001,22 @@ def _prepare_chat_run(
 			# write intents inside the established draft + human review boundary.
 			# Local keyword rules are the last fallback when the parser is unavailable,
 			# unconfident, or returns a schema-invalid scenario.
-			intent = _call_ai_intent_orchestrator(
-				content=current_content,
-				user=user,
-				company=intent_company,
-				conversation_state=conversation_state,
-				model_alias=model_alias,
-				attachments=attachment_payloads,
-			)
-			intent = _merge_intent_with_conversation_state(
-				current_content,
-				intent,
-				conversation_state,
-				has_current_attachments=bool(attachment_payloads),
-			)
+			intent = preparsed_intent
+			if requested_scenario != "auto":
+				intent = _call_ai_intent_orchestrator(
+					content=current_content,
+					user=user,
+					company=intent_company,
+					conversation_state=conversation_state,
+					model_alias=model_alias,
+					attachments=attachment_payloads,
+				)
+				intent = _merge_intent_with_conversation_state(
+					current_content,
+					intent,
+					conversation_state,
+					has_current_attachments=bool(attachment_payloads),
+				)
 			candidate = str(intent.get("intent") or "").strip()
 			try:
 				confidence = min(1.0, max(0.0, float(intent.get("confidence") or 0)))
@@ -5173,16 +6029,23 @@ def _prepare_chat_run(
 			)
 			if candidate_is_usable:
 				if requested_scenario == "auto":
-					resolved_scenario = candidate
+					resolved_scenario = requested_action_scenario
 				structured_intent = intent
-				intent_resolution = {
-					"mode": "structured_intent", "resolved_scenario": resolved_scenario,
-					"confidence": confidence,
-					"scenario_locked": requested_scenario != "auto",
-					"structured_filters_used": candidate in {"product_search", "order_query", "report_summary"},
-				}
+				if requested_scenario != "auto":
+					intent_resolution = {
+						"mode": "structured_intent", "resolved_scenario": resolved_scenario,
+						"confidence": confidence,
+						"scenario_locked": True,
+						"structured_filters_used": candidate in {
+							"product_search", "order_query", "report_summary",
+						},
+					}
 			else:
-				intent_resolution = {"mode": "structured_intent_fallback", "resolved_scenario": resolved_scenario}
+				if requested_scenario != "auto":
+					intent_resolution = {
+						"mode": "structured_intent_fallback",
+						"resolved_scenario": resolved_scenario,
+					}
 	prompt_version = _resolve_prompt_version(resolved_scenario)
 
 	resolved_company = _resolve_company_scope(
@@ -5300,6 +6163,7 @@ def _prepare_chat_run(
 				query=current_content,
 				company=resolved_company,
 				structured_intent=structured_intent,
+				conversation_state=conversation_state,
 			)
 		elif resolved_scenario == "report_summary":
 			tool_context, citations, tool_calls = _build_report_query_context(
@@ -5365,7 +6229,10 @@ def _prepare_chat_run(
 			"user": user,
 			"company": resolved_company,
 			"locale": getattr(frappe.local, "lang", None) or "zh-CN",
-			"context": tool_context,
+			"context": (
+				{"conversation_state": _conversation_state_for_intent(conversation_state)}
+				if agent_mode else tool_context
+			),
 			"prompt_version": prompt_version,
 			"conversation_id": conversation_id,
 			"run_id": run_id,
@@ -5441,7 +6308,9 @@ def _prepare_agent_resume(run_id: str) -> dict:
 			"user": user,
 			"company": company,
 			"locale": getattr(frappe.local, "lang", None) or "zh-CN",
-			"context": None,
+			"context": {"conversation_state": _conversation_state_for_intent(
+				conversation_state_record.get("state") or {},
+			)},
 			"prompt_version": prompt_version,
 			"conversation_id": conversation_id,
 			"run_id": resolved_run_id,
@@ -5502,7 +6371,9 @@ def _prepare_agent_approval_resume(approval_id: str) -> dict:
 		"payload": {
 			"messages": model_messages, "scenario": scenario, "user": user,
 			"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
-			"context": None, "prompt_version": prompt_version,
+			"context": {"conversation_state": _conversation_state_for_intent(
+				conversation_state_record.get("state") or {},
+			)}, "prompt_version": prompt_version,
 			"conversation_id": conversation_id, "run_id": resume_context["run_id"],
 			"policy_context": {
 				"roles": sorted(set(frappe.get_roles(user) or [])),
@@ -5522,21 +6393,37 @@ def _apply_agent_result(prepared: dict, result: dict) -> None:
 	tool_results = result.get("tool_results") or []
 	if not tool_results:
 		return
-	last = tool_results[-1] if isinstance(tool_results[-1], dict) else {}
-	tool_context = last.get("model_context") if isinstance(last.get("model_context"), dict) else None
-	tool = str(last.get("tool") or "")
-	scenario = {
+	scenario_by_tool = {
 		"search_products": "product_search",
 		"query_business_documents": "order_query",
 		"get_business_report": "report_summary",
-	}.get(tool, prepared["scenario"])
-	prepared["next_conversation_state"] = _build_next_conversation_state(
-		previous_state=prepared.get("next_conversation_state") or {},
-		scenario=scenario,
-		structured_intent=None,
-		tool_context=tool_context,
-		citations=prepared["citations"],
-	)
+	}
+	next_state = prepared.get("next_conversation_state") or {}
+	for tool_result in tool_results:
+		if not isinstance(tool_result, dict):
+			continue
+		tool = str(tool_result.get("tool") or "")
+		tool_context = (
+			tool_result.get("model_context")
+			if isinstance(tool_result.get("model_context"), dict)
+			else {}
+		)
+		# Denied/retryable tool envelopes deliberately carry an empty context.
+		# They must not erase a previously resolved entity.  Successful empty
+		# searches still carry their typed tool marker and are applied as not_found.
+		if tool not in scenario_by_tool or str(tool_context.get("tool") or "") != tool:
+			continue
+		next_state = _build_next_conversation_state(
+			previous_state=next_state,
+			scenario=scenario_by_tool[tool],
+			structured_intent=None,
+			tool_context=tool_context,
+			citations=[
+				citation for citation in (tool_result.get("citations") or [])
+				if isinstance(citation, dict)
+			],
+		)
+	prepared["next_conversation_state"] = next_state
 
 
 def _complete_chat_run(

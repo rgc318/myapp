@@ -34,9 +34,14 @@ MAX_CONVERSATION_STATE_BYTES = 12000
 MAX_AGENT_STATE_BYTES = 200000
 MAX_AGENT_EVENT_BYTES = 30000
 MAX_AGENT_APPROVAL_ARGUMENT_BYTES = 30000
-CONVERSATION_STATE_SCHEMA_VERSION = "conversation-state-v1"
+CONVERSATION_STATE_SCHEMA_VERSION = "conversation-state-v2"
 ALLOWED_CONTEXT_SCENARIOS = {"general", "product_search", "order_query", "report_summary"}
 ALLOWED_ORDER_ENTITIES = {"sales_order", "sales_invoice", "purchase_order", "purchase_invoice"}
+ALLOWED_CONTEXT_ENTITY_SLOTS = {"product", "business_document", "business_partner"}
+ALLOWED_CONTEXT_ENTITY_TYPES = {
+	"product", "customer", "supplier", *ALLOWED_ORDER_ENTITIES,
+}
+ALLOWED_CONTEXT_ENTITY_STATUSES = {"resolved", "ambiguous", "not_found"}
 ALLOWED_ORDER_STATUSES = {"all", "unfinished", "completed", "cancelled", "delivering", "receiving", "paying"}
 ALLOWED_ORDER_SORTS = {"latest", "oldest", "amount_desc", "amount_asc"}
 ALLOWED_DATE_PRESETS = {"all", "today", "this_week", "last_month", "this_month", "last_30_days", "custom"}
@@ -85,7 +90,9 @@ def _default_conversation_state() -> dict:
 def _conversation_state_has_context(state: dict) -> bool:
 	return bool(
 		state.get("active_scenario") != "general"
-		or any(state.get(key) for key in ("product", "order", "report", "last_result_set"))
+		or any(state.get(key) for key in (
+			"product", "order", "report", "active_entities", "last_result_set",
+		))
 	)
 
 
@@ -137,7 +144,8 @@ def _normalize_conversation_state(state) -> dict:
 	if not isinstance(state, dict):
 		frappe.throw(_("AI 会话状态格式不正确。"))
 	allowed_top_level = {
-		"schema_version", "active_scenario", "product", "order", "report", "last_result_set",
+		"schema_version", "active_scenario", "product", "order", "report",
+		"active_entities", "last_result_set",
 	}
 	if set(state) - allowed_top_level:
 		frappe.throw(_("AI 会话状态包含不受支持的字段。"))
@@ -162,6 +170,53 @@ def _normalize_conversation_state(state) -> dict:
 			"item_name": _bounded_text(product.get("item_name"), limit=140),
 			"resolution_status": resolution_status if resolution_status in {"resolved", "ambiguous", "not_found"} else None,
 		}
+
+	active_entities = state.get("active_entities")
+	if isinstance(active_entities, dict):
+		if set(active_entities) - ALLOWED_CONTEXT_ENTITY_SLOTS:
+			frappe.throw(_("AI 会话活动实体包含不受支持的槽位。"))
+		normalized_entities = {}
+		for slot, entity in active_entities.items():
+			if not isinstance(entity, dict):
+				continue
+			allowed_entity = {
+				"entity_type", "entity_id", "display_name", "resolution_status",
+				"source", "source_result_set_id",
+			}
+			if set(entity) - allowed_entity:
+				frappe.throw(_("AI 会话活动实体包含不受支持的字段。"))
+			entity_type = str(entity.get("entity_type") or "").strip()
+			resolution_status = str(entity.get("resolution_status") or "").strip()
+			entity_id = _bounded_text(entity.get("entity_id"), limit=140)
+			if entity_type:
+				if entity_type not in ALLOWED_CONTEXT_ENTITY_TYPES:
+					continue
+				if slot == "product" and entity_type != "product":
+					continue
+				if slot == "business_document" and entity_type not in ALLOWED_ORDER_ENTITIES:
+					continue
+				if slot == "business_partner" and entity_type not in {"customer", "supplier"}:
+					continue
+			elif resolution_status == "resolved":
+				continue
+			if resolution_status == "resolved" and not entity_id:
+				resolution_status = "not_found"
+			normalized_entities[slot] = {
+				"entity_type": entity_type or None,
+				"entity_id": entity_id,
+				"display_name": _bounded_text(entity.get("display_name"), limit=140),
+				"resolution_status": (
+					resolution_status
+					if resolution_status in ALLOWED_CONTEXT_ENTITY_STATUSES
+					else None
+				),
+				"source": _bounded_text(entity.get("source"), limit=40),
+				"source_result_set_id": _bounded_text(
+					entity.get("source_result_set_id"), limit=140,
+				),
+			}
+		if normalized_entities:
+			result["active_entities"] = normalized_entities
 
 	order = state.get("order")
 	if isinstance(order, dict):
@@ -207,19 +262,37 @@ def _normalize_conversation_state(state) -> dict:
 
 	last_result_set = state.get("last_result_set")
 	if isinstance(last_result_set, dict):
-		allowed_result = {"type", "id", "entity_ids", "scope"}
+		allowed_result = {"type", "id", "entity_ids", "entity_refs", "scope"}
 		if set(last_result_set) - allowed_result:
 			frappe.throw(_("AI 结果集上下文包含不受支持的字段。"))
 		entity_ids = last_result_set.get("entity_ids") if isinstance(last_result_set.get("entity_ids"), list) else []
+		entity_refs = last_result_set.get("entity_refs") if isinstance(last_result_set.get("entity_refs"), list) else []
+		normalized_refs = []
+		for entity in entity_refs[:20]:
+			if not isinstance(entity, dict):
+				continue
+			if set(entity) - {"entity_type", "entity_id", "display_name"}:
+				frappe.throw(_("AI 结果集实体引用包含不受支持的字段。"))
+			entity_type = str(entity.get("entity_type") or "").strip()
+			entity_id = _bounded_text(entity.get("entity_id"), limit=140)
+			if entity_type not in ALLOWED_CONTEXT_ENTITY_TYPES or not entity_id:
+				continue
+			normalized_refs.append({
+				"entity_type": entity_type,
+				"entity_id": entity_id,
+				"display_name": _bounded_text(entity.get("display_name"), limit=140),
+			})
 		scope = last_result_set.get("scope") if isinstance(last_result_set.get("scope"), dict) else {}
 		allowed_scope = {
 			"company", "report_type", "date_range", "date_from", "date_to", "status_filter",
 			"exclude_cancelled", "sort_by", "min_amount", "limit_per_group",
+			"target_document_entity", "target_document_name",
 		}
 		result["last_result_set"] = {
 			"type": _bounded_text(last_result_set.get("type"), limit=40),
 			"id": _bounded_text(last_result_set.get("id"), limit=140),
 			"entity_ids": [_bounded_text(value, limit=140) for value in entity_ids[:20] if _bounded_text(value, limit=140)],
+			"entity_refs": normalized_refs,
 			"scope": {key: scope[key] for key in allowed_scope if key in scope},
 		}
 
@@ -407,6 +480,13 @@ def update_conversation_state(
 ) -> dict:
 	normalized = _normalize_conversation_state(state)
 	conversation = _get_owned_conversation((conversation_id or "").strip(), user, for_update=True)
+	conversation_status = str(getattr(conversation, "status", None) or "").strip()
+	if conversation_status and conversation_status != "active":
+		return {
+			"updated": False,
+			"version": max(0, cint(getattr(conversation, "state_version", 0))),
+			"reason": "conversation_not_active",
+		}
 	current_version = max(0, cint(getattr(conversation, "state_version", 0)))
 	if current_version != max(0, cint(expected_version)):
 		return {"updated": False, "version": current_version, "reason": "version_conflict"}

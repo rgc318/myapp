@@ -490,18 +490,53 @@ class TestAiRepository(TestCase):
 	def test_normalize_conversation_state_whitelists_and_bounds_working_fields(self):
 		state = _normalize_conversation_state({
 			"active_scenario": "order_query",
+			"active_entities": {
+				"business_document": {
+					"entity_type": "sales_order", "entity_id": "SO-1",
+					"display_name": "SO-1", "resolution_status": "resolved",
+					"source": "order_query", "source_result_set_id": "RESULT-1",
+				},
+				"business_partner": {
+					"entity_type": "customer", "entity_id": "CUST-1",
+					"display_name": "客户甲", "resolution_status": "resolved",
+					"source": "sales_order_draft", "source_result_set_id": None,
+				},
+			},
 			"order": {
 				"entities": ["sales_order", "invalid"], "date_preset": "last_month",
 				"status": "unfinished", "sort": "amount_desc", "limit": 99,
 			},
 			"last_result_set": {"type": "business_documents", "id": "RESULT-1", "entity_ids": ["SO-1"],
+				"entity_refs": [{"entity_type": "sales_order", "entity_id": "SO-1", "display_name": "SO-1"}],
 				"scope": {"company": "Demo Company", "secret": "discarded"}},
 		})
 
-		self.assertEqual(state["schema_version"], "conversation-state-v1")
+		self.assertEqual(state["schema_version"], "conversation-state-v2")
 		self.assertEqual(state["order"]["entities"], ["sales_order"])
 		self.assertEqual(state["order"]["limit"], 20)
+		self.assertEqual(state["active_entities"]["business_document"]["entity_id"], "SO-1")
+		self.assertEqual(state["active_entities"]["business_partner"]["entity_type"], "customer")
+		self.assertEqual(state["last_result_set"]["entity_refs"][0]["entity_type"], "sales_order")
 		self.assertNotIn("secret", state["last_result_set"]["scope"])
+
+	def test_normalize_conversation_state_preserves_untyped_ambiguous_slot(self):
+		state = _normalize_conversation_state({
+			"active_entities": {
+				"business_partner": {
+					"entity_type": None,
+					"entity_id": None,
+					"resolution_status": "ambiguous",
+					"source": "order_query",
+				},
+			},
+		})
+
+		self.assertIn("business_partner", state["active_entities"])
+		self.assertIsNone(state["active_entities"]["business_partner"]["entity_type"])
+		self.assertEqual(
+			state["active_entities"]["business_partner"]["resolution_status"],
+			"ambiguous",
+		)
 
 	def test_get_conversation_state_is_owner_scoped_and_recovers_default_shape(self):
 		conversation = frappe._dict({
@@ -550,6 +585,22 @@ class TestAiRepository(TestCase):
 		query = mock_frappe.db.sql.call_args.args[0]
 		self.assertIn("state_version = %s", query)
 		self.assertEqual(mock_frappe.db.sql.call_args.args[1][-1], 4)
+
+	def test_update_conversation_state_skips_archived_conversation(self):
+		conversation = frappe._dict({
+			"name": "AI-CONV-1", "state_version": 4, "status": "archived",
+		})
+		with patch.object(
+			ai_repository, "_get_owned_conversation", return_value=conversation,
+		), patch.object(ai_repository, "frappe") as mock_frappe:
+			result = update_conversation_state(
+				conversation_id="AI-CONV-1", user="user@example.com",
+				state={"active_scenario": "order_query"}, expected_version=4,
+			)
+
+		self.assertFalse(result["updated"])
+		self.assertEqual(result["reason"], "conversation_not_active")
+		mock_frappe.db.sql.assert_not_called()
 
 	def test_get_conversation_state_reports_expiry_without_mutating(self):
 		conversation = frappe._dict({
