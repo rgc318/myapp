@@ -29,6 +29,28 @@ TOOL_ARGUMENT_SCHEMAS = {
 		"type": "object",
 		"properties": {
 			"query": {"type": "string", "minLength": 1, "maxLength": 500},
+			"query_variants": {
+				"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 140},
+				"maxItems": 8,
+			},
+			"hypotheses": {
+				"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 140},
+				"maxItems": 5,
+			},
+			"attributes": {
+				"type": "object",
+				"properties": {
+					"brand": {"type": ["string", "null"], "maxLength": 140},
+					"item_group": {"type": ["string", "null"], "maxLength": 140},
+					"color": {"type": ["string", "null"], "maxLength": 80},
+					"flavor": {"type": ["string", "null"], "maxLength": 140},
+					"specification": {"type": ["string", "null"], "maxLength": 200},
+					"capacity": {"type": ["string", "null"], "maxLength": 80},
+					"packaging": {"type": ["string", "null"], "maxLength": 140},
+				},
+				"required": ["brand", "item_group", "color", "flavor", "specification", "capacity", "packaging"],
+				"additionalProperties": False,
+			},
 			"match_mode": {"type": "string", "enum": ["auto", "exact", "contains", "semantic"]},
 			"search_fields": {
 				"type": "array",
@@ -37,6 +59,8 @@ TOOL_ARGUMENT_SCHEMAS = {
 			},
 			"limit": {"type": "integer", "minimum": 1, "maximum": 8},
 		},
+		# Keep v1 calls valid during rolling deployment; the v2 model-side strict
+		# schema always supplies the structured hint fields.
 		"required": ["query", "match_mode", "search_fields", "limit"],
 		"additionalProperties": False,
 	},
@@ -196,6 +220,9 @@ def _execute_search_products(arguments: dict, *, company: str) -> tuple[dict, li
 		company=company,
 		structured_intent={
 			"product_query": query,
+			"product_terms": arguments.get("query_variants") or [],
+			"product_hypotheses": arguments.get("hypotheses") or [],
+			"product_attributes": arguments.get("attributes") or {},
 			"match_mode": match_mode,
 			"search_fields": search_fields,
 			"limit": limit,

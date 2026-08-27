@@ -2083,11 +2083,11 @@ docker exec \
 
 Prompt 版本必须在 Frappe 消息审计、Orchestrator registry 和 Langfuse metadata 中保持一致。当前有效版本：
 
-- 受控业务查询场景：`erp-readonly-v8`
-- 销售草稿：`sales-order-draft-v2`
-- 采购草稿：`purchase-order-draft-v2`
+- 受控业务查询场景：`erp-readonly-v10`
+- 销售草稿：`sales-order-draft-v4`
+- 采购草稿：`purchase-order-draft-v4`
 - 库存调整草稿：`inventory-adjustment-draft-v2`
-- 商品建档草稿：`product-setup-draft-v1`
+- 商品建档草稿：`product-setup-draft-v6`
 
 聊天、流式和四类草稿接口显式收到其他版本或空字符串时应返回 HTTP `409`；`GET /health` 必须返回上述全部 `prompt_versions`。Langfuse 207 批次验收需同时断言 `errors` 为空且 `successes` 覆盖全部事件 ID；反馈默认只保存 comment 哈希/长度，eval 与 feedback score 的 `source` 分别为 `EVAL` / `API`，且携带正确 `environment`。
 

@@ -5,12 +5,38 @@ from myapp.services.ai_agent_tool_service import (
 	TOOL_POLICIES,
 	_build_grounding_contract,
 	_execute_business_documents,
+	_execute_search_products,
 	execute_ai_agent_tool_v1,
 	request_ai_agent_tool_approval_v1,
 )
 
 
 class TestAiAgentToolService(TestCase):
+	@patch("myapp.services.ai_service._build_product_search_context")
+	def test_product_tool_forwards_structured_semantic_hints(self, build_context):
+		build_context.return_value = (
+			{"tool": "search_products", "retrieval": {"status": "ambiguous"}},
+			[{"type": "product", "id": "COKE-2L"}],
+			[],
+		)
+		attributes = {
+			"brand": None, "item_group": "饮料", "color": "红色", "flavor": None,
+			"specification": None, "capacity": "2升", "packaging": None,
+		}
+
+		_context, _citations, status = _execute_search_products({
+			"query": "可乐", "query_variants": ["可乐", "红色", "2升"],
+			"hypotheses": ["可口可乐"], "attributes": attributes,
+			"match_mode": "auto", "search_fields": [], "limit": 5,
+		}, company="Demo Company")
+
+		self.assertEqual(status, "ambiguous")
+		intent = build_context.call_args.kwargs["structured_intent"]
+		self.assertEqual(intent["product_terms"], ["可乐", "红色", "2升"])
+		self.assertEqual(intent["product_hypotheses"], ["可口可乐"])
+		self.assertEqual(intent["product_attributes"]["capacity"], "2升")
+		self.assertEqual(intent["limit"], 5)
+
 	@patch("myapp.services.ai_service._build_order_query_context")
 	def test_business_document_tool_reports_ok_when_any_group_has_results(self, build_context):
 		build_context.return_value = (

@@ -79,7 +79,7 @@ MAX_AI_MESSAGES = 20
 MAX_AI_MESSAGE_CHARS = 8000
 MAX_AI_PRODUCT_RESULTS = 8
 CONVERSATION_STATE_SCHEMA_VERSION = "conversation-state-v2"
-AI_INTENT_PROMPT_VERSION = "erp-intent-v5"
+AI_INTENT_PROMPT_VERSION = "erp-intent-v6"
 CONVERSATION_STATE_BUSINESS_SCENARIOS = {"product_search", "order_query", "report_summary"}
 ALLOWED_AI_ROLES = {"user", "assistant"}
 ALLOWED_AI_SCENARIOS = {"auto", "general", "product_search", "order_query", "report_summary"}
@@ -93,12 +93,12 @@ AI_DRAFT_SCENARIOS = {
 	"product_setup_draft",
 }
 PROMPT_VERSION_BY_SCENARIO = {
-	"general": "erp-readonly-v8",
-	"product_search": "erp-readonly-v8",
-	"order_query": "erp-readonly-v8",
-	"report_summary": "erp-readonly-v8",
+	"general": "erp-readonly-v10",
+	"product_search": "erp-readonly-v10",
+	"order_query": "erp-readonly-v10",
+	"report_summary": "erp-readonly-v10",
 	"sales_order_draft": "sales-order-draft-v4",
-	"purchase_order_draft": "purchase-order-draft-v3",
+	"purchase_order_draft": "purchase-order-draft-v4",
 	"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
 	"product_setup_draft": "product-setup-draft-v6",
 }
@@ -1154,6 +1154,44 @@ def _product_row_matches_exact(row: dict, query: str) -> tuple[bool, bool]:
 	return False, False
 
 
+def _product_row_exact_match_fields(row: dict, query: str) -> set[str]:
+	"""Return fields whose normalized value exactly matches a query."""
+	query_normalized = _normalize_product_entity_text(query)
+	if not query_normalized:
+		return set()
+	return {
+		field for field in ("item_code", "item_name", "nickname", "barcode")
+		if _normalize_product_entity_text(row.get(field)) == query_normalized
+	}
+
+
+def _normalize_product_hint_values(values, *, limit: int, max_length: int = 140) -> list[str]:
+	result = []
+	for value in values if isinstance(values, (list, tuple)) else []:
+		resolved = " ".join(str(value or "").strip().split())[:max_length]
+		if resolved and resolved not in result:
+			result.append(resolved)
+		if len(result) >= limit:
+			break
+	return result
+
+
+def _product_clarification_context(rows: list[dict], *, selected: dict | None) -> dict:
+	if selected or not rows:
+		return {"required": False, "reason": None, "candidate_count": len(rows), "suggested_fields": []}
+	differentiators = []
+	for field in ("brand", "specification", "item_name", "nickname", "item_code"):
+		values = {str(row.get(field) or "").strip() for row in rows if str(row.get(field) or "").strip()}
+		if len(values) > 1 or (len(rows) == 1 and values):
+			differentiators.append(field)
+	return {
+		"required": True,
+		"reason": "single_fuzzy_candidate" if len(rows) == 1 else "multiple_candidates",
+		"candidate_count": len(rows),
+		"suggested_fields": differentiators[:4],
+	}
+
+
 def _resolve_item_candidates(
 	query: str,
 	*,
@@ -1162,23 +1200,49 @@ def _resolve_item_candidates(
 	warehouse: str | None = None,
 	limit: int = 8,
 	entity_query: str | None = None,
+	query_terms: list[str] | None = None,
+	hypotheses: list[str] | None = None,
+	attributes: dict | None = None,
+	match_mode: str = "auto",
+	search_fields: list[str] | None = None,
 ) -> dict:
 	"""Resolve an ERP Item through one shared, permission-safe retrieval boundary."""
 	raw_query = " ".join(str(query or "").strip().split())
 	resolved_entity_query = " ".join(str(entity_query or "").strip().split())
 	retrieval_query = resolved_entity_query or raw_query
-	terms = _extract_product_search_terms(retrieval_query)
-	terms = [term for term in terms if str(term or "").strip()]
+	model_terms = _normalize_product_hint_values(query_terms, limit=8)
+	model_hypotheses = _normalize_product_hint_values(hypotheses, limit=5)
+	attribute_values = _normalize_product_hint_values(
+		[(attributes or {}).get(field) for field in (
+			"brand", "item_group", "color", "flavor", "specification", "capacity", "packaging",
+		)],
+		limit=7,
+		max_length=200,
+	)
+	terms = _normalize_product_hint_values(
+		[retrieval_query, *model_terms, *model_hypotheses, *_extract_product_search_terms(retrieval_query)],
+		limit=12,
+		max_length=200,
+	)
+	allowed_search_fields = {
+		"barcode", "item_code", "item_name", "nickname", "specification", "brand", "item_group",
+	}
+	resolved_search_fields = [
+		str(field) for field in (search_fields or []) if str(field) in allowed_search_fields
+	] or ["barcode", "item_code", "item_name", "nickname", "specification", "brand", "item_group"]
+	resolved_match_mode = str(match_mode or "auto").strip()
+	if resolved_match_mode not in {"auto", "exact", "contains", "semantic"}:
+		resolved_match_mode = "auto"
 	lexical_rows = []
 	seen_codes = set()
-	for term in terms[:5]:
+	for term in ([] if resolved_match_mode == "semantic" else terms[:12]):
 		rows = (search_product_v2(
 			search_key=term,
 			company=company,
 			warehouse=warehouse,
 			limit=max(1, min(int(limit or 8) * 2, MAX_AI_PRODUCT_RESULTS * 2)),
 			disabled=0,
-			search_fields=["barcode", "item_code", "item_name", "nickname", "specification"],
+			search_fields=resolved_search_fields,
 			item_context=context,
 		) or {}).get("data") or []
 		for row in rows:
@@ -1191,49 +1255,91 @@ def _resolve_item_candidates(
 		if len(lexical_rows) >= max(1, int(limit or 8) * 2):
 			break
 
-	entity_queries = [raw_query, resolved_entity_query] + [term for term in terms if term not in {raw_query, resolved_entity_query}]
+	# Hypotheses improve recall but never prove identity and therefore never participate
+	# in automatic exact selection.
+	confirmed_terms = _normalize_product_hint_values(
+		[retrieval_query, *model_terms, *_extract_product_search_terms(retrieval_query)],
+		limit=12,
+		max_length=200,
+	)
+	entity_queries = [raw_query, resolved_entity_query] + [
+		term for term in confirmed_terms if term not in {raw_query, resolved_entity_query}
+	]
 	entity_queries = [value for value in entity_queries if value]
-	raw_matches = [
+	identifier_matches = [
 		row for row in lexical_rows
-		if any(_product_row_matches_exact(row, value)[0] for value in entity_queries)
+		if any(_product_row_exact_match_fields(row, value) & {"item_code", "barcode"} for value in entity_queries)
 	]
-	normalized_matches = [
+	text_matches = [
 		row for row in lexical_rows
-		if any(_product_row_matches_exact(row, value)[1] for value in entity_queries)
+		if any(_product_row_exact_match_fields(row, value) & {"item_name", "nickname"} for value in entity_queries)
 	]
-	# Duplicate names/nicknames remain ambiguous; only a unique exact entity can auto-select.
-	raw_exact = raw_matches[0] if len(raw_matches) == 1 else None
-	normalized_exact = normalized_matches[0] if len(normalized_matches) == 1 else None
+	exact_identifier = identifier_matches[0] if len(identifier_matches) == 1 else None
+	exact_text = text_matches[0] if len(text_matches) == 1 and len(lexical_rows) == 1 else None
 	# Descriptive expressions and zero/multiple lexical hits benefit from semantic recall;
 	# exact identifiers never depend on the vector service.
-	descriptive = len(terms) > 1 or any(
+	descriptive = bool(model_hypotheses or attribute_values or len(model_terms) > 1) or any(
 		word in retrieval_query for word in ("适合", "用于", "可以", "能够", "规格", "颜色", "包装")
 	)
-	semantic_result = {"available": False, "rows": [], "reason": "not_needed"}
-	if not raw_exact and not normalized_exact and (not lexical_rows or len(lexical_rows) > 1 or descriptive):
-		semantic_result = search_products_semantic(
+	semantic_query = "；".join(_normalize_product_hint_values(
+		[
+			raw_query if _product_search_text_has_entity_hint(raw_query) else None,
 			retrieval_query,
+			*model_terms,
+			*attribute_values,
+			*model_hypotheses,
+		],
+		limit=20,
+		max_length=200,
+	)) or retrieval_query
+	semantic_result = {"available": False, "rows": [], "reason": "not_needed"}
+	if not exact_identifier and (
+		resolved_match_mode == "semantic"
+		or (
+			resolved_match_mode == "auto"
+			and (not lexical_rows or len(lexical_rows) > 1 or descriptive)
+		)
+	):
+		semantic_result = search_products_semantic(
+			semantic_query,
 			company=company,
 			limit=max(1, min(int(limit or 8) * 2, MAX_AI_PRODUCT_RESULTS * 2)),
 			item_context=context,
 		)
 	semantic_rows = semantic_result.get("rows") or []
+	if semantic_rows:
+		top_semantic_score = max(float(row.get("semantic_score") or 0) for row in semantic_rows)
+		semantic_score_floor = max(0.5 if lexical_rows else 0.35, top_semantic_score - 0.12)
+		filtered_semantic_rows = [
+			row for row in semantic_rows
+			if float(row.get("semantic_score") or 0) >= semantic_score_floor
+		]
+		semantic_result = {
+			**semantic_result,
+			"raw_result_count": len(semantic_rows),
+			"score_floor": round(semantic_score_floor, 6),
+			"rows": filtered_semantic_rows,
+		}
+		semantic_rows = filtered_semantic_rows
 	rows = _hybrid_rerank_product_rows(
 		query=retrieval_query,
 		lexical_rows=lexical_rows,
 		semantic_rows=semantic_rows,
 		limit=max(1, int(limit or 8)),
+		preferred_terms=model_hypotheses,
+		attribute_terms=attribute_values,
 	)
-	if raw_exact:
-		selected = raw_exact
+	if exact_identifier:
+		selected = exact_identifier
 		match_method, confidence = "exact", 1.0
-	elif normalized_exact:
-		selected = normalized_exact
-		match_method, confidence = "normalized", 0.99
-	elif len(rows) == 1:
-		selected = rows[0]
-		match_method = "hybrid" if semantic_rows else "lexical"
-		confidence = 0.9 if semantic_rows else 0.8
+	elif exact_text:
+		selected = exact_text
+		match_method = (
+			"exact"
+			if any(_product_row_matches_exact(exact_text, value)[0] for value in entity_queries)
+			else "normalized"
+		)
+		confidence = 1.0 if match_method == "exact" else 0.99
 	else:
 		selected = None
 		match_method, confidence = ("hybrid" if semantic_rows and lexical_rows else "semantic" if semantic_rows else "lexical"), 0.0
@@ -1255,6 +1361,7 @@ def _resolve_item_candidates(
 		status = "not_found"
 	return {
 		"resolved_query": retrieval_query,
+		"semantic_query": semantic_query,
 		"status": status,
 		"selected": selected,
 		"candidates": rows[: max(1, int(limit or 8))],
@@ -1263,11 +1370,15 @@ def _resolve_item_candidates(
 		"semantic_available": bool(semantic_result.get("available")),
 		"semantic_result": semantic_result,
 		"search_terms": terms,
+		"hypotheses": model_hypotheses,
+		"attributes": dict(attributes or {}),
+		"clarification": _product_clarification_context(rows, selected=selected),
 	}
 
 
 def _hybrid_rerank_product_rows(
 	*, query: str, lexical_rows: list[dict], semantic_rows: list[dict], limit: int,
+	preferred_terms: list[str] | None = None, attribute_terms: list[str] | None = None,
 ) -> list[dict]:
 	candidates: dict[str, dict] = {}
 	for source, rows in (("lexical", lexical_rows), ("semantic", semantic_rows)):
@@ -1282,6 +1393,14 @@ def _hybrid_rerank_product_rows(
 				entry["row"].update(row)
 				entry["score"] += max(0.0, min(float(row.get("semantic_score") or 0), 1.0)) * 0.01
 	query_key = re.sub(r"\s+", "", query).lower()
+	preferred_keys = [
+		re.sub(r"\s+", "", _normalize_product_entity_text(term))
+		for term in (preferred_terms or []) if str(term or "").strip()
+	]
+	attribute_keys = [
+		re.sub(r"\s+", "", _normalize_product_entity_text(term))
+		for term in (attribute_terms or []) if str(term or "").strip()
+	]
 	for entry in candidates.values():
 		row = entry["row"]
 		document_key = re.sub(
@@ -1294,6 +1413,12 @@ def _hybrid_rerank_product_rows(
 		).lower()
 		if query_key and query_key in document_key:
 			entry["score"] += 0.05
+		for term in preferred_keys:
+			if term and term in document_key:
+				entry["score"] += 0.04
+		for term in attribute_keys:
+			if term and term in document_key:
+				entry["score"] += 0.012
 		row["match_source"] = "+".join(sorted(entry["sources"]))
 		row["match_reason"] = (
 			"关键词与语义混合匹配" if len(entry["sources"]) > 1
@@ -1317,12 +1442,24 @@ def _build_product_search_context(
 	if not frappe.has_permission("Item", ptype="read"):
 		raise frappe.PermissionError(_("无权读取商品资料。"))
 	resolved_company = _resolve_company_scope(company, required=True)
+	requested_limit = max(1, min(
+		MAX_AI_PRODUCT_RESULTS,
+		cint((structured_intent or {}).get("limit")) or MAX_AI_PRODUCT_RESULTS,
+	))
 	resolution = _resolve_item_candidates(
 		query,
 		company=resolved_company,
 		context="sales",
-		limit=MAX_AI_PRODUCT_RESULTS,
+		limit=requested_limit,
 		entity_query=(structured_intent or {}).get("product_query"),
+		query_terms=(structured_intent or {}).get("product_terms")
+			or (structured_intent or {}).get("query_variants"),
+		hypotheses=(structured_intent or {}).get("product_hypotheses")
+			or (structured_intent or {}).get("hypotheses"),
+		attributes=(structured_intent or {}).get("product_attributes")
+			or (structured_intent or {}).get("attributes"),
+		match_mode=(structured_intent or {}).get("match_mode") or "auto",
+		search_fields=(structured_intent or {}).get("search_fields"),
 	)
 	search_terms = resolution["search_terms"]
 	semantic_result = resolution["semantic_result"]
@@ -1394,6 +1531,10 @@ def _build_product_search_context(
 		"query": query,
 		"resolved_query": resolution.get("resolved_query") or query,
 		"search_terms": search_terms,
+		"search_hints": {
+			"hypotheses": resolution.get("hypotheses") or [],
+			"attributes": resolution.get("attributes") or {},
+		},
 		"company": resolved_company,
 		"products": products,
 		"resolved_product": (
@@ -1410,11 +1551,17 @@ def _build_product_search_context(
 			"status": resolution["status"],
 			"confidence": resolution["confidence"],
 		},
+		"clarification": resolution.get("clarification") or {"required": False},
 		"query_resolution": {
 			"status": "resolved",
 			"source": tool_calls[0]["query_source"],
 		},
-		"instructions": "商品数据是只读工具结果。只能基于这些候选解释匹配原因；不得编造商品、价格或库存。",
+		"instructions": (
+			"商品数据是只读工具结果。当前结果是待确认候选；必须请用户结合候选的品牌、规格、口味或包装确认，"
+			"不能声称唯一匹配，也不能擅自选择第一条。"
+			if (resolution.get("clarification") or {}).get("required")
+			else "商品数据是只读工具结果。只能基于这些候选解释匹配原因；不得编造商品、价格或库存。"
+		),
 	}
 	return context, citations, tool_calls
 

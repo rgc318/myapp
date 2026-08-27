@@ -1370,7 +1370,7 @@ class TestAiService(TestCase):
 			return_value={
 				"run_id": "AI-RUN-1", "conversation_id": "AI-CONV-1", "scenario": "general",
 				"company": "Demo Company", "model_alias": "erp-fast-chat",
-				"prompt_version": "erp-readonly-v8", "allowed_tools": ["search_products"],
+				"prompt_version": "erp-readonly-v10", "allowed_tools": ["search_products"],
 				"capability_token": "new-capability-token", "checkpoint_stage": "tool_completed",
 			},
 		), patch(
@@ -1399,7 +1399,7 @@ class TestAiService(TestCase):
 		self.assertEqual(prepared["run_id"], "AI-RUN-1")
 		self.assertEqual(prepared["payload"]["capability_token"], "new-capability-token")
 		self.assertEqual(prepared["payload"]["model_alias"], "erp-fast-chat")
-		self.assertEqual(prepared["payload"]["prompt_version"], "erp-readonly-v8")
+		self.assertEqual(prepared["payload"]["prompt_version"], "erp-readonly-v10")
 		self.assertEqual(
 			prepared["payload"]["context"]["conversation_state"]["active_entities"]
 			["product"]["entity_id"],
@@ -1630,17 +1630,17 @@ class TestAiService(TestCase):
 		self.assertTrue(mock_create_draft.call_args.kwargs["validation"]["ready_for_handoff"])
 
 	def test_prompt_versions_are_mapped_by_scenario(self):
-		self.assertEqual(_resolve_prompt_version("general"), "erp-readonly-v8")
+		self.assertEqual(_resolve_prompt_version("general"), "erp-readonly-v10")
 		draft_versions = {
 			"sales_order_draft": "sales-order-draft-v4",
-			"purchase_order_draft": "purchase-order-draft-v3",
+			"purchase_order_draft": "purchase-order-draft-v4",
 			"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
 			"product_setup_draft": "product-setup-draft-v6",
 		}
 		for scenario, expected in draft_versions.items():
 			with self.subTest(scenario=scenario):
 				self.assertEqual(_resolve_prompt_version(scenario), expected)
-				self.assertNotEqual(expected, "erp-readonly-v8")
+				self.assertNotEqual(expected, "erp-readonly-v10")
 
 	@patch("myapp.services.ai_service._persist_draft_conversation_state", return_value={"tool": "update_conversation_state"})
 	@patch("myapp.services.ai_service.ai_repository.create_draft")
@@ -1907,7 +1907,7 @@ class TestAiService(TestCase):
 		payload = json.loads(request.data.decode("utf-8"))
 		self.assertEqual(result["intent"], "general")
 		self.assertEqual(payload["model_alias"], "gpt-5.5")
-		self.assertEqual(payload["prompt_version"], "erp-intent-v5")
+		self.assertEqual(payload["prompt_version"], "erp-intent-v6")
 		self.assertEqual(payload["attachments"][0]["attachment_id"], "AI-ATT-1")
 		self.assertEqual(request.full_url, "http://ai/internal/v1/intent/parse")
 
@@ -3221,8 +3221,65 @@ class TestAiService(TestCase):
 
 		self.assertEqual(result["search_terms"], ["莫"])
 		self.assertEqual(result["candidates"][0]["item_name"], "迪莫")
+		self.assertEqual(result["status"], "ambiguous")
+		self.assertTrue(result["clarification"]["required"])
+		self.assertEqual(result["clarification"]["reason"], "single_fuzzy_candidate")
 		self.assertEqual(mock_search.call_args.kwargs["search_key"], "莫")
 		mock_semantic.assert_not_called()
+
+	@patch("myapp.services.ai_service.search_products_semantic")
+	@patch("myapp.services.ai_service.search_product_v2")
+	def test_descriptive_cola_query_uses_structured_hints_and_requires_confirmation(
+		self, mock_search, mock_semantic,
+	):
+		rows = [
+			{"item_code": "COKE-2L", "item_name": "可口可乐", "brand": "可口可乐", "specification": "2L"},
+			{"item_code": "PEPSI-2L", "item_name": "百事可乐", "brand": "百事可乐", "specification": "2L"},
+		]
+		mock_search.side_effect = lambda **kwargs: {"data": rows if kwargs["search_key"] == "可乐" else []}
+		mock_semantic.return_value = {"available": True, "rows": [
+			{**rows[0], "semantic_score": 0.94},
+			{**rows[1], "semantic_score": 0.81},
+		]}
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.get_list.return_value = ["COKE-2L", "PEPSI-2L"]
+			result = _resolve_item_candidates(
+				"红色可乐饮料",
+				company="Demo Company",
+				entity_query="可乐",
+				query_terms=["可乐", "红色", "饮料"],
+				hypotheses=["可口可乐"],
+				attributes={"color": "红色", "item_group": "饮料"},
+			)
+
+		self.assertEqual(result["resolved_query"], "可乐")
+		self.assertIn("红色可乐饮料", result["semantic_query"])
+		self.assertIn("可口可乐", result["semantic_query"])
+		self.assertEqual(result["status"], "ambiguous")
+		self.assertIsNone(result["selected"])
+		self.assertEqual(result["clarification"]["reason"], "multiple_candidates")
+		self.assertEqual([row["item_code"] for row in result["candidates"]], ["COKE-2L", "PEPSI-2L"])
+
+	@patch("myapp.services.ai_service.search_products_semantic", return_value={
+		"available": True,
+		"rows": [{"item_code": "COKE-2L", "item_name": "可口可乐", "semantic_score": 0.96}],
+	})
+	@patch("myapp.services.ai_service.search_product_v2", return_value={"data": []})
+	def test_single_semantic_candidate_is_not_misreported_as_unique(self, _mock_search, _mock_semantic):
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.get_list.return_value = ["COKE-2L"]
+			result = _resolve_item_candidates(
+				"两升的红色可乐",
+				company="Demo Company",
+				entity_query="可乐",
+				query_terms=["可乐", "红色", "2升"],
+				hypotheses=["可口可乐"],
+				attributes={"color": "红色", "capacity": "2升"},
+			)
+
+		self.assertEqual(result["status"], "ambiguous")
+		self.assertIsNone(result["selected"])
+		self.assertEqual(result["clarification"]["reason"], "single_fuzzy_candidate")
 
 	@patch("myapp.services.ai_service.search_products_semantic", return_value={"available": True, "rows": []})
 	@patch("myapp.services.ai_service.search_product_v2", return_value={"data": []})
