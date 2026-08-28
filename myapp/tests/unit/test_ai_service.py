@@ -1370,7 +1370,7 @@ class TestAiService(TestCase):
 			return_value={
 				"run_id": "AI-RUN-1", "conversation_id": "AI-CONV-1", "scenario": "general",
 				"company": "Demo Company", "model_alias": "erp-fast-chat",
-				"prompt_version": "erp-readonly-v10", "allowed_tools": ["search_products"],
+				"prompt_version": "erp-readonly-v11", "allowed_tools": ["search_products"],
 				"capability_token": "new-capability-token", "checkpoint_stage": "tool_completed",
 			},
 		), patch(
@@ -1399,7 +1399,7 @@ class TestAiService(TestCase):
 		self.assertEqual(prepared["run_id"], "AI-RUN-1")
 		self.assertEqual(prepared["payload"]["capability_token"], "new-capability-token")
 		self.assertEqual(prepared["payload"]["model_alias"], "erp-fast-chat")
-		self.assertEqual(prepared["payload"]["prompt_version"], "erp-readonly-v10")
+		self.assertEqual(prepared["payload"]["prompt_version"], "erp-readonly-v11")
 		self.assertEqual(
 			prepared["payload"]["context"]["conversation_state"]["active_entities"]
 			["product"]["entity_id"],
@@ -1630,7 +1630,7 @@ class TestAiService(TestCase):
 		self.assertTrue(mock_create_draft.call_args.kwargs["validation"]["ready_for_handoff"])
 
 	def test_prompt_versions_are_mapped_by_scenario(self):
-		self.assertEqual(_resolve_prompt_version("general"), "erp-readonly-v10")
+		self.assertEqual(_resolve_prompt_version("general"), "erp-readonly-v11")
 		draft_versions = {
 			"sales_order_draft": "sales-order-draft-v4",
 			"purchase_order_draft": "purchase-order-draft-v4",
@@ -1640,7 +1640,7 @@ class TestAiService(TestCase):
 		for scenario, expected in draft_versions.items():
 			with self.subTest(scenario=scenario):
 				self.assertEqual(_resolve_prompt_version(scenario), expected)
-				self.assertNotEqual(expected, "erp-readonly-v10")
+				self.assertNotEqual(expected, "erp-readonly-v11")
 
 	@patch("myapp.services.ai_service._persist_draft_conversation_state", return_value={"tool": "update_conversation_state"})
 	@patch("myapp.services.ai_service.ai_repository.create_draft")

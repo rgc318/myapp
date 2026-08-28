@@ -93,10 +93,10 @@ AI_DRAFT_SCENARIOS = {
 	"product_setup_draft",
 }
 PROMPT_VERSION_BY_SCENARIO = {
-	"general": "erp-readonly-v10",
-	"product_search": "erp-readonly-v10",
-	"order_query": "erp-readonly-v10",
-	"report_summary": "erp-readonly-v10",
+	"general": "erp-readonly-v11",
+	"product_search": "erp-readonly-v11",
+	"order_query": "erp-readonly-v11",
+	"report_summary": "erp-readonly-v11",
 	"sales_order_draft": "sales-order-draft-v4",
 	"purchase_order_draft": "purchase-order-draft-v4",
 	"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
