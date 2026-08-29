@@ -51,6 +51,7 @@ ALLOWED_AGENT_RUNTIME_EVENT_TYPES = {
 	"model_decision",
 	"tool_guardrail",
 	"grounding_rewrite",
+	"deterministic_tool_answer",
 	"output_guardrail",
 	"checkpoint",
 	"state_transition",

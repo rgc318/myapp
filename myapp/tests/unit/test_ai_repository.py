@@ -202,6 +202,31 @@ class TestAiRepository(TestCase):
 		insert_call = mock_frappe.db.sql.call_args_list[-2]
 		self.assertEqual(insert_call.args[1][8], "grounding_rewrite")
 
+	def test_record_agent_runtime_event_accepts_deterministic_tool_answer(self):
+		now = datetime(2026, 7, 27, 12, 0, 0)
+		token = "capability-token-value"
+		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value=now,
+		):
+			mock_frappe.PermissionError = frappe.PermissionError
+			mock_frappe.as_json.side_effect = frappe.as_json
+			mock_frappe.db.sql.side_effect = [
+				[self._agent_capability_row(token, now)],
+				[frappe._dict({"requested_by": "user@example.com", "status": "running", "last_step_no": 4})],
+				[], None, None,
+			]
+			result = record_agent_runtime_event(
+				run_id="AI-RUN-1", event_id="runtime:deterministic_tool_answer:2",
+				step_type="deterministic_tool_answer", status="completed",
+				data={"status": "completed", "tools": ["search_products"]},
+				capability_token=token,
+			)
+
+		self.assertFalse(result["replayed"])
+		self.assertEqual(result["sequence_no"], 5)
+		insert_call = mock_frappe.db.sql.call_args_list[-2]
+		self.assertEqual(insert_call.args[1][8], "deterministic_tool_answer")
+
 	def test_get_agent_checkpoint_requires_capability_and_returns_state(self):
 		now = datetime(2026, 7, 27, 12, 0, 0)
 		token = "capability-token-value"
