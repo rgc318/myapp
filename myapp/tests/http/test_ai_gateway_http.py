@@ -110,6 +110,28 @@ class AiGatewayHttpTestCase(unittest.TestCase):
 		self.assertEqual(len(conversation["data"]["messages"]), 2)
 		self._archive_conversation(message["data"]["conversation"])
 
+	def test_ai_auto_scenario_resolution_accepts_company_and_conversation(self):
+		created = self._post_gateway(
+			"create_ai_conversation_v1",
+			{"title": "HTTP auto scenario contract", "company": "rgc (Demo)"},
+		)
+		self.assertTrue(created["ok"])
+		conversation_id = created["data"]["name"]
+		try:
+			resolved = self._post_gateway(
+				"resolve_ai_scenario_v1",
+				{
+					"content": "新增一个测试商品",
+					"company": "rgc (Demo)",
+					"conversation_id": conversation_id,
+				},
+			)
+			self.assertTrue(resolved["ok"])
+			self.assertEqual(resolved["code"], "AI_SCENARIO_RESOLVED")
+			self.assertTrue(resolved["data"]["scenario"])
+		finally:
+			self._archive_conversation(conversation_id)
+
 	def test_ai_product_search_uses_controlled_backend_tool(self):
 		message = self._post_gateway(
 			"chat_ai_v1",

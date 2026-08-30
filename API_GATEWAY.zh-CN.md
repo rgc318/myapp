@@ -121,6 +121,24 @@
   - 首期只允许治理 Item 的 `item_name`、`description`、`brand`、`item_group`，禁止价格、库存和正式交易字段。
   - `AI Data Steward` 负责创建/执行，`AI Data Approver` 负责审批，`AI Auditor` 只读，回滚仅 `System Manager`；发起、审批、执行必须职责分离。
 
+### Gateway 包装层参数契约
+
+公开接口的参数契约不只包含浏览器到 `myapp.api.gateway` 的 HTTP 载荷，也包含 Backend 内部所有同步包装层。当前常见调用结构为：
+
+```text
+Web/Mobile → myapp.api.gateway → myapp.api.*_api → myapp.services.*
+```
+
+约束：
+
+- Gateway 新增、删除或重命名参数时，所有中间 adapter 与最终 Service 必须同步接受并正确转发；可选参数的默认值也必须一致。
+- 任何一层都不得静默丢弃 `company`、`conversation_id`、权限上下文、幂等键、版本号或其他会改变业务范围的参数。
+- 仅 Mock Gateway 中导入的 service alias 不能证明完整契约；公开参数变化必须有不跳过 adapter 的契约测试和真实 HTTP 回归。
+- AI `auto` 模式的公开用户链路包含 `resolve_ai_scenario_v1` 前置请求和后续 Chat/SSE。Runtime、工具或 Orchestrator 直调成功不能替代该 Gateway 链路验收。
+- 未知 Python `TypeError` 会被统一错误包络隐藏为 `INTERNAL_ERROR`；诊断时应读取 Frappe `Error Log`，但不得向普通客户端暴露内部函数名或堆栈。
+
+2026-08-29 已发现并修复一次参数漂移：Gateway 向 `resolve_ai_scenario_v1` 传入 `company`、`conversation_id`，中间 `ai_api` adapter 未接收，导致本地和 staging Web `auto` 模式稳定 HTTP 500。修复后 adapter 与 Service 保持同一参数集合，并增加不跳过 adapter 的单元契约测试及携带 `content + company + conversation_id` 的真实 HTTP 回归。该事实不改变公开接口应携带这两个上下文字段的契约；不得通过删除前端参数规避 Backend 契约问题。
+
 ### 统一数据权限与用户隔离
 
 所有面向 Web、Mobile 和 AI 工具的业务接口都以当前 Frappe 登录用户为权限主体。默认公司、默认仓库只是工作偏好，不能替代权限授权，也不能扩大用户的数据范围。

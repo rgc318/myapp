@@ -1,6 +1,6 @@
 # 测试说明
 
-更新时间：2026-05-27
+更新时间：2026-08-29
 
 ## 1. 测试原则
 
@@ -15,6 +15,24 @@
 - 更贴近前端与实际集成调用路径
 - 能覆盖鉴权、权限、路由、包装器和响应结构
 - 更容易发现 devcontainer 环境、站点权限、真实主数据导致的问题
+
+### 1.1 Gateway 多层包装契约
+
+公开接口可能经过 `myapp.api.gateway → myapp.api.*_api → myapp.services.*` 多层包装。测试必须区分“某一层参数组装正确”和“完整调用链参数兼容”：
+
+- Gateway 单元测试可以 patch 下一层以验证错误映射和参数组装，但这类测试不能作为完整包装契约的唯一证据。
+- 如果 patch 的是 Gateway 模块已导入的 service alias，中间 `*_api` adapter 不会执行；此时即使 Gateway 和 Service 两端测试都通过，仍可能存在 adapter 少参数、错参数或默认值漂移。
+- 新增、删除或重命名公开参数时，必须逐层核对 Gateway、adapter、Service，并增加至少一条不跳过 adapter 的契约测试。
+- 同一改动必须增加真实 HTTP 回归，使用 Web/Mobile 实际发送的参数组合；HTTP 200/业务错误码断言用于发现 Python 签名、Frappe 路由、鉴权、包装器和响应包络问题。
+- Mock 应放在待验证边界之后。要验证 `gateway → adapter`，不能直接把 adapter alias patch 掉；要验证完整公开入口，应通过真实 HTTP 调用。
+
+AI 工作台额外要求：
+
+- Web `requestedScenario=auto` 会先调用 `resolve_ai_scenario_v1`，再进入 Chat/SSE 或草稿接口。完整验收必须覆盖这个顺序。
+- Agent Runtime、工具、Orchestrator 直调和固定评测集只证明对应底层能力，不代表 Web 自动场景入口可用。
+- staging 验收报告必须注明测试层次：Runtime/工具旁证、Backend HTTP 或 Web 浏览器端到端，不得相互替代。
+- 2026-08-29 的 `resolve_ai_scenario_v1` 500 实例证明：仅 Mock Gateway alias 与直测 Service 会漏掉中间 `ai_api` 参数签名不一致；后续该接口的 `content + company + conversation_id` 组合必须进入确定性 HTTP smoke。
+- 对应回归入口为 `test_gateway_wrappers.TestGatewayWrappers.test_resolve_ai_scenario_preserves_context_through_ai_api_adapter` 和 `test_ai_gateway_http.AiGatewayHttpTestCase.test_ai_auto_scenario_resolution_accepts_company_and_conversation`；前者验证 Python 多层包装契约，后者验证鉴权、Frappe 路由和真实 HTTP 包络。
 
 ## 2. 测试文件划分
 
@@ -2016,7 +2034,7 @@ MYAPP_HTTP_ENABLE_AI_TESTS=1 python3 -m unittest \
   apps.myapp.myapp.tests.http.test_ai_gateway_http
 ```
 
-该用例验证 Web/Frappe 网关、AI Orchestrator、LiteLLM 和实际模型的完整链路，并断言当前只读警告和最低推理等级的 `reasoning_tokens = 0`。测试凭据继续从 `apps/myapp/.env.http-test` 读取；LiteLLM 密钥只存在父仓库忽略的 `.env.ai.local`，不得写入测试文件或提交到 Git。
+该用例验证 Frappe Gateway、AI Orchestrator、LiteLLM 和实际模型链路，并断言当前只读警告和最低推理等级的 `reasoning_tokens = 0`。只有测试实际按 Web 顺序先调用 `resolve_ai_scenario_v1`、再调用 Chat/SSE，并使用浏览器同等参数组合时，才能表述为 Web 完整入口回归；单独调用 Chat/SSE 不得称为浏览器端到端。测试凭据继续从 `apps/myapp/.env.http-test` 读取；LiteLLM 密钥只存在父仓库忽略的 `.env.ai.local`，不得写入测试文件或提交到 Git。
 
 第一条真实回归历史结果：1 项通过；实际模型为 `gpt-5.5`，`reasoning_tokens = 0`。
 

@@ -579,6 +579,29 @@ class TestGatewayWrappers(TestCase):
 			company="Demo Company", conversation_id="AI-CONV-1",
 		)
 
+	@patch("myapp.api.ai_api.resolve_ai_scenario_v1_service")
+	def test_resolve_ai_scenario_preserves_context_through_ai_api_adapter(self, mock_service):
+		mock_service.return_value = {
+			"status": "success", "data": {"scenario": "product_setup_draft"},
+		}
+
+		result = resolve_ai_scenario_v1(
+			content="新增商品传承结晶",
+			attachment_ids=["AI-ATT-1"],
+			model_alias="erp-fast-chat",
+			company="Demo Company",
+			conversation_id="AI-CONV-1",
+		)
+
+		mock_service.assert_called_once_with(
+			content="新增商品传承结晶",
+			attachment_ids=["AI-ATT-1"],
+			model_alias="erp-fast-chat",
+			company="Demo Company",
+			conversation_id="AI-CONV-1",
+		)
+		self.assertEqual(result["code"], "AI_SCENARIO_RESOLVED")
+
 	@patch("myapp.api.gateway.execute_ai_draft_v1_service")
 	def test_execute_ai_draft_passes_confirmation_and_version(self, mock_execute_service):
 		mock_execute_service.return_value = {"status": "success", "data": {"execution": {}}}

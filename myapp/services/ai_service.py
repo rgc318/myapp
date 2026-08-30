@@ -370,6 +370,16 @@ def _infer_ai_scenario(content: str) -> str:
 	return "general"
 
 
+def _is_simple_general_ai_message(content: str) -> bool:
+	text = re.sub(r"[\s,.!?，。！？、~～]+", "", (content or "").strip().casefold())
+	return text in {
+		"你好", "您好", "你好呀", "您好呀", "嗨", "哈喽", "在吗",
+		"早上好", "上午好", "中午好", "下午好", "晚上好",
+		"hi", "hello", "hey", "谢谢", "多谢", "感谢",
+		"你是谁", "你能做什么", "帮助", "help",
+	}
+
+
 def _conversation_state_for_intent(state: dict | None) -> dict:
 	"""Return only the bounded, non-sensitive working state sent to the parser."""
 	if not isinstance(state, dict):
@@ -2495,17 +2505,24 @@ def resolve_ai_scenario_v1(
 	resolved_company = _resolve_company_scope(
 		requested_company or conversation_company, required=False,
 	)
-	intent = _call_ai_intent_orchestrator(
-		content=resolved_content,
-		user=user,
-		company=resolved_company,
-		conversation_state=conversation_state,
-		model_alias=resolve_ai_selected_model_alias(model_alias),
-		attachments=attachment_payloads,
-	)
-	resolved_scenario, _resolution_mode, _confidence = _resolve_ai_action_scenario(
-		resolved_content, conversation_state, intent,
-	)
+	resolved_model_alias = resolve_ai_selected_model_alias(model_alias)
+	local_scenario = _infer_ai_action_scenario(resolved_content, conversation_state)
+	if not attachment_payloads and (
+		local_scenario in AI_DRAFT_SCENARIOS or _is_simple_general_ai_message(resolved_content)
+	):
+		resolved_scenario = local_scenario
+	else:
+		intent = _call_ai_intent_orchestrator(
+			content=resolved_content,
+			user=user,
+			company=resolved_company,
+			conversation_state=conversation_state,
+			model_alias=resolved_model_alias,
+			attachments=attachment_payloads,
+		)
+		resolved_scenario, _resolution_mode, _confidence = _resolve_ai_action_scenario(
+			resolved_content, conversation_state, intent,
+		)
 	return {
 		"status": "success",
 		"message": _("AI 场景识别完成。"),
@@ -6067,23 +6084,33 @@ def _prepare_chat_run(
 	route_mode = "scenario_locked"
 	route_confidence = None
 	if requested_scenario == "auto":
-		preparsed_intent = _call_ai_intent_orchestrator(
-			content=current_content,
-			user=user,
-			company=intent_company,
-			conversation_state=conversation_state,
-			model_alias=model_alias,
-			attachments=attachment_payloads,
-		)
-		preparsed_intent = _merge_intent_with_conversation_state(
-			current_content,
-			preparsed_intent,
-			conversation_state,
-			has_current_attachments=bool(attachment_payloads),
-		)
-		requested_action_scenario, route_mode, route_confidence = _resolve_ai_action_scenario(
-			current_content, conversation_state, preparsed_intent,
-		)
+		local_scenario = _infer_ai_action_scenario(current_content, conversation_state)
+		if not attachment_payloads and (
+			local_scenario in AI_DRAFT_SCENARIOS
+			or _is_simple_general_ai_message(current_content)
+		):
+			requested_action_scenario = local_scenario
+			preparsed_intent = {"intent": local_scenario, "confidence": 1.0}
+			route_mode = "local_fast_path"
+			route_confidence = 1.0
+		else:
+			preparsed_intent = _call_ai_intent_orchestrator(
+				content=current_content,
+				user=user,
+				company=intent_company,
+				conversation_state=conversation_state,
+				model_alias=model_alias,
+				attachments=attachment_payloads,
+			)
+			preparsed_intent = _merge_intent_with_conversation_state(
+				current_content,
+				preparsed_intent,
+				conversation_state,
+				has_current_attachments=bool(attachment_payloads),
+			)
+			requested_action_scenario, route_mode, route_confidence = _resolve_ai_action_scenario(
+				current_content, conversation_state, preparsed_intent,
+			)
 	else:
 		requested_action_scenario = requested_scenario
 	# Keep established draft workflows outside the read-only Agent Runtime.  The
