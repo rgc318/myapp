@@ -129,6 +129,38 @@ class AiGatewayHttpTestCase(unittest.TestCase):
 			self.assertTrue(resolved["ok"])
 			self.assertEqual(resolved["code"], "AI_SCENARIO_RESOLVED")
 			self.assertTrue(resolved["data"]["scenario"])
+			self.assertTrue(resolved["data"]["resolution_id"])
+		finally:
+			self._archive_conversation(conversation_id)
+
+	def test_ai_auto_scenario_resolution_is_reused_by_stream(self):
+		created = self._post_gateway(
+			"create_ai_conversation_v1",
+			{"title": "HTTP auto scenario reuse", "company": "rgc (Demo)"},
+		)
+		conversation_id = created["data"]["name"]
+		content = "仓里还剩迪莫吗"
+		try:
+			resolved = self._post_gateway(
+				"resolve_ai_scenario_v1",
+				{
+					"content": content,
+					"company": "rgc (Demo)",
+					"conversation_id": conversation_id,
+				},
+			)
+			events = self._stream_gateway(
+				{
+					"content": content,
+					"scenario": "auto",
+					"company": "rgc (Demo)",
+					"conversation_id": conversation_id,
+					"scenario_resolution_id": resolved["data"]["resolution_id"],
+				},
+			)
+			self.assertEqual(events[0]["type"], "run_started")
+			self.assertEqual(events[-1]["type"], "completed")
+			self.assertEqual(events[-1]["conversation"], conversation_id)
 		finally:
 			self._archive_conversation(conversation_id)
 

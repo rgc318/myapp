@@ -43,6 +43,7 @@ from myapp.services.ai_service import (
 	_infer_ai_scenario,
 	_infer_ai_action_scenario,
 	_is_simple_general_ai_message,
+	_issue_ai_scenario_resolution,
 	_prepare_chat_run,
 	_prepare_product_setup_image_binding,
 	_resolve_draft_retry_request,
@@ -66,6 +67,7 @@ from myapp.services.ai_service import (
 	_complete_chat_run,
 	_apply_agent_result,
 	_stream_ai_orchestrator,
+	_take_ai_scenario_resolution,
 	chat_ai_v1,
 	execute_ai_draft_v1,
 	generate_ai_inventory_adjustment_draft_v1,
@@ -1058,6 +1060,49 @@ class TestAiService(TestCase):
 		self.assertEqual(prepared["scenario"], "general")
 		self.assertEqual(prepared["tool_calls"][0]["tool"], "parse_ai_intent")
 		self.assertEqual(prepared["tool_calls"][0]["mode"], "local_fast_path")
+		mock_intent.assert_not_called()
+
+	@patch("myapp.services.ai_service._call_ai_intent_orchestrator")
+	@patch("myapp.services.ai_service._take_ai_scenario_resolution", return_value={
+		"scenario": "product_search",
+		"intent": {
+			"intent": "product_search", "confidence": 0.97, "product_query": "迪莫",
+			"entities": [], "report_type": None, "date_preset": "all",
+			"date_from": None, "date_to": None, "status": "all", "sort": "latest",
+			"min_amount": None, "limit": 10,
+		},
+		"mode": "structured_intent", "confidence": 0.97,
+	})
+	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
+	def test_auto_chat_reuses_validated_preflight_intent(
+		self, _resolve_model, _current_user, _resolve_company, mock_take, mock_intent,
+	):
+		with patch.dict(os.environ, {"MYAPP_AI_AGENT_RUNTIME_ENABLED": "0"}, clear=False), patch(
+			"myapp.services.ai_service.ai_repository.create_conversation",
+			return_value={"name": "AI-CONV-1", "company": "Demo Company"},
+		), patch("myapp.services.ai_service.ai_repository.append_message"), patch(
+			"myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-1",
+		), patch("myapp.services.ai_service.ai_repository.load_model_messages", return_value=[]), patch(
+			"myapp.services.ai_service._build_product_search_context",
+			return_value=({"tool": "search_products", "products": []}, [], []),
+		) as build_context, patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.get_roles.return_value = []
+			prepared = _prepare_chat_run(
+				content="仓里还剩迪莫吗",
+				scenario="auto",
+				company="Demo Company",
+				scenario_resolution_id="AI-RESOLUTION-1",
+			)
+
+		self.assertEqual(prepared["scenario"], "product_search")
+		self.assertEqual(prepared["tool_calls"][0]["mode"], "preflight_reuse")
+		self.assertEqual(
+			build_context.call_args.kwargs["structured_intent"]["product_query"], "迪莫",
+		)
+		mock_take.assert_called_once()
 		mock_intent.assert_not_called()
 
 	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
@@ -2793,32 +2838,84 @@ class TestAiService(TestCase):
 		self.assertTrue(_is_simple_general_ai_message("HELLO"))
 		self.assertFalse(_is_simple_general_ai_message("你好，请查询最新销售订单"))
 
+	@patch("myapp.services.ai_service.secrets.token_urlsafe", return_value="AI-RESOLUTION-1")
+	def test_scenario_resolution_is_one_time_and_bound_to_request_context(self, _token):
+		cache = MagicMock()
+		with patch("myapp.services.ai_service.frappe.cache", return_value=cache):
+			resolution_id = _issue_ai_scenario_resolution(
+				user="user@example.com",
+				content="仓里还剩迪莫吗",
+				attachment_ids=["AI-ATT-1"],
+				company="Demo Company",
+				conversation_id="AI-CONV-1",
+				conversation_state_version=3,
+				model_alias="erp-fast-chat",
+				scenario="product_search",
+				intent={"intent": "product_search", "confidence": 0.97, "product_query": "迪莫"},
+				mode="structured_intent",
+				confidence=0.97,
+			)
+			record = cache.set_value.call_args.args[1]
+			cache.get_value.return_value = record
+			resolved = _take_ai_scenario_resolution(
+				resolution_id,
+				user="user@example.com",
+				content="仓里还剩迪莫吗",
+				attachment_ids=["AI-ATT-1"],
+				company="Demo Company",
+				conversation_id="AI-CONV-1",
+				conversation_state_version=3,
+				model_alias="erp-fast-chat",
+			)
+			mismatched = _take_ai_scenario_resolution(
+				resolution_id,
+				user="user@example.com",
+				content="仓里还剩另一个商品吗",
+				attachment_ids=["AI-ATT-1"],
+				company="Demo Company",
+				conversation_id="AI-CONV-1",
+				conversation_state_version=3,
+				model_alias="erp-fast-chat",
+			)
+
+		self.assertEqual(resolution_id, "AI-RESOLUTION-1")
+		self.assertEqual(resolved["scenario"], "product_search")
+		self.assertEqual(resolved["intent"]["product_query"], "迪莫")
+		self.assertIsNone(mismatched)
+		self.assertEqual(cache.delete_value.call_count, 2)
+
+	@patch("myapp.services.ai_service._issue_ai_scenario_resolution", return_value="AI-RESOLUTION-1")
 	@patch("myapp.services.ai_service._call_ai_intent_orchestrator")
 	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
 	@patch("myapp.services.ai_service._resolve_company_scope", return_value="Demo Company")
 	@patch("myapp.services.ai_service.resolve_ai_attachments", return_value=([], []))
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	def test_resolve_scenario_skips_intent_model_for_simple_general_message(
-		self, _user, _attachments, _company, _model, mock_intent,
+		self, _user, _attachments, _company, _model, mock_intent, mock_issue,
 	):
 		result = resolve_ai_scenario_v1(content="你好！", company="Demo Company")
 
 		self.assertEqual(result["data"]["scenario"], "general")
+		self.assertEqual(result["data"]["resolution_id"], "AI-RESOLUTION-1")
+		mock_issue.assert_called_once()
 		mock_intent.assert_not_called()
 
+	@patch("myapp.services.ai_service._issue_ai_scenario_resolution", return_value="AI-RESOLUTION-2")
 	@patch("myapp.services.ai_service._call_ai_intent_orchestrator")
 	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
 	@patch("myapp.services.ai_service._resolve_company_scope", return_value="Demo Company")
 	@patch("myapp.services.ai_service.resolve_ai_attachments", return_value=([], []))
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	def test_resolve_scenario_skips_intent_model_for_explicit_draft_action(
-		self, _user, _attachments, _company, _model, mock_intent,
+		self, _user, _attachments, _company, _model, mock_intent, mock_issue,
 	):
 		result = resolve_ai_scenario_v1(
 			content="给迪莫添加10个库存", company="Demo Company",
 		)
 
 		self.assertEqual(result["data"]["scenario"], "inventory_adjustment_draft")
+		self.assertEqual(result["data"]["resolution_id"], "AI-RESOLUTION-2")
+		mock_issue.assert_called_once()
 		mock_intent.assert_not_called()
 
 	def test_auto_scenario_routes_product_stock_status_queries_to_product_search(self):

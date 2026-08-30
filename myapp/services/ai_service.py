@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import time
 import unicodedata
 import urllib.error
@@ -92,6 +93,7 @@ AI_DRAFT_SCENARIOS = {
 	"sales_order_draft", "purchase_order_draft", "inventory_adjustment_draft",
 	"product_setup_draft",
 }
+AI_SCENARIO_RESOLUTION_TTL_SECONDS = 120
 PROMPT_VERSION_BY_SCENARIO = {
 	"general": "erp-readonly-v11",
 	"product_search": "erp-readonly-v11",
@@ -377,6 +379,112 @@ def _is_simple_general_ai_message(content: str) -> bool:
 		"早上好", "上午好", "中午好", "下午好", "晚上好",
 		"hi", "hello", "hey", "谢谢", "多谢", "感谢",
 		"你是谁", "你能做什么", "帮助", "help",
+	}
+
+
+def _scenario_resolution_attachment_ids(attachment_refs: list[dict] | None) -> list[str]:
+	return sorted({
+		str(row.get("attachment_id") or row.get("name") or "").strip()
+		for row in attachment_refs or []
+		if isinstance(row, dict) and str(row.get("attachment_id") or row.get("name") or "").strip()
+	})
+
+
+def _scenario_resolution_fingerprint(
+	*, user: str, content: str, attachment_ids: list[str], company: str | None,
+	conversation_id: str | None, conversation_state_version: int, model_alias: str | None,
+) -> str:
+	payload = {
+		"user": str(user or "").strip(),
+		"content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+		"attachment_ids": sorted({str(value or "").strip() for value in attachment_ids if str(value or "").strip()}),
+		"company": str(company or "").strip() or None,
+		"conversation_id": str(conversation_id or "").strip() or None,
+		"conversation_state_version": cint(conversation_state_version),
+		"model_alias": str(model_alias or "").strip() or None,
+	}
+	encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+	return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _scenario_resolution_cache_key(resolution_id: str) -> str:
+	digest = hashlib.sha256(resolution_id.encode("utf-8")).hexdigest()
+	return f"myapp:ai:scenario-resolution:{digest}"
+
+
+def _issue_ai_scenario_resolution(
+	*, user: str, content: str, attachment_ids: list[str], company: str | None,
+	conversation_id: str | None, conversation_state_version: int, model_alias: str | None,
+	scenario: str, intent: dict, mode: str, confidence: float | None,
+) -> str | None:
+	resolution_id = secrets.token_urlsafe(24)
+	record = {
+		"fingerprint": _scenario_resolution_fingerprint(
+			user=user,
+			content=content,
+			attachment_ids=attachment_ids,
+			company=company,
+			conversation_id=conversation_id,
+			conversation_state_version=conversation_state_version,
+			model_alias=model_alias,
+		),
+		"scenario": scenario,
+		"intent": intent if isinstance(intent, dict) else {},
+		"mode": str(mode or "").strip() or "structured_intent",
+		"confidence": confidence,
+	}
+	try:
+		frappe.cache().set_value(
+			_scenario_resolution_cache_key(resolution_id),
+			record,
+			expires_in_sec=AI_SCENARIO_RESOLUTION_TTL_SECONDS,
+		)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("AI 场景解析复用凭据写入失败"))
+		return None
+	return resolution_id
+
+
+def _take_ai_scenario_resolution(
+	resolution_id: str | None, *, user: str, content: str, attachment_ids: list[str],
+	company: str | None, conversation_id: str | None, conversation_state_version: int,
+	model_alias: str | None,
+) -> dict | None:
+	resolved_id = str(resolution_id or "").strip()
+	if not resolved_id or len(resolved_id) > 256:
+		return None
+	cache_key = _scenario_resolution_cache_key(resolved_id)
+	try:
+		cache = frappe.cache()
+		record = cache.get_value(cache_key, expires=True, use_local_cache=False)
+		cache.delete_value(cache_key)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("AI 场景解析复用凭据读取失败"))
+		return None
+	if not isinstance(record, dict):
+		return None
+	expected_fingerprint = _scenario_resolution_fingerprint(
+		user=user,
+		content=content,
+		attachment_ids=attachment_ids,
+		company=company,
+		conversation_id=conversation_id,
+		conversation_state_version=conversation_state_version,
+		model_alias=model_alias,
+	)
+	if record.get("fingerprint") != expected_fingerprint:
+		return None
+	scenario = str(record.get("scenario") or "").strip()
+	if scenario not in AI_ACTION_SCENARIOS:
+		return None
+	intent = record.get("intent")
+	if not isinstance(intent, dict):
+		return None
+	return {
+		"scenario": scenario,
+		"intent": intent,
+		"mode": str(record.get("mode") or "").strip() or "structured_intent",
+		"confidence": record.get("confidence"),
 	}
 
 
@@ -2480,7 +2588,7 @@ def resolve_ai_scenario_v1(
 	conversation_id: str | None = None,
 ):
 	user = _current_user()
-	_attachment_refs, attachment_payloads = resolve_ai_attachments(attachment_ids, user=user)
+	attachment_refs, attachment_payloads = resolve_ai_attachments(attachment_ids, user=user)
 	if content in (None, "") and attachment_payloads:
 		content = _("请识别附件图片对应的业务场景；无法确定时返回 general。")
 	resolved_content = _normalize_content(content)
@@ -2488,17 +2596,20 @@ def resolve_ai_scenario_v1(
 		"schema_version": CONVERSATION_STATE_SCHEMA_VERSION,
 		"active_scenario": "general",
 	}
+	conversation_state_version = 0
 	conversation_company = None
+	resolved_conversation_id = str(conversation_id or "").strip() or None
 	if conversation_id:
 		conversation = ai_repository.get_conversation(
-			conversation_id=str(conversation_id).strip(), user=user,
+			conversation_id=resolved_conversation_id, user=user,
 		)["conversation"]
 		conversation_company = str(conversation.get("company") or "").strip() or None
 		state_record = ai_repository.get_conversation_state(
-			conversation_id=str(conversation_id).strip(), user=user,
+			conversation_id=resolved_conversation_id, user=user,
 			expire_if_needed=conversation.get("status") == "active",
 		)
 		conversation_state = state_record.get("state") or conversation_state
+		conversation_state_version = cint(state_record.get("version"))
 	requested_company = str(company or "").strip() or None
 	if requested_company and conversation_company and requested_company != conversation_company:
 		frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
@@ -2511,6 +2622,9 @@ def resolve_ai_scenario_v1(
 		local_scenario in AI_DRAFT_SCENARIOS or _is_simple_general_ai_message(resolved_content)
 	):
 		resolved_scenario = local_scenario
+		intent = {"intent": local_scenario, "confidence": 1.0}
+		resolution_mode = "local_fast_path"
+		resolution_confidence = 1.0
 	else:
 		intent = _call_ai_intent_orchestrator(
 			content=resolved_content,
@@ -2520,13 +2634,32 @@ def resolve_ai_scenario_v1(
 			model_alias=resolved_model_alias,
 			attachments=attachment_payloads,
 		)
-		resolved_scenario, _resolution_mode, _confidence = _resolve_ai_action_scenario(
+		intent = _merge_intent_with_conversation_state(
+			resolved_content,
+			intent,
+			conversation_state,
+			has_current_attachments=bool(attachment_payloads),
+		)
+		resolved_scenario, resolution_mode, resolution_confidence = _resolve_ai_action_scenario(
 			resolved_content, conversation_state, intent,
 		)
+	resolution_id = _issue_ai_scenario_resolution(
+		user=user,
+		content=resolved_content,
+		attachment_ids=_scenario_resolution_attachment_ids(attachment_refs),
+		company=resolved_company,
+		conversation_id=resolved_conversation_id,
+		conversation_state_version=conversation_state_version,
+		model_alias=resolved_model_alias,
+		scenario=resolved_scenario,
+		intent=intent,
+		mode=resolution_mode,
+		confidence=resolution_confidence,
+	)
 	return {
 		"status": "success",
 		"message": _("AI 场景识别完成。"),
-		"data": {"scenario": resolved_scenario},
+		"data": {"scenario": resolved_scenario, "resolution_id": resolution_id},
 	}
 
 
@@ -6031,6 +6164,7 @@ def _prepare_chat_run(
 	model_alias: str | None = None,
 	retry_run_id: str | None = None,
 	attachment_ids=None,
+	scenario_resolution_id: str | None = None,
 ):
 	user = _current_user()
 	attachment_refs, attachment_payloads = resolve_ai_attachments(attachment_ids, user=user)
@@ -6080,37 +6214,57 @@ def _prepare_chat_run(
 	conversation_company = str((conversation or {}).get("company") or "").strip() or None
 	requested_company = str(company or "").strip() or None
 	intent_company = requested_company or conversation_company
+	resolved_intent_company = (
+		_resolve_company_scope(intent_company, required=False)
+		if requested_scenario == "auto" else intent_company
+	)
 	preparsed_intent = {}
 	route_mode = "scenario_locked"
 	route_confidence = None
 	if requested_scenario == "auto":
-		local_scenario = _infer_ai_action_scenario(current_content, conversation_state)
-		if not attachment_payloads and (
-			local_scenario in AI_DRAFT_SCENARIOS
-			or _is_simple_general_ai_message(current_content)
-		):
-			requested_action_scenario = local_scenario
-			preparsed_intent = {"intent": local_scenario, "confidence": 1.0}
-			route_mode = "local_fast_path"
-			route_confidence = 1.0
+		cached_resolution = None if retry_context else _take_ai_scenario_resolution(
+			scenario_resolution_id,
+			user=user,
+			content=current_content,
+			attachment_ids=_scenario_resolution_attachment_ids(attachment_refs),
+			company=resolved_intent_company,
+			conversation_id=str(conversation_id or "").strip() or None,
+			conversation_state_version=cint(conversation_state_record.get("version")),
+			model_alias=model_alias,
+		)
+		if cached_resolution:
+			requested_action_scenario = cached_resolution["scenario"]
+			preparsed_intent = cached_resolution["intent"]
+			route_mode = "preflight_reuse"
+			route_confidence = cached_resolution.get("confidence")
 		else:
-			preparsed_intent = _call_ai_intent_orchestrator(
-				content=current_content,
-				user=user,
-				company=intent_company,
-				conversation_state=conversation_state,
-				model_alias=model_alias,
-				attachments=attachment_payloads,
-			)
-			preparsed_intent = _merge_intent_with_conversation_state(
-				current_content,
-				preparsed_intent,
-				conversation_state,
-				has_current_attachments=bool(attachment_payloads),
-			)
-			requested_action_scenario, route_mode, route_confidence = _resolve_ai_action_scenario(
-				current_content, conversation_state, preparsed_intent,
-			)
+			local_scenario = _infer_ai_action_scenario(current_content, conversation_state)
+			if not attachment_payloads and (
+				local_scenario in AI_DRAFT_SCENARIOS
+				or _is_simple_general_ai_message(current_content)
+			):
+				requested_action_scenario = local_scenario
+				preparsed_intent = {"intent": local_scenario, "confidence": 1.0}
+				route_mode = "local_fast_path"
+				route_confidence = 1.0
+			else:
+				preparsed_intent = _call_ai_intent_orchestrator(
+					content=current_content,
+					user=user,
+					company=resolved_intent_company,
+					conversation_state=conversation_state,
+					model_alias=model_alias,
+					attachments=attachment_payloads,
+				)
+				preparsed_intent = _merge_intent_with_conversation_state(
+					current_content,
+					preparsed_intent,
+					conversation_state,
+					has_current_attachments=bool(attachment_payloads),
+				)
+				requested_action_scenario, route_mode, route_confidence = _resolve_ai_action_scenario(
+					current_content, conversation_state, preparsed_intent,
+				)
 	else:
 		requested_action_scenario = requested_scenario
 	# Keep established draft workflows outside the read-only Agent Runtime.  The
@@ -6729,6 +6883,7 @@ def chat_ai_v1(
 	content: str | None = None,
 	model_alias: str | None = None,
 	attachment_ids=None,
+	scenario_resolution_id: str | None = None,
 ):
 	prepared = _prepare_chat_run(
 		messages=messages,
@@ -6738,6 +6893,7 @@ def chat_ai_v1(
 		content=content,
 		model_alias=model_alias,
 		attachment_ids=attachment_ids,
+		scenario_resolution_id=scenario_resolution_id,
 	)
 	try:
 		result = _call_ai_orchestrator(prepared["payload"])
@@ -6948,6 +7104,7 @@ def stream_ai_message_v1(
 	model_alias: str | None = None,
 	retry_run_id: str | None = None,
 	attachment_ids=None,
+	scenario_resolution_id: str | None = None,
 ):
 	prepared = _prepare_chat_run(
 		scenario=scenario,
@@ -6957,6 +7114,7 @@ def stream_ai_message_v1(
 		model_alias=model_alias,
 		retry_run_id=retry_run_id,
 		attachment_ids=attachment_ids,
+		scenario_resolution_id=scenario_resolution_id,
 	)
 	return _stream_prepared_ai_run(prepared)
 

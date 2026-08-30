@@ -134,7 +134,7 @@ Web/Mobile → myapp.api.gateway → myapp.api.*_api → myapp.services.*
 - Gateway 新增、删除或重命名参数时，所有中间 adapter 与最终 Service 必须同步接受并正确转发；可选参数的默认值也必须一致。
 - 任何一层都不得静默丢弃 `company`、`conversation_id`、权限上下文、幂等键、版本号或其他会改变业务范围的参数。
 - 仅 Mock Gateway 中导入的 service alias 不能证明完整契约；公开参数变化必须有不跳过 adapter 的契约测试和真实 HTTP 回归。
-- AI `auto` 模式的公开用户链路包含 `resolve_ai_scenario_v1` 前置请求和后续 Chat/SSE。Runtime、工具或 Orchestrator 直调成功不能替代该 Gateway 链路验收。
+- AI `auto` 模式的公开用户链路包含 `resolve_ai_scenario_v1` 前置请求和后续 Chat/SSE。前置响应同时返回短期一次性 `resolution_id`，后续 `chat_ai_v1` / `stream_ai_message_v1` 可通过 `scenario_resolution_id` 复用同一次结构化解析。Runtime、工具或 Orchestrator 直调成功不能替代该 Gateway 链路验收。
 - 未知 Python `TypeError` 会被统一错误包络隐藏为 `INTERNAL_ERROR`；诊断时应读取 Frappe `Error Log`，但不得向普通客户端暴露内部函数名或堆栈。
 
 2026-08-29 已发现并修复一次参数漂移：Gateway 向 `resolve_ai_scenario_v1` 传入 `company`、`conversation_id`，中间 `ai_api` adapter 未接收，导致本地和 staging Web `auto` 模式稳定 HTTP 500。修复后 adapter 与 Service 保持同一参数集合，并增加不跳过 adapter 的单元契约测试及携带 `content + company + conversation_id` 的真实 HTTP 回归。该事实不改变公开接口应携带这两个上下文字段的契约；不得通过删除前端参数规避 Backend 契约问题。
@@ -197,7 +197,7 @@ Web/Mobile → myapp.api.gateway → myapp.api.*_api → myapp.services.*
 
 会话现在同时维护短期消息历史和受控的 `conversation-state-v2` 工作状态。状态通过 `active_entities` 维护 `product`、`business_document`、`business_partner` 三个 typed slot，可引用商品、销售/采购订单、销售/采购发票、客户和供应商；同时保留订单/报表筛选、结果集 ID 及少量权限过滤后的实体摘要，不保存完整业务结果、模型原文或凭据。唯一查询结果写为 `resolved`，多候选写为 `ambiguous`，空结果写为 `not_found`；后两种状态是权威清空信号，不能回退并“复活”旧结果集。状态由服务端 owner 校验、字段白名单、大小限制和 `state_version` 乐观并发控制保护。每轮业务工具调用前重新读取状态，当前用户明确表达优先于历史状态；业务工具仍必须按当前请求重新执行公司范围、DocType 和记录权限校验。回答成功后才写回状态，版本冲突时跳过写回并审计，不影响当前只读回答。用户清除上下文或状态自动过期时，服务端同时更新 `context_start_sequence`，旧消息仍可在历史中查看但不会继续发送给模型；状态损坏会在下一次发送前恢复为空上下文并记录审计原因。
 
-`auto` 场景统一先调用结构化意图解析器，因此“它”“刚才那个”“这个商品”“这个订单”“这个客户/供应商”“只看未完成的”“换成上个月”等自然语言省略表达可以继承上一轮 typed entity 和筛选。Orchestrator 的意图 Prompt 版本为 `erp-intent-v6`；商品查询同时返回核心词、明确属性线索和未确认身份假设，避免把用户整句话硬编码成唯一搜索词。语义路由优先决定当前场景，本地规则只在模型不可用、低置信度、输出非法，或需要防止明确写操作被降级到只读 Agent 路径时兜底。状态只用于解析辅助，不能把历史业务事实当作实时事实，也不能替代本轮 Frappe 查询。
+`auto` 场景统一先调用结构化意图解析器，因此“它”“刚才那个”“这个商品”“这个订单”“这个客户/供应商”“只看未完成的”“换成上个月”等自然语言省略表达可以继承上一轮 typed entity 和筛选。Web 前置识别成功后，Backend 把解析结果保存在短期服务端缓存，只向浏览器返回 opaque `resolution_id`；正式 Chat/SSE 仅在当前用户、规范化内容、公司、会话 ID、`conversation-state-v2` 版本、附件 ID 和固定模型全部一致时一次性复用。凭据过期、重复使用、字段被改动或上下文版本变化时自动回退正常解析，Backend 不接受浏览器提交可篡改的 intent JSON。Orchestrator 的意图 Prompt 版本为 `erp-intent-v6`；商品查询同时返回核心词、明确属性线索和未确认身份假设，避免把用户整句话硬编码成唯一搜索词。语义路由优先决定当前场景，本地规则只在模型不可用、低置信度、输出非法，或需要防止明确写操作被降级到只读 Agent 路径时兜底。状态只用于解析辅助，不能把历史业务事实当作实时事实，也不能替代本轮 Frappe 查询。
 
 Agent Runtime 会按实际成功工具结果的顺序合并会话状态，而不是只读取最后一个工具结果。失败、拒绝或可重试错误信封没有 typed `model_context.tool`，不得清空先前已解析实体；成功的空查询仍会写入 `not_found`。订单查询结果会从权限过滤后的 citation 投影唯一客户/供应商；多工具 Run 可以同时保留商品、单据和往来单位槽位。草稿生成、人工编辑和正式执行都会重新投影相同槽位；新建商品和新建订单只有正式执行成功后才成为活动正式实体。
 

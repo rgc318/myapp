@@ -370,6 +370,7 @@ def chat_ai_v1(
 	content: str | None = None,
 	model_alias: str | None = None,
 	attachment_ids=None,
+	scenario_resolution_id: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: chat_ai_v1_service(
@@ -380,6 +381,7 @@ def chat_ai_v1(
 			content=content,
 			model_alias=model_alias,
 			attachment_ids=attachment_ids,
+			scenario_resolution_id=scenario_resolution_id,
 		),
 		success_code="AI_CHAT_COMPLETED",
 	)
@@ -394,6 +396,7 @@ def stream_ai_message_v1(
 	model_alias: str | None = None,
 	retry_run_id: str | None = None,
 	attachment_ids=None,
+	scenario_resolution_id: str | None = None,
 ):
 	return stream_ai_message_v1_service(
 		content=content,
@@ -403,6 +406,7 @@ def stream_ai_message_v1(
 		model_alias=model_alias,
 		retry_run_id=retry_run_id,
 		attachment_ids=attachment_ids,
+		scenario_resolution_id=scenario_resolution_id,
 	)
 
 

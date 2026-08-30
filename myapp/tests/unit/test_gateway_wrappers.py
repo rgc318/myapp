@@ -2,6 +2,7 @@ from unittest import TestCase
 from unittest.mock import patch
 
 import frappe
+from myapp.api import ai_api as ai_api_module
 from myapp.api import gateway as gateway_module
 from myapp.utils.ai_errors import AiServiceError
 
@@ -426,6 +427,7 @@ class TestGatewayWrappers(TestCase):
 			company="rgc (Demo)",
 			model_alias="opencode-glm-5.2",
 			attachment_ids=None,
+			scenario_resolution_id="AI-RESOLUTION-1",
 		)
 
 		mock_chat_service.assert_called_once_with(
@@ -436,7 +438,36 @@ class TestGatewayWrappers(TestCase):
 			company="rgc (Demo)",
 			model_alias="opencode-glm-5.2",
 			attachment_ids=None,
+			scenario_resolution_id="AI-RESOLUTION-1",
 		)
+
+	@patch("myapp.api.ai_api.stream_ai_message_v1_service")
+	def test_stream_ai_message_preserves_scenario_resolution_through_adapter(self, mock_service):
+		mock_service.return_value = "stream-response"
+
+		result = gateway_module.stream_ai_message_v1(
+			content="仓里还剩迪莫吗",
+			scenario="auto",
+			company="Demo Company",
+			conversation_id="AI-CONV-1",
+			model_alias="erp-fast-chat",
+			retry_run_id=None,
+			attachment_ids=["AI-ATT-1"],
+			scenario_resolution_id="AI-RESOLUTION-1",
+		)
+
+		self.assertEqual(result, "stream-response")
+		mock_service.assert_called_once_with(
+			content="仓里还剩迪莫吗",
+			scenario="auto",
+			company="Demo Company",
+			conversation_id="AI-CONV-1",
+			model_alias="erp-fast-chat",
+			retry_run_id=None,
+			attachment_ids=["AI-ATT-1"],
+			scenario_resolution_id="AI-RESOLUTION-1",
+		)
+		self.assertIs(gateway_module.stream_ai_message_v1_service, ai_api_module.stream_ai_message_v1)
 
 	@patch("myapp.api.gateway.get_ai_conversation_v1_service")
 	def test_get_ai_conversation_v1_forwards_message_cursor(self, mock_service):

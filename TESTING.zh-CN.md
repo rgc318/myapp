@@ -28,11 +28,11 @@
 
 AI 工作台额外要求：
 
-- Web `requestedScenario=auto` 会先调用 `resolve_ai_scenario_v1`，再进入 Chat/SSE 或草稿接口。完整验收必须覆盖这个顺序。
+- Web `requestedScenario=auto` 会先调用 `resolve_ai_scenario_v1`，再进入 Chat/SSE 或草稿接口。只读 Chat/SSE 必须把前置响应的 `resolution_id` 作为 `scenario_resolution_id` 原样传入，并验证同一请求只发生一次 intent 解析；完整验收必须覆盖这个顺序。
 - Agent Runtime、工具、Orchestrator 直调和固定评测集只证明对应底层能力，不代表 Web 自动场景入口可用。
 - staging 验收报告必须注明测试层次：Runtime/工具旁证、Backend HTTP 或 Web 浏览器端到端，不得相互替代。
 - 2026-08-29 的 `resolve_ai_scenario_v1` 500 实例证明：仅 Mock Gateway alias 与直测 Service 会漏掉中间 `ai_api` 参数签名不一致；后续该接口的 `content + company + conversation_id` 组合必须进入确定性 HTTP smoke。
-- 对应回归入口为 `test_gateway_wrappers.TestGatewayWrappers.test_resolve_ai_scenario_preserves_context_through_ai_api_adapter` 和 `test_ai_gateway_http.AiGatewayHttpTestCase.test_ai_auto_scenario_resolution_accepts_company_and_conversation`；前者验证 Python 多层包装契约，后者验证鉴权、Frappe 路由和真实 HTTP 包络。
+- 对应回归入口包括 `test_gateway_wrappers.TestGatewayWrappers.test_resolve_ai_scenario_preserves_context_through_ai_api_adapter`、`test_stream_ai_message_preserves_scenario_resolution_through_adapter`、`test_ai_gateway_http.AiGatewayHttpTestCase.test_ai_auto_scenario_resolution_accepts_company_and_conversation` 和 `test_ai_auto_scenario_resolution_is_reused_by_stream`；前两项验证 Python 多层包装契约，后两项验证鉴权、Frappe 路由、真实 HTTP 包络和 Web 同顺序复用。
 
 ## 2. 测试文件划分
 
