@@ -32,7 +32,25 @@ class TestWholesaleService(TestCase):
 		mock_get_list,
 		mock_get_all,
 	):
-		mock_get_all.return_value = [frappe._dict(item_code="ITEM-001", price_list_rate=12.5)]
+		mock_get_all.side_effect = [
+			[
+				frappe._dict(
+					item_code="ITEM-001",
+					price_list="Standard Selling",
+					price_list_rate=288,
+					uom="Box",
+					modified="2026-08-31 11:00:00",
+				),
+				frappe._dict(
+					item_code="ITEM-001",
+					price_list="Standard Selling",
+					price_list_rate=12.5,
+					uom="Nos",
+					modified="2026-08-31 10:00:00",
+				)
+			],
+			[frappe._dict(name="ITEM-001", stock_uom="Nos")],
+		]
 
 		result = _get_price_map(
 			["ITEM-001"],
@@ -47,14 +65,16 @@ class TestWholesaleService(TestCase):
 			pluck="name",
 			limit_page_length=0,
 		)
-		mock_get_all.assert_called_once_with(
+		self.assertEqual(mock_get_all.call_count, 2)
+		mock_get_all.assert_any_call(
 			"Item Price",
 			filters={
 				"item_code": ["in", ["ITEM-001"]],
 				"price_list": "Standard Selling",
 				"currency": "CNY",
 			},
-			fields=["item_code", "price_list_rate"],
+			fields=["item_code", "price_list", "price_list_rate", "uom", "modified"],
+			order_by="modified desc",
 		)
 
 	@patch("myapp.services.wholesale_service.frappe.get_all")
@@ -78,7 +98,15 @@ class TestWholesaleService(TestCase):
 				price_list="Standard Selling",
 				price_list_rate=12.5,
 				currency="CNY",
-			)
+				uom="Nos",
+			),
+			frappe._dict(
+				item_code="ITEM-001",
+				price_list="Standard Selling",
+				price_list_rate=288,
+				currency="CNY",
+				uom="Box",
+			),
 		]
 
 		result = _get_multi_price_map(
@@ -88,6 +116,10 @@ class TestWholesaleService(TestCase):
 		)
 
 		self.assertEqual(result["ITEM-001"]["Standard Selling"]["rate"], 12.5)
+		self.assertEqual(
+			{entry["uom"] for entry in result["ITEM-001"].values()},
+			{"Nos", "Box"},
+		)
 		self.assertEqual(
 			mock_get_all.call_args.kwargs["filters"]["price_list"],
 			["in", ["Standard Selling"]],
@@ -768,7 +800,7 @@ class TestWholesaleService(TestCase):
 		mock_new_doc.assert_called_once_with("Item")
 		self.assertEqual(item.custom_nickname, "冰可乐")
 		item.insert.assert_called_once()
-		item.append.assert_called_once_with("barcodes", {"barcode": "BAR-001X"})
+		item.append.assert_called_once_with("barcodes", {"barcode": "BAR-001X", "uom": "Nos"})
 		fake_db.after_rollback.add.assert_called_once()
 		mock_bind_uploaded_item_image.assert_called_once_with(
 			file_url="/files/cola.png",
@@ -1115,12 +1147,14 @@ class TestWholesaleService(TestCase):
 		mock_run_idempotent.assert_called_once()
 
 	@patch("myapp.services.wholesale_service._build_product_detail_payload")
+	@patch("myapp.services.wholesale_service._resolve_item_barcode_uom", return_value="Box")
 	@patch("myapp.services.wholesale_service.run_idempotent")
 	@patch("myapp.services.wholesale_service.frappe.get_doc")
 	def test_add_product_barcode_v2_appends_unique_barcode(
 		self,
 		mock_get_doc,
 		mock_run_idempotent,
+		_mock_resolve_item_barcode_uom,
 		mock_build_product_detail_payload,
 	):
 		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
@@ -1132,6 +1166,7 @@ class TestWholesaleService(TestCase):
 			child = MagicMock()
 			child.name = "ROW-001"
 			child.barcode = row["barcode"]
+			child.uom = row["uom"]
 			child.idx = len(item.barcodes) + 1
 			item.barcodes.append(child)
 
@@ -1147,9 +1182,9 @@ class TestWholesaleService(TestCase):
 		from myapp.services import wholesale_service
 
 		with patch.object(wholesale_service.frappe, "db", fake_db):
-			result = add_product_barcode_v2("ITEM-001", "BAR-002")
+			result = add_product_barcode_v2("ITEM-001", "BAR-002", uom="Box")
 
-		item.append.assert_called_once_with("barcodes", {"barcode": "BAR-002"})
+		item.append.assert_called_once_with("barcodes", {"barcode": "BAR-002", "uom": "Box"})
 		item.save.assert_called_once()
 		item.reload.assert_called_once()
 		self.assertEqual(result["data"]["barcodes"], ["BAR-002"])

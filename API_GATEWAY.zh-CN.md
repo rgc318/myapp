@@ -2473,6 +2473,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
   - `retail_rate`
   - `standard_buying_rate`
   - `valuation_rate`
+  - `selling_prices[]` / `buying_prices[]` 每行返回 `price_list`、`rate`、`currency`、`uom`
 - 当前设计目标：
   - 保持旧的 `price` 单值口径兼容
   - 同时向商品工作台提供多价格体系摘要
@@ -2526,6 +2527,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
   - `idx`
   - `is_primary`
   - `name`
+  - `uom`，表示该条码对应的商品单位，例如件码或箱码
 - 其中库存相关字段包括：
   - `qty`
   - `total_qty`
@@ -2633,8 +2635,9 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `wholesale_default_uom` / `retail_default_uom` 当前用于保存商品在不同销售模式下的默认成交单位
   - 2026-03-25 起，后端会校验这些默认成交单位必须能通过 `uom_conversions` 换算到 `stock_uom`
 - `standard_rate` 有值时同步更新标准售价
-- `selling_prices` 支持补充 selling 类价格表
-- `buying_prices` 支持补充 buying 类价格表
+- `selling_prices` 支持补充 selling 类价格表，每行可传 `uom`；省略时按价格表选择库存、批发或零售默认单位
+- `buying_prices` 支持补充 buying 类价格表，每行可传 `uom`；省略时默认使用库存基准单位
+- `Item Price` 以 `item_code + price_list + currency + uom` 作为更新定位维度，同一价格表允许同时维护件价和箱价，不再互相覆盖
 - `warehouse_stock_qty` 有值时，按当前 `warehouse` 计算库存差额并生成正式库存调整单据，使该仓商品库存调整到目标值
 - 当传入 `warehouse + warehouse_stock_qty = 0`，且该 `item_code + warehouse` 尚无 `Bin` 记录时：
   - 后端会创建正式的零库存 `Bin`
@@ -2705,6 +2708,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
   - `selling_prices`
   - `buying_prices`
   则会同步补齐对应 `Item Price`
+  - 每条价格可带 `uom`，且该单位必须存在于当前商品 `uom_conversions`；省略时按价格表默认单位补齐
 - 若同时传入 `warehouse + warehouse_stock_qty + warehouse_stock_uom`：
   - 正库存会按正式库存调整链路写入
   - `warehouse_stock_qty = 0` 时也会创建零库存 `Bin`
@@ -2751,12 +2755,14 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 
 - `item_code: str`
 - `barcode: str`
+- `uom: str | None`，省略时使用商品库存基准单位
 - `set_primary: bool | int = 0`
 - `request_id: str | None`
 
 行为：
 
 - 向商品 `Item Barcode` 子表新增条码
+- 条码单位必须属于当前商品已配置单位；用于区分单件码、整箱码等包装层级
 - 若条码已被其他商品使用，则拦截
 - 若条码已存在于当前商品，则不会重复新增；当 `set_primary=1` 时会将该条码调整为主条码
 - 返回更新后的商品详情快照

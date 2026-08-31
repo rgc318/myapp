@@ -558,8 +558,48 @@ def _get_price_map(item_codes: list[str], *, price_list: str, currency: str | No
 	# ERPNext transaction users consume Item Price through pricing services even though the
 	# raw Item Price DocType is not readable by standard Sales/Purchase roles. The requested
 	# Price List is permission-filtered above, and item_codes already came from Item.get_list.
-	price_data = frappe.get_all("Item Price", filters=price_filters, fields=["item_code", "price_list_rate"])
-	return {p.item_code: p.price_list_rate for p in price_data}
+	price_data = frappe.get_all(
+		"Item Price",
+		filters=price_filters,
+		fields=["item_code", "price_list", "price_list_rate", "uom", "modified"],
+		order_by="modified desc",
+	)
+	item_fields = ["name", "stock_uom"]
+	mode_field = None
+	if price_list == "Wholesale":
+		mode_field = _get_item_mode_default_uom_field("wholesale")
+	elif price_list == "Retail":
+		mode_field = _get_item_mode_default_uom_field("retail")
+	if mode_field:
+		item_fields.append(mode_field)
+	item_rows = frappe.get_all(
+		"Item",
+		filters={"name": ["in", item_codes]},
+		fields=item_fields,
+		limit_page_length=0,
+	)
+	preferred_uoms = {
+		row.name: (
+			(_normalize_text(getattr(row, mode_field, None)) if mode_field else None)
+			or _normalize_text(row.stock_uom)
+		)
+		for row in item_rows
+	}
+	grouped = {}
+	for row in price_data:
+		grouped.setdefault(row.item_code, []).append(
+			{
+				"price_list": row.price_list,
+				"rate": flt(row.price_list_rate or 0),
+				"uom": _normalize_text(row.uom) or None,
+			}
+		)
+	result = {}
+	for item_code, entries in grouped.items():
+		selected = _select_price_entry(entries, price_list=price_list, preferred_uom=preferred_uoms.get(item_code))
+		if selected:
+			result[item_code] = selected["rate"]
+	return result
 
 
 def _get_multi_price_map(item_codes: list[str], *, price_lists: list[str], currency: str | None):
@@ -575,15 +615,20 @@ def _get_multi_price_map(item_codes: list[str], *, price_lists: list[str], curre
 	price_rows = frappe.get_all(
 		"Item Price",
 		filters=price_filters,
-		fields=["item_code", "price_list", "price_list_rate", "currency"],
+		fields=["item_code", "price_list", "price_list_rate", "currency", "uom"],
 	)
 
 	result = {}
 	for row in price_rows:
-		result.setdefault(row.item_code, {})[row.price_list] = {
+		item_prices = result.setdefault(row.item_code, {})
+		entry_key = row.price_list
+		if entry_key in item_prices:
+			entry_key = f"{row.price_list}\x1f{_normalize_text(row.uom)}"
+		item_prices[entry_key] = {
 			"price_list": row.price_list,
 			"rate": flt(row.price_list_rate or 0),
 			"currency": row.currency or currency,
+			"uom": _normalize_text(row.uom) or None,
 		}
 	return result
 
@@ -750,21 +795,59 @@ def _build_price_summary(
 ):
 	selling_price_map = selling_price_map or {}
 	buying_price_map = buying_price_map or {}
+	selling_entries = list(selling_price_map.values())
+	buying_entries = list(buying_price_map.values())
+	mode_default_uoms = _extract_mode_default_uoms(item)
+	standard_selling = _select_price_entry(
+		selling_entries,
+		price_list="Standard Selling",
+		preferred_uom=_normalize_text(getattr(item, "stock_uom", None)),
+	)
+	wholesale = _select_price_entry(
+		selling_entries,
+		price_list="Wholesale",
+		preferred_uom=mode_default_uoms.get("wholesale_default_uom") or getattr(item, "stock_uom", None),
+	)
+	retail = _select_price_entry(
+		selling_entries,
+		price_list="Retail",
+		preferred_uom=mode_default_uoms.get("retail_default_uom") or getattr(item, "stock_uom", None),
+	)
+	standard_buying = _select_price_entry(
+		buying_entries,
+		price_list="Standard Buying",
+		preferred_uom=_normalize_text(getattr(item, "stock_uom", None)),
+	)
 	return {
 		"current_price_list": current_price_list,
 		"current_rate": flt(current_rate or 0),
 		"standard_selling_rate": flt(
-			(selling_price_map.get("Standard Selling") or {}).get("rate")
+			(standard_selling or {}).get("rate")
 			or getattr(item, "standard_rate", 0)
 			or 0
 		),
-		"wholesale_rate": flt((selling_price_map.get("Wholesale") or {}).get("rate") or 0),
-		"retail_rate": flt((selling_price_map.get("Retail") or {}).get("rate") or 0),
-		"standard_buying_rate": flt((buying_price_map.get("Standard Buying") or {}).get("rate") or 0),
+		"wholesale_rate": flt((wholesale or {}).get("rate") or 0),
+		"retail_rate": flt((retail or {}).get("rate") or 0),
+		"standard_buying_rate": flt((standard_buying or {}).get("rate") or 0),
 		"valuation_rate": flt(getattr(item, "valuation_rate", 0) or 0),
-		"selling_prices": list(selling_price_map.values()),
-		"buying_prices": list(buying_price_map.values()),
+		"selling_prices": selling_entries,
+		"buying_prices": buying_entries,
 	}
+
+
+def _select_price_entry(entries, *, price_list: str, preferred_uom: str | None):
+	candidates = [entry for entry in entries or [] if entry.get("price_list") == price_list]
+	if not candidates:
+		return None
+	resolved_preferred_uom = _normalize_text(preferred_uom)
+	if resolved_preferred_uom:
+		for entry in candidates:
+			if _normalize_text(entry.get("uom")) == resolved_preferred_uom:
+				return entry
+	for entry in candidates:
+		if not _normalize_text(entry.get("uom")):
+			return entry
+	return candidates[0]
 
 
 def _normalize_mode_default_uom(value):
@@ -856,6 +939,7 @@ def _get_item_barcodes(item):
 				"barcode": barcode,
 				"idx": cint(getattr(row, "idx", 0)) or index,
 				"is_primary": index == 1,
+				"uom": _normalize_text(getattr(row, "uom", None)) or None,
 			}
 		)
 	return rows
@@ -875,8 +959,10 @@ def _update_primary_barcode(item, barcode: str | None):
 	if normalized:
 		if barcodes:
 			barcodes[0].barcode = normalized
+			if not _normalize_text(getattr(barcodes[0], "uom", None)):
+				barcodes[0].uom = item.stock_uom
 		else:
-			item.append("barcodes", {"barcode": normalized})
+			item.append("barcodes", {"barcode": normalized, "uom": item.stock_uom})
 
 
 def _build_product_detail_payload(
@@ -1437,6 +1523,7 @@ def _coerce_price_entries(value):
 				"price_list": price_list,
 				"rate": flt(rate),
 				"currency": _normalize_currency(row.get("currency")),
+				"uom": _normalize_text(row.get("uom")) or None,
 			}
 		)
 	return normalized
@@ -1508,7 +1595,7 @@ def _apply_item_uom_updates(
 
 def _apply_item_price_updates(
 	*,
-	item_code: str,
+	item,
 	standard_rate,
 	price_list: str | None,
 	currency: str | None,
@@ -1520,27 +1607,52 @@ def _apply_item_price_updates(
 
 	if standard_rate not in (None, ""):
 		_upsert_item_price(
-			item_code=item_code,
+			item_code=item.name,
 			rate=flt(standard_rate),
 			price_list=default_price_list,
 			currency=default_currency,
+			uom=_resolve_item_price_uom(item, None, default_price_list),
 		)
 
 	for entry in _coerce_price_entries(selling_prices):
 		_upsert_item_price(
-			item_code=item_code,
+			item_code=item.name,
 			rate=entry["rate"],
 			price_list=entry["price_list"],
 			currency=entry["currency"] or default_currency,
+			uom=_resolve_item_price_uom(item, entry.get("uom"), entry["price_list"]),
 		)
 
 	for entry in _coerce_price_entries(buying_prices):
 		_upsert_item_price(
-			item_code=item_code,
+			item_code=item.name,
 			rate=entry["rate"],
 			price_list=entry["price_list"],
 			currency=entry["currency"] or default_currency,
+			uom=_resolve_item_price_uom(item, entry.get("uom"), entry["price_list"]),
 		)
+
+
+def _resolve_item_price_uom(item, requested_uom: str | None, price_list: str):
+	stock_uom, conversion_map = _build_item_uom_conversion_map(item=item)
+	mode_default_uoms = _extract_mode_default_uoms(item)
+	default_uom = stock_uom
+	if price_list == "Wholesale":
+		default_uom = mode_default_uoms.get("wholesale_default_uom") or stock_uom
+	elif price_list == "Retail":
+		default_uom = mode_default_uoms.get("retail_default_uom") or stock_uom
+	resolved_uom = _normalize_text(requested_uom) or default_uom
+	if not resolved_uom or resolved_uom not in conversion_map:
+		frappe.throw(_("价格单位 {0} 未配置在商品 {1} 的单位换算表中。").format(resolved_uom, item.name))
+	return resolved_uom
+
+
+def _resolve_item_barcode_uom(item, requested_uom: str | None):
+	stock_uom, conversion_map = _build_item_uom_conversion_map(item=item)
+	resolved_uom = _normalize_text(requested_uom) or stock_uom
+	if not resolved_uom or resolved_uom not in conversion_map:
+		frappe.throw(_("条码单位 {0} 未配置在商品 {1} 的单位换算表中。").format(resolved_uom, item.name))
+	return resolved_uom
 
 
 def _resolve_default_warehouse(warehouse: str | None, default_warehouse: str | None = None):
@@ -1621,18 +1733,28 @@ def _build_item_code(item_name: str, item_code: str | None = None):
 	return candidate
 
 
-def _upsert_item_price(item_code: str, rate: float, price_list: str, currency: str | None = None):
+def _upsert_item_price(
+	item_code: str,
+	rate: float,
+	price_list: str,
+	currency: str | None = None,
+	uom: str | None = None,
+):
 	if rate < 0:
 		frappe.throw(_("销售价不能为负数。"))
 
 	filters = {"item_code": item_code, "price_list": price_list}
 	if currency:
 		filters["currency"] = currency
+	if uom:
+		filters["uom"] = uom
 
 	existing_name = frappe.db.get_value("Item Price", filters, "name")
 	if existing_name:
 		item_price = frappe.get_doc("Item Price", existing_name)
 		item_price.price_list_rate = rate
+		if uom:
+			item_price.uom = uom
 		item_price.save()
 		return item_price
 
@@ -1640,6 +1762,8 @@ def _upsert_item_price(item_code: str, rate: float, price_list: str, currency: s
 	item_price.item_code = item_code
 	item_price.price_list = price_list
 	item_price.price_list_rate = rate
+	if uom:
+		item_price.uom = uom
 	if currency:
 		item_price.currency = currency
 	item_price.insert()
@@ -1863,7 +1987,7 @@ def update_product_v2(
 		price_list = _normalize_text(kwargs.get("price_list")) or "Standard Selling"
 		currency = _normalize_currency(kwargs.get("currency"))
 		_apply_item_price_updates(
-			item_code=item.name,
+			item=item,
 			standard_rate=standard_rate,
 			price_list=price_list,
 			currency=currency,
@@ -1953,7 +2077,7 @@ def create_product_v2(
 		if kwargs.get("valuation_rate") not in (None, ""):
 			item.valuation_rate = flt(kwargs.get("valuation_rate"))
 		if barcode:
-			item.append("barcodes", {"barcode": barcode})
+			item.append("barcodes", {"barcode": barcode, "uom": resolved_uom})
 		if image_url:
 			frappe.db.after_rollback.add(lambda file_url=image_url: cleanup_temporary_item_image(file_url=file_url))
 		item.insert()
@@ -1961,7 +2085,7 @@ def create_product_v2(
 			bind_uploaded_item_image(file_url=image_url, item_code=item.name)
 
 		_apply_item_price_updates(
-			item_code=item.item_code,
+			item=item,
 			standard_rate=kwargs.get("standard_rate"),
 			price_list=kwargs.get("price_list"),
 			currency=kwargs.get("currency"),
@@ -2069,6 +2193,7 @@ def add_product_barcode_v2(
 
 	def _add_product_barcode():
 		item = frappe.get_doc("Item", item_code)
+		resolved_uom = _resolve_item_barcode_uom(item, kwargs.get("uom"))
 		existing_parent = frappe.db.get_value("Item Barcode", {"barcode": barcode}, "parent")
 		if existing_parent and existing_parent != item.name:
 			frappe.throw(_("条码 {0} 已存在。").format(barcode))
@@ -2080,9 +2205,11 @@ def add_product_barcode_v2(
 				matched_row = row
 				break
 		if not matched_row:
-			item.append("barcodes", {"barcode": barcode})
+			item.append("barcodes", {"barcode": barcode, "uom": resolved_uom})
 			existing_rows = list(getattr(item, "barcodes", []) or [])
 			matched_row = existing_rows[-1] if existing_rows else None
+		elif kwargs.get("uom") is not None or not _normalize_text(getattr(matched_row, "uom", None)):
+			matched_row.uom = resolved_uom
 
 		if cint(set_primary) and matched_row:
 			_set_barcode_row_primary(item, matched_row)
@@ -2260,7 +2387,7 @@ def create_product_and_stock(
 			uom_conversions=kwargs.get("uom_conversions"),
 		)
 		if barcode:
-			item.append("barcodes", {"barcode": barcode})
+			item.append("barcodes", {"barcode": barcode, "uom": resolved_uom})
 		if image_url:
 			frappe.db.after_rollback.add(lambda file_url=image_url: cleanup_temporary_item_image(file_url=file_url))
 		item.insert()
@@ -2282,6 +2409,7 @@ def create_product_and_stock(
 				rate=flt(standard_rate),
 				price_list=selling_price_list,
 				currency=currency,
+				uom=_resolve_item_price_uom(item, None, selling_price_list),
 			)
 
 		stock_entry = _create_stock_entry(
