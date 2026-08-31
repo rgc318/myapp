@@ -53,6 +53,7 @@ class TestUOMService(TestCase):
 						"symbol": "箱",
 						"description": "整箱",
 						"enabled": 1,
+						"myapp_business_selectable": 1,
 						"must_be_whole_number": 1,
 						"modified": "2026-03-26 10:00:00",
 						"creation": "2026-03-20 10:00:00",
@@ -64,6 +65,7 @@ class TestUOMService(TestCase):
 
 		result = list_uoms_v2(
 			search_key="Bo",
+			business_selectable=1,
 			date_from="2026-03-01",
 			date_to="2026-03-31",
 			limit=20,
@@ -73,6 +75,7 @@ class TestUOMService(TestCase):
 		self.assertEqual(result["status"], "success")
 		self.assertEqual(result["data"][0]["uom_name"], "Box")
 		self.assertEqual(result["data"][0]["display_name"], "箱")
+		self.assertEqual(result["data"][0]["business_selectable"], 1)
 		self.assertEqual(result["meta"]["total"], 2)
 		self.assertEqual(result["meta"]["total_count"], 2)
 		self.assertEqual(result["pagination"]["total_count"], 2)
@@ -83,6 +86,10 @@ class TestUOMService(TestCase):
 		self.assertEqual(
 			mock_get_list.call_args_list[0].kwargs["filters"]["creation"],
 			["between", ["2026-03-01 00:00:00", "2026-03-31 23:59:59"]],
+		)
+		self.assertEqual(
+			mock_get_list.call_args_list[0].kwargs["filters"]["myapp_business_selectable"],
+			1,
 		)
 		self.assertEqual(result["meta"]["filters"]["date_from"], "2026-03-01")
 		self.assertEqual(result["meta"]["filters"]["date_to"], "2026-03-31")
@@ -134,6 +141,7 @@ class TestUOMService(TestCase):
 		doc.name = "Box"
 		doc.uom_name = "Box"
 		doc.enabled = 1
+		doc.myapp_business_selectable = 0
 		doc.must_be_whole_number = 1
 		doc.symbol = "箱"
 		doc.description = "整箱"
@@ -146,9 +154,11 @@ class TestUOMService(TestCase):
 			description="整箱",
 			enabled=1,
 			must_be_whole_number=1,
+			business_selectable=1,
 		)
 
 		self.assertEqual(result["status"], "success")
+		self.assertEqual(doc.myapp_business_selectable, 1)
 		doc.insert.assert_called_once()
 
 	@patch("myapp.services.uom_service.frappe.throw")
@@ -181,6 +191,7 @@ class TestUOMService(TestCase):
 		doc.uom_name = "Piece"
 		doc.must_be_whole_number = 0
 		doc.enabled = 1
+		doc.myapp_business_selectable = 1
 		mock_require_document_permission.return_value = doc
 		mock_collect_uom_references.return_value = {
 			"total_references": 3,
@@ -208,12 +219,14 @@ class TestUOMService(TestCase):
 			description="单件",
 			enabled=0,
 			must_be_whole_number=0,
+			business_selectable=0,
 		)
 
 		self.assertEqual(result["status"], "success")
 		doc.save.assert_called_once()
 		self.assertEqual(doc.symbol, "件")
 		self.assertEqual(doc.enabled, 0)
+		self.assertEqual(doc.myapp_business_selectable, 0)
 
 	@patch("myapp.services.uom_service.run_idempotent")
 	def test_disable_uom_v2_uses_idempotent_runner(self, mock_run_idempotent):

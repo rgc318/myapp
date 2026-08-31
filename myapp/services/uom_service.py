@@ -8,6 +8,7 @@ from myapp.services.data_permission_service import (
 )
 from myapp.utils.idempotency import run_idempotent
 from myapp.utils.pagination import build_offset_pagination
+from myapp.utils.standard_uoms import BUSINESS_SELECTABLE_UOM_FIELD
 from myapp.utils.uom_display import resolve_uom_display_name
 
 
@@ -70,6 +71,7 @@ def _build_uom_payload(doc, *, usage_summary=None):
 		"symbol": getattr(doc, "symbol", None),
 		"description": getattr(doc, "description", None),
 		"enabled": cint(getattr(doc, "enabled", 0)),
+		"business_selectable": cint(getattr(doc, BUSINESS_SELECTABLE_UOM_FIELD, 0)),
 		"must_be_whole_number": cint(getattr(doc, "must_be_whole_number", 0)),
 		"modified": getattr(doc, "modified", None),
 		"creation": getattr(doc, "creation", None),
@@ -202,6 +204,7 @@ def _ensure_whole_number_rule_editable(uom_name: str, old_value, new_value):
 def list_uoms_v2(
 	search_key: str | None = None,
 	enabled: int | None = None,
+	business_selectable: int | None = None,
 	must_be_whole_number: int | None = None,
 	date_from: str | None = None,
 	date_to: str | None = None,
@@ -219,6 +222,8 @@ def list_uoms_v2(
 	filters = {}
 	if _normalize_enabled(enabled) is not None:
 		filters["enabled"] = _normalize_enabled(enabled)
+	if _normalize_enabled(business_selectable) is not None:
+		filters[BUSINESS_SELECTABLE_UOM_FIELD] = _normalize_enabled(business_selectable)
 	if _normalize_enabled(must_be_whole_number) is not None:
 		filters["must_be_whole_number"] = _normalize_enabled(must_be_whole_number)
 	if resolved_date_from and resolved_date_to:
@@ -242,7 +247,17 @@ def list_uoms_v2(
 		"UOM",
 		filters=filters,
 		or_filters=or_filters,
-		fields=["name", "uom_name", "symbol", "description", "enabled", "must_be_whole_number", "modified", "creation"],
+		fields=[
+			"name",
+			"uom_name",
+			"symbol",
+			"description",
+			"enabled",
+			BUSINESS_SELECTABLE_UOM_FIELD,
+			"must_be_whole_number",
+			"modified",
+			"creation",
+		],
 		order_by=f"{sort_by} {sort_order}",
 		start=start,
 		limit_page_length=limit,
@@ -277,6 +292,7 @@ def list_uoms_v2(
 			"filters": {
 				"search_key": search_key or None,
 				"enabled": _normalize_enabled(enabled),
+				"business_selectable": _normalize_enabled(business_selectable),
 				"must_be_whole_number": _normalize_enabled(must_be_whole_number),
 				"date_from": resolved_date_from,
 				"date_to": resolved_date_to,
@@ -315,6 +331,11 @@ def create_uom_v2(uom_name: str, **kwargs):
 		doc = _new_doc("UOM")
 		doc.uom_name = uom_name
 		doc.enabled = _normalize_bool(kwargs.get("enabled"), default=1)
+		setattr(
+			doc,
+			BUSINESS_SELECTABLE_UOM_FIELD,
+			_normalize_bool(kwargs.get("business_selectable"), default=1),
+		)
 		doc.must_be_whole_number = _normalize_bool(kwargs.get("must_be_whole_number"), default=0)
 		doc.symbol = _normalize_text(kwargs.get("symbol"))
 		doc.description = kwargs.get("description")
@@ -354,6 +375,12 @@ def update_uom_v2(uom: str, **kwargs):
 
 		if kwargs.get("enabled") is not None:
 			doc.enabled = _normalize_bool(kwargs.get("enabled"), default=getattr(doc, "enabled", 1))
+		if kwargs.get("business_selectable") is not None:
+			setattr(
+				doc,
+				BUSINESS_SELECTABLE_UOM_FIELD,
+				_normalize_bool(kwargs.get("business_selectable")),
+			)
 		if kwargs.get("symbol") is not None:
 			doc.symbol = _normalize_text(kwargs.get("symbol"))
 		if kwargs.get("description") is not None:

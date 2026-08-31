@@ -13,6 +13,7 @@ from myapp.services.uom_service import update_uom_v2 as update_uom_v2_service
 def list_uoms_v2(
 	search_key: str | None = None,
 	enabled: int | None = None,
+	business_selectable: int | None = None,
 	must_be_whole_number: int | None = None,
 	date_from: str | None = None,
 	date_to: str | None = None,
@@ -24,6 +25,7 @@ def list_uoms_v2(
 	return list_uoms_v2_service(
 		search_key=search_key,
 		enabled=enabled,
+		business_selectable=business_selectable,
 		must_be_whole_number=must_be_whole_number,
 		date_from=date_from,
 		date_to=date_to,

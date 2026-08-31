@@ -2082,6 +2082,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 
 - `search_key: str | None`
 - `enabled: int | None`
+- `business_selectable: int | None`
 - `must_be_whole_number: int | None`
 - `date_from: str | None`
 - `date_to: str | None`
@@ -2094,7 +2095,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 
 - 返回单位主数据列表
 - 支持按单位名称 / 符号 / 描述模糊搜索
-- 支持按启停状态、是否必须整数筛选
+- 支持按启停状态、是否属于日常业务可选目录、是否必须整数筛选
+- 商品建档和普通交易选择器应固定传 `enabled = 1`、`business_selectable = 1`；单位管理页默认仍可查看全部系统单位
 - 支持按单位主数据创建时间 `creation` 做日期区间过滤
 - 返回顶层 `pagination`，同时保留 `meta.total`、`meta.total_count`、`meta.has_more`
 - 日期区间按整天处理：
@@ -2107,6 +2109,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `uom_name`
 - `symbol`
 - `enabled`
+- `business_selectable`
 - `must_be_whole_number`
 - `description`
 
@@ -2143,11 +2146,12 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `symbol: str | None`
 - `description: str | None`
 - `enabled: bool | int = True`
+- `business_selectable: bool | int = True`
 - `must_be_whole_number: bool | int = False`
 
 行为：
 
-- 创建单位主数据
+- 创建单位主数据；新建单位默认加入日常业务可选目录
 - 当前不支持创建后立即改名；若需要新名称，请新建新单位
 
 ### update_uom_v2

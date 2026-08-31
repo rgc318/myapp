@@ -2198,6 +2198,7 @@ class TestGatewayWrappers(TestCase):
 		list_uoms_v2(
 			search_key="Box",
 			enabled=1,
+			business_selectable=1,
 			must_be_whole_number=1,
 			date_from="2026-03-01",
 			date_to="2026-03-31",
@@ -2208,6 +2209,7 @@ class TestGatewayWrappers(TestCase):
 		mock_list_uoms_v2_service.assert_called_once_with(
 			search_key="Box",
 			enabled=1,
+			business_selectable=1,
 			must_be_whole_number=1,
 			date_from="2026-03-01",
 			date_to="2026-03-31",

@@ -450,6 +450,9 @@ STANDARD_UOMS: tuple[StandardUom, ...] = (
 
 
 STANDARD_UOM_MAP = {row["name"]: row for row in STANDARD_UOMS}
+STANDARD_UOM_NAMES = frozenset(STANDARD_UOM_MAP)
+
+BUSINESS_SELECTABLE_UOM_FIELD = "myapp_business_selectable"
 
 STANDARD_UOM_DISPLAY_ALIASES = {
 	alias.upper(): row["display_name"]
