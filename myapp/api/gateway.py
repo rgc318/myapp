@@ -186,10 +186,12 @@ from .settlement_api import get_supplier_refund_context_v1 as get_supplier_refun
 from .settlement_api import process_sales_return as process_sales_return_service
 from .settlement_api import update_payment_status as update_payment_status_service
 from .wholesale_api import add_product_barcode_v2 as add_product_barcode_v2_service
+from .wholesale_api import assess_product_uom_migration_v1 as assess_product_uom_migration_v1_service
 from .wholesale_api import create_product_and_stock as create_product_and_stock_service
 from .wholesale_api import create_product_v2 as create_product_v2_service
 from .wholesale_api import delete_product_barcode_v2 as delete_product_barcode_v2_service
 from .wholesale_api import disable_product_v2 as disable_product_v2_service
+from .wholesale_api import execute_product_uom_migration_v1 as execute_product_uom_migration_v1_service
 from .wholesale_api import get_product_detail_v2 as get_product_detail_v2_service
 from .wholesale_api import list_products_v2 as list_products_v2_service
 from .wholesale_api import search_product as search_product_service
@@ -2711,6 +2713,22 @@ def get_product_detail_v2(
 			currency=currency,
 		),
 		success_code="PRODUCT_DETAIL_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def assess_product_uom_migration_v1(item_code: str):
+	return _handle_gateway_call(
+		lambda: assess_product_uom_migration_v1_service(item_code=item_code),
+		success_code="PRODUCT_UOM_MIGRATION_ASSESSED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def execute_product_uom_migration_v1(item_code: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: execute_product_uom_migration_v1_service(item_code=item_code, **kwargs),
+		success_code="PRODUCT_UOM_MIGRATED",
 	)
 
 

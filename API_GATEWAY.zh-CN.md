@@ -8,6 +8,8 @@
 - `myapp.api.gateway.create_product_and_stock`
 - `myapp.api.gateway.create_product_v2`
 - `myapp.api.gateway.get_product_detail_v2`
+- `myapp.api.gateway.assess_product_uom_migration_v1`
+- `myapp.api.gateway.execute_product_uom_migration_v1`
 - `myapp.api.gateway.list_products_v2`
 - `myapp.api.gateway.update_product_v2`
 - `myapp.api.gateway.disable_product_v2`
@@ -101,7 +103,7 @@
 
 ### 模块导航
 
-- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`update_product_v2`、`disable_product_v2`、`add_product_barcode_v2`、`set_primary_product_barcode_v2`、`delete_product_barcode_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`list_business_documents_v1`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`get_payment_entry_detail_v1`、`get_customer_refund_context_v1`、`create_customer_refund`、`process_sales_return`
+- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`assess_product_uom_migration_v1`、`execute_product_uom_migration_v1`、`update_product_v2`、`disable_product_v2`、`add_product_barcode_v2`、`set_primary_product_barcode_v2`、`delete_product_barcode_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`list_business_documents_v1`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`get_payment_entry_detail_v1`、`get_customer_refund_context_v1`、`create_customer_refund`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`quick_create_purchase_order_v2`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`、`quick_cancel_purchase_order_v2`
 - 采购快捷链路：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
 - 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`list_business_documents_v1`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`、`create_supplier_v2`、`update_supplier_v2`、`disable_supplier_v2`
@@ -2560,6 +2562,81 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 下单页回填旧草稿商品图片与摘要
 - 商品编辑前预加载
 - 商品搜索结果中的“查看库存详情”
+
+### assess_product_uom_migration_v1
+
+方法：
+
+- `myapp.api.gateway.assess_product_uom_migration_v1`
+
+参数：
+
+- `item_code: str`
+
+权限：
+
+- 仅 `Administrator` 或 `System Manager`
+- 同时要求源 `Item` 读取权限
+
+行为：
+
+- 只读评估错误库存单位商品，绝不修改商品或库存数据
+- 返回源商品版本、现有单位换算、所有 Bin 库存和占用、历史 Stock Ledger Entry 数量、未完销售/采购订单、全部 Item Price、全部 Item Barcode 和现有 Item Alternative
+- 以下情况返回 blocker，并令 `can_execute = false`：
+  - 任一仓库实际库存不为 0
+  - 存在预留、在途、计划或请购数量
+  - 存在未完成或草稿销售/采购订单
+  - 商品属于模板/变体族
+  - 商品属于固定资产
+- 历史库存流水不是 blocker；它会作为强警告返回，因为迁移后仍永久保留在源商品下
+
+### execute_product_uom_migration_v1
+
+方法：
+
+- `myapp.api.gateway.execute_product_uom_migration_v1`
+- 仅 POST
+- 必须携带 `Idempotency-Key`
+
+核心参数：
+
+- `item_code: str`
+- `source_modified: str`，必须等于评估时返回的源商品版本
+- `new_item_code: str`
+- `new_item_name: str | None`
+- `stock_uom: str`
+- `uom_conversions: list[dict]`
+- `wholesale_default_uom: str | None`
+- `retail_default_uom: str | None`
+- `price_mappings: list[dict]`
+  - `source_name`
+  - `action = copy | skip`
+  - `target_uom`，`copy` 时必填
+- `barcode_mappings: list[dict]`
+  - `source_name`
+  - `action = move | keep`
+  - `target_uom`，`move` 时必填
+- `confirm_disable_source = 1`
+- `confirm_history_preserved = 1`
+
+权限与事务：
+
+- 仅 `Administrator` 或 `System Manager`
+- 同时要求源 Item 写、新 Item 创建、Item Alternative 创建权限；复制价格时还要求 Item Price 创建权限
+- 执行时锁定源 Item 与现有 Bin，重新评估所有 blocker，并校验 `source_modified`
+- 任一步失败整体回滚；不会产生半个新商品、孤立替代关系或部分条码移动
+
+行为：
+
+- 不直接修改源商品 `stock_uom`
+- 只允许选择 `myapp_business_selectable = 1` 的日常业务单位
+- 每一条源价格和条码都必须人工明确选择动作，不能遗漏、默认复制或自动猜测单位
+- 创建正确库存单位和换算表的新 Item
+- 选择 `move` 的条码从源商品原子移动到新商品
+- 选择 `copy` 的价格按原价格表、币种和金额复制到人工指定的新单位
+- 创建 ERPNext 原生 `Item Alternative`：源商品 -> 新商品
+- 成功后停用源商品；历史单据、Stock Ledger Entry 和旧 Item Price 保持原样
+- 为降低并发业务写入风险，应在短暂受控作业窗口执行，不应与该商品的库存收发、开单或改单并行
 
 ### 商品图片上传与保存边界
 

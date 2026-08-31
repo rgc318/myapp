@@ -8,6 +8,7 @@ from myapp.utils.ai_errors import AiServiceError
 
 from myapp.api.gateway import (
 	add_product_barcode_v2,
+	assess_product_uom_migration_v1,
 	analyze_ai_product_data_v1,
 	approve_ai_model_policy_v1,
 	approve_ai_vector_release_v1,
@@ -38,6 +39,7 @@ from myapp.api.gateway import (
 	create_print_batch_v1,
 	create_supplier_refund,
 	create_product_v2,
+	execute_product_uom_migration_v1,
 	create_supplier_v2,
 	create_purchase_invoice,
 	create_purchase_invoice_from_receipt,
@@ -1889,6 +1891,32 @@ class TestGatewayWrappers(TestCase):
 			company=None,
 			price_list="Standard Selling",
 			currency=None,
+		)
+
+	@patch("myapp.api.gateway.assess_product_uom_migration_v1_service")
+	def test_assess_product_uom_migration_passes_item_code(self, mock_assess):
+		mock_assess.return_value = {"status": "success", "data": {"can_execute": True}}
+
+		result = assess_product_uom_migration_v1("ITEM-001")
+
+		self.assertTrue(result["data"]["can_execute"])
+		mock_assess.assert_called_once_with(item_code="ITEM-001")
+
+	@patch("myapp.api.gateway.execute_product_uom_migration_v1_service")
+	def test_execute_product_uom_migration_forwards_payload(self, mock_execute):
+		mock_execute.return_value = {"status": "success", "data": {"source_item_code": "ITEM-001"}}
+
+		result = execute_product_uom_migration_v1(
+			"ITEM-001",
+			new_item_code="ITEM-NEW",
+			confirm_disable_source=1,
+		)
+
+		self.assertEqual(result["data"]["source_item_code"], "ITEM-001")
+		mock_execute.assert_called_once_with(
+			item_code="ITEM-001",
+			new_item_code="ITEM-NEW",
+			confirm_disable_source=1,
 		)
 
 	@patch("myapp.api.gateway.list_products_v2_service")

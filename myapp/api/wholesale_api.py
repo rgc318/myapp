@@ -3,9 +3,11 @@ from frappe.utils import cint
 
 from myapp.services.wholesale_service import create_product_and_stock as create_product_and_stock_service
 from myapp.services.wholesale_service import add_product_barcode_v2 as add_product_barcode_v2_service
+from myapp.services.wholesale_service import assess_product_uom_migration_v1 as assess_product_uom_migration_v1_service
 from myapp.services.wholesale_service import create_product_v2 as create_product_v2_service
 from myapp.services.wholesale_service import delete_product_barcode_v2 as delete_product_barcode_v2_service
 from myapp.services.wholesale_service import disable_product_v2 as disable_product_v2_service
+from myapp.services.wholesale_service import execute_product_uom_migration_v1 as execute_product_uom_migration_v1_service
 from myapp.services.wholesale_service import get_product_detail_v2 as get_product_detail_v2_service
 from myapp.services.wholesale_service import list_products_v2 as list_products_v2_service
 from myapp.services.wholesale_service import search_product as search_product_service
@@ -134,6 +136,16 @@ def get_product_detail_v2(
 		price_list=price_list,
 		currency=currency,
 	)
+
+
+@frappe.whitelist()
+def assess_product_uom_migration_v1(item_code: str):
+	return assess_product_uom_migration_v1_service(item_code=item_code)
+
+
+@frappe.whitelist(methods=["POST"])
+def execute_product_uom_migration_v1(item_code: str, **kwargs):
+	return execute_product_uom_migration_v1_service(item_code=item_code, **kwargs)
 
 
 @frappe.whitelist(methods=["POST"])
