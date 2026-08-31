@@ -108,7 +108,7 @@ STANDARD_UOMS: tuple[StandardUom, ...] = (
 		"name": "Carton",
 		"uom_name": "Carton",
 		"display_name": "纸箱",
-		"symbol": "箱",
+		"symbol": "纸箱",
 		"must_be_whole_number": 1,
 		"description": "纸箱包装单位。",
 		"aliases": (),
@@ -117,7 +117,7 @@ STANDARD_UOMS: tuple[StandardUom, ...] = (
 		"name": "Case",
 		"uom_name": "Case",
 		"display_name": "箱装",
-		"symbol": "箱",
+		"symbol": "箱装",
 		"must_be_whole_number": 1,
 		"description": "箱装商品计量单位。",
 		"aliases": ("CASES",),
@@ -451,6 +451,13 @@ STANDARD_UOMS: tuple[StandardUom, ...] = (
 
 STANDARD_UOM_MAP = {row["name"]: row for row in STANDARD_UOMS}
 STANDARD_UOM_NAMES = frozenset(STANDARD_UOM_MAP)
+
+# Box is the single default carton-style unit for everyday wholesale workflows.
+# Case and Carton remain valid system UOMs for existing data and specialist use,
+# but administrators must opt them into normal business selectors explicitly.
+STANDARD_UOM_BUSINESS_SELECTABLE_DEFAULTS = {
+	name: int(name not in {"Case", "Carton"}) for name in STANDARD_UOM_NAMES
+}
 
 BUSINESS_SELECTABLE_UOM_FIELD = "myapp_business_selectable"
 

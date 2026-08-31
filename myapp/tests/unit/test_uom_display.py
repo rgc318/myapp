@@ -13,6 +13,10 @@ class TestUomDisplay(TestCase):
 	def test_resolve_uom_display_name_prefers_chinese_symbol(self):
 		self.assertEqual(resolve_uom_display_name("Box", symbol="箱"), "箱")
 
+	def test_resolve_uom_display_name_keeps_legacy_packaging_codes_distinct(self):
+		self.assertEqual(resolve_uom_display_name("Case", symbol="箱"), "箱装")
+		self.assertEqual(resolve_uom_display_name("Carton", symbol="箱"), "纸箱")
+
 	def test_resolve_uom_display_name_handles_existing_english_symbol_units(self):
 		self.assertEqual(resolve_uom_display_name("Litre", symbol="L"), "升")
 		self.assertEqual(resolve_uom_display_name("Yard", symbol="yd"), "码")
@@ -21,6 +25,11 @@ class TestUomDisplay(TestCase):
 		aliases = build_uom_input_aliases("Box", uom_name="Box", symbol="箱")
 
 		self.assertTrue({"Box", "BOX", "BOXES", "箱"}.issubset(aliases))
+
+	def test_build_uom_input_aliases_preserves_legacy_case_symbol_compatibility(self):
+		aliases = build_uom_input_aliases("Case", uom_name="Case", symbol="箱")
+
+		self.assertTrue({"Case", "CASE", "CASES", "箱", "箱装"}.issubset(aliases))
 
 	def test_sort_uom_rows_prioritizes_box_and_nos_stably(self):
 		rows = [

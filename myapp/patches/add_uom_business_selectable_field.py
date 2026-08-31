@@ -1,7 +1,11 @@
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
-from myapp.utils.standard_uoms import BUSINESS_SELECTABLE_UOM_FIELD, STANDARD_UOM_NAMES
+from myapp.utils.standard_uoms import (
+	BUSINESS_SELECTABLE_UOM_FIELD,
+	STANDARD_UOM_BUSINESS_SELECTABLE_DEFAULTS,
+	STANDARD_UOM_NAMES,
+)
 
 
 def execute():
@@ -36,11 +40,14 @@ def execute():
 		limit_page_length=0,
 	)
 	for uom_name in existing_standard_uoms:
-		if not frappe.db.get_value("UOM", uom_name, BUSINESS_SELECTABLE_UOM_FIELD):
+		business_selectable_default = STANDARD_UOM_BUSINESS_SELECTABLE_DEFAULTS[uom_name]
+		if business_selectable_default and not frappe.db.get_value(
+			"UOM", uom_name, BUSINESS_SELECTABLE_UOM_FIELD
+		):
 			frappe.db.set_value(
 				"UOM",
 				uom_name,
 				BUSINESS_SELECTABLE_UOM_FIELD,
-				1,
+				business_selectable_default,
 				update_modified=False,
 			)

@@ -78,12 +78,17 @@ def resolve_uom_display_name(
 	uom_name: str | None = None,
 	symbol: str | None = None,
 ) -> str | None:
+	normalized_uom = normalize_uom_text(uom)
+	if normalized_uom:
+		standard_display = STANDARD_UOM_DISPLAY_ALIASES.get(normalized_uom.upper())
+		if standard_display:
+			return standard_display
+
 	candidates = [normalize_uom_text(symbol), normalize_uom_text(uom_name), normalize_uom_text(uom)]
 	for candidate in candidates:
 		if looks_like_chinese(candidate):
 			return candidate
 
-	normalized_uom = normalize_uom_text(uom)
 	if normalized_uom:
 		mapped = _COMMON_UOM_DISPLAY_NAMES.get(normalized_uom.upper())
 		if mapped:

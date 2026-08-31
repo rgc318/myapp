@@ -5,7 +5,12 @@ import argparse
 import frappe
 
 from myapp.services.uom_service import _collect_uom_references
-from myapp.utils.standard_uoms import BUSINESS_SELECTABLE_UOM_FIELD, STANDARD_UOMS, TEST_UOM_PREFIXES
+from myapp.utils.standard_uoms import (
+	BUSINESS_SELECTABLE_UOM_FIELD,
+	STANDARD_UOM_BUSINESS_SELECTABLE_DEFAULTS,
+	STANDARD_UOMS,
+	TEST_UOM_PREFIXES,
+)
 
 
 def _find_test_uoms() -> list[str]:
@@ -43,12 +48,13 @@ def _upsert_standard_uoms(*, commit: bool) -> dict[str, list[str]]:
 	skipped_rule_change: list[str] = []
 
 	for row in STANDARD_UOMS:
+		business_selectable_default = STANDARD_UOM_BUSINESS_SELECTABLE_DEFAULTS[row["name"]]
 		exists = frappe.db.exists("UOM", row["name"])
 		if not exists:
 			doc = frappe.new_doc("UOM")
 			doc.uom_name = row["uom_name"]
 			doc.enabled = 1
-			setattr(doc, BUSINESS_SELECTABLE_UOM_FIELD, 1)
+			setattr(doc, BUSINESS_SELECTABLE_UOM_FIELD, business_selectable_default)
 			doc.must_be_whole_number = row["must_be_whole_number"]
 			doc.symbol = row["symbol"]
 			doc.description = row["description"]
@@ -69,10 +75,6 @@ def _upsert_standard_uoms(*, commit: bool) -> dict[str, list[str]]:
 
 		if int(getattr(doc, "enabled", 1) or 0) != 1:
 			doc.enabled = 1
-			changed = True
-
-		if int(getattr(doc, BUSINESS_SELECTABLE_UOM_FIELD, 0) or 0) != 1:
-			setattr(doc, BUSINESS_SELECTABLE_UOM_FIELD, 1)
 			changed = True
 
 		current_whole = int(getattr(doc, "must_be_whole_number", 0) or 0)
