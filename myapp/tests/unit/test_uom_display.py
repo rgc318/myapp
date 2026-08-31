@@ -1,6 +1,6 @@
 from unittest import TestCase
 
-from myapp.utils.uom_display import resolve_uom_display_name, sort_uom_rows
+from myapp.utils.uom_display import build_uom_input_aliases, resolve_uom_display_name, sort_uom_rows
 
 
 class TestUomDisplay(TestCase):
@@ -16,6 +16,11 @@ class TestUomDisplay(TestCase):
 	def test_resolve_uom_display_name_handles_existing_english_symbol_units(self):
 		self.assertEqual(resolve_uom_display_name("Litre", symbol="L"), "升")
 		self.assertEqual(resolve_uom_display_name("Yard", symbol="yd"), "码")
+
+	def test_build_uom_input_aliases_includes_code_display_symbol_and_common_aliases(self):
+		aliases = build_uom_input_aliases("Box", uom_name="Box", symbol="箱")
+
+		self.assertTrue({"Box", "BOX", "BOXES", "箱"}.issubset(aliases))
 
 	def test_sort_uom_rows_prioritizes_box_and_nos_stably(self):
 		rows = [

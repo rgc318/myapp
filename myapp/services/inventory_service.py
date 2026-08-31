@@ -233,44 +233,6 @@ def _create_inventory_transfer_entry(
 	return stock_entry
 
 
-def _create_inventory_adjustment_entry(
-	*,
-	item_code: str,
-	warehouse: str,
-	qty_delta: float,
-	company: str,
-	valuation_rate: float,
-	posting_date: str | None,
-	remarks: str | None,
-):
-	stock_entry = frappe.new_doc("Stock Entry")
-	is_receipt = qty_delta > 0
-	stock_entry.stock_entry_type = "Material Receipt" if is_receipt else "Material Issue"
-	stock_entry.purpose = "Material Receipt" if is_receipt else "Material Issue"
-	stock_entry.company = company
-	if posting_date:
-		stock_entry.posting_date = posting_date
-	if remarks:
-		stock_entry.remarks = remarks
-
-	item_row = {
-		"item_code": item_code,
-		"qty": abs(qty_delta),
-		"basic_rate": valuation_rate,
-		"valuation_rate": valuation_rate,
-		"allow_zero_valuation_rate": 1,
-	}
-	if is_receipt:
-		item_row["t_warehouse"] = warehouse
-	else:
-		item_row["s_warehouse"] = warehouse
-
-	stock_entry.append("items", item_row)
-	stock_entry.insert()
-	stock_entry.submit()
-	return stock_entry
-
-
 def _create_stock_reconciliation(
 	*,
 	company: str,
@@ -582,10 +544,13 @@ def reconcile_inventory_stock_v1(
 ):
 	resolved_item_code = _normalize_text(item_code)
 	resolved_warehouse = _normalize_text(warehouse)
+	resolved_remarks = _normalize_text(remarks)
 	if not resolved_item_code:
 		frappe.throw(_("商品编码不能为空。"))
 	if not resolved_warehouse:
 		frappe.throw(_("仓库不能为空。"))
+	if not resolved_remarks:
+		frappe.throw(_("库存盘点必须填写差异原因或盘点说明。"))
 
 	def _reconcile_inventory_stock():
 		item = _get_item_stock_context(resolved_item_code)
@@ -607,6 +572,7 @@ def reconcile_inventory_stock_v1(
 				"message": _("库存数量无变化。"),
 				"data": {
 					"stock_entry": None,
+					"stock_reconciliation": None,
 					"item_code": item.name,
 					"item_name": item.item_name,
 					"warehouse": resolved_warehouse,
@@ -621,30 +587,37 @@ def reconcile_inventory_stock_v1(
 				},
 			}
 
-		stock_entry = _create_inventory_adjustment_entry(
-			item_code=item.name,
-			warehouse=resolved_warehouse,
-			qty_delta=qty_delta,
+		reconciliation = _create_stock_reconciliation(
 			company=company,
-			valuation_rate=flt(valuation_rate or 0),
+			items=[
+				{
+					"item_code": item.name,
+					"warehouse": resolved_warehouse,
+					"qty": target_stock_qty,
+					"valuation_rate": flt(valuation_rate or 0),
+				}
+			],
 			posting_date=_normalize_text(posting_date) or None,
-			remarks=_normalize_text(remarks) or None,
+			remarks=resolved_remarks,
+		)
+		serialized = _serialize_inventory_stock_entry(
+			reconciliation,
+			item=item,
+			quantity_context=quantity_context,
+			extra={
+				"warehouse": resolved_warehouse,
+				"company": company,
+				"target_stock_qty": target_stock_qty,
+				"current_stock_qty": current_qty,
+				"qty_delta": qty_delta,
+				"stock_entry": None,
+				"stock_reconciliation": reconciliation.name,
+			},
 		)
 		return {
 			"status": "success",
 			"message": _("库存盘点调整成功。"),
-			"data": _serialize_inventory_stock_entry(
-				stock_entry,
-				item=item,
-				quantity_context=quantity_context,
-				extra={
-					"warehouse": resolved_warehouse,
-					"company": company,
-					"target_stock_qty": target_stock_qty,
-					"current_stock_qty": current_qty,
-					"qty_delta": qty_delta,
-				},
-			),
+			"data": serialized,
 		}
 
 	return run_idempotent("reconcile_inventory_stock_v1", request_id, _reconcile_inventory_stock)

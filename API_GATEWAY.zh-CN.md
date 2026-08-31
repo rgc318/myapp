@@ -790,10 +790,8 @@ Method:
 
 - 为 Web 单品单仓盘点提供目标库存校准。
 - 使用共享 `myapp.utils.uom.resolve_item_quantity_to_stock` 将盘点输入单位换算为商品库存基准单位。
-- 根据当前 `Bin.actual_qty` 和目标库存的差值创建并提交 ERPNext `Stock Entry`：
-  - 差值为正：`Material Receipt`
-  - 差值为负：`Material Issue`
-  - 差值为 0：不创建库存单据，返回 `stock_entry = None`
+- 使用目标库存创建并提交 ERPNext `Stock Reconciliation`，与批量盘点保持相同账务和审计语义。
+- 差值为 0 时不创建库存单据，返回 `stock_reconciliation = None`。
 
 参数：
 
@@ -803,7 +801,7 @@ Method:
 - `uom: str | None = None`
 - `valuation_rate: float | int | str | None = None`
 - `posting_date: str | None = None`
-- `remarks: str | None = None`
+- `remarks: str`，必须填写盘点差异原因或盘点说明
 - `request_id: str | None = None`
 
 业务规则：
@@ -811,11 +809,14 @@ Method:
 - 商品必须存在、未停用且为库存商品。
 - 仓库必须是可交易仓库：存在、未停用、`is_group = 0` 且绑定公司。
 - 目标库存不能为负数。
+- `uom` 只允许使用当前商品已配置的单位；支持通过内部编码、中文展示名、符号和标准别名解析，未知或歧义单位失败关闭，不会静默改用库存基准单位。
+- 标记为 `must_be_whole_number` 的输入单位只允许整数数量。
 - 接口支持 `request_id` 幂等。
 
 响应字段：
 
-- `stock_entry`: 已提交的 `Stock Entry` 单号；无差异时为 `None`
+- `stock_entry`: 固定为 `None`，保留字段用于兼容库存转仓响应结构
+- `stock_reconciliation`: 已提交的 `Stock Reconciliation` 单号；无差异时为 `None`
 - `item_code`
 - `item_name`
 - `warehouse`

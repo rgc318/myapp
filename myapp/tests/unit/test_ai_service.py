@@ -91,6 +91,10 @@ from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
 from myapp.utils.api_response import UpstreamServiceUnavailableError, map_exception_to_error
 
 
+def _raise_validation_error(message, *args, **kwargs):
+	raise frappe.ValidationError(message)
+
+
 class TestAiService(TestCase):
 	def setUp(self):
 		# Existing tests exercise the compatibility chat path. Agent Runtime has
@@ -405,8 +409,9 @@ class TestAiService(TestCase):
 
 	@patch("myapp.services.ai_service.search_product_v2")
 	@patch("myapp.services.ai_service.frappe.get_list")
+	@patch("myapp.utils.uom.frappe.throw", side_effect=_raise_validation_error)
 	def test_sales_draft_missing_uom_uses_default_for_resolved_sales_mode(
-		self, mock_allowed, mock_search,
+		self, _mock_throw, mock_allowed, mock_search,
 	):
 		mock_allowed.return_value = ["ITEM-001"]
 		mock_search.return_value = {"data": [{
@@ -432,7 +437,11 @@ class TestAiService(TestCase):
 			default_sales_mode="retail",
 		)
 		explicit = _resolve_sales_draft_item(
-			{**candidate, "uom": "Box"}, company="Demo Company",
+			{**candidate, "uom": "箱"}, company="Demo Company",
+			default_warehouse="Stores - DC", default_sales_mode="retail",
+		)
+		invalid = _resolve_sales_draft_item(
+			{**candidate, "uom": "托盘"}, company="Demo Company",
 			default_warehouse="Stores - DC", default_sales_mode="retail",
 		)
 
@@ -442,6 +451,8 @@ class TestAiService(TestCase):
 		self.assertEqual(retail["conversion_factor"], 1)
 		self.assertEqual(explicit["uom"], "Box")
 		self.assertEqual(explicit["conversion_factor"], 12)
+		self.assertIsNone(invalid["conversion_factor"])
+		self.assertIn("未配置单位", invalid["uom_resolution_error"])
 
 	def test_reference_price_distinguishes_missing_from_explicit_zero(self):
 		missing, missing_source = _authoritative_reference_price(
@@ -1510,10 +1521,11 @@ class TestAiService(TestCase):
 		)
 
 	@patch("myapp.services.ai_service.resolve_item_quantity_to_stock")
+	@patch("myapp.services.ai_service.resolve_item_uom")
 	@patch("myapp.services.ai_service.search_product_v2")
 	@patch("myapp.services.ai_service.frappe.get_list", return_value=["ITEM-1"])
 	def test_resolve_inventory_draft_item_uses_stock_uom_and_real_stock(
-		self, _allowed, mock_search_product, mock_resolve_quantity,
+		self, _allowed, mock_search_product, mock_resolve_uom, mock_resolve_quantity,
 	):
 		mock_search_product.return_value = {"data": [{
 			"item_code": "ITEM-1", "item_name": "测试商品", "nickname": "测试",
@@ -1523,6 +1535,9 @@ class TestAiService(TestCase):
 		}]}
 		mock_resolve_quantity.return_value = {
 			"qty": 2, "uom": "Box", "stock_uom": "Nos", "stock_qty": 12, "conversion_factor": 6,
+		}
+		mock_resolve_uom.return_value = {
+			"uom": "Box", "uom_display": "箱", "stock_uom": "Nos", "conversion_factor": 6,
 		}
 
 		result = _resolve_inventory_draft_item(
@@ -1534,6 +1549,32 @@ class TestAiService(TestCase):
 		self.assertEqual(result["target_stock_qty"], 17)
 		self.assertEqual(result["qty_delta"], 12)
 		self.assertEqual(result["valuation_rate"], 12.5)
+		self.assertEqual(result["available_uoms"][0]["uom"], "Box")
+
+	@patch("myapp.services.ai_service.resolve_item_quantity_to_stock")
+	@patch("myapp.services.ai_service.resolve_item_uom")
+	@patch("myapp.services.ai_service.search_product_v2")
+	@patch("myapp.services.ai_service.frappe.get_list", return_value=["ITEM-1"])
+	def test_resolve_inventory_draft_item_rejects_unknown_uom_without_fallback(
+		self, _allowed, mock_search_product, mock_resolve_uom, mock_resolve_quantity,
+	):
+		mock_search_product.return_value = {"data": [{
+			"item_code": "ITEM-1", "item_name": "测试商品", "uom": "Nos",
+			"uom_display": "件", "qty": 5,
+			"all_uoms": [{"uom": "Box", "uom_display": "箱", "conversion_factor": 6}],
+			"price_summary": {"valuation_rate": 12.5},
+		}]}
+		mock_resolve_uom.side_effect = frappe.ValidationError("商品 ITEM-1 未配置单位 托盘 的换算关系。")
+
+		result = _resolve_inventory_draft_item(
+			{"item_query": "ITEM-1", "adjustment_type": "increase", "quantity": 2, "uom": "托盘"},
+			company="Test Company", warehouse="Stores - TC",
+		)
+
+		self.assertEqual(result["uom"], "托盘")
+		self.assertIsNone(result["target_stock_qty"])
+		self.assertIn("未配置单位", result["uom_resolution_error"])
+		mock_resolve_quantity.assert_not_called()
 
 	@patch("myapp.services.ai_service._resolve_inventory_draft_item")
 	@patch("myapp.services.ai_service._resolve_inventory_draft_warehouse")

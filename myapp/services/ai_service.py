@@ -72,8 +72,8 @@ from myapp.services.ai_draft_state import (
 from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
 from myapp.utils.api_response import UpstreamServiceUnavailableError
 from myapp.utils.idempotency import get_current_request_id, run_idempotent
-from myapp.utils.uom import resolve_item_quantity_to_stock
-from myapp.utils.uom_display import resolve_uom_display_name
+from myapp.utils.uom import resolve_item_quantity_to_stock, resolve_item_uom
+from myapp.utils.uom_display import build_uom_input_aliases, resolve_uom_display_name
 from myapp.utils.standard_uoms import STANDARD_UOMS
 
 MAX_AI_MESSAGES = 20
@@ -2833,6 +2833,61 @@ def _build_transaction_line_state(
 	return state
 
 
+def _resolve_draft_item_uom(
+	selected: dict,
+	*,
+	requested_uom: str | None,
+	fallback_uom: str | None,
+) -> dict:
+	input_uom = str(requested_uom or "").strip() or str(fallback_uom or "").strip() or selected.get("uom")
+	stock_uom = selected.get("uom")
+	conversion_factors = {stock_uom: 1.0} if stock_uom else {}
+	uom_metadata = {}
+	for row in selected.get("all_uoms") or []:
+		uom = str(row.get("uom") or "").strip()
+		if not uom:
+			continue
+		conversion_factors[uom] = flt(row.get("conversion_factor") or (1 if uom == stock_uom else 0))
+		display = row.get("uom_display") or resolve_uom_display_name(uom)
+		uom_metadata[uom] = {
+			"aliases": build_uom_input_aliases(uom, symbol=display),
+			"must_be_whole_number": False,
+			"uom_display": display,
+		}
+	if stock_uom and stock_uom not in uom_metadata:
+		display = selected.get("uom_display") or resolve_uom_display_name(stock_uom)
+		uom_metadata[stock_uom] = {
+			"aliases": build_uom_input_aliases(stock_uom, symbol=display),
+			"must_be_whole_number": False,
+			"uom_display": display,
+		}
+	try:
+		resolved = resolve_item_uom(
+			item_code=selected.get("item_code"),
+			uom=input_uom,
+			uom_context_map={
+				selected.get("item_code"): {
+					"conversion_factors": conversion_factors,
+					"stock_uom": stock_uom,
+					"uom_metadata": uom_metadata,
+				}
+			},
+		)
+	except frappe.ValidationError as exc:
+		return {
+			"uom": input_uom,
+			"uom_display": resolve_uom_display_name(input_uom),
+			"conversion_factor": None,
+			"error": str(exc),
+		}
+	return {
+		"uom": resolved.get("uom"),
+		"uom_display": resolved.get("uom_display") or resolve_uom_display_name(resolved.get("uom")),
+		"conversion_factor": flt(resolved.get("conversion_factor") or 0),
+		"error": None,
+	}
+
+
 def _resolve_purchase_draft_item(
 	candidate: dict, *, company: str, default_warehouse: str | None,
 	allow_user_price: bool = False,
@@ -2865,10 +2920,12 @@ def _resolve_purchase_draft_item(
 		}
 	all_uoms = selected.get("all_uoms") or []
 	requested_uom = str(candidate.get("uom") or "").strip()
-	uom_row = next((row for row in all_uoms if str(row.get("uom") or "") == requested_uom), None)
-	if requested_uom and not uom_row:
-		warnings.append(_("商品 {0} 未配置单位 {1}，已改用采购默认单位。" ).format(selected.get("item_code"), requested_uom))
-	resolved_uom = (uom_row or {}).get("uom") or selected.get("wholesale_default_uom") or selected.get("uom")
+	uom_resolution = _resolve_draft_item_uom(
+		selected,
+		requested_uom=requested_uom,
+		fallback_uom=selected.get("wholesale_default_uom") or selected.get("uom"),
+	)
+	resolved_uom = uom_resolution.get("uom")
 	reference_price, reference_source = _authoritative_reference_price(selected, buying=True)
 	user_price = None if candidate.get("price") in (None, "") else flt(candidate.get("price"))
 	if allow_user_price and user_price is not None and user_price < 0:
@@ -2880,17 +2937,19 @@ def _resolve_purchase_draft_item(
 	)
 	if not allow_user_price and user_price is not None and user_price != reference_price:
 		warnings.append(_("模型建议价格未采用，草稿使用当前后端采购参考价。"))
-	conversion_factor = float((uom_row or {}).get("conversion_factor") or 1)
+	conversion_factor = uom_resolution.get("conversion_factor")
 	return {
 		"item_query": query, "item_code": selected.get("item_code"), "item_name": selected.get("item_name"),
 		"target_source": target_source, "target_context_ref": target_context_ref,
 		"qty": qty, "uom": resolved_uom,
-		"uom_display": (uom_row or {}).get("uom_display") or resolve_uom_display_name(resolved_uom),
+		"uom_display": uom_resolution.get("uom_display"),
 		"stock_uom": selected.get("uom"), "stock_uom_display": selected.get("uom_display"),
 		"price": resolved_price, "reference_price": reference_price,
 		"price_source": "user" if "price" in user_patch else "system",
 		"warehouse_query": warehouse_query, "warehouse": warehouse,
 		"conversion_factor": conversion_factor,
+		"available_uoms": all_uoms,
+		"uom_resolution_error": uom_resolution.get("error"),
 		"candidates": [{"item_code": row.get("item_code"), "item_name": row.get("item_name")} for row in rows],
 		"warnings": warnings,
 		"_state": _build_transaction_line_state(
@@ -2967,6 +3026,8 @@ def _resolve_inventory_draft_item(
 			"stock_uom_display": None,
 			"warehouse": warehouse,
 			"conversion_factor": None,
+			"available_uoms": [],
+			"uom_resolution_error": None,
 			"current_stock_qty": None,
 			"target_stock_qty": None,
 			"qty_delta": None,
@@ -2981,19 +3042,24 @@ def _resolve_inventory_draft_item(
 	stock_uom = selected.get("uom")
 	all_uoms = selected.get("all_uoms") or []
 	requested_uom = str(candidate.get("uom") or "").strip()
-	uom_row = next((row for row in all_uoms if str(row.get("uom") or "") == requested_uom), None)
-	if requested_uom == stock_uom:
-		uom_row = uom_row or {"uom": stock_uom, "conversion_factor": 1, "uom_display": selected.get("uom_display")}
-	if requested_uom and not uom_row:
-		warnings.append(_("商品 {0} 未配置单位 {1}，已改用库存单位。").format(selected.get("item_code"), requested_uom))
-	resolved_uom = (uom_row or {}).get("uom") or stock_uom
+	uom_resolution = _resolve_draft_item_uom(
+		selected,
+		requested_uom=requested_uom,
+		fallback_uom=stock_uom,
+	)
+	resolved_uom = uom_resolution.get("uom")
+	uom_display = uom_resolution.get("uom_display")
+	uom_resolution_error = uom_resolution.get("error")
 	quantity_context = None
-	if input_qty is not None:
-		quantity_context = resolve_item_quantity_to_stock(
-			item_code=selected.get("item_code"),
-			qty=input_qty,
-			uom=resolved_uom,
-		)
+	if input_qty is not None and not uom_resolution_error:
+		try:
+			quantity_context = resolve_item_quantity_to_stock(
+				item_code=selected.get("item_code"),
+				qty=input_qty,
+				uom=resolved_uom,
+			)
+		except frappe.ValidationError as exc:
+			uom_resolution_error = str(exc)
 	current_stock_qty = flt(selected.get("qty") or 0)
 	resolved_stock_qty = flt((quantity_context or {}).get("stock_qty")) if quantity_context else None
 	target_stock_qty = None
@@ -3007,7 +3073,15 @@ def _resolve_inventory_draft_item(
 	price_summary = selected.get("price_summary") or {}
 	valuation_value = price_summary.get("valuation_rate")
 	valuation_rate = None if valuation_value in (None, "") else flt(valuation_value)
-	conversion_factor = flt((quantity_context or {}).get("conversion_factor") or 1)
+	conversion_factor = (
+		None
+		if uom_resolution_error
+		else flt(
+			(quantity_context or {}).get("conversion_factor")
+			or uom_resolution.get("conversion_factor")
+			or 1
+		)
+	)
 	line_state = build_draft_state(
 		operation="transaction",
 		entity_doctype="Item",
@@ -3046,11 +3120,21 @@ def _resolve_inventory_draft_item(
 		"target_context_ref": target_context_ref,
 		"qty": input_qty,
 		"uom": resolved_uom,
-		"uom_display": (uom_row or {}).get("uom_display") or resolve_uom_display_name(resolved_uom),
+		"uom_display": uom_display,
 		"stock_uom": stock_uom,
 		"stock_uom_display": selected.get("uom_display") or resolve_uom_display_name(stock_uom),
 		"warehouse": warehouse,
 		"conversion_factor": conversion_factor,
+		"available_uoms": [
+			{
+				"uom": row.get("uom"),
+				"uom_display": row.get("uom_display") or resolve_uom_display_name(row.get("uom")),
+				"conversion_factor": row.get("conversion_factor"),
+			}
+			for row in all_uoms
+			if row.get("uom")
+		],
+		"uom_resolution_error": uom_resolution_error,
 		"current_stock_qty": current_stock_qty,
 		"target_stock_qty": target_stock_qty,
 		"qty_delta": flt(target_stock_qty - current_stock_qty) if target_stock_qty is not None else None,
@@ -3102,6 +3186,8 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 		errors.append(_("增减库存数量必须大于 0。"))
 	if item.get("target_stock_qty") is not None and flt(item.get("target_stock_qty")) < 0:
 		errors.append(_("调整后的目标库存不能为负数。"))
+	if item.get("uom_resolution_error"):
+		errors.append(item.get("uom_resolution_error"))
 	if not reason:
 		errors.append(_("库存调整必须填写盘点差异或业务原因。"))
 	try:
@@ -3175,21 +3261,18 @@ def _resolve_sales_draft_item(
 		}
 	all_uoms = selected.get("all_uoms") or []
 	requested_uom = str(candidate.get("uom") or "").strip()
-	uom_row = next((row for row in all_uoms if str(row.get("uom") or "") == requested_uom), None)
-	if requested_uom and not uom_row:
-		warnings.append(_("商品 {0} 未配置单位 {1}，已改用默认单位。" ).format(selected.get("item_code"), requested_uom))
 	resolved_sales_mode = "retail" if default_sales_mode == "retail" else "wholesale"
 	mode_default_uom = (
 		selected.get("retail_default_uom")
 		if resolved_sales_mode == "retail"
 		else selected.get("wholesale_default_uom")
 	)
-	if not uom_row and mode_default_uom:
-		uom_row = next(
-			(row for row in all_uoms if str(row.get("uom") or "") == mode_default_uom),
-			None,
-		)
-	resolved_uom = (uom_row or {}).get("uom") or mode_default_uom or selected.get("uom")
+	uom_resolution = _resolve_draft_item_uom(
+		selected,
+		requested_uom=requested_uom,
+		fallback_uom=mode_default_uom or selected.get("uom"),
+	)
+	resolved_uom = uom_resolution.get("uom")
 	reference_price, reference_source = _authoritative_reference_price(selected, buying=False)
 	user_price = None if candidate.get("price") in (None, "") else flt(candidate.get("price"))
 	if allow_user_price and user_price is not None and user_price < 0:
@@ -3201,7 +3284,7 @@ def _resolve_sales_draft_item(
 	)
 	if not allow_user_price and user_price is not None and user_price != reference_price:
 		warnings.append(_("模型建议价格未采用，草稿使用当前后端参考价。"))
-	conversion_factor = float((uom_row or {}).get("conversion_factor") or 1)
+	conversion_factor = uom_resolution.get("conversion_factor")
 	return {
 		"item_query": query,
 		"item_code": selected.get("item_code"),
@@ -3210,7 +3293,7 @@ def _resolve_sales_draft_item(
 		"target_context_ref": target_context_ref,
 		"qty": qty,
 		"uom": resolved_uom,
-		"uom_display": (uom_row or {}).get("uom_display") or resolve_uom_display_name(resolved_uom),
+		"uom_display": uom_resolution.get("uom_display"),
 		"stock_uom": selected.get("uom"),
 		"stock_uom_display": selected.get("uom_display"),
 		"price": resolved_price,
@@ -3218,6 +3301,8 @@ def _resolve_sales_draft_item(
 		"price_source": "user" if "price" in user_patch else "system",
 		"warehouse_query": warehouse_query, "warehouse": warehouse,
 		"conversion_factor": conversion_factor,
+		"available_uoms": all_uoms,
+		"uom_resolution_error": uom_resolution.get("error"),
 		"candidates": [{"item_code": row.get("item_code"), "item_name": row.get("item_name")} for row in rows],
 		"warnings": warnings,
 		"_state": _build_transaction_line_state(
@@ -3736,6 +3821,8 @@ def generate_ai_sales_order_draft_v1(
 		for index, row in enumerate(items, 1):
 			if not row.get("item_code") or row.get("qty", 0) <= 0 or not row.get("warehouse"):
 				errors.append(_("第 {0} 行需要人工补充商品、数量或仓库。" ).format(index))
+			if row.get("uom_resolution_error"):
+				errors.append(_("第 {0} 行：{1}").format(index, row.get("uom_resolution_error")))
 		transaction_date = str(
 			candidate.get("transaction_date")
 			or existing_meta.get("transaction_date")
@@ -3949,6 +4036,8 @@ def generate_ai_purchase_order_draft_v1(
 		for index, row in enumerate(items, 1):
 			if not row.get("item_code") or row.get("qty", 0) <= 0 or not row.get("warehouse"):
 				errors.append(_("第 {0} 行需要人工补充商品、数量或收货仓库。" ).format(index))
+			if row.get("uom_resolution_error"):
+				errors.append(_("第 {0} 行：{1}").format(index, row.get("uom_resolution_error")))
 		existing_meta = (
 			existing_order.get("meta")
 			if existing_order and isinstance(existing_order.get("meta"), dict)

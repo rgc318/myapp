@@ -92,6 +92,33 @@ def resolve_uom_display_name(
 	return normalize_uom_text(uom_name) or normalized_uom
 
 
+def build_uom_input_aliases(
+	uom: str | None,
+	*,
+	uom_name: str | None = None,
+	symbol: str | None = None,
+) -> set[str]:
+	"""Return user-facing aliases that may identify one stable UOM code."""
+	aliases = {
+		candidate
+		for candidate in (
+			normalize_uom_text(uom),
+			normalize_uom_text(uom_name),
+			normalize_uom_text(symbol),
+			resolve_uom_display_name(uom, uom_name=uom_name, symbol=symbol),
+		)
+		if candidate
+	}
+	display_name = resolve_uom_display_name(uom, uom_name=uom_name, symbol=symbol)
+	if display_name:
+		aliases.update(
+			alias
+			for alias, mapped_display in _COMMON_UOM_DISPLAY_NAMES.items()
+			if mapped_display == display_name
+		)
+	return aliases
+
+
 def get_uom_business_priority(
 	uom: str | None,
 	*,

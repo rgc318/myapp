@@ -332,7 +332,7 @@ class TestInventoryService(TestCase):
 	@patch("myapp.services.inventory_service.resolve_item_quantity_to_stock")
 	@patch("myapp.services.inventory_service.frappe.new_doc")
 	@patch("myapp.services.inventory_service.frappe.db", new_callable=MagicMock)
-	def test_reconcile_inventory_stock_v1_creates_delta_adjustment(
+	def test_reconcile_inventory_stock_v1_creates_stock_reconciliation(
 		self,
 		mock_db,
 		mock_new_doc,
@@ -360,9 +360,9 @@ class TestInventoryService(TestCase):
 			"qty": 2,
 			"stock_qty": 12,
 		}
-		stock_entry = MagicMock()
-		stock_entry.name = "MAT-STE-0002"
-		mock_new_doc.return_value = stock_entry
+		reconciliation = MagicMock()
+		reconciliation.name = "MAT-RECO-0002"
+		mock_new_doc.return_value = reconciliation
 
 		result = reconcile_inventory_stock_v1(
 			item_code="ITEM-001",
@@ -376,23 +376,25 @@ class TestInventoryService(TestCase):
 		)
 
 		self.assertEqual(result["status"], "success")
-		self.assertEqual(result["data"]["stock_entry"], "MAT-STE-0002")
+		self.assertIsNone(result["data"]["stock_entry"])
+		self.assertEqual(result["data"]["stock_reconciliation"], "MAT-RECO-0002")
 		self.assertEqual(result["data"]["target_stock_qty"], 12)
 		self.assertEqual(result["data"]["qty_delta"], 9)
-		self.assertEqual(stock_entry.stock_entry_type, "Material Receipt")
-		stock_entry.append.assert_called_once_with(
+		self.assertEqual(reconciliation.company, "Test Company")
+		self.assertEqual(reconciliation.purpose, "Stock Reconciliation")
+		self.assertEqual(reconciliation.posting_date, "2026-06-02")
+		self.assertEqual(reconciliation.remarks, "Cycle count")
+		reconciliation.append.assert_called_once_with(
 			"items",
 			{
 				"item_code": "ITEM-001",
-				"qty": 9,
-				"basic_rate": 8,
+				"warehouse": "Stores - TC",
+				"qty": 12,
 				"valuation_rate": 8,
-				"allow_zero_valuation_rate": 1,
-				"t_warehouse": "Stores - TC",
 			},
 		)
-		stock_entry.insert.assert_called_once()
-		stock_entry.submit.assert_called_once()
+		reconciliation.insert.assert_called_once()
+		reconciliation.submit.assert_called_once()
 
 	@patch("myapp.services.inventory_service.run_idempotent")
 	@patch("myapp.services.inventory_service.resolve_item_quantity_to_stock")
