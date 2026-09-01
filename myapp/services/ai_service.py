@@ -74,7 +74,7 @@ from myapp.utils.api_response import UpstreamServiceUnavailableError
 from myapp.utils.idempotency import get_current_request_id, run_idempotent
 from myapp.utils.uom import resolve_item_quantity_to_stock, resolve_item_uom
 from myapp.utils.uom_display import build_uom_input_aliases, resolve_uom_display_name
-from myapp.utils.standard_uoms import STANDARD_UOMS
+from myapp.utils.standard_uoms import BUSINESS_SELECTABLE_UOM_FIELD, STANDARD_UOMS
 
 MAX_AI_MESSAGES = 20
 MAX_AI_MESSAGE_CHARS = 8000
@@ -2993,6 +2993,22 @@ def _resolve_inventory_draft_warehouse(query: str | None, company: str) -> tuple
 	return (selected.get("name") if selected else None), candidates
 
 
+def _is_business_selectable_uom(uom: str | None) -> bool:
+	resolved_uom = str(uom or "").strip()
+	if not resolved_uom:
+		return False
+	try:
+		return bool(cint(
+			frappe.db.get_value("UOM", resolved_uom, BUSINESS_SELECTABLE_UOM_FIELD) or 0
+		))
+	except RuntimeError as exc:
+		# Pure unit tests can exercise the resolver without a bound Frappe request
+		# context. Runtime requests always use the persisted governance field.
+		if "not bound" in str(exc):
+			return True
+		raise
+
+
 def _resolve_inventory_draft_item(
 	candidate: dict,
 	*,
@@ -3032,6 +3048,9 @@ def _resolve_inventory_draft_item(
 			"target_stock_qty": None,
 			"qty_delta": None,
 			"valuation_rate": None,
+			"stock_uom_business_selectable": None,
+			"requires_uom_migration": False,
+			"uom_governance_error": None,
 			"candidates": [
 				{"item_code": row.get("item_code"), "item_name": row.get("item_name")}
 				for row in rows
@@ -3040,6 +3059,13 @@ def _resolve_inventory_draft_item(
 		}
 
 	stock_uom = selected.get("uom")
+	stock_uom_business_selectable = _is_business_selectable_uom(stock_uom)
+	uom_governance_error = None
+	if stock_uom and not stock_uom_business_selectable:
+		uom_governance_error = _(
+			"商品 {0} 的库存基准单位“{1}”未纳入日常业务单位目录，不能直接调整库存；"
+			"请由管理员确认正确单位并使用受控单位错误迁移流程处理。"
+		).format(selected.get("item_code"), resolve_uom_display_name(stock_uom))
 	all_uoms = selected.get("all_uoms") or []
 	requested_uom = str(candidate.get("uom") or "").strip()
 	uom_resolution = _resolve_draft_item_uom(
@@ -3139,6 +3165,9 @@ def _resolve_inventory_draft_item(
 		"target_stock_qty": target_stock_qty,
 		"qty_delta": flt(target_stock_qty - current_stock_qty) if target_stock_qty is not None else None,
 		"valuation_rate": valuation_rate,
+		"stock_uom_business_selectable": stock_uom_business_selectable,
+		"requires_uom_migration": bool(uom_governance_error),
+		"uom_governance_error": uom_governance_error,
 		"candidates": [
 			{"item_code": row.get("item_code"), "item_name": row.get("item_name")}
 			for row in rows
@@ -3188,6 +3217,8 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 		errors.append(_("调整后的目标库存不能为负数。"))
 	if item.get("uom_resolution_error"):
 		errors.append(item.get("uom_resolution_error"))
+	if item.get("uom_governance_error"):
+		errors.append(item.get("uom_governance_error"))
 	if not reason:
 		errors.append(_("库存调整必须填写盘点差异或业务原因。"))
 	try:
@@ -4491,12 +4522,20 @@ def _build_existing_product_baseline(detail: dict, *, company: str) -> tuple[dic
 		"currency": "Company/default_currency",
 		"description": "Item/description",
 	}
+	stock_uom = str(detail.get("stock_uom") or "").strip() or None
+	stock_uom_business_selectable = _is_business_selectable_uom(stock_uom)
 	context = {
 		"inventory_read_only": True,
 		"company_total_qty": detail.get("total_qty"),
 		"company_warehouse_stock": detail.get("warehouse_stock_details") or [],
-		"stock_uom": detail.get("stock_uom"),
+		"stock_uom": stock_uom,
 		"stock_uom_display": detail.get("stock_uom_display"),
+		"stock_uom_business_selectable": stock_uom_business_selectable,
+		"requires_uom_migration": bool(stock_uom and not stock_uom_business_selectable),
+		"uom_governance_message": (
+			_("当前库存基准单位未纳入日常业务单位目录，请先完成受控单位错误迁移。")
+			if stock_uom and not stock_uom_business_selectable else None
+		),
 	}
 	return baseline, sources, context
 
@@ -5113,6 +5152,287 @@ def generate_ai_product_setup_draft_v1(
 	except Exception as error:
 		_fail_draft_generation_run(run_id=run_id, user=user, error=error, started=started)
 		raise
+
+
+def _resolve_deterministic_draft_action_context(
+	*, conversation_id: str, company: str | None,
+) -> tuple[str, str, dict]:
+	user = _current_user()
+	resolved_conversation_id = str(conversation_id or "").strip()
+	if not resolved_conversation_id:
+		frappe.throw(_("缺少来源 AI 会话，不能准备业务草稿。"))
+	conversation = ai_repository.get_conversation(
+		conversation_id=resolved_conversation_id, user=user,
+	)["conversation"]
+	if conversation.get("status") != "active":
+		frappe.throw(_("已归档的 AI 会话为只读状态，请新建会话后继续操作。"))
+	conversation_company = str(conversation.get("company") or "").strip() or None
+	requested_company = str(company or "").strip() or None
+	if requested_company and conversation_company and requested_company != conversation_company:
+		frappe.throw(_("当前公司与会话公司范围不一致，请新建会话。"))
+	resolved_company = _resolve_company_scope(
+		requested_company or conversation_company, required=True,
+	)
+	return user, resolved_company, conversation
+
+
+def _append_deterministic_draft_action_messages(
+	*, conversation_id: str, user: str, scenario: str, user_content: str,
+	assistant_content: str, citations: list[dict] | None = None,
+) -> list[dict]:
+	user_message = ai_repository.append_message(
+		conversation_id=conversation_id,
+		user=user,
+		role="user",
+		content=user_content,
+		scenario=scenario,
+	)
+	assistant_message = ai_repository.append_message(
+		conversation_id=conversation_id,
+		user=user,
+		role="assistant",
+		content=assistant_content,
+		scenario=scenario,
+		citations=citations or [],
+	)
+	return [
+		{
+			"name": user_message["name"], "sequence": user_message["sequence"],
+			"role": "user", "content": user_content, "scenario": scenario,
+			"citations": [],
+		},
+		{
+			"name": assistant_message["name"], "sequence": assistant_message["sequence"],
+			"role": "assistant", "content": assistant_content, "scenario": scenario,
+			"citations": citations or [],
+		},
+	]
+
+
+def _persist_prepared_draft_context(*, conversation_id: str, user: str, draft: dict) -> None:
+	try:
+		state_record = ai_repository.get_conversation_state(
+			conversation_id=conversation_id, user=user, expire_if_needed=True,
+		)
+		_persist_draft_conversation_state(
+			conversation_id=conversation_id,
+			user=user,
+			state_record=state_record,
+			draft_type=draft["draft_type"],
+			payload=draft.get("payload") or {},
+		)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), _("确定性业务草稿的会话状态同步失败"))
+
+
+def _prepare_ai_product_action_draft_once(
+	*, action: str, item_code: str, company: str | None, conversation_id: str,
+) -> dict:
+	resolved_item_code = str(item_code or "").strip()
+	if not resolved_item_code:
+		frappe.throw(_("商品编码不能为空。"))
+	user, resolved_company, conversation = _resolve_deterministic_draft_action_context(
+		conversation_id=conversation_id, company=company,
+	)
+	conversation_id = conversation["name"]
+	if action == "product_update":
+		if not frappe.has_permission("Item", ptype="write"):
+			raise frappe.PermissionError(_("无权完善现有商品。"))
+		payload, validation = _build_product_setup_draft(
+			{
+				"operation": "update",
+				"item_code": resolved_item_code,
+				"item_query": resolved_item_code,
+			},
+			company=resolved_company,
+		)
+		draft_type = "product_setup"
+		scenario = "product_setup_draft"
+		title = _("完善商品 {0}").format(resolved_item_code)
+		user_content = _("编辑商品资料：{0}").format(resolved_item_code)
+		assistant_content = _("已读取当前商品资料、价格和库存上下文，请直接在编辑器中完善需要修改的字段。")
+	else:
+		if not frappe.has_permission("Stock Entry", ptype="create"):
+			raise frappe.PermissionError(_("无权创建库存调整草稿。"))
+		payload, validation = _build_inventory_adjustment_draft(
+			{
+				"item_code": resolved_item_code,
+				"item_query": resolved_item_code,
+				"adjustment_type": "increase",
+			},
+			company=resolved_company,
+		)
+		draft_type = "inventory_adjustment"
+		scenario = "inventory_adjustment_draft"
+		title = _("调整商品 {0} 的库存").format(resolved_item_code)
+		user_content = _("调整商品库存：{0}").format(resolved_item_code)
+		assistant_content = (
+			_("已读取商品单位和当前库存，请填写仓库、数量及调整原因后复核。")
+			if not (payload.get("items") or [{}])[0].get("requires_uom_migration")
+			else _("该商品的库存基准单位异常，草稿已阻断执行；请先处理受控单位错误迁移。")
+		)
+	draft = ai_repository.create_draft(
+		user=user,
+		conversation_id=conversation_id,
+		source_run=f"AI-ACTION-{secrets.token_hex(12)}",
+		draft_type=draft_type,
+		company=resolved_company,
+		title=title,
+		payload=payload,
+		validation=validation,
+	)
+	citation = {
+		"type": "ai_draft", "id": draft["name"], "label": draft["title"],
+		"href": None, "data": draft,
+	}
+	messages = _append_deterministic_draft_action_messages(
+		conversation_id=conversation_id,
+		user=user,
+		scenario=scenario,
+		user_content=user_content,
+		assistant_content=assistant_content,
+		citations=[citation],
+	)
+	_persist_prepared_draft_context(
+		conversation_id=conversation_id, user=user, draft=draft,
+	)
+	return {
+		"status": "success",
+		"message": assistant_content,
+		"data": {
+			"conversation": conversation_id,
+			"draft": draft,
+			"messages": messages,
+			"message": messages[-1],
+		},
+	}
+
+
+def prepare_ai_product_update_draft_v1(
+	item_code: str, company: str | None, conversation_id: str,
+	request_id: str | None = None,
+):
+	resolved_request_id = get_current_request_id(request_id)
+	return run_idempotent(
+		"prepare_ai_product_update_draft_v1",
+		resolved_request_id,
+		lambda: _prepare_ai_product_action_draft_once(
+			action="product_update", item_code=item_code,
+			company=company, conversation_id=conversation_id,
+		),
+		request_payload={
+			"item_code": item_code, "company": company, "conversation_id": conversation_id,
+		},
+	)
+
+
+def prepare_ai_inventory_adjustment_draft_v1(
+	item_code: str, company: str | None, conversation_id: str,
+	request_id: str | None = None,
+):
+	resolved_request_id = get_current_request_id(request_id)
+	return run_idempotent(
+		"prepare_ai_inventory_adjustment_draft_v1",
+		resolved_request_id,
+		lambda: _prepare_ai_product_action_draft_once(
+			action="inventory_adjustment", item_code=item_code,
+			company=company, conversation_id=conversation_id,
+		),
+		request_payload={
+			"item_code": item_code, "company": company, "conversation_id": conversation_id,
+		},
+	)
+
+
+def _select_ai_draft_product_candidate_once(
+	*, draft_id: str, expected_version: int, item_code: str, selection_text: str | None,
+) -> dict:
+	user = _current_user()
+	draft = ai_repository.get_draft(draft_id=draft_id, user=user)
+	if draft.get("draft_type") != "inventory_adjustment" or draft.get("status") != "draft":
+		frappe.throw(_("只有待处理的库存调整草稿可以选择候选商品。"))
+	payload = draft.get("payload") if isinstance(draft.get("payload"), dict) else {}
+	items = payload.get("items") if isinstance(payload.get("items"), list) else []
+	source_item = items[0] if items and isinstance(items[0], dict) else {}
+	candidates = source_item.get("candidates") if isinstance(source_item.get("candidates"), list) else []
+	resolved_item_code = str(item_code or "").strip()
+	selected_candidate = next(
+		(
+			row for row in candidates
+			if isinstance(row, dict) and str(row.get("item_code") or "").strip() == resolved_item_code
+		),
+		None,
+	)
+	if not selected_candidate:
+		frappe.throw(_("所选商品不在当前草稿候选列表中，请刷新草稿后重试。"))
+	next_payload = {
+		**payload,
+		"item_code": resolved_item_code,
+		"item_query": resolved_item_code,
+		"items": [
+			{
+				**source_item,
+				"item_code": resolved_item_code,
+				"item_query": resolved_item_code,
+			},
+			*items[1:],
+		],
+	}
+	updated_result = _update_ai_draft_once(
+		draft_id=draft_id,
+		payload=next_payload,
+		expected_version=expected_version,
+		change_source="candidate_selection",
+	)
+	updated = updated_result["data"]
+	resolved_selection_text = " ".join(str(selection_text or "").split())[:140] or str(
+		selected_candidate.get("item_name") or resolved_item_code
+	)
+	assistant_content = _("已将原库存调整草稿绑定到商品 {0}，并按该商品的单位与实时库存重新校验。"
+	).format(selected_candidate.get("item_name") or resolved_item_code)
+	messages = _append_deterministic_draft_action_messages(
+		conversation_id=draft["conversation"],
+		user=user,
+		scenario="inventory_adjustment_draft",
+		user_content=resolved_selection_text,
+		assistant_content=assistant_content,
+	)
+	return {
+		"status": "success",
+		"message": assistant_content,
+		"data": {
+			"conversation": draft["conversation"],
+			"draft": updated,
+			"messages": messages,
+			"message": messages[-1],
+		},
+	}
+
+
+def select_ai_draft_product_candidate_v1(
+	draft_id: str, expected_version: int, item_code: str,
+	selection_text: str | None = None, request_id: str | None = None,
+):
+	expected_version = cint(expected_version)
+	if expected_version < 1:
+		frappe.throw(_("草稿版本号不正确。"))
+	resolved_request_id = get_current_request_id(request_id)
+	return run_idempotent(
+		"select_ai_draft_product_candidate_v1",
+		resolved_request_id,
+		lambda: _select_ai_draft_product_candidate_once(
+			draft_id=draft_id,
+			expected_version=expected_version,
+			item_code=item_code,
+			selection_text=selection_text,
+		),
+		request_payload={
+			"draft_id": draft_id,
+			"expected_version": expected_version,
+			"item_code": item_code,
+			"selection_text": selection_text,
+		},
+	)
 
 
 def get_ai_draft_v1(draft_id: str):

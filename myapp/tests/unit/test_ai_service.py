@@ -21,6 +21,7 @@ from myapp.services.ai_service import (
 	_bind_context_order_candidate,
 	_bind_context_product_candidates,
 	_build_unresolved_multimodal_product_search_context,
+	_build_existing_product_baseline,
 	_build_product_setup_draft,
 	_candidate_requests_product_image_application,
 	_rebuild_order_draft_before_execution,
@@ -63,6 +64,7 @@ from myapp.services.ai_service import (
 	_resolve_order_update_source,
 	_resolve_ai_action_scenario,
 	_resolve_sales_draft_item,
+	_select_ai_draft_product_candidate_once,
 	_requests_product_image_application,
 	_complete_chat_run,
 	_apply_agent_result,
@@ -77,9 +79,12 @@ from myapp.services.ai_service import (
 	get_ai_conversation_v1,
 	list_ai_conversations_v1,
 	list_ai_drafts_v1,
+	prepare_ai_inventory_adjustment_draft_v1,
+	prepare_ai_product_update_draft_v1,
 	rename_ai_conversation_v1,
 	reset_ai_conversation_context_v1,
 	resolve_ai_scenario_v1,
+	select_ai_draft_product_candidate_v1,
 	refresh_ai_business_result_v1,
 	resume_ai_run_v1,
 	stream_ai_message_v1,
@@ -106,6 +111,118 @@ class TestAiService(TestCase):
 
 	def tearDown(self):
 		self._agent_runtime_env.stop()
+
+	@patch("myapp.services.ai_service._prepare_ai_product_action_draft_once")
+	@patch(
+		"myapp.services.ai_service.run_idempotent",
+		side_effect=lambda _namespace, _request_id, callback, **_kwargs: callback(),
+	)
+	@patch("myapp.services.ai_service.get_current_request_id", return_value="REQ-PRODUCT-ACTION")
+	def test_prepare_product_actions_are_idempotent_without_model_calls(
+		self, _request_id, mock_idempotent, mock_prepare,
+	):
+		mock_prepare.return_value = {"status": "success", "data": {"draft": {"name": "AI-DRAFT-1"}}}
+
+		prepare_ai_product_update_draft_v1(
+			item_code="ITEM-001", company="Demo Company", conversation_id="AI-CONV-1",
+		)
+		prepare_ai_inventory_adjustment_draft_v1(
+			item_code="ITEM-001", company="Demo Company", conversation_id="AI-CONV-1",
+		)
+
+		self.assertEqual(
+			[call.args[0] for call in mock_idempotent.call_args_list],
+			["prepare_ai_product_update_draft_v1", "prepare_ai_inventory_adjustment_draft_v1"],
+		)
+		self.assertEqual(
+			[call.kwargs["action"] for call in mock_prepare.call_args_list],
+			["product_update", "inventory_adjustment"],
+		)
+
+	@patch("myapp.services.ai_service._append_deterministic_draft_action_messages")
+	@patch("myapp.services.ai_service._update_ai_draft_once")
+	@patch("myapp.services.ai_service.ai_repository.get_draft")
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_select_inventory_candidate_updates_original_draft_and_preserves_intent(
+		self, _user, mock_get_draft, mock_update, mock_messages,
+	):
+		mock_get_draft.return_value = {
+			"name": "AI-DRAFT-1", "draft_type": "inventory_adjustment", "status": "draft",
+			"conversation": "AI-CONV-1", "company": "Demo Company",
+			"payload": {
+				"adjustment_type": "increase", "warehouse": "Stores - DC",
+				"reason": "补货", "posting_date": "2026-09-01",
+				"items": [{
+					"item_query": "可乐", "qty": 500, "uom": "Box",
+					"candidates": [
+						{"item_code": "COKE-5000", "item_name": "可口可乐 5000ml"},
+						{"item_code": "PEPSI-5000", "item_name": "百事可乐 5000ml"},
+					],
+				}],
+			},
+		}
+		mock_update.return_value = {"status": "success", "data": {"name": "AI-DRAFT-1", "version": 2}}
+		mock_messages.return_value = [
+			{"name": "AI-MSG-USER", "role": "user", "content": "可口可乐"},
+			{"name": "AI-MSG-ASSISTANT", "role": "assistant", "content": "已选择"},
+		]
+
+		result = _select_ai_draft_product_candidate_once(
+			draft_id="AI-DRAFT-1", expected_version=1,
+			item_code="COKE-5000", selection_text="可口可乐",
+		)
+
+		payload = mock_update.call_args.kwargs["payload"]
+		self.assertEqual(payload["adjustment_type"], "increase")
+		self.assertEqual(payload["warehouse"], "Stores - DC")
+		self.assertEqual(payload["reason"], "补货")
+		self.assertEqual(payload["items"][0]["qty"], 500)
+		self.assertEqual(payload["items"][0]["uom"], "Box")
+		self.assertEqual(payload["items"][0]["item_code"], "COKE-5000")
+		self.assertEqual(mock_update.call_args.kwargs["change_source"], "candidate_selection")
+		self.assertEqual(result["data"]["draft"]["version"], 2)
+
+	def test_product_update_context_marks_non_business_stock_uom_for_migration(self):
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.db.get_value.return_value = 0
+			_baseline, _sources, context = _build_existing_product_baseline(
+				{
+					"item_code": "COKE-5000", "item_name": "可口可乐 5000ml",
+					"stock_uom": "Wavelength In Megametres",
+					"stock_uom_display": "兆米波长", "total_qty": 0,
+					"warehouse_stock_details": [], "price_summary": {}, "currency": "CNY",
+				},
+				company="Demo Company",
+			)
+
+		self.assertFalse(context["stock_uom_business_selectable"])
+		self.assertTrue(context["requires_uom_migration"])
+		self.assertIn("受控单位错误迁移", context["uom_governance_message"])
+
+	@patch("myapp.services.ai_service._select_ai_draft_product_candidate_once")
+	@patch(
+		"myapp.services.ai_service.run_idempotent",
+		side_effect=lambda _namespace, _request_id, callback, **_kwargs: callback(),
+	)
+	@patch("myapp.services.ai_service.get_current_request_id", return_value="REQ-CANDIDATE-1")
+	def test_select_inventory_candidate_uses_versioned_idempotency(
+		self, _request_id, mock_idempotent, mock_select,
+	):
+		mock_select.return_value = {"status": "success", "data": {"draft": {"version": 2}}}
+
+		select_ai_draft_product_candidate_v1(
+			draft_id="AI-DRAFT-1", expected_version=1, item_code="COKE-5000",
+			selection_text="可口可乐",
+		)
+
+		mock_select.assert_called_once_with(
+			draft_id="AI-DRAFT-1", expected_version=1, item_code="COKE-5000",
+			selection_text="可口可乐",
+		)
+		self.assertEqual(
+			mock_idempotent.call_args.args[:2],
+			("select_ai_draft_product_candidate_v1", "REQ-CANDIDATE-1"),
+		)
 
 	@patch("myapp.services.ai_service.ai_repository.prepare_failed_run_retry")
 	def test_draft_retry_recovers_original_attachment_ids(self, mock_prepare):

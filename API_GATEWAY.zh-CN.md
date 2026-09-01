@@ -79,6 +79,9 @@
 - `myapp.api.gateway.generate_ai_purchase_order_draft_v1`
 - `myapp.api.gateway.generate_ai_inventory_adjustment_draft_v1`
 - `myapp.api.gateway.generate_ai_product_setup_draft_v1`
+- `myapp.api.gateway.prepare_ai_product_update_draft_v1`
+- `myapp.api.gateway.prepare_ai_inventory_adjustment_draft_v1`
+- `myapp.api.gateway.select_ai_draft_product_candidate_v1`
 - `myapp.api.gateway.execute_ai_draft_v1`
 - `myapp.api.gateway.get_ai_draft_v1`
 - `myapp.api.gateway.list_ai_drafts_v1`
@@ -111,7 +114,7 @@
 - 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`、`list_stock_ledger_entries_v1`
 - 库存：`list_inventory_stock_summary_v1`、`list_stock_ledger_entries_v1`、`transfer_inventory_stock_v1`、`reconcile_inventory_stock_v1`、`submit_inventory_stock_count_v1`
 - 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
-- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`rename_ai_conversation_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`upload_ai_image_attachment_v1`、`discard_ai_attachment_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`cancel_ai_run_v1`、`resume_ai_run_v1`、`stream_ai_run_resume_v1`、`get_ai_agent_approval_v1`、`list_ai_agent_approvals_v1`、`review_ai_agent_approval_v1`、`resume_ai_agent_approval_v1`、`list_ai_selectable_models_v1`、`resolve_ai_scenario_v1`、`refresh_ai_business_result_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1`、`get_ai_draft_v1`、`list_ai_drafts_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`execute_ai_draft_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
+- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`rename_ai_conversation_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`upload_ai_image_attachment_v1`、`discard_ai_attachment_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`cancel_ai_run_v1`、`resume_ai_run_v1`、`stream_ai_run_resume_v1`、`get_ai_agent_approval_v1`、`list_ai_agent_approvals_v1`、`review_ai_agent_approval_v1`、`resume_ai_agent_approval_v1`、`list_ai_selectable_models_v1`、`resolve_ai_scenario_v1`、`refresh_ai_business_result_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1`、`prepare_ai_product_update_draft_v1`、`prepare_ai_inventory_adjustment_draft_v1`、`select_ai_draft_product_candidate_v1`、`get_ai_draft_v1`、`list_ai_drafts_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`execute_ai_draft_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
 - AI 模型管理：`get_ai_model_governance_overview_v1`、`list_ai_audit_events_v1`、`sync_ai_model_registry_v1`、`check_ai_model_availability_v1`、`list_ai_models_v1`、`update_ai_model_registry_v1`、`list_ai_model_policies_v1`、`get_ai_model_policy_v1`、`save_ai_model_policy_draft_v1`、`validate_ai_model_policy_v1`、`approve_ai_model_policy_v1`、`publish_ai_model_policy_v1`、`rollback_ai_model_policy_v1`、`get_ai_model_usage_summary_v1`
   - `update_ai_model_registry_v1` 只维护治理字段：状态、数据区域、留存策略、敏感数据许可、输入/输出成本和币种；供应商能力字段由同步维护。请求必须包含 `reason` 和幂等键，响应返回递增后的 `registry_version` 与受影响的已发布策略。
   - `get_ai_model_usage_summary_v1` 支持 `date_from`、`date_to`、`environment`、`company`，返回延迟/首 Token 平均值与 p50/p95、反馈计数和正向率。
@@ -263,7 +266,11 @@ Run 摘要返回 `model_selection=auto/fixed`、安全的 `requested_model_displ
 
 商品草稿类型为 `product_setup`，`operation` 为 `create` 或 `update`。创建模式承载 Item 主数据、商品图片、条码、规格、四类价格和可选初始库存，复用幂等 `create_product_v2`；完善模式读取现有商品、图片和价格作为 baseline，只把 `_state.patch` 交给 `update_product_v2`。AI 来源图片通过私有短期 Attachment 发送给经过视觉探测的模型；只有明确创建且草稿未指定图片时，第一张来源图片才派生暂存封面。完善现有商品绝不自动覆盖图片。完善模式不接受初始库存，当前库存仅在 `_state.context` 中只读展示；库存变化必须使用库存调整。旧草稿的 `valuation_rate` 仅作为兼容输入读取。用户可在 AI 工作台确认当前版本后原地执行，也可选择进入 `/master-data/products` 处理复杂字段。
 
-商品查询后的指代表达使用服务端受控业务上下文，不依赖模型从助手文字猜测商品。`generate_ai_product_setup_draft_v1` 在本轮未提供 `item_code`，且用户明确表达修改/完善意图并使用“这个商品、刚才查询到的商品、它”等指代时，只允许继承当前有效会话中 `resolution_status=resolved` 的唯一商品，或最近商品结果集中唯一的 `entity_id`；即使结构化模型把操作降级为 `auto`，Backend 也只在该明确更新条件下纠正为 `update`。显式商品编码优先；多个候选、过期或已清除上下文、非商品结果集均不自动绑定。绑定后 Backend 仍按当前用户、公司和 Item 权限重新读取正式商品，并把不可变目标写入 `_state.entity`；Run 工具审计记录目标编码和来源。Web 商品卡片的“完善此商品”会把明确编码写入待发送文字，草稿仍须经过人工复核。
+商品查询后的指代表达使用服务端受控业务上下文，不依赖模型从助手文字猜测商品。`generate_ai_product_setup_draft_v1` 在本轮未提供 `item_code`，且用户明确表达修改/完善意图并使用“这个商品、刚才查询到的商品、它”等指代时，只允许继承当前有效会话中 `resolution_status=resolved` 的唯一商品，或最近商品结果集中唯一的 `entity_id`；即使结构化模型把操作降级为 `auto`，Backend 也只在该明确更新条件下纠正为 `update`。显式商品编码优先；多个候选、过期或已清除上下文、非商品结果集均不自动绑定。绑定后 Backend 仍按当前用户、公司和 Item 权限重新读取正式商品，并把不可变目标写入 `_state.entity`；Run 工具审计记录目标编码和来源。
+
+商品查询卡片的确定性动作不调用模型。`prepare_ai_product_update_draft_v1(item_code, company, conversation_id)` 直接按当前权限读取商品 baseline、价格和只读库存上下文并创建 `product_setup/update` 草稿；`prepare_ai_inventory_adjustment_draft_v1(...)` 直接创建已绑定商品的库存调整草稿，等待用户填写仓库、数量和原因。两者必须使用 POST 与 `Idempotency-Key`，并在来源会话中保存用户动作和确定性系统回执。库存草稿存在候选商品时，`select_ai_draft_product_candidate_v1(draft_id, expected_version, item_code, selection_text)` 只接受当前草稿候选列表内的编码，保留原增减方式、数量、单位、仓库、原因和日期，更新同一个草稿版本，不重新执行商品搜索或模型调用。
+
+库存调整会检查商品库存基准单位是否属于日常业务可选目录。未纳入目录的历史、科学或异常单位失败关闭，payload 返回 `requires_uom_migration` 和治理提示；用户必须先通过受控商品单位错误迁移处理，不能借 AI 草稿绕过历史库存与单位约束。
 
 图片商品查询先把当前有效 Attachment 同时交给 `erp-intent-v6` 结构化意图解析，从可见条码、SKU、品牌加商品名或稳定商品名提取核心查询词和属性线索，再由 Backend 完成关键词与语义混合检索。纯文字描述同样走该结构化链路：“可乐”保留多品牌、多规格候选；“红色可乐饮料”可把“可口可乐”作为未确认排序假设，但不得直接绑定；“两升的红色可乐”继续保留容量、颜色和品类线索。只有编码、条码或真正唯一的精确名称允许自动解析；单个模糊/语义候选仍返回 `clarification.required=true`，多候选全部展示给用户确认。图片只有颜色、容器或模糊类别且没有可靠身份时，Backend 明确标记本轮未执行数据库查询，不得把它表述为数据库无商品。
 

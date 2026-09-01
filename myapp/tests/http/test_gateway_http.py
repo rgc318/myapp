@@ -233,6 +233,53 @@ class GatewayHttpTestCase(TestCase):
 		self.assertTrue(payload["message"]["ok"])
 		self.assertEqual(payload["message"]["code"], code)
 
+	def test_ai_product_actions_prepare_drafts_without_model_generation(self):
+		created_status, created_payload = self._post_method(
+			"myapp.api.gateway.create_ai_conversation_v1",
+			{"title": "HTTP deterministic product actions", "company": SALES_COMPANY},
+		)
+		self._assert_success(created_status, created_payload, code="AI_CONVERSATION_CREATED")
+		conversation_id = created_payload["message"]["data"]["name"]
+		draft_ids = []
+		try:
+			for method, expected_code, action_name in (
+				(
+					"prepare_ai_product_update_draft_v1",
+					"AI_PRODUCT_UPDATE_DRAFT_PREPARED",
+					"product-update",
+				),
+				(
+					"prepare_ai_inventory_adjustment_draft_v1",
+					"AI_INVENTORY_ADJUSTMENT_DRAFT_PREPARED",
+					"inventory-adjustment",
+				),
+			):
+				status_code, payload = self._post_method(
+					f"myapp.api.gateway.{method}",
+					{
+						"company": SALES_COMPANY,
+						"conversation_id": conversation_id,
+						"item_code": self._sales_transaction_item_code,
+					},
+					headers={"Idempotency-Key": self._unique_request_id(f"http-{action_name}")},
+				)
+				self._assert_success(status_code, payload, code=expected_code)
+				data = payload["message"]["data"]
+				self.assertEqual(data["conversation"], conversation_id)
+				self.assertEqual(len(data["messages"]), 2)
+				self.assertIsNone(data.get("run_id"))
+				draft_ids.append(data["draft"]["name"])
+		finally:
+			for draft_id in draft_ids:
+				self._post_method(
+					"myapp.api.gateway.discard_ai_draft_v1",
+					{"draft_id": draft_id},
+				)
+			self._post_method(
+				"myapp.api.gateway.archive_ai_conversation_v1",
+				{"conversation_id": conversation_id},
+			)
+
 	def _assert_validation_error(self, status_code: int, payload: dict):
 		self.assertEqual(status_code, 422)
 		self.assertIn("message", payload)

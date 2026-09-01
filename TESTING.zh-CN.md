@@ -33,6 +33,7 @@ AI 工作台额外要求：
 - staging 验收报告必须注明测试层次：Runtime/工具旁证、Backend HTTP 或 Web 浏览器端到端，不得相互替代。
 - 2026-08-29 的 `resolve_ai_scenario_v1` 500 实例证明：仅 Mock Gateway alias 与直测 Service 会漏掉中间 `ai_api` 参数签名不一致；后续该接口的 `content + company + conversation_id` 组合必须进入确定性 HTTP smoke。
 - 对应回归入口包括 `test_gateway_wrappers.TestGatewayWrappers.test_resolve_ai_scenario_preserves_context_through_ai_api_adapter`、`test_stream_ai_message_preserves_scenario_resolution_through_adapter`、`test_ai_gateway_http.AiGatewayHttpTestCase.test_ai_auto_scenario_resolution_accepts_company_and_conversation` 和 `test_ai_auto_scenario_resolution_is_reused_by_stream`；前两项验证 Python 多层包装契约，后两项验证鉴权、Frappe 路由、真实 HTTP 包络和 Web 同顺序复用。
+- 商品卡片确定性动作与候选续接的包装契约由 `test_prepare_ai_product_update_draft_forwards_context`、`test_prepare_ai_inventory_adjustment_draft_forwards_context`、`test_select_ai_draft_product_candidate_preserves_adapter_contract` 覆盖；真实 Web 参数组合由 `GatewayHttpTestCase.test_ai_product_actions_prepare_drafts_without_model_generation` 验证。该 HTTP 用例必须确认响应没有 `run_id`，避免把不调用模型的业务动作误计为 AI 生成 Run。
 
 ## 2. 测试文件划分
 

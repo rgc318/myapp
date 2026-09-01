@@ -25,9 +25,12 @@ from myapp.services.ai_service import (
 	stream_ai_message_v1 as stream_ai_message_v1_service,
 	submit_ai_feedback_v1 as submit_ai_feedback_v1_service,
 	prepare_ai_draft_handoff_v1 as prepare_ai_draft_handoff_v1_service,
+	prepare_ai_inventory_adjustment_draft_v1 as prepare_ai_inventory_adjustment_draft_v1_service,
+	prepare_ai_product_update_draft_v1 as prepare_ai_product_update_draft_v1_service,
 	refresh_ai_business_result_v1 as refresh_ai_business_result_v1_service,
 	restore_ai_draft_version_v1 as restore_ai_draft_version_v1_service,
 	resolve_ai_scenario_v1 as resolve_ai_scenario_v1_service,
+	select_ai_draft_product_candidate_v1 as select_ai_draft_product_candidate_v1_service,
 	update_ai_draft_v1 as update_ai_draft_v1_service,
 )
 from myapp.services.ai_vector_service import (
@@ -318,6 +321,36 @@ def list_ai_drafts_v1(
 
 def prepare_ai_draft_handoff_v1(draft_id: str):
 	return prepare_ai_draft_handoff_v1_service(draft_id=draft_id)
+
+
+def prepare_ai_product_update_draft_v1(
+	item_code: str, company: str | None, conversation_id: str,
+	request_id: str | None = None,
+):
+	return prepare_ai_product_update_draft_v1_service(
+		item_code=item_code, company=company, conversation_id=conversation_id,
+		request_id=request_id,
+	)
+
+
+def prepare_ai_inventory_adjustment_draft_v1(
+	item_code: str, company: str | None, conversation_id: str,
+	request_id: str | None = None,
+):
+	return prepare_ai_inventory_adjustment_draft_v1_service(
+		item_code=item_code, company=company, conversation_id=conversation_id,
+		request_id=request_id,
+	)
+
+
+def select_ai_draft_product_candidate_v1(
+	draft_id: str, expected_version: int, item_code: str,
+	selection_text: str | None = None, request_id: str | None = None,
+):
+	return select_ai_draft_product_candidate_v1_service(
+		draft_id=draft_id, expected_version=expected_version, item_code=item_code,
+		selection_text=selection_text, request_id=request_id,
+	)
 
 
 def update_ai_draft_v1(

@@ -31,9 +31,12 @@ from .ai_api import stream_ai_run_resume_v1 as stream_ai_run_resume_v1_service
 from .ai_api import stream_ai_message_v1 as stream_ai_message_v1_service
 from .ai_api import submit_ai_feedback_v1 as submit_ai_feedback_v1_service
 from .ai_api import prepare_ai_draft_handoff_v1 as prepare_ai_draft_handoff_v1_service
+from .ai_api import prepare_ai_inventory_adjustment_draft_v1 as prepare_ai_inventory_adjustment_draft_v1_service
+from .ai_api import prepare_ai_product_update_draft_v1 as prepare_ai_product_update_draft_v1_service
 from .ai_api import refresh_ai_business_result_v1 as refresh_ai_business_result_v1_service
 from .ai_api import restore_ai_draft_version_v1 as restore_ai_draft_version_v1_service
 from .ai_api import resolve_ai_scenario_v1 as resolve_ai_scenario_v1_service
+from .ai_api import select_ai_draft_product_candidate_v1 as select_ai_draft_product_candidate_v1_service
 from .ai_api import rebuild_ai_product_vector_index_v1 as rebuild_ai_product_vector_index_v1_service
 from .ai_api import update_ai_draft_v1 as update_ai_draft_v1_service
 from .ai_api import approve_ai_model_policy_v1 as approve_ai_model_policy_v1_service
@@ -574,6 +577,48 @@ def prepare_ai_draft_handoff_v1(draft_id: str):
 	return _handle_gateway_call(
 		lambda: prepare_ai_draft_handoff_v1_service(draft_id=draft_id),
 		success_code="AI_DRAFT_HANDOFF_PREPARED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def prepare_ai_product_update_draft_v1(
+	item_code: str, company: str | None, conversation_id: str,
+	request_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: prepare_ai_product_update_draft_v1_service(
+			item_code=item_code, company=company, conversation_id=conversation_id,
+			request_id=request_id,
+		),
+		success_code="AI_PRODUCT_UPDATE_DRAFT_PREPARED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def prepare_ai_inventory_adjustment_draft_v1(
+	item_code: str, company: str | None, conversation_id: str,
+	request_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: prepare_ai_inventory_adjustment_draft_v1_service(
+			item_code=item_code, company=company, conversation_id=conversation_id,
+			request_id=request_id,
+		),
+		success_code="AI_INVENTORY_ADJUSTMENT_DRAFT_PREPARED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def select_ai_draft_product_candidate_v1(
+	draft_id: str, expected_version: int, item_code: str,
+	selection_text: str | None = None, request_id: str | None = None,
+):
+	return _handle_gateway_call(
+		lambda: select_ai_draft_product_candidate_v1_service(
+			draft_id=draft_id, expected_version=expected_version, item_code=item_code,
+			selection_text=selection_text, request_id=request_id,
+		),
+		success_code="AI_DRAFT_PRODUCT_CANDIDATE_SELECTED",
 	)
 
 

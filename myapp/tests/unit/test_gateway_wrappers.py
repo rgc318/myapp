@@ -87,10 +87,13 @@ from myapp.api.gateway import (
 	list_stock_ledger_entries_v1,
 	reconcile_inventory_stock_v1,
 	refresh_ai_business_result_v1,
+	prepare_ai_inventory_adjustment_draft_v1,
+	prepare_ai_product_update_draft_v1,
 	rename_ai_conversation_v1,
 	reset_ai_conversation_context_v1,
 	resume_ai_run_v1,
 	resolve_ai_scenario_v1,
+	select_ai_draft_product_candidate_v1,
 	restore_ai_draft_version_v1,
 	execute_ai_data_task_v1,
 	execute_ai_draft_v1,
@@ -660,6 +663,51 @@ class TestGatewayWrappers(TestCase):
 			draft_id="AI-DRAFT-1", payload={"remarks": "修改后"},
 			expected_version=2, request_id="REQ-UPDATE-1",
 		)
+
+	@patch("myapp.api.gateway.prepare_ai_product_update_draft_v1_service")
+	def test_prepare_ai_product_update_draft_forwards_context(self, mock_service):
+		mock_service.return_value = {"status": "success", "data": {"draft": {"name": "AI-DRAFT-1"}}}
+
+		result = prepare_ai_product_update_draft_v1(
+			item_code="ITEM-001", company="Demo Company",
+			conversation_id="AI-CONV-1", request_id="REQ-1",
+		)
+
+		mock_service.assert_called_once_with(
+			item_code="ITEM-001", company="Demo Company",
+			conversation_id="AI-CONV-1", request_id="REQ-1",
+		)
+		self.assertEqual(result["code"], "AI_PRODUCT_UPDATE_DRAFT_PREPARED")
+
+	@patch("myapp.api.gateway.prepare_ai_inventory_adjustment_draft_v1_service")
+	def test_prepare_ai_inventory_adjustment_draft_forwards_context(self, mock_service):
+		mock_service.return_value = {"status": "success", "data": {"draft": {"name": "AI-DRAFT-2"}}}
+
+		result = prepare_ai_inventory_adjustment_draft_v1(
+			item_code="ITEM-001", company="Demo Company",
+			conversation_id="AI-CONV-1", request_id="REQ-2",
+		)
+
+		mock_service.assert_called_once_with(
+			item_code="ITEM-001", company="Demo Company",
+			conversation_id="AI-CONV-1", request_id="REQ-2",
+		)
+		self.assertEqual(result["code"], "AI_INVENTORY_ADJUSTMENT_DRAFT_PREPARED")
+
+	@patch("myapp.api.ai_api.select_ai_draft_product_candidate_v1_service")
+	def test_select_ai_draft_product_candidate_preserves_adapter_contract(self, mock_service):
+		mock_service.return_value = {"status": "success", "data": {"draft": {"version": 2}}}
+
+		result = select_ai_draft_product_candidate_v1(
+			draft_id="AI-DRAFT-1", expected_version=1, item_code="COKE-5000",
+			selection_text="可口可乐", request_id="REQ-CANDIDATE-1",
+		)
+
+		mock_service.assert_called_once_with(
+			draft_id="AI-DRAFT-1", expected_version=1, item_code="COKE-5000",
+			selection_text="可口可乐", request_id="REQ-CANDIDATE-1",
+		)
+		self.assertEqual(result["code"], "AI_DRAFT_PRODUCT_CANDIDATE_SELECTED")
 
 	@patch("myapp.api.gateway.restore_ai_draft_version_v1_service")
 	def test_restore_ai_draft_passes_current_and_target_versions(self, mock_restore_service):
