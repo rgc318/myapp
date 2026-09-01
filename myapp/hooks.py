@@ -161,6 +161,9 @@ scheduler_events = {
 		"myapp.tasks.reconcile_ai_product_vectors",
 	],
 	"cron": {
+		"*/10 * * * *": [
+			"myapp.tasks.cleanup_stale_ai_runs",
+		],
 		"15 3 * * *": [
 			"myapp.tasks.check_ai_model_availability",
 		],

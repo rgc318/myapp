@@ -26,6 +26,7 @@ DRAFT_LINE_TABLE = "tabMyApp AI Draft Line"
 DRAFT_VERSION_TABLE = "tabMyApp AI Draft Version"
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_CONVERSATION_STATE_TTL_HOURS = 168
+DEFAULT_RUN_STALE_TIMEOUT_SECONDS = 900
 MAX_CONVERSATION_PAGE_SIZE = 50
 DEFAULT_MESSAGE_PAGE_SIZE = 40
 MAX_MESSAGE_PAGE_SIZE = 100
@@ -79,6 +80,17 @@ def _conversation_state_ttl_hours() -> int:
 	except (TypeError, ValueError):
 		value = DEFAULT_CONVERSATION_STATE_TTL_HOURS
 	return max(1, min(value, 720))
+
+
+def _run_stale_timeout_seconds() -> int:
+	try:
+		value = int(os.environ.get(
+			"MYAPP_AI_RUN_STALE_TIMEOUT_SECONDS",
+			DEFAULT_RUN_STALE_TIMEOUT_SECONDS,
+		))
+	except (TypeError, ValueError):
+		value = DEFAULT_RUN_STALE_TIMEOUT_SECONDS
+	return max(120, min(value, 86400))
 
 
 def _default_conversation_state() -> dict:
@@ -346,6 +358,48 @@ def _serialize_message_run(row, *, include_advanced_diagnostics: bool) -> dict |
 	return run
 
 
+def _get_latest_conversation_run(
+	*, conversation_id: str, user: str, include_advanced_diagnostics: bool,
+) -> dict | None:
+	rows = frappe.db.sql(
+		f"""
+		SELECT r.name AS run_id, r.status AS run_status, r.requested_model_alias,
+			r.model_alias, r.model, r.trace_id,
+			(SELECT m.name FROM `{MESSAGE_TABLE}` m
+				WHERE m.run_id = r.name AND m.role = 'assistant'
+				ORDER BY m.sequence_no DESC LIMIT 1) AS message_id,
+			COALESCE(mr.provider_model_display, r.model_alias) AS model_display,
+			COALESCE(requested_mr.provider_model_display, r.requested_model_alias)
+				AS requested_model_display,
+			r.prompt_tokens, r.completion_tokens, r.total_tokens, r.reasoning_tokens,
+			r.latency_ms, r.first_token_ms, r.error_code, r.error,
+			r.creation, r.modified
+		FROM `{RUN_TABLE}` r
+		LEFT JOIN `tabMyApp AI Model Registry` mr ON mr.model_alias = r.model_alias
+		LEFT JOIN `tabMyApp AI Model Registry` requested_mr
+			ON requested_mr.model_alias = r.requested_model_alias
+		WHERE r.conversation = %s AND r.requested_by = %s
+		ORDER BY r.creation DESC
+		LIMIT 1
+		""",
+		(conversation_id, user),
+		as_dict=True,
+	)
+	if not rows:
+		return None
+	row = rows[0]
+	return {
+		"run_id": row.run_id,
+		"message_id": row.message_id or None,
+		"run": _serialize_message_run(
+			row,
+			include_advanced_diagnostics=include_advanced_diagnostics,
+		),
+		"creation": str(row.creation or "") or None,
+		"modified": str(row.modified or "") or None,
+	}
+
+
 def _get_owned_conversation(conversation_id: str, user: str, *, for_update: bool = False):
 	lock_sql = " FOR UPDATE" if for_update else ""
 	rows = frappe.db.sql(
@@ -591,6 +645,11 @@ def get_conversation(
 ) -> dict:
 	_ensure_tables()
 	conversation = _get_owned_conversation((conversation_id or "").strip(), user)
+	latest_run = _get_latest_conversation_run(
+		conversation_id=conversation.name,
+		user=user,
+		include_advanced_diagnostics=include_advanced_diagnostics,
+	)
 	resolved_limit = max(1, min(MAX_MESSAGE_PAGE_SIZE, cint(limit) or DEFAULT_MESSAGE_PAGE_SIZE))
 	resolved_before = None
 	if before_sequence not in (None, ""):
@@ -631,6 +690,7 @@ def get_conversation(
 	next_before_sequence = cint(messages[0].sequence_no) if has_more and messages else None
 	return {
 		"conversation": _serialize_conversation(conversation),
+		"latest_run": latest_run,
 		"context": get_conversation_state(
 			conversation_id=conversation.name,
 			user=user,
@@ -2537,3 +2597,98 @@ def cleanup_expired_ai_conversations(batch_size: int = 200) -> dict:
 	frappe.db.sql(f"DELETE FROM `{CONVERSATION_TABLE}` WHERE name IN ({placeholders})", tuple(names))
 	frappe.db.commit()
 	return {"deleted": len(names)}
+
+
+def expire_stale_ai_runs(
+	*, batch_size: int = 200, stale_timeout_seconds: int | None = None,
+) -> dict:
+	"""Converge abandoned running runs and overdue approvals to durable terminal states."""
+	_ensure_tables()
+	batch_size = max(1, min(1000, cint(batch_size) or 200))
+	timeout_seconds = (
+		_run_stale_timeout_seconds()
+		if stale_timeout_seconds is None
+		else max(120, min(cint(stale_timeout_seconds), 86400))
+	)
+	now = now_datetime()
+	cutoff = now - timedelta(seconds=timeout_seconds)
+
+	approval_rows = frappe.db.sql(
+		f"""
+		SELECT a.name AS approval_id, a.run_id, a.requested_by,
+			a.status AS approval_status
+		FROM `{AGENT_APPROVAL_TABLE}` a
+		JOIN `{RUN_TABLE}` r ON r.name = a.run_id
+		WHERE a.status IN ('pending', 'approved', 'rejected')
+			AND a.expires_at <= %s
+			AND r.status = 'waiting_approval'
+		ORDER BY a.expires_at ASC
+		LIMIT %s
+		FOR UPDATE
+		""",
+		(now, batch_size),
+		as_dict=True,
+	) if frappe.db.table_exists("MyApp AI Agent Approval") else []
+	for row in approval_rows:
+		frappe.db.sql(
+			f"""
+			UPDATE `{AGENT_APPROVAL_TABLE}`
+			SET status = 'expired', modified = %s, modified_by = %s,
+				version = version + 1
+			WHERE name = %s
+				AND status IN ('pending', 'approved', 'rejected')
+				AND expires_at <= %s
+			""",
+			(now, row.requested_by, row.approval_id, now),
+		)
+		frappe.db.sql(
+			f"""
+			UPDATE `{RUN_TABLE}`
+			SET status = 'expired', modified = %s, modified_by = %s,
+				completed_at = %s, cancellation_requested = 1,
+				capability_token_hash = NULL, capability_expires_at = NULL,
+				error_code = 'AI_AGENT_APPROVAL_EXPIRED', error = %s
+			WHERE name = %s AND status = 'waiting_approval'
+			""",
+			(now, row.requested_by, now, _("Agent 审批已过期。"), row.run_id),
+		)
+
+	remaining_limit = max(0, batch_size - len(approval_rows))
+	stale_rows = frappe.db.sql(
+		f"""
+		SELECT name AS run_id, requested_by
+		FROM `{RUN_TABLE}`
+		WHERE status = 'running'
+			AND COALESCE(modified, started_at, creation) <= %s
+		ORDER BY COALESCE(modified, started_at, creation) ASC
+		LIMIT %s
+		FOR UPDATE
+		""",
+		(cutoff, remaining_limit),
+		as_dict=True,
+	) if remaining_limit else []
+	for row in stale_rows:
+		frappe.db.sql(
+			f"""
+			UPDATE `{RUN_TABLE}`
+			SET status = 'failed', modified = %s, modified_by = %s,
+				completed_at = %s, cancellation_requested = 1,
+				capability_token_hash = NULL, capability_expires_at = NULL,
+				error_code = 'AI_RUN_STALE_TIMEOUT', error = %s
+			WHERE name = %s AND status = 'running'
+				AND COALESCE(modified, started_at, creation) <= %s
+			""",
+			(
+				now, row.requested_by, now,
+				_("AI Run 长时间没有更新，系统已自动结束该运行。"),
+				row.run_id, cutoff,
+			),
+		)
+		append_failed_run_message(run_id=row.run_id, user=row.requested_by)
+
+	return {
+		"status": "success",
+		"stale_timeout_seconds": timeout_seconds,
+		"failed_run_count": len(stale_rows),
+		"expired_approval_count": len(approval_rows),
+	}

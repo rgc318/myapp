@@ -5,7 +5,11 @@ from frappe.utils.background_jobs import get_redis_conn
 
 from myapp.services.ai_model_governance_service import run_scheduled_ai_model_availability_check
 from myapp.services.ai_attachment_service import cleanup_expired_ai_attachments
-from myapp.services.ai_repository import cleanup_expired_ai_conversations, refresh_ai_usage_daily_metrics
+from myapp.services.ai_repository import (
+	cleanup_expired_ai_conversations,
+	expire_stale_ai_runs,
+	refresh_ai_usage_daily_metrics,
+)
 from myapp.services.ai_vector_service import reconcile_product_vector_index
 from myapp.services.media_service import cleanup_expired_temporary_item_images
 from myapp.services.printing_service import cleanup_expired_print_batches
@@ -43,6 +47,13 @@ def cleanup_ai_attachments():
 
 def refresh_ai_usage_metrics():
 	return refresh_ai_usage_daily_metrics()
+
+
+def cleanup_stale_ai_runs():
+	result = expire_stale_ai_runs()
+	if result["failed_run_count"] or result["expired_approval_count"]:
+		frappe.db.commit()
+	return result
 
 
 def reconcile_ai_product_vectors():

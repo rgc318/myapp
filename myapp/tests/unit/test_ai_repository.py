@@ -12,6 +12,7 @@ from myapp.services.ai_repository import (
 	_normalize_conversation_state,
 	cancel_agent_run,
 	create_run,
+	expire_stale_ai_runs,
 	fail_run,
 	get_agent_run_control,
 	get_agent_checkpoint,
@@ -961,6 +962,9 @@ class TestAiRepository(TestCase):
 			)
 
 		self.assertEqual(result["messages"][0]["run"]["usage"]["total_tokens"], 12)
+		self.assertEqual(result["latest_run"]["run_id"], "AI-RUN-1")
+		self.assertIsNone(result["latest_run"]["message_id"])
+		self.assertEqual(result["latest_run"]["run"]["status"], "completed")
 		self.assertEqual(result["messages"][0]["run"]["first_token_ms"], 240)
 		self.assertEqual(result["messages"][0]["feedback"]["rating"], "positive")
 		self.assertEqual(result["pagination"], {
@@ -1053,4 +1057,50 @@ class TestAiRepository(TestCase):
 		self.assertEqual(
 			mock_frappe.db.sql.call_args.args[1],
 			("user@example.com", "user@example.com", "AI-CONV-1", 45, 41),
+		)
+
+	def test_expire_stale_ai_runs_converges_running_runs_and_overdue_approvals(self):
+		now = datetime(2026, 9, 1, 10, 0, 0)
+		approval = frappe._dict({
+			"approval_id": "AI-APPROVAL-1",
+			"approval_status": "approved",
+			"run_id": "AI-RUN-WAITING",
+			"requested_by": "user@example.com",
+		})
+		stale_run = frappe._dict({
+			"run_id": "AI-RUN-STALE",
+			"requested_by": "user@example.com",
+		})
+		with patch.object(ai_repository, "frappe") as mock_frappe, patch.object(
+			ai_repository, "append_failed_run_message",
+		) as mock_append_failed, patch(
+			"myapp.services.ai_repository.now_datetime", return_value=now,
+		):
+			mock_frappe.db.table_exists.return_value = True
+			mock_frappe.db.sql.side_effect = [
+				[approval], None, None, [stale_run], None,
+			]
+			result = expire_stale_ai_runs(
+				batch_size=20,
+				stale_timeout_seconds=300,
+			)
+
+		self.assertEqual(result["expired_approval_count"], 1)
+		self.assertEqual(result["failed_run_count"], 1)
+		self.assertEqual(result["stale_timeout_seconds"], 300)
+		self.assertIn(
+			"AI_AGENT_APPROVAL_EXPIRED",
+			mock_frappe.db.sql.call_args_list[2].args[0],
+		)
+		self.assertIn(
+			"status IN ('pending', 'approved', 'rejected')",
+			mock_frappe.db.sql.call_args_list[1].args[0],
+		)
+		self.assertIn(
+			"AI_RUN_STALE_TIMEOUT",
+			mock_frappe.db.sql.call_args_list[4].args[0],
+		)
+		mock_append_failed.assert_called_once_with(
+			run_id="AI-RUN-STALE",
+			user="user@example.com",
 		)

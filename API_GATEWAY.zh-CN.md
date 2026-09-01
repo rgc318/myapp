@@ -168,7 +168,7 @@ Web/Mobile → myapp.api.gateway → myapp.api.*_api → myapp.services.*
 
 ### AI Copilot 只读聊天
 
-会话接口只返回当前登录用户自己的会话；归档后的会话不能继续追加消息。`list_ai_conversations_v1` 支持 `status`、`search`、`start` 和 `limit`，其中 `search` 最多规范化为 100 个字符，并在当前用户范围内匹配会话标题或消息正文；返回每个会话的 `pending_draft_count` 和当前用户全局 `pending_draft_total`，两者只统计 `draft` 状态。`rename_ai_conversation_v1` 只允许当前用户重命名自己的会话，名称规范化空白后必须为 1～120 个字符，活跃和归档会话均可修改名称，但不改变消息、公司、状态或排序时间。`get_ai_conversation_v1` 额外返回当前用户可见的受控上下文元数据，包括状态、版本、更新时间、过期时间和上下文起始消息序号；不会返回模型原文或完整业务结果。`reset_ai_conversation_context_v1` 只清除工作状态并把后续模型消息窗口切到当前会话末尾，历史消息和审计记录仍保留。工作状态默认 168 小时未更新后在下一次 Chat/SSE 前自动过期；可通过 `MYAPP_AI_CONVERSATION_STATE_TTL_HOURS` 配置 1～720 小时范围。`chat_ai_v1` 是 Web/Mobile 访问 AI Orchestrator 的受控入口。客户端不得直接访问 LiteLLM，也不能传入 `system` / `tool` 消息。
+会话接口只返回当前登录用户自己的会话；归档后的会话不能继续追加消息。`list_ai_conversations_v1` 支持 `status`、`search`、`start` 和 `limit`，其中 `search` 最多规范化为 100 个字符，并在当前用户范围内匹配会话标题或消息正文；返回每个会话的 `pending_draft_count` 和当前用户全局 `pending_draft_total`，两者只统计 `draft` 状态。`rename_ai_conversation_v1` 只允许当前用户重命名自己的会话，名称规范化空白后必须为 1～120 个字符，活跃和归档会话均可修改名称，但不改变消息、公司、状态或排序时间。`get_ai_conversation_v1` 额外返回当前用户可见的受控上下文元数据和 `latest_run`；后者直接来自当前用户最新持久 Run，并携带可空 `message_id`，即使助手消息尚未生成，也能恢复 `running / waiting_approval / completed / failed / expired / cancelled` 事实，同时避免把已存在但不在当前分页中的旧助手消息重复追加到末尾。接口不会返回模型原文或完整业务结果。`reset_ai_conversation_context_v1` 只清除工作状态并把后续模型消息窗口切到当前会话末尾，历史消息和审计记录仍保留。工作状态默认 168 小时未更新后在下一次 Chat/SSE 前自动过期；可通过 `MYAPP_AI_CONVERSATION_STATE_TTL_HOURS` 配置 1～720 小时范围。`chat_ai_v1` 是 Web/Mobile 访问 AI Orchestrator 的受控入口。客户端不得直接访问 LiteLLM，也不能传入 `system` / `tool` 消息。
 
 公司上下文明确且 Agent Runtime 开启时，Frappe 为 Run 签发短期能力令牌，并只允许 Orchestrator 调用 `search_products`、`query_business_documents`、`get_business_report` 三个只读工具。内部 `execute_ai_agent_tool_v1` 同时验证服务 Token、Run 能力令牌、用户、公司和工具白名单，按 `run_id + call_id` 幂等执行并重新应用 Frappe 权限。成功工具信封除 `model_context/citations` 外还返回 `grounding.schema_version=agent-grounding-v1`，绑定当前公司、citation 引用，以及每个结果集的 `complete=true/false/null`、返回数和权限安全的可见总量；`null` 表示无法安全证明完整，模型不得声称“全部、完整、没有更多”。Orchestrator 只能以该信封和权限过滤后的工具数据验证最终业务事实，不能把模型原文反向写入 Grounding。`record_ai_agent_runtime_event_v1` 与 `get_ai_agent_checkpoint_v1` 同样要求服务 Token 和当前 Run 能力令牌，用于持久化/读取 `agent-state-v1`；允许的运行事件类型为 `input_guardrail`、`model_decision`、`tool_guardrail`、`grounding_rewrite`、`output_guardrail`、`checkpoint`、`state_transition`。检查点绑定 Run，限制 200KB，运行事件限制 30KB，并拒绝凭据类敏感字段。运行事件由 `run_id + event_id` 幂等保护；Agent 回调与用户请求收尾发生瞬时数据库写冲突时，只重做尚未提交的本地收尾事务，不重复已提交的工具调用。能力令牌不进入模型上下文或持久检查点。`cancel_ai_run_v1(run_id)` 只允许 Run 所有人调用；取消后状态为 `cancelled`、令牌立即吊销，迟到结果不能覆盖取消状态。正式写操作仍走候选草稿、用户复核和显式执行接口。
 
@@ -217,6 +217,8 @@ AI 同步、流式失败事件和持久化 Run 必须保留稳定 `error_code`�
 - `retry_of_run_id`：消息级重试来源；普通新 Run 为空。
 
 Run 摘要返回 `model_selection=auto/fixed`、安全的 `requested_model_display` 和实际 `model_display`；具备高级诊断权限时再返回请求/实际 alias。失败 Run 必须持久化空正文助手占位，使刷新页面后仍能在原会话位置恢复诊断和重试入口。加载模型上下文时排除失败/取消的空助手消息，避免把错误占位发送给模型。
+
+Scheduler 每 10 分钟回收长时间没有持久更新的 `running` Run，并把过期的 `waiting_approval` 审批收敛为终态。运行超时默认 900 秒，可通过 `MYAPP_AI_RUN_STALE_TIMEOUT_SECONDS` 配置为 120～86400 秒；超时 Run 写入 `AI_RUN_STALE_TIMEOUT`，吊销能力令牌并补齐失败助手占位，审批过期写入 `AI_AGENT_APPROVAL_EXPIRED`。该回收只处理持久状态，不重放模型或工具调用。
 
 已有会话的公司范围以会话持久化字段为准。调用方省略 `company` 时，Chat/SSE 会自动恢复会话公司；调用方显式传入与会话不同的公司时仍失败关闭并要求新建会话，避免同一上下文混入跨公司业务数据。工作偏好中的默认公司只用于创建新会话或无公司会话的首次业务上下文。
 
