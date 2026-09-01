@@ -197,6 +197,7 @@ from .wholesale_api import disable_product_v2 as disable_product_v2_service
 from .wholesale_api import execute_product_uom_migration_v1 as execute_product_uom_migration_v1_service
 from .wholesale_api import get_product_detail_v2 as get_product_detail_v2_service
 from .wholesale_api import list_products_v2 as list_products_v2_service
+from .wholesale_api import resolve_active_product_v1 as resolve_active_product_v1_service
 from .wholesale_api import search_product as search_product_service
 from .wholesale_api import search_product_v2 as search_product_v2_service
 from .wholesale_api import set_primary_product_barcode_v2 as set_primary_product_barcode_v2_service
@@ -2758,6 +2759,14 @@ def get_product_detail_v2(
 			currency=currency,
 		),
 		success_code="PRODUCT_DETAIL_FETCHED",
+	)
+
+
+@frappe.whitelist()
+def resolve_active_product_v1(item_code: str):
+	return _handle_gateway_call(
+		lambda: resolve_active_product_v1_service(item_code=item_code),
+		success_code="ACTIVE_PRODUCT_RESOLVED",
 	)
 
 

@@ -4,6 +4,7 @@ from unittest.mock import patch
 import frappe
 from myapp.api import ai_api as ai_api_module
 from myapp.api import gateway as gateway_module
+from myapp.api import wholesale_api as wholesale_api_module
 from myapp.utils.ai_errors import AiServiceError
 
 from myapp.api.gateway import (
@@ -56,6 +57,7 @@ from myapp.api.gateway import (
 	get_ai_runtime_policy_snapshot_v1,
 	get_ai_agent_checkpoint_v1,
 	request_ai_agent_tool_approval_v1,
+	resolve_active_product_v1,
 	review_ai_agent_approval_v1,
 	get_user_management_overview_v1,
 	get_user_permission_snapshot_v1,
@@ -1950,21 +1952,68 @@ class TestGatewayWrappers(TestCase):
 		self.assertTrue(result["data"]["can_execute"])
 		mock_assess.assert_called_once_with(item_code="ITEM-001")
 
+	@patch("myapp.api.wholesale_api.resolve_active_product_v1_service")
+	def test_resolve_active_product_covers_gateway_adapter_and_service(self, mock_resolve):
+		mock_resolve.return_value = {
+			"status": "success",
+			"data": {
+				"requested_item_code": "ITEM-OLD",
+				"active_item_code": "ITEM-NEW",
+				"changed": True,
+			},
+		}
+
+		result = resolve_active_product_v1("ITEM-OLD")
+
+		self.assertEqual(result["data"]["active_item_code"], "ITEM-NEW")
+		mock_resolve.assert_called_once_with(item_code="ITEM-OLD")
+		self.assertIsNotNone(wholesale_api_module.resolve_active_product_v1)
+
 	@patch("myapp.api.gateway.execute_product_uom_migration_v1_service")
 	def test_execute_product_uom_migration_forwards_payload(self, mock_execute):
 		mock_execute.return_value = {"status": "success", "data": {"source_item_code": "ITEM-001"}}
 
 		result = execute_product_uom_migration_v1(
 			"ITEM-001",
-			new_item_code="ITEM-NEW",
 			confirm_disable_source=1,
+			new_prices=[
+				{
+					"price_list": "Retail",
+					"currency": "CNY",
+					"rate": 9.9,
+					"target_uom": "Nos",
+				}
+			],
+			price_mappings=[
+				{
+					"source_name": "PRICE-1",
+					"action": "manual",
+					"target_rate": 88,
+					"target_uom": "Box",
+				}
+			],
 		)
 
 		self.assertEqual(result["data"]["source_item_code"], "ITEM-001")
 		mock_execute.assert_called_once_with(
 			item_code="ITEM-001",
-			new_item_code="ITEM-NEW",
 			confirm_disable_source=1,
+			new_prices=[
+				{
+					"price_list": "Retail",
+					"currency": "CNY",
+					"rate": 9.9,
+					"target_uom": "Nos",
+				}
+			],
+			price_mappings=[
+				{
+					"source_name": "PRICE-1",
+					"action": "manual",
+					"target_rate": 88,
+					"target_uom": "Box",
+				}
+			],
 		)
 
 	@patch("myapp.api.gateway.list_products_v2_service")

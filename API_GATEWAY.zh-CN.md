@@ -2578,6 +2578,31 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 商品编辑前预加载
 - 商品搜索结果中的“查看库存详情”
 
+### resolve_active_product_v1
+
+方法：
+
+- `myapp.api.gateway.resolve_active_product_v1`
+
+参数：
+
+- `item_code: str`
+
+行为：
+
+- 解析历史商品编码当前应使用的有效商品，不修改商品、库存、价格或历史单据。
+- 优先读取 `tabMyApp Product Correction` 中已完成的正式 `replacement` 纠正关系，并支持最多 10 层继任链；检测到循环时失败关闭。
+- 对纠正审计表上线前已经完成的历史迁移，只有在源商品已停用、恰好存在一个单向 `Item Alternative`、且目标商品仍启用时，才使用 `legacy_item_alternative` 兼容解析；多个可用替代商品不会自动猜测。
+- 返回：
+  - `requested_item_code`
+  - `active_item_code`
+  - `changed`
+  - `active_disabled`
+  - `resolution_source = correction_record | legacy_item_alternative | null`
+  - `requires_confirmation`
+  - `chain[]`
+- 历史聊天中的“完善商品/调整库存”应先调用本接口。Web 在编码发生替换时要求用户确认，再用 `active_item_code` 创建新草稿；最终有效商品仍停用且没有继任商品时必须阻断。
+
 ### assess_product_uom_migration_v1
 
 方法：
@@ -2597,13 +2622,17 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 
 - 只读评估错误库存单位商品，绝不修改商品或库存数据
 - 返回源商品版本、现有单位换算、所有 Bin 库存和占用、历史 Stock Ledger Entry 数量、未完销售/采购订单、全部 Item Price、全部 Item Barcode 和现有 Item Alternative
+- 返回 `recommended_strategy = in_place | replacement | null` 和两种策略的 `available/reason`
+- 只有没有 blocker、源商品启用、没有既有替代关系、并且没有历史 Stock Ledger Entry 时，才推荐 `in_place`
+- 存在历史库存流水但当前库存、占用和未完订单均已清零时，整体纠正仍可执行，但只推荐 `replacement`，避免改变历史库存数量的单位语义
+- 返回 `suggested_new_item_code`，供 `replacement` 使用；客户端可修改或留空，由后端按现有编码规则重新生成
 - 以下情况返回 blocker，并令 `can_execute = false`：
   - 任一仓库实际库存不为 0
   - 存在预留、在途、计划或请购数量
   - 存在未完成或草稿销售/采购订单
   - 商品属于模板/变体族
   - 商品属于固定资产
-- 历史库存流水不是 blocker；它会作为强警告返回，因为迁移后仍永久保留在源商品下
+- 历史库存流水不是整个纠正流程的 blocker，但会禁止 `in_place` 并作为强警告返回；`replacement` 后历史流水仍永久保留在源商品下
 
 ### execute_product_uom_migration_v1
 
@@ -2616,41 +2645,57 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 核心参数：
 
 - `item_code: str`
+- `strategy = in_place | replacement`；旧客户端省略时兼容默认为 `replacement`
 - `source_modified: str`，必须等于评估时返回的源商品版本
-- `new_item_code: str`
-- `new_item_name: str | None`
+- `new_item_code: str | None`，仅 `replacement` 使用；可提交建议值或人工编码，留空时自动生成
+- `new_item_name: str | None`，仅 `replacement` 使用
+- `correction_reason: str | None`；`in_place` 必填，Web 对两种策略均要求填写
 - `stock_uom: str`
 - `uom_conversions: list[dict]`
 - `wholesale_default_uom: str | None`
 - `retail_default_uom: str | None`
 - `price_mappings: list[dict]`
   - `source_name`
-  - `action = copy | skip`
-  - `target_uom`，`copy` 时必填
+  - `action = copy | manual | skip`
+  - `target_uom`，`copy / manual` 时必填
+  - `target_rate`，`manual` 时必填且不能为负数
+- `new_prices: list[dict]`，可选；用于创建不依赖旧价格记录的新价格
+  - `price_list`
+  - `currency`
+  - `target_uom`
+  - `rate`，必须是非负有效数字
 - `barcode_mappings: list[dict]`
   - `source_name`
   - `action = move | keep`
   - `target_uom`，`move` 时必填
-- `confirm_disable_source = 1`
+- `confirm_disable_source = 1`，`replacement` 必填
+- `confirm_in_place_correction = 1`，`in_place` 必填
 - `confirm_history_preserved = 1`
 
 权限与事务：
 
 - 仅 `Administrator` 或 `System Manager`
-- 同时要求源 Item 写、新 Item 创建、Item Alternative 创建权限；复制价格时还要求 Item Price 创建权限
+- 两种策略都要求源 Item 写权限
+- `in_place` 更新/失效旧价格时要求 Item Price 写权限；只有真正新增价格时要求 Item Price 创建权限
+- `replacement` 还要求新 Item、Item Alternative 和计划价格的创建权限
+- 所有结果价格会在写入前校验价格表存在，并拒绝重复的 `价格表 + 币种 + 单位` 组合
 - 执行时锁定源 Item 与现有 Bin，重新评估所有 blocker，并校验 `source_modified`
 - 任一步失败整体回滚；不会产生半个新商品、孤立替代关系或部分条码移动
 
 行为：
 
-- 不直接修改源商品 `stock_uom`
+- `in_place`：仅用于无历史库存流水的低风险建档错误；保留商品编码，受控更新库存单位、完整换算、批发/零售默认单位、条码单位和价格，并写入 `in_place` 纠正审计
+- `replacement`：不直接修改源商品 `stock_uom`，创建正确单位的新 Item、正式继任关系和 `replacement` 纠正审计，然后停用源商品
 - 只允许选择 `myapp_business_selectable = 1` 的日常业务单位
 - 每一条源价格和条码都必须人工明确选择动作，不能遗漏、默认复制或自动猜测单位
-- 创建正确库存单位和换算表的新 Item
-- 选择 `move` 的条码从源商品原子移动到新商品
+- `in_place` 的 `move` 表示把原条码改绑到新单位；`keep` 仅在旧条码单位仍存在于新换算表时允许
+- `replacement` 的 `move` 表示把条码从源商品原子移动到继任商品
 - 选择 `copy` 的价格按原价格表、币种和金额复制到人工指定的新单位
-- 创建 ERPNext 原生 `Item Alternative`：源商品 -> 新商品
-- 成功后停用源商品；历史单据、Stock Ledger Entry 和旧 Item Price 保持原样
+- 选择 `manual` 的价格保留原价格表和币种，但使用用户明确填写的新金额与新单位
+- `in_place` 的 `skip` 会把旧价格有效期截止到执行前一日；不会删除历史价格记录
+- `new_prices` 可以在同一次迁移中直接创建额外价格；同一价格表、币种和单位不能在迁移计划中重复
+- `replacement` 同时创建 ERPNext 单向 `Item Alternative`：源商品 -> 继任商品；历史单据、Stock Ledger Entry 和旧 Item Price 保持原样
+- 所有成功纠正写入 `tabMyApp Product Correction`，保存前后快照、原因、请求 ID、执行人和执行时间；后续历史引用解析不只依赖普通替代商品
 - 为降低并发业务写入风险，应在短暂受控作业窗口执行，不应与该商品的库存收发、开单或改单并行
 
 ### 商品图片上传与保存边界

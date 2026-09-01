@@ -580,6 +580,19 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self.assertEqual(data["warehouse"], SALES_WAREHOUSE)
 		self.assertGreaterEqual(float(data["price"]), 0)
 
+	def test_resolve_active_product_v1_accepts_web_item_code_payload(self):
+		status_code, response = self._call_gateway(
+			"myapp.api.gateway.resolve_active_product_v1",
+			{"item_code": self._sales_transaction_item_code},
+		)
+
+		self._assert_success(status_code, response, code="ACTIVE_PRODUCT_RESOLVED")
+		data = response["message"]["data"]
+		self.assertEqual(data["requested_item_code"], self._sales_transaction_item_code)
+		self.assertEqual(data["active_item_code"], self._sales_transaction_item_code)
+		self.assertFalse(data["changed"])
+		self.assertFalse(data["active_disabled"])
+
 	def test_product_barcode_management_v2_roundtrip(self):
 		create_request, create_payload = self._create_product_and_stock(
 			item_name=f"HTTP-V2-多条码商品-{time.time_ns()}",

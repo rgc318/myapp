@@ -46,6 +46,7 @@ from myapp.services.ai_service import (
 	_is_simple_general_ai_message,
 	_issue_ai_scenario_resolution,
 	_prepare_chat_run,
+	_prepare_ai_product_action_draft_once,
 	_prepare_product_setup_image_binding,
 	_resolve_draft_retry_request,
 	_resolve_existing_product_for_setup,
@@ -138,6 +139,93 @@ class TestAiService(TestCase):
 			[call.kwargs["action"] for call in mock_prepare.call_args_list],
 			["product_update", "inventory_adjustment"],
 		)
+
+	@patch("myapp.services.ai_service._persist_prepared_draft_context")
+	@patch(
+		"myapp.services.ai_service._append_deterministic_draft_action_messages",
+		return_value=[{"name": "AI-MESSAGE-1"}],
+	)
+	@patch("myapp.services.ai_service.ai_repository.create_draft")
+	@patch("myapp.services.ai_service._build_product_setup_draft")
+	@patch("myapp.services.ai_service.frappe.has_permission", return_value=True)
+	@patch("myapp.services.ai_service._resolve_deterministic_draft_action_context")
+	@patch("myapp.services.ai_service.resolve_active_product_reference")
+	def test_product_action_uses_current_active_successor(
+		self,
+		mock_resolve_product,
+		mock_resolve_context,
+		_mock_has_permission,
+		mock_build_product_draft,
+		mock_create_draft,
+		_mock_append_messages,
+		_mock_persist_context,
+	):
+		resolution = {
+			"requested_item_code": "ITEM-OLD",
+			"active_item_code": "ITEM-NEW",
+			"changed": True,
+			"active_disabled": False,
+			"resolution_source": "correction_record",
+			"requires_confirmation": True,
+			"chain": [],
+		}
+		mock_resolve_product.return_value = resolution
+		mock_resolve_context.return_value = (
+			"user@example.com",
+			"Demo Company",
+			{"name": "AI-CONV-1"},
+		)
+		mock_build_product_draft.return_value = (
+			{"operation": "update", "item_code": "ITEM-NEW"},
+			{"valid": True, "errors": [], "warnings": []},
+		)
+		mock_create_draft.return_value = {
+			"name": "AI-DRAFT-1",
+			"title": "完善商品 ITEM-NEW",
+			"draft_type": "product_setup",
+			"payload": {"operation": "update", "item_code": "ITEM-NEW"},
+		}
+
+		result = _prepare_ai_product_action_draft_once(
+			action="product_update",
+			item_code="ITEM-OLD",
+			company="Demo Company",
+			conversation_id="AI-CONV-1",
+		)
+
+		mock_build_product_draft.assert_called_once_with(
+			{
+				"operation": "update",
+				"item_code": "ITEM-NEW",
+				"item_query": "ITEM-NEW",
+			},
+			company="Demo Company",
+		)
+		self.assertEqual(result["data"]["product_resolution"], resolution)
+		self.assertEqual(result["data"]["draft"]["payload"]["item_code"], "ITEM-NEW")
+
+	@patch("myapp.services.ai_service.resolve_active_product_reference")
+	def test_product_action_rejects_disabled_item_without_successor(self, mock_resolve_product):
+		mock_resolve_product.return_value = {
+			"requested_item_code": "ITEM-OLD",
+			"active_item_code": "ITEM-OLD",
+			"changed": False,
+			"active_disabled": True,
+			"resolution_source": None,
+			"requires_confirmation": False,
+			"chain": [],
+		}
+
+		with (
+			patch("myapp.services.ai_service.frappe.throw", side_effect=frappe.ValidationError),
+			self.assertRaises(frappe.ValidationError),
+		):
+			_prepare_ai_product_action_draft_once(
+				action="product_update",
+				item_code="ITEM-OLD",
+				company="Demo Company",
+				conversation_id="AI-CONV-1",
+			)
 
 	@patch("myapp.services.ai_service._append_deterministic_draft_action_messages")
 	@patch("myapp.services.ai_service._update_ai_draft_once")

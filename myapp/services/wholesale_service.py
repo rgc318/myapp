@@ -1,7 +1,9 @@
+from decimal import Decimal, InvalidOperation
+
 import frappe
 from frappe import _
 from frappe.query_builder.functions import Sum
-from frappe.utils import cint, flt, getdate
+from frappe.utils import add_days, cint, flt, getdate, nowdate
 
 from myapp.services.media_service import (
 	bind_uploaded_item_image,
@@ -15,6 +17,7 @@ from myapp.services.data_permission_service import (
 	require_document_permission,
 	require_doctype_permission,
 )
+from myapp.services.product_correction_service import record_product_correction
 from myapp.utils.idempotency import get_current_request_id, run_idempotent
 from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom_display import build_uom_display_map, sort_uom_rows
@@ -1565,7 +1568,30 @@ def _build_product_uom_migration_assessment(item):
 
 	uom_rows = _get_uom_map([item_code]).get(item_code, [])
 	uom_display_map = build_uom_display_map(_collect_item_uom_names(item=item, all_uoms=uom_rows))
+	can_correct_in_place = (
+		not blockers
+		and not cint(item.disabled)
+		and not alternatives
+		and not stock_ledger_entry_count
+	)
+	can_create_replacement = not blockers and not cint(item.disabled)
 	return {
+		"suggested_new_item_code": _build_item_code(item.item_name),
+		"recommended_strategy": "in_place" if can_correct_in_place else ("replacement" if can_create_replacement else None),
+		"strategies": {
+			"in_place": {
+				"available": can_correct_in_place,
+				"reason": _("当前库存、占用和未完单据均已清零，可保留原商品编码并受控纠正单位。")
+				if can_correct_in_place
+				else _("源商品已停用、已有替代关系、存在历史库存流水或其他阻断项，不能原地纠正。"),
+			},
+			"replacement": {
+				"available": can_create_replacement,
+				"reason": _("商品物理身份或包装基础真正变化时，可创建正式继任商品。")
+				if can_create_replacement
+				else _("源商品已停用或存在阻断项，不能创建替代商品。"),
+			},
+		},
 		"source": {
 			"item_code": item_code,
 			"item_name": item.item_name,
@@ -1610,7 +1636,7 @@ def assess_product_uom_migration_v1(item_code: str):
 
 def _normalize_product_uom_migration_mappings(value, *, source_rows, mapping_kind: str):
 	mapping_config = {
-		"price": {"label": _("价格"), "actions": {"copy", "skip"}},
+		"price": {"label": _("价格"), "actions": {"copy", "manual", "skip"}},
 		"barcode": {"label": _("条码"), "actions": {"move", "keep"}},
 	}.get(mapping_kind)
 	if not mapping_config:
@@ -1637,9 +1663,99 @@ def _normalize_product_uom_migration_mappings(value, *, source_rows, mapping_kin
 			"action": action,
 			"target_uom": _normalize_text(row.get("target_uom")) or None,
 		}
+		if mapping_kind == "price":
+			mappings[source_name]["target_rate"] = (
+				_normalize_product_uom_migration_price_rate(
+					row.get("target_rate"),
+					field_label=_("手工新价格"),
+				)
+				if action == "manual"
+				else None
+			)
 	if set(mappings) != source_names:
 		frappe.throw(_("必须逐条确认全部{0}记录的迁移方式，不能遗漏或自动猜测。").format(mapping_label))
 	return mappings
+
+
+def _normalize_product_uom_migration_price_rate(value, *, field_label: str):
+	if value in (None, ""):
+		frappe.throw(_("{0}不能为空。").format(field_label))
+	try:
+		resolved = Decimal(str(value))
+	except (InvalidOperation, TypeError, ValueError):
+		frappe.throw(_("{0}必须是有效数字。").format(field_label))
+	if not resolved.is_finite() or resolved < 0:
+		frappe.throw(_("{0}不能为负数或无效数值。").format(field_label))
+	return flt(resolved)
+
+
+def _normalize_product_uom_migration_new_prices(value):
+	rows = _coerce_json_value(value, [])
+	if not isinstance(rows, list):
+		frappe.throw(_("新增价格格式不正确。"))
+	result = []
+	for index, row in enumerate(rows, start=1):
+		if not isinstance(row, dict):
+			frappe.throw(_("第 {0} 条新增价格必须是对象。").format(index))
+		price_list = _normalize_text(row.get("price_list"))
+		target_uom = _normalize_text(row.get("target_uom"))
+		if not price_list:
+			frappe.throw(_("第 {0} 条新增价格必须选择价格表。").format(index))
+		if not target_uom:
+			frappe.throw(_("第 {0} 条新增价格必须选择单位。").format(index))
+		result.append(
+			{
+				"price_list": price_list,
+				"currency": _normalize_currency(row.get("currency")),
+				"rate": _normalize_product_uom_migration_price_rate(
+					row.get("rate"),
+					field_label=_("第 {0} 条新增价格金额").format(index),
+				),
+				"target_uom": target_uom,
+			}
+		)
+	return result
+
+
+def _build_product_uom_migration_price_plan(*, source_prices, price_mappings, new_prices):
+	price_by_name = {row["name"]: row for row in source_prices}
+	planned_prices = []
+	for source_name, mapping in price_mappings.items():
+		if mapping["action"] == "skip":
+			continue
+		price_row = price_by_name[source_name]
+		planned_prices.append(
+			{
+				"action": mapping["action"],
+				"currency": price_row["currency"],
+				"price_list": price_row["price_list"],
+				"rate": price_row["rate"] if mapping["action"] == "copy" else mapping["target_rate"],
+				"source_name": source_name,
+				"target_uom": mapping["target_uom"],
+			}
+		)
+	planned_prices.extend(
+		{
+			"action": "new",
+			"source_name": None,
+			**price,
+		}
+		for price in new_prices
+	)
+
+	seen_price_keys = set()
+	for price in planned_prices:
+		if not frappe.db.exists("Price List", price["price_list"]):
+			frappe.throw(_("价格表 {0} 不存在。").format(price["price_list"]))
+		key = (price["price_list"], price["currency"] or "", price["target_uom"])
+		if key in seen_price_keys:
+			frappe.throw(
+				_("新商品价格计划存在重复：{0} / {1} / {2}。").format(
+					price["price_list"], price["currency"] or _("默认币种"), price["target_uom"]
+				)
+			)
+		seen_price_keys.add(key)
+	return planned_prices
 
 
 def _validate_business_uom_conversion_map(stock_uom, uom_conversions):
@@ -1655,22 +1771,166 @@ def _validate_business_uom_conversion_map(stock_uom, uom_conversions):
 	return resolved_stock_uom, conversion_map
 
 
+def _build_product_uom_correction_snapshot(item, assessment):
+	return {
+		"item_code": item.name,
+		"item_name": item.item_name,
+		"modified": str(item.modified),
+		"disabled": bool(cint(item.disabled)),
+		"stock_uom": item.stock_uom,
+		"wholesale_default_uom": _extract_mode_default_uoms(item)["wholesale_default_uom"],
+		"retail_default_uom": _extract_mode_default_uoms(item)["retail_default_uom"],
+		"uom_conversions": assessment.get("source", {}).get("uom_conversions", []),
+		"prices": assessment.get("prices", []),
+		"barcodes": assessment.get("barcodes", []),
+	}
+
+
+def _execute_in_place_product_uom_correction(
+	*,
+	source,
+	assessment,
+	resolved_stock_uom,
+	conversion_map,
+	wholesale_default_uom,
+	retail_default_uom,
+	price_mappings,
+	planned_prices,
+	barcode_mappings,
+	request_id,
+	reason,
+	before_snapshot,
+):
+	if not assessment.get("strategies", {}).get("in_place", {}).get("available"):
+		frappe.throw(_("当前商品不满足原地纠正条件，请重新评估处理策略。"))
+	if not _normalize_text(reason):
+		frappe.throw(_("原地纠正必须填写业务原因。"))
+
+	if price_mappings:
+		require_doctype_permission("Item Price", "write")
+	for source_name, mapping in barcode_mappings.items():
+		if mapping["action"] == "keep":
+			barcode = next((row for row in assessment["barcodes"] if row["name"] == source_name), None)
+			if barcode and _normalize_text(barcode.get("uom")) not in conversion_map:
+				frappe.throw(_("条码 {0} 的旧单位不在新换算表中，必须改绑新单位。").format(barcode.get("barcode")))
+
+	source_modified_before = source.modified
+	source.stock_uom = resolved_stock_uom
+	for mode, value in (("wholesale", wholesale_default_uom), ("retail", retail_default_uom)):
+		fieldname = _get_item_mode_default_uom_field(mode)
+		if fieldname:
+			setattr(source, fieldname, value)
+	_apply_item_uom_updates(
+		item=source,
+		stock_uom=resolved_stock_uom,
+		uom_conversions=[
+			{"uom": uom, "conversion_factor": factor}
+			for uom, factor in conversion_map.items()
+		],
+	)
+	for row in list(getattr(source, "barcodes", []) or []):
+		mapping = barcode_mappings.get(getattr(row, "name", None))
+		if mapping and mapping["action"] == "move":
+			row.uom = mapping["target_uom"]
+	source.save()
+
+	planned_by_source = {row["source_name"]: row for row in planned_prices if row.get("source_name")}
+	updated_price_names = []
+	expired_price_names = []
+	created_price_names = []
+	for source_name, mapping in price_mappings.items():
+		price_doc = require_document_permission("Item Price", source_name, "write")
+		if mapping["action"] == "skip":
+			price_doc.valid_upto = add_days(nowdate(), -1)
+			price_doc.save()
+			expired_price_names.append(price_doc.name)
+			continue
+		plan = planned_by_source[source_name]
+		price_doc.price_list_rate = plan["rate"]
+		price_doc.uom = plan["target_uom"]
+		price_doc.currency = plan["currency"]
+		price_doc.valid_upto = None
+		price_doc.save()
+		updated_price_names.append(price_doc.name)
+	for price in planned_prices:
+		if price.get("source_name"):
+			continue
+		created_price = _upsert_item_price(
+			item_code=source.name,
+			rate=price["rate"],
+			price_list=price["price_list"],
+			currency=price["currency"],
+			uom=price["target_uom"],
+		)
+		created_price_names.append(created_price.name)
+
+	source.reload()
+	corrected_item = _build_product_detail_payload(source)
+	correction_name = record_product_correction(
+		source_item=source.name,
+		target_item=source.name,
+		correction_type="in_place",
+		reason=reason,
+		source_modified_before=source_modified_before,
+		target_modified_after=source.modified,
+		before_snapshot=before_snapshot,
+		after_snapshot={
+			"item": corrected_item,
+			"updated_price_names": updated_price_names,
+			"expired_price_names": expired_price_names,
+			"created_price_names": created_price_names,
+		},
+		metadata={"history_preserved": True},
+		request_id=request_id,
+	)
+	return {
+		"status": "success",
+		"message": _("商品单位已在原编码上完成受控纠正，历史库存流水保持不变。"),
+		"data": {
+			"strategy": "in_place",
+			"correction_name": correction_name,
+			"source_item_code": source.name,
+			"source_disabled": False,
+			"new_item": corrected_item,
+			"corrected_item": corrected_item,
+			"alternative": None,
+			"copied_price_names": updated_price_names,
+			"created_price_names": created_price_names,
+			"expired_price_names": expired_price_names,
+			"moved_barcodes": [
+				row["barcode"]
+				for row in assessment["barcodes"]
+				if barcode_mappings[row["name"]]["action"] == "move"
+			],
+			"history_preserved": True,
+		},
+	}
+
+
 def execute_product_uom_migration_v1(item_code: str, **kwargs):
 	_require_product_uom_migration_manager()
 	item_code = _normalize_text(item_code)
 	if not item_code:
 		frappe.throw(_("商品编码不能为空。"))
-	if not cint(kwargs.get("confirm_disable_source")) or not cint(kwargs.get("confirm_history_preserved")):
-		frappe.throw(_("必须确认停用源商品，并确认不修改历史库存流水。"))
+	strategy = _normalize_text(kwargs.get("strategy")).lower() or "replacement"
+	if strategy not in {"in_place", "replacement"}:
+		frappe.throw(_("商品单位纠正策略不正确。"))
+	if not cint(kwargs.get("confirm_history_preserved")):
+		frappe.throw(_("必须确认不修改历史库存流水。"))
+	if strategy == "replacement" and not cint(kwargs.get("confirm_disable_source")):
+		frappe.throw(_("创建替代商品前必须确认停用源商品。"))
+	if strategy == "in_place" and not cint(kwargs.get("confirm_in_place_correction")):
+		frappe.throw(_("原地纠正前必须确认保留原商品编码。"))
 
 	request_id = get_current_request_id(kwargs.get("request_id"))
 	if not request_id:
 		frappe.throw(_("商品单位迁移必须携带 Idempotency-Key。"))
 
 	def _execute_migration():
-		require_doctype_permission("Item", "create")
 		source = require_document_permission("Item", item_code, "write")
-		require_doctype_permission("Item Alternative", "create")
+		if strategy == "replacement":
+			require_doctype_permission("Item", "create")
+			require_doctype_permission("Item Alternative", "create")
 
 		frappe.db.sql("SELECT name FROM `tabItem` WHERE name = %s FOR UPDATE", (item_code,))
 		frappe.db.sql("SELECT name FROM `tabBin` WHERE item_code = %s FOR UPDATE", (item_code,))
@@ -1682,13 +1942,8 @@ def execute_product_uom_migration_v1(item_code: str, **kwargs):
 		assessment = _build_product_uom_migration_assessment(source)
 		if assessment["blockers"]:
 			frappe.throw("\n".join(row["message"] for row in assessment["blockers"]))
+		before_snapshot = _build_product_uom_correction_snapshot(source, assessment)
 
-		new_item_code = _normalize_text(kwargs.get("new_item_code"))
-		new_item_name = _normalize_text(kwargs.get("new_item_name")) or source.item_name
-		if not new_item_code:
-			frappe.throw(_("必须明确填写新商品编码。"))
-		if frappe.db.exists("Item", new_item_code):
-			frappe.throw(_("新商品编码 {0} 已存在。").format(new_item_code))
 		resolved_stock_uom, conversion_map = _validate_business_uom_conversion_map(
 			kwargs.get("stock_uom"),
 			kwargs.get("uom_conversions"),
@@ -1699,14 +1954,18 @@ def execute_product_uom_migration_v1(item_code: str, **kwargs):
 			source_rows=assessment["prices"],
 			mapping_kind="price",
 		)
+		new_prices = _normalize_product_uom_migration_new_prices(kwargs.get("new_prices"))
 		barcode_mappings = _normalize_product_uom_migration_mappings(
 			kwargs.get("barcode_mappings"),
 			source_rows=assessment["barcodes"],
 			mapping_kind="barcode",
 		)
 		for mapping in [*price_mappings.values(), *barcode_mappings.values()]:
-			if mapping["action"] in {"copy", "move"} and mapping["target_uom"] not in conversion_map:
+			if mapping["action"] in {"copy", "manual", "move"} and mapping["target_uom"] not in conversion_map:
 				frappe.throw(_("映射单位 {0} 不在新商品换算表中。").format(mapping["target_uom"] or _("空")))
+		for price in new_prices:
+			if price["target_uom"] not in conversion_map:
+				frappe.throw(_("新增价格单位 {0} 不在新商品换算表中。").format(price["target_uom"]))
 
 		wholesale_default_uom = _normalize_text(kwargs.get("wholesale_default_uom")) or None
 		retail_default_uom = _normalize_text(kwargs.get("retail_default_uom")) or None
@@ -1716,6 +1975,32 @@ def execute_product_uom_migration_v1(item_code: str, **kwargs):
 		):
 			if default_uom and default_uom not in conversion_map:
 				frappe.throw(_("{0} {1} 不在新商品换算表中。").format(label, default_uom))
+
+		planned_prices = _build_product_uom_migration_price_plan(
+			source_prices=assessment["prices"],
+			price_mappings=price_mappings,
+			new_prices=new_prices,
+		)
+		if (strategy == "replacement" and planned_prices) or (strategy == "in_place" and new_prices):
+			require_doctype_permission("Item Price", "create")
+		if strategy == "in_place":
+			return _execute_in_place_product_uom_correction(
+				source=source,
+				assessment=assessment,
+				resolved_stock_uom=resolved_stock_uom,
+				conversion_map=conversion_map,
+				wholesale_default_uom=wholesale_default_uom,
+				retail_default_uom=retail_default_uom,
+				price_mappings=price_mappings,
+				planned_prices=planned_prices,
+				barcode_mappings=barcode_mappings,
+				request_id=request_id,
+				reason=kwargs.get("correction_reason"),
+				before_snapshot=before_snapshot,
+			)
+
+		new_item_name = _normalize_text(kwargs.get("new_item_name")) or source.item_name
+		new_item_code = _build_item_code(new_item_name, kwargs.get("new_item_code"))
 
 		barcode_by_name = {row["name"]: row for row in assessment["barcodes"]}
 		moved_barcode_names = [
@@ -1781,22 +2066,19 @@ def execute_product_uom_migration_v1(item_code: str, **kwargs):
 			)
 		new_item.insert()
 
-		if any(mapping["action"] == "copy" for mapping in price_mappings.values()):
-			require_doctype_permission("Item Price", "create")
-		price_by_name = {row["name"]: row for row in assessment["prices"]}
 		copied_price_names = []
-		for source_name, mapping in price_mappings.items():
-			if mapping["action"] != "copy":
-				continue
-			price_row = price_by_name[source_name]
+		created_price_names = []
+		for price in planned_prices:
 			created_price = _upsert_item_price(
 				item_code=new_item.name,
-				rate=price_row["rate"],
-				price_list=price_row["price_list"],
-				currency=price_row["currency"],
-				uom=mapping["target_uom"],
+				rate=price["rate"],
+				price_list=price["price_list"],
+				currency=price["currency"],
+				uom=price["target_uom"],
 			)
-			copied_price_names.append(created_price.name)
+			created_price_names.append(created_price.name)
+			if price["action"] == "copy":
+				copied_price_names.append(created_price.name)
 
 		alternative = frappe.new_doc("Item Alternative")
 		alternative.item_code = source.name
@@ -1806,10 +2088,29 @@ def execute_product_uom_migration_v1(item_code: str, **kwargs):
 
 		new_item.reload()
 		source.reload()
+		correction_name = record_product_correction(
+			source_item=source.name,
+			target_item=new_item.name,
+			correction_type="replacement",
+			reason=kwargs.get("correction_reason") or _("库存基准单位纠正"),
+			source_modified_before=before_snapshot.get("modified"),
+			target_modified_after=new_item.modified,
+			before_snapshot=before_snapshot,
+			after_snapshot={
+				"source_disabled": bool(cint(source.disabled)),
+				"new_item": _build_product_detail_payload(new_item),
+				"alternative": alternative.name,
+				"created_price_names": created_price_names,
+			},
+			metadata={"history_preserved": True},
+			request_id=request_id,
+		)
 		return {
 			"status": "success",
 			"message": _("商品单位迁移已完成，源商品已停用，历史库存流水保持不变。"),
 			"data": {
+				"strategy": "replacement",
+				"correction_name": correction_name,
 				"source_item_code": source.name,
 				"source_disabled": bool(cint(source.disabled)),
 				"new_item": _build_product_detail_payload(new_item),
@@ -1819,6 +2120,7 @@ def execute_product_uom_migration_v1(item_code: str, **kwargs):
 					"alternative_item_code": new_item.name,
 				},
 				"copied_price_names": copied_price_names,
+				"created_price_names": created_price_names,
 				"moved_barcodes": [
 					barcode_by_name[name]["barcode"] for name in moved_barcode_names
 				],

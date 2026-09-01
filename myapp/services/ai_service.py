@@ -19,6 +19,7 @@ from frappe.utils.synchronization import filelock
 from werkzeug.wrappers import Response
 
 from myapp.services import ai_repository
+from myapp.services.product_correction_service import resolve_active_product_reference
 from myapp.services.ai_attachment_service import (
 	hydrate_ai_message_attachments,
 	resolve_ai_attachments,
@@ -5231,6 +5232,10 @@ def _prepare_ai_product_action_draft_once(
 	resolved_item_code = str(item_code or "").strip()
 	if not resolved_item_code:
 		frappe.throw(_("商品编码不能为空。"))
+	product_resolution = resolve_active_product_reference(resolved_item_code)
+	resolved_item_code = product_resolution["active_item_code"]
+	if product_resolution.get("active_disabled"):
+		frappe.throw(_("商品 {0} 已停用且没有可用的继任商品。").format(resolved_item_code))
 	user, resolved_company, conversation = _resolve_deterministic_draft_action_context(
 		conversation_id=conversation_id, company=company,
 	)
@@ -5304,6 +5309,7 @@ def _prepare_ai_product_action_draft_once(
 			"draft": draft,
 			"messages": messages,
 			"message": messages[-1],
+			"product_resolution": product_resolution,
 		},
 	}
 

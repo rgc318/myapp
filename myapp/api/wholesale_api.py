@@ -14,6 +14,7 @@ from myapp.services.wholesale_service import search_product as search_product_se
 from myapp.services.wholesale_service import search_product_v2 as search_product_v2_service
 from myapp.services.wholesale_service import set_primary_product_barcode_v2 as set_primary_product_barcode_v2_service
 from myapp.services.wholesale_service import update_product_v2 as update_product_v2_service
+from myapp.services.product_correction_service import resolve_active_product_v1 as resolve_active_product_v1_service
 
 
 @frappe.whitelist()
@@ -136,6 +137,11 @@ def get_product_detail_v2(
 		price_list=price_list,
 		currency=currency,
 	)
+
+
+@frappe.whitelist()
+def resolve_active_product_v1(item_code: str):
+	return resolve_active_product_v1_service(item_code=item_code)
 
 
 @frappe.whitelist()
