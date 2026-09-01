@@ -307,7 +307,7 @@ Run 摘要返回 `model_selection=auto/fixed`、安全的 `requested_model_displ
 
 模型管理接口只面向 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 的职责范围。模型注册同步只从受服务 Token 保护的 Orchestrator 读取当前 LiteLLM Key 可见的完整模型库存，不保存供应商 Key；同步中已消失的 LiteLLM 模型标记为 `degraded / missing`，人工维护的 `disabled / retired` 状态不会被同步覆盖。同步只证明当前 Key 在 LiteLLM `/v1/models` 中可见，不证明推理可用。
 
-`check_ai_model_availability_v1` 会对 Chat 模型执行最小回答与强制 Function Calling 探测，对 Embedding 模型执行最小向量请求，分别持久化 `available / unavailable` 和 `supports_tools`。选择语义如下：
+`check_ai_model_availability_v1` 会对 Chat 模型执行最小回答与强制 Function Calling 探测，对 Embedding 模型执行最小向量请求，持久化 `available / degraded / unavailable`、`supports_tools` 和 `supports_vision`。选择语义如下：
 
 | `model_aliases` | 检测范围 | `trigger` |
 |---|---|---|
@@ -316,7 +316,9 @@ Run 摘要返回 `model_selection=auto/fixed`、安全的 `requested_model_displ
 | `["alias-a", "alias-b"]` | 多个指定模型 | `manual_selected` |
 | 显式空列表 | 拒绝请求，避免把误操作解释为全量检测 | - |
 
-未知、停用或退役 alias 会整体拒绝，不进行部分检测。单次最多选择 100 个模型。检查返回 `requested_count`、`checked_count`、`available_count`、`unavailable_count`、`trigger` 和逐模型稳定错误码。Agent 场景策略要求所有主/降级模型均通过工具能力验证。检查可能产生少量 Provider 费用，但不会自动修改 `active / validated / disabled / retired` 等人工治理状态。
+未知、停用或退役 alias 会整体拒绝，不进行部分检测。单次最多选择 100 个模型。检查返回 `requested_count`、`checked_count`、`available_count`、`degraded_count`、`unavailable_count`、`trigger`、`runtime_cache_invalidated` 和逐模型 `health_status`、稳定错误码。Agent 场景策略要求所有主/降级模型均通过工具能力验证。检查可能产生少量 Provider 费用，但不会自动修改 `active / validated / disabled / retired` 等人工治理状态。
+
+健康状态采用有界状态机：成功立即恢复为 `available`；401/403、alias 不存在等确定性错误立即进入 `unavailable`；429、超时、5xx 和连接异常第一次只进入 `degraded`，连续瞬态失败才进入 `unavailable`。`degraded` 不阻止运行，并保留上一次已验证的工具和视觉能力，避免一次 Provider 限流清空能力事实。健康写入和审计提交后，Backend 会通知 Orchestrator 使运行时 Policy 缓存过期；通知失败不回滚健康结果，响应中的 `runtime_cache_invalidated=false` 供运维诊断。
 
 单项或多选请求示例：
 
@@ -340,11 +342,14 @@ Authorization: Bearer <jwt>
   "requested_count": 2,
   "checked_count": 2,
   "available_count": 1,
+  "degraded_count": 0,
   "unavailable_count": 1,
+  "runtime_cache_invalidated": true,
   "items": [
     {
       "model_alias": "gpt-5.5",
       "available": true,
+      "health_status": "available",
       "supports_tools": true,
       "latency_ms": 1580,
       "provider_model": "gpt-5.5",
@@ -353,6 +358,7 @@ Authorization: Bearer <jwt>
     {
       "model_alias": "opencode-deepseek-v4-flash",
       "available": false,
+      "health_status": "unavailable",
       "supports_tools": false,
       "latency_ms": 8708,
       "provider_model": null,

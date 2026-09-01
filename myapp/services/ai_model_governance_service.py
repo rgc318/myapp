@@ -46,6 +46,26 @@ ENVIRONMENTS = {"development", "test", "staging", "production"}
 MAX_PAGE_SIZE = 100
 MODEL_HEALTHCHECK_CRON = "15 3 * * *"
 
+_DETERMINISTIC_HEALTH_ERROR_CODES = {
+	"MODEL_ALIAS_NOT_FOUND",
+	"MODEL_ALIAS_NOT_LISTED",
+}
+
+_TRANSIENT_HEALTH_ERROR_CODES = {
+	"CONNECTERROR",
+	"CONNECTIONERROR",
+	"NETWORKERROR",
+	"POOLTIMEOUT",
+	"PROVIDER_TIMEOUT",
+	"READERROR",
+	"READTIMEOUT",
+	"REMOTEPROTOCOLERROR",
+	"TIMEOUTERROR",
+	"TIMEOUTEXCEPTION",
+	"WRITEERROR",
+	"WRITETIMEOUT",
+}
+
 
 def _name(prefix: str) -> str:
 	return f"{prefix}-{uuid.uuid4().hex}"
@@ -431,6 +451,22 @@ def _call_orchestrator(path: str, *, payload: dict | None = None, method: str = 
 	return result
 
 
+def _invalidate_runtime_policy_cache() -> bool:
+	try:
+		result = _call_orchestrator(
+			"/internal/v1/governance/policy-cache/invalidate",
+			payload={},
+			method="POST",
+		)
+	except Exception:
+		frappe.log_error(
+			frappe.get_traceback(),
+			_("AI 运行时策略缓存失效通知失败"),
+		)
+		return False
+	return result.get("invalidated") is True
+
+
 def get_ai_model_governance_overview_v1() -> dict:
 	_require_viewer()
 	_ensure_tables()
@@ -633,29 +669,29 @@ def sync_ai_model_registry_v1(*, request_id: str | None = None) -> dict:
 					provider_family = VALUES(provider_family),
 					provider_model_display = VALUES(provider_model_display), supports_streaming = VALUES(supports_streaming),
 					supports_tools = CASE
-						WHEN last_health_status IN ('available', 'unavailable')
+						WHEN last_health_status IN ('available', 'degraded', 'unavailable')
 							AND VALUES(last_health_status) = 'listed' THEN supports_tools
 						ELSE VALUES(supports_tools)
 					END,
 					supports_json_schema = VALUES(supports_json_schema),
 					supports_vision = CASE
-						WHEN last_health_status IN ('available', 'unavailable')
+						WHEN last_health_status IN ('available', 'degraded', 'unavailable')
 							AND VALUES(last_health_status) = 'listed' THEN supports_vision
 						ELSE VALUES(supports_vision)
 					END,
 					embedding_dimensions = VALUES(embedding_dimensions), embedding_space_version = VALUES(embedding_space_version),
 					last_health_at = CASE
-						WHEN last_health_status IN ('available', 'unavailable')
+						WHEN last_health_status IN ('available', 'degraded', 'unavailable')
 							AND VALUES(last_health_status) = 'listed' THEN last_health_at
 						ELSE VALUES(last_health_at)
 					END,
 					last_health_status = CASE
-						WHEN last_health_status IN ('available', 'unavailable')
+						WHEN last_health_status IN ('available', 'degraded', 'unavailable')
 							AND VALUES(last_health_status) = 'listed' THEN last_health_status
 						ELSE VALUES(last_health_status)
 					END,
 					last_error_code = CASE
-						WHEN last_health_status IN ('available', 'unavailable')
+						WHEN last_health_status IN ('available', 'degraded', 'unavailable')
 							AND VALUES(last_health_status) = 'listed' THEN last_error_code
 						ELSE VALUES(last_error_code)
 					END,
@@ -751,9 +787,43 @@ def _resolve_healthcheck_model_aliases(model_aliases=None) -> list[str]:
 	return resolved
 
 
+def _is_transient_health_error(error_code: str | None) -> bool:
+	resolved = _normalize_text(error_code, max_length=140).upper()
+	if not resolved or resolved in _DETERMINISTIC_HEALTH_ERROR_CODES:
+		return False
+	if resolved.startswith("PROVIDER_HTTP_"):
+		try:
+			status_code = int(resolved.rsplit("_", 1)[-1])
+		except ValueError:
+			return True
+		return status_code in {408, 429} or status_code >= 500
+	if resolved in _TRANSIENT_HEALTH_ERROR_CODES:
+		return True
+	return not any(token in resolved for token in ("AUTH", "CREDENTIAL", "INVALID", "NOT_FOUND", "NOT_LISTED"))
+
+
+def _resolve_health_status(*, available: bool, error_code: str | None, previous_status: str | None) -> str:
+	if available:
+		return "available"
+	if not _is_transient_health_error(error_code):
+		return "unavailable"
+	return "unavailable" if previous_status in {"degraded", "unavailable"} else "degraded"
+
+
 def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str) -> dict:
 	_ensure_tables()
 	resolved_aliases = _resolve_healthcheck_model_aliases(model_aliases)
+	placeholders = ", ".join(["%s"] * len(resolved_aliases))
+	previous_rows = frappe.db.sql(
+		f"""
+		SELECT model_alias, last_health_status, supports_tools, supports_vision
+		FROM `{REGISTRY_TABLE}`
+		WHERE model_alias IN ({placeholders})
+		""",
+		tuple(resolved_aliases),
+		as_dict=True,
+	)
+	previous_by_alias = {str(row.model_alias): row for row in previous_rows}
 	result = _call_orchestrator(
 		"/internal/v1/governance/models/availability",
 		payload={"model_aliases": resolved_aliases},
@@ -780,6 +850,18 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 		vision_error_code = _normalize_text(item.get("vision_error_code"), max_length=140) or None
 		provider_model = _normalize_text(item.get("provider_model"), max_length=255) or None
 		latency_ms = max(0, int(float(item.get("latency_ms") or 0)))
+		previous = previous_by_alias.get(model_alias)
+		previous_status = _normalize_text(
+			getattr(previous, "last_health_status", None), max_length=20,
+		) or None
+		health_status = _resolve_health_status(
+			available=available,
+			error_code=error_code,
+			previous_status=previous_status,
+		)
+		if health_status == "degraded" and previous:
+			supports_tools = bool(previous.supports_tools)
+			supports_vision = bool(previous.supports_vision)
 		frappe.db.sql(
 			f"""
 			UPDATE `{REGISTRY_TABLE}`
@@ -790,7 +872,7 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 			WHERE model_alias = %s
 			""",
 			(
-				now, "available" if available else "unavailable", error_code,
+				now, health_status, error_code,
 				provider_model, cint(supports_tools), cint(supports_vision),
 				tool_error_code, vision_error_code, now, actor, model_alias,
 			),
@@ -799,6 +881,7 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 			"model_alias": model_alias,
 			"capability": _normalize_text(item.get("capability"), max_length=30) or None,
 			"available": available,
+			"health_status": health_status,
 			"supports_tools": supports_tools,
 			"supports_vision": supports_vision,
 			"latency_ms": latency_ms,
@@ -808,14 +891,17 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 			"vision_error_code": vision_error_code,
 		})
 
-	available_count = sum(1 for item in normalized_items if item["available"])
+	available_count = sum(1 for item in normalized_items if item["health_status"] == "available")
+	degraded_count = sum(1 for item in normalized_items if item["health_status"] == "degraded")
+	unavailable_count = sum(1 for item in normalized_items if item["health_status"] == "unavailable")
 	response = {
 		"source": _normalize_text(result.get("source"), max_length=40) or "litellm",
 		"trigger": trigger,
 		"requested_count": len(resolved_aliases),
 		"checked_count": len(normalized_items),
 		"available_count": available_count,
-		"unavailable_count": len(normalized_items) - available_count,
+		"degraded_count": degraded_count,
+		"unavailable_count": unavailable_count,
 		"items": normalized_items,
 	}
 	_record_audit(
@@ -826,6 +912,8 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 		parameters={"model_aliases": resolved_aliases, "trigger": trigger},
 		result=response,
 	)
+	frappe.db.commit()
+	response["runtime_cache_invalidated"] = _invalidate_runtime_policy_cache()
 	return {
 		"status": "success",
 		"message": _("AI 模型可用性检查已完成。"),

@@ -7,6 +7,7 @@ import frappe
 from myapp.services.ai_model_governance_service import (
 	_normalize_model_metadata_payload,
 	_normalize_policy_payload,
+	_resolve_health_status,
 	_validate_budget_and_cost,
 	_validate_policy_conflicts,
 	_validate_registry_models,
@@ -29,6 +30,25 @@ def _run_immediately(_namespace, _request_id, callback, **_kwargs):
 
 
 class TestAiModelGovernanceService(TestCase):
+	def test_health_status_requires_two_transient_failures_before_unavailable(self):
+		self.assertEqual(_resolve_health_status(
+			available=False, error_code="PROVIDER_HTTP_429", previous_status="available",
+		), "degraded")
+		self.assertEqual(_resolve_health_status(
+			available=False, error_code="PROVIDER_TIMEOUT", previous_status="degraded",
+		), "unavailable")
+
+	def test_health_status_recovers_and_rejects_deterministic_errors_immediately(self):
+		self.assertEqual(_resolve_health_status(
+			available=True, error_code=None, previous_status="unavailable",
+		), "available")
+		self.assertEqual(_resolve_health_status(
+			available=False, error_code="PROVIDER_HTTP_401", previous_status="available",
+		), "unavailable")
+		self.assertEqual(_resolve_health_status(
+			available=False, error_code="MODEL_ALIAS_NOT_LISTED", previous_status="available",
+		), "unavailable")
+
 	@patch("myapp.services.ai_model_governance_service._ensure_tables")
 	def test_runtime_readiness_is_safe_when_no_policy_is_published(self, _mock_tables):
 		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
@@ -147,7 +167,7 @@ class TestAiModelGovernanceService(TestCase):
 	def test_availability_check_updates_health_without_changing_governance_status(
 		self, _mock_idempotent, _mock_actor, _mock_tables, mock_orchestrator, mock_audit,
 	):
-		mock_orchestrator.return_value = {
+		availability_result = {
 			"source": "litellm",
 			"items": [
 				{
@@ -162,6 +182,7 @@ class TestAiModelGovernanceService(TestCase):
 				},
 			],
 		}
+		mock_orchestrator.side_effect = [availability_result, {"invalidated": True}]
 		with patch.object(ai_model_governance_service, "frappe") as mock_frappe, patch(
 			"myapp.services.ai_model_governance_service.now_datetime",
 			return_value="2026-07-22 18:00:00",
@@ -171,6 +192,16 @@ class TestAiModelGovernanceService(TestCase):
 					frappe._dict(model_alias="erp-embedding"),
 					frappe._dict(model_alias="erp-fast-chat"),
 				],
+				[
+					frappe._dict(
+						model_alias="erp-embedding", last_health_status="available",
+						supports_tools=1, supports_vision=1,
+					),
+					frappe._dict(
+						model_alias="erp-fast-chat", last_health_status="available",
+						supports_tools=1, supports_vision=0,
+					),
+				],
 				None,
 				None,
 			]
@@ -178,19 +209,29 @@ class TestAiModelGovernanceService(TestCase):
 
 		self.assertEqual(result["data"]["checked_count"], 2)
 		self.assertEqual(result["data"]["available_count"], 1)
-		self.assertEqual(result["data"]["unavailable_count"], 1)
-		mock_orchestrator.assert_called_once_with(
+		self.assertEqual(result["data"]["degraded_count"], 1)
+		self.assertEqual(result["data"]["unavailable_count"], 0)
+		self.assertTrue(result["data"]["runtime_cache_invalidated"])
+		self.assertEqual(mock_orchestrator.call_count, 2)
+		mock_orchestrator.assert_any_call(
 			"/internal/v1/governance/models/availability",
 			payload={"model_aliases": ["erp-embedding", "erp-fast-chat"]},
 			method="POST",
 			timeout=180,
 		)
-		update_calls = mock_frappe.db.sql.call_args_list[1:]
+		mock_orchestrator.assert_any_call(
+			"/internal/v1/governance/policy-cache/invalidate",
+			payload={}, method="POST",
+		)
+		update_calls = mock_frappe.db.sql.call_args_list[2:]
 		self.assertTrue(all("SET last_health_at" in call.args[0] for call in update_calls))
 		self.assertTrue(all("SET status" not in call.args[0] for call in update_calls))
 		self.assertEqual(update_calls[0].args[1][1], "available")
-		self.assertEqual(update_calls[1].args[1][1], "unavailable")
+		self.assertEqual(update_calls[1].args[1][1], "degraded")
 		self.assertEqual(update_calls[1].args[1][2], "PROVIDER_HTTP_429")
+		self.assertEqual(update_calls[1].args[1][4], 1)
+		self.assertEqual(update_calls[1].args[1][5], 1)
+		mock_frappe.db.commit.assert_called_once()
 		mock_audit.assert_called_once()
 		self.assertEqual(mock_audit.call_args.kwargs["action"], "check_model_availability")
 
@@ -202,7 +243,7 @@ class TestAiModelGovernanceService(TestCase):
 	def test_availability_check_limits_provider_calls_to_selected_models(
 		self, _idempotent, _actor, _tables, mock_orchestrator, mock_audit,
 	):
-		mock_orchestrator.return_value = {
+		availability_result = {
 			"source": "litellm",
 			"items": [{
 				"model_alias": "gpt-5.5", "capability": "structured",
@@ -210,12 +251,17 @@ class TestAiModelGovernanceService(TestCase):
 				"provider_model": "openai/gpt-5.5", "error_code": None,
 			}],
 		}
+		mock_orchestrator.side_effect = [availability_result, {"invalidated": True}]
 		with patch.object(ai_model_governance_service, "frappe") as mock_frappe, patch(
 			"myapp.services.ai_model_governance_service.now_datetime",
 			return_value="2026-08-01 12:00:00",
 		):
 			mock_frappe.db.sql.side_effect = [
 				[frappe._dict(model_alias="gpt-5.5")],
+				[frappe._dict(
+					model_alias="gpt-5.5", last_health_status="available",
+					supports_tools=1, supports_vision=1,
+				)],
 				None,
 			]
 			result = check_ai_model_availability_v1(
@@ -225,7 +271,7 @@ class TestAiModelGovernanceService(TestCase):
 
 		self.assertEqual(result["data"]["requested_count"], 1)
 		self.assertEqual(result["data"]["trigger"], "manual_selected")
-		mock_orchestrator.assert_called_once_with(
+		mock_orchestrator.assert_any_call(
 			"/internal/v1/governance/models/availability",
 			payload={"model_aliases": ["gpt-5.5"]},
 			method="POST",
