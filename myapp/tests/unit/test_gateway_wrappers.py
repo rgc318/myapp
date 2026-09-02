@@ -129,6 +129,7 @@ from myapp.api.gateway import (
 	get_payment_entry_detail_v1,
 	get_delivery_note_detail_v2,
 	get_product_detail_v2,
+	list_product_change_history_v1,
 	list_product_prices_v1,
 	get_sales_order_detail,
 	get_sales_invoice_detail_v2,
@@ -1954,6 +1955,23 @@ class TestGatewayWrappers(TestCase):
 
 		self.assertEqual(result["data"]["prices"], [])
 		mock_list_prices.assert_called_once_with(item_code="ITEM-001")
+
+	@patch("myapp.api.wholesale_api.list_product_change_history_v1_service")
+	def test_list_product_change_history_preserves_pagination_through_adapter(self, mock_history):
+		mock_history.return_value = {
+			"status": "success",
+			"data": {"events": [], "pagination": {"start": 20, "limit": 10}},
+		}
+
+		result = gateway_module.list_product_change_history_v1(
+			"ITEM-001",
+			start="20",
+			limit="10",
+		)
+
+		self.assertEqual(result["data"]["pagination"]["start"], 20)
+		mock_history.assert_called_once_with(item_code="ITEM-001", start=20, limit=10)
+		self.assertIsNotNone(list_product_change_history_v1)
 
 	@patch("myapp.api.gateway.upsert_product_price_v1_service")
 	def test_upsert_product_price_forwards_payload(self, mock_upsert_price):

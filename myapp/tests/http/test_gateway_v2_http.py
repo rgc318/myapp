@@ -663,6 +663,31 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self.assertEqual(detail_data["description"], "更新后的商品描述")
 		self.assertEqual(detail_data["price"], 19.0)
 
+	def test_product_change_history_returns_created_and_updated_events(self):
+		_create_request, create_payload = self._create_product_v2(
+			item_name=f"HTTP-V2-审计商品-{time.time_ns()}",
+			description="审计前描述",
+		)
+		item_code = create_payload["message"]["data"]["item_code"]
+		self._update_product_v2(item_code, description="审计后描述")
+
+		status_code, payload = self._call_gateway(
+			"myapp.api.gateway.list_product_change_history_v1",
+			{"item_code": item_code, "start": 0, "limit": 20},
+		)
+
+		self._assert_success(status_code, payload, code="PRODUCT_CHANGE_HISTORY_FETCHED")
+		data = payload["message"]["data"]
+		self.assertEqual(data["item_code"], item_code)
+		self.assertTrue(any(event["action"] == "created" for event in data["events"]))
+		self.assertTrue(
+			any(
+				event["action"] == "updated"
+				and any(change["field"] == "description" for change in event["changes"])
+				for event in data["events"]
+			)
+		)
+
 	def test_get_sales_order_detail_success(self):
 		_order_request, order_payload = self._create_sales_order()
 		order_name = order_payload["message"]["data"]["order"]

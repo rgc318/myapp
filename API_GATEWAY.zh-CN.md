@@ -9,6 +9,7 @@
 - `myapp.api.gateway.create_product_v2`
 - `myapp.api.gateway.get_product_detail_v2`
 - `myapp.api.gateway.list_product_prices_v1`
+- `myapp.api.gateway.list_product_change_history_v1`
 - `myapp.api.gateway.upsert_product_price_v1`
 - `myapp.api.gateway.terminate_product_price_v1`
 - `myapp.api.gateway.assess_product_uom_migration_v1`
@@ -109,7 +110,7 @@
 
 ### 模块导航
 
-- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`assess_product_uom_migration_v1`、`execute_product_uom_migration_v1`、`update_product_v2`、`disable_product_v2`、`add_product_barcode_v2`、`set_primary_product_barcode_v2`、`delete_product_barcode_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`list_business_documents_v1`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`get_payment_entry_detail_v1`、`get_customer_refund_context_v1`、`create_customer_refund`、`process_sales_return`
+- 销售与商品：`search_product`、`search_product_v2`、`create_product_and_stock`、`create_product_v2`、`list_products_v2`、`get_product_detail_v2`、`list_product_prices_v1`、`list_product_change_history_v1`、`upsert_product_price_v1`、`terminate_product_price_v1`、`assess_product_uom_migration_v1`、`execute_product_uom_migration_v1`、`update_product_v2`、`disable_product_v2`、`add_product_barcode_v2`、`set_primary_product_barcode_v2`、`delete_product_barcode_v2`、`get_customer_sales_context`、`list_customers_v2`、`get_customer_detail_v2`、`create_customer_v2`、`update_customer_v2`、`disable_customer_v2`、`create_order`、`create_order_v2`、`quick_create_order_v2`、`quick_cancel_order_v2`、`get_sales_order_detail`、`get_sales_order_status_summary`、`search_sales_orders_v2`、`list_business_documents_v1`、`get_delivery_note_detail_v2`、`get_sales_invoice_detail_v2`、`submit_delivery`、`cancel_delivery_note`、`create_sales_invoice`、`cancel_sales_invoice`、`update_payment_status`、`cancel_payment_entry`、`get_payment_entry_detail_v1`、`get_customer_refund_context_v1`、`create_customer_refund`、`process_sales_return`
 - 采购与结算：`create_purchase_order`、`quick_create_purchase_order_v2`、`receive_purchase_order`、`create_purchase_invoice`、`create_purchase_invoice_from_receipt`、`record_supplier_payment`、`process_purchase_return`、`quick_cancel_purchase_order_v2`
 - 采购快捷链路：`quick_create_purchase_order_v2`、`quick_cancel_purchase_order_v2`
 - 采购聚合与供应商：`get_purchase_order_detail_v2`、`get_purchase_order_status_summary`、`search_purchase_orders_v2`、`list_business_documents_v1`、`get_purchase_receipt_detail_v2`、`get_purchase_invoice_detail_v2`、`get_supplier_purchase_context`、`list_suppliers_v2`、`get_supplier_detail_v2`、`create_supplier_v2`、`update_supplier_v2`、`disable_supplier_v2`
@@ -2607,6 +2608,31 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
   - `modified`
 - 顶层同时返回 `price_lists[]` 和 `permissions.can_create / can_write`，供 Web 隐藏或禁用无权限的维护动作。
 - 适用于商品详情和 AI 商品快捷窗口的完整单位化价格矩阵。
+
+### list_product_change_history_v1
+
+方法：
+
+- `myapp.api.gateway.list_product_change_history_v1`
+
+参数：
+
+- `item_code: str`
+- `start: int = 0`
+- `limit: int = 50`，最大 200
+
+行为：
+
+- 要求当前用户具有目标 `Item.read`，只聚合该商品及当前用户可见价格表范围内的正式记录。
+- 聚合来源包括：
+  - 商品创建记录与 `Item` 的 Frappe `Version`
+  - 当前可见 `Item Price` 的创建记录与 Frappe `Version`
+  - 条码、单位换算和默认单位在 `Item` Version 中的子表差异
+  - `MyApp Product Correction` 的原地单位纠正和继任商品审计
+- 返回事件统一包含 `occurred_at`、`actor`、`category`、`action`、`title`、`summary`、来源 DocType/单号和结构化 `changes[]`。
+- `category` 为 `product | price | barcode | uom | valuation`；`action` 为 `created | updated | terminated | corrected`。
+- 历史值进行长度限制并过滤凭据型键；接口不允许客户端提交、覆盖或伪造历史记录。
+- 返回 offset 分页元数据 `start / limit / returned_count / has_more`，供商品维护工作区的变更历史页签使用。
 
 ### upsert_product_price_v1
 

@@ -16,6 +16,7 @@ from myapp.services.wholesale_service import (
 	delete_product_barcode_v2,
 	disable_product_v2,
 	get_product_detail_v2,
+	list_product_change_history_v1,
 	list_product_prices_v1,
 	list_products_v2,
 	search_product,
@@ -28,6 +29,87 @@ from myapp.services.wholesale_service import (
 
 
 class TestWholesaleService(TestCase):
+	@patch("myapp.services.wholesale_service.list_product_corrections_for_history")
+	@patch("myapp.services.wholesale_service.frappe.get_all")
+	@patch("myapp.services.wholesale_service._get_permitted_product_price_lists")
+	@patch("myapp.services.wholesale_service.require_document_permission")
+	def test_list_product_change_history_aggregates_governed_sources(
+		self,
+		mock_require_document_permission,
+		mock_price_lists,
+		mock_get_all,
+		mock_corrections,
+	):
+		mock_require_document_permission.return_value = frappe._dict(
+			name="ITEM-001",
+			creation="2026-09-03 09:00:00",
+			owner="creator@example.com",
+		)
+		mock_price_lists.return_value = {
+			"Standard Selling": {"buying": False, "selling": True, "currency": "CNY"},
+		}
+		mock_get_all.side_effect = [
+			[
+				frappe._dict(
+					name="PRICE-1",
+					creation="2026-09-03 10:00:00",
+					owner="price@example.com",
+					price_list="Standard Selling",
+					currency="CNY",
+					uom="Nos",
+					price_list_rate=12,
+					valid_from=None,
+					valid_upto="2026-09-03",
+				)
+			],
+			[
+				frappe._dict(
+					name="VERSION-ITEM-1",
+					creation="2026-09-03 11:00:00",
+					owner="editor@example.com",
+					modified_by="editor@example.com",
+					docname="ITEM-001",
+					data='{"changed":[["item_name","旧名称","新名称"]],"added":[["barcodes",{"barcode":"6901","uom":"Nos"}]]}',
+				)
+			],
+			[
+				frappe._dict(
+					name="VERSION-PRICE-1",
+					creation="2026-09-03 11:30:00",
+					owner="price@example.com",
+					modified_by="price@example.com",
+					docname="PRICE-1",
+					data='{"changed":[["valid_upto",null,"2026-09-03"]]}',
+				)
+			],
+		]
+		mock_corrections.return_value = [
+			frappe._dict(
+				name="CORRECTION-1",
+				creation="2026-09-03 12:00:00",
+				owner="admin@example.com",
+				modified_by="admin@example.com",
+				source_item="ITEM-001",
+				target_item="ITEM-002",
+				correction_type="replacement",
+				status="completed",
+				reason="包装基础变化",
+				executed_by="admin@example.com",
+				executed_at="2026-09-03 12:00:00",
+			)
+		]
+
+		result = list_product_change_history_v1("ITEM-001", limit=20)
+
+		events = result["data"]["events"]
+		self.assertEqual(events[0]["action"], "corrected")
+		self.assertEqual(events[0]["title"], "创建继任商品")
+		self.assertEqual(events[1]["action"], "terminated")
+		self.assertEqual(events[2]["category"], "barcode")
+		self.assertEqual(events[-1]["action"], "created")
+		self.assertFalse(result["data"]["pagination"]["has_more"])
+		mock_require_document_permission.assert_called_once_with("Item", "ITEM-001", "read")
+
 	@patch("myapp.services.wholesale_service.frappe.has_permission", return_value=True)
 	@patch("myapp.services.wholesale_service.frappe.get_all")
 	@patch("myapp.services.wholesale_service._get_permitted_product_price_lists")

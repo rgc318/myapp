@@ -17,7 +17,10 @@ from myapp.services.data_permission_service import (
 	require_document_permission,
 	require_doctype_permission,
 )
-from myapp.services.product_correction_service import record_product_correction
+from myapp.services.product_correction_service import (
+	list_product_corrections_for_history,
+	record_product_correction,
+)
 from myapp.utils.idempotency import get_current_request_id, run_idempotent
 from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom_display import build_uom_display_map, sort_uom_rows
@@ -41,6 +44,26 @@ PRODUCT_UOM_MIGRATION_COMMITTED_BIN_FIELDS = (
 	"planned_qty",
 	"indented_qty",
 )
+PRODUCT_HISTORY_FIELD_LABELS = {
+	"item_name": _("商品名称"),
+	"item_group": _("商品分类"),
+	"brand": _("品牌"),
+	"description": _("描述"),
+	"image": _("商品图片"),
+	"disabled": _("停用状态"),
+	"stock_uom": _("库存基准单位"),
+	"valuation_rate": _("库存估值成本"),
+	"barcodes": _("条码"),
+	"uoms": _("单位换算"),
+	WHOLESALE_DEFAULT_UOM_FIELD: _("批发默认单位"),
+	RETAIL_DEFAULT_UOM_FIELD: _("零售默认单位"),
+	"price_list_rate": _("价格金额"),
+	"price_list": _("价格表"),
+	"currency": _("币种"),
+	"uom": _("计价单位"),
+	"valid_from": _("生效日期"),
+	"valid_upto": _("失效日期"),
+}
 
 
 def _normalize_text(value: str | None):
@@ -1457,6 +1480,293 @@ def list_product_prices_v1(item_code: str):
 				}
 				for name, config in price_lists.items()
 			],
+		},
+	}
+
+
+def _product_history_value(value):
+	if isinstance(value, str):
+		return value if len(value) <= 500 else f"{value[:500]}…"
+	if isinstance(value, dict):
+		return {
+			str(key): _product_history_value(nested)
+			for key, nested in value.items()
+			if str(key).lower() not in {"password", "secret", "token"}
+		}
+	if isinstance(value, (list, tuple)):
+		return [_product_history_value(nested) for nested in list(value)[:50]]
+	return value
+
+
+def _product_history_label(fieldname):
+	resolved = _normalize_text(fieldname)
+	if "." in resolved:
+		parent, child = resolved.split(".", 1)
+		return f"{PRODUCT_HISTORY_FIELD_LABELS.get(parent, parent)} · {PRODUCT_HISTORY_FIELD_LABELS.get(child, child)}"
+	return PRODUCT_HISTORY_FIELD_LABELS.get(resolved, resolved or _("未知字段"))
+
+
+def _parse_product_version_changes(raw_data):
+	if isinstance(raw_data, str):
+		try:
+			payload = frappe.parse_json(raw_data) or {}
+		except Exception:
+			payload = {}
+	elif isinstance(raw_data, dict):
+		payload = raw_data
+	else:
+		payload = {}
+	changes = []
+	for row in payload.get("changed") or []:
+		if not isinstance(row, (list, tuple)) or len(row) < 3:
+			continue
+		fieldname = _normalize_text(row[0])
+		changes.append(
+			{
+				"field": fieldname,
+				"label": _product_history_label(fieldname),
+				"old_value": _product_history_value(row[1]),
+				"new_value": _product_history_value(row[2]),
+			}
+		)
+	for key, action in (("added", "added"), ("removed", "removed")):
+		for row in payload.get(key) or []:
+			if not isinstance(row, (list, tuple)) or len(row) < 2:
+				continue
+			fieldname = _normalize_text(row[0])
+			value = _product_history_value(row[1])
+			changes.append(
+				{
+					"field": fieldname,
+					"label": _product_history_label(fieldname),
+					"old_value": value if action == "removed" else None,
+					"new_value": value if action == "added" else None,
+					"row_action": action,
+				}
+			)
+	for row in payload.get("row_changed") or []:
+		if not isinstance(row, (list, tuple)) or len(row) < 4:
+			continue
+		parent_field = _normalize_text(row[0])
+		for child_change in row[3] or []:
+			if not isinstance(child_change, (list, tuple)) or len(child_change) < 3:
+				continue
+			fieldname = f"{parent_field}.{_normalize_text(child_change[0])}"
+			changes.append(
+				{
+					"field": fieldname,
+					"label": _product_history_label(fieldname),
+					"old_value": _product_history_value(child_change[1]),
+					"new_value": _product_history_value(child_change[2]),
+				}
+			)
+	return changes
+
+
+def _product_history_category(changes):
+	fields = {_normalize_text(change.get("field")) for change in changes}
+	if any(field == "barcodes" or field.startswith("barcodes.") for field in fields):
+		return "barcode"
+	if any(
+		field in {"stock_uom", "uoms", WHOLESALE_DEFAULT_UOM_FIELD, RETAIL_DEFAULT_UOM_FIELD}
+		or field.startswith("uoms.")
+		for field in fields
+	):
+		return "uom"
+	if fields == {"valuation_rate"}:
+		return "valuation"
+	return "product"
+
+
+def _product_history_event_from_version(row, *, category, title, summary, source_doctype):
+	changes = _parse_product_version_changes(row.data)
+	resolved_category = category(changes) if callable(category) else category
+	resolved_title = {
+		"barcode": _("更新条码"),
+		"uom": _("更新单位配置"),
+		"valuation": _("更新库存估值"),
+	}.get(resolved_category, title)
+	return {
+		"id": f"Version:{row.name}",
+		"occurred_at": str(row.creation),
+		"actor": _normalize_text(row.owner) or _normalize_text(getattr(row, "modified_by", None)) or None,
+		"category": resolved_category,
+		"action": "updated",
+		"title": resolved_title,
+		"summary": summary,
+		"source_doctype": source_doctype,
+		"source_name": row.docname,
+		"changes": changes,
+	}
+
+
+def list_product_change_history_v1(item_code: str, start: int = 0, limit: int = 50):
+	item_code = _normalize_text(item_code)
+	if not item_code:
+		frappe.throw(_("商品编码不能为空。"))
+	item = require_document_permission("Item", item_code, "read")
+	resolved_start = _normalize_start(start)
+	resolved_limit = max(1, min(int(limit or 50), 200))
+	fetch_limit = resolved_start + resolved_limit + 1
+	price_lists = _get_permitted_product_price_lists()
+	price_rows = []
+	if price_lists:
+		price_rows = frappe.get_all(
+			"Item Price",
+			filters={"item_code": item.name, "price_list": ["in", list(price_lists)]},
+			fields=[
+				"name",
+				"creation",
+				"owner",
+				"price_list",
+				"currency",
+				"uom",
+				"price_list_rate",
+				"valid_from",
+				"valid_upto",
+			],
+			order_by="creation desc",
+			limit_page_length=fetch_limit,
+		)
+	price_by_name = {row.name: row for row in price_rows}
+	item_versions = frappe.get_all(
+		"Version",
+		filters={"ref_doctype": "Item", "docname": item.name},
+		fields=["name", "creation", "owner", "modified_by", "docname", "data"],
+		order_by="creation desc",
+		limit_page_length=fetch_limit,
+	)
+	price_versions = []
+	if price_by_name:
+		price_versions = frappe.get_all(
+			"Version",
+			filters={"ref_doctype": "Item Price", "docname": ["in", list(price_by_name)]},
+			fields=["name", "creation", "owner", "modified_by", "docname", "data"],
+			order_by="creation desc",
+			limit_page_length=fetch_limit,
+		)
+	initial_price_rates = {
+		name: flt(row.price_list_rate or 0) for name, row in price_by_name.items()
+	}
+	for row in price_versions:
+		for change in _parse_product_version_changes(row.data):
+			if change.get("field") == "price_list_rate":
+				initial_price_rates[row.docname] = flt(change.get("old_value") or 0)
+	events = []
+	if getattr(item, "creation", None):
+		events.append(
+			{
+				"id": f"Item:{item.name}:created",
+				"occurred_at": str(item.creation),
+				"actor": _normalize_text(getattr(item, "owner", None)) or None,
+				"category": "product",
+				"action": "created",
+				"title": _("创建商品"),
+				"summary": item.name,
+				"source_doctype": "Item",
+				"source_name": item.name,
+				"changes": [],
+			}
+		)
+	for row in item_versions:
+		events.append(
+			_product_history_event_from_version(
+				row,
+				category=_product_history_category,
+				title=_("更新商品资料"),
+				summary=item.name,
+				source_doctype="Item",
+			)
+		)
+	for row in price_rows:
+		events.append(
+			{
+				"id": f"Item Price:{row.name}:created",
+				"occurred_at": str(row.creation),
+				"actor": _normalize_text(row.owner) or None,
+				"category": "price",
+				"action": "created",
+				"title": _("新增价格"),
+				"summary": f"{row.price_list} · {_normalize_text(row.uom) or _('未指定单位')}",
+				"source_doctype": "Item Price",
+				"source_name": row.name,
+				"changes": [
+					{
+						"field": "price_list_rate",
+						"label": _product_history_label("price_list_rate"),
+						"old_value": None,
+						"new_value": initial_price_rates.get(row.name, flt(row.price_list_rate or 0)),
+					}
+				],
+			}
+		)
+	for row in price_versions:
+		price = price_by_name.get(row.docname)
+		changes = _parse_product_version_changes(row.data)
+		terminated = False
+		for change in changes:
+			if change.get("field") != "valid_upto" or change.get("new_value") in (None, ""):
+				continue
+			try:
+				terminated = getdate(change.get("new_value")) <= getdate(row.creation)
+			except Exception:
+				terminated = False
+			if terminated:
+				break
+		events.append(
+			{
+				"id": f"Version:{row.name}",
+				"occurred_at": str(row.creation),
+				"actor": _normalize_text(row.owner) or _normalize_text(getattr(row, "modified_by", None)) or None,
+				"category": "price",
+				"action": "terminated" if terminated else "updated",
+				"title": _("终止价格") if terminated else _("更新价格"),
+				"summary": (
+					f"{price.price_list} · {_normalize_text(price.uom) or _('未指定单位')}"
+					if price
+					else row.docname
+				),
+				"source_doctype": "Item Price",
+				"source_name": row.docname,
+				"changes": changes,
+			}
+		)
+	for row in list_product_corrections_for_history(item.name, limit=fetch_limit):
+		correction_type = _normalize_text(row.correction_type)
+		events.append(
+			{
+				"id": f"MyApp Product Correction:{row.name}",
+				"occurred_at": str(row.executed_at or row.creation),
+				"actor": _normalize_text(row.executed_by or row.modified_by or row.owner) or None,
+				"category": "uom",
+				"action": "corrected",
+				"title": _("创建继任商品") if correction_type == "replacement" else _("原地纠正单位"),
+				"summary": _normalize_text(row.reason) or _("库存基准单位纠正"),
+				"source_doctype": "MyApp Product Correction",
+				"source_name": row.name,
+				"changes": [
+					{
+						"field": "target_item",
+						"label": _("目标商品"),
+						"old_value": row.source_item,
+						"new_value": row.target_item,
+					}
+				],
+			}
+		)
+	events.sort(key=lambda event: (event.get("occurred_at") or "", event.get("id") or ""), reverse=True)
+	page = events[resolved_start : resolved_start + resolved_limit]
+	return {
+		"status": "success",
+		"data": {
+			"item_code": item.name,
+			"events": page,
+			"pagination": {
+				"start": resolved_start,
+				"limit": resolved_limit,
+				"returned_count": len(page),
+				"has_more": len(events) > resolved_start + resolved_limit,
+			},
 		},
 	}
 

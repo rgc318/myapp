@@ -86,6 +86,26 @@ def record_product_correction(
 	return name
 
 
+def list_product_corrections_for_history(item_code: str, *, limit: int = 100):
+	resolved_item_code = _normalize_text(item_code)
+	if not resolved_item_code or not _table_exists():
+		return []
+	resolved_limit = max(1, min(cint(limit or 100), 500))
+	return frappe.db.sql(
+		f"""
+		SELECT
+			name, creation, owner, modified_by, source_item, target_item,
+			correction_type, status, reason, executed_by, executed_at
+		FROM `{CORRECTION_TABLE}`
+		WHERE source_item = %(item_code)s OR target_item = %(item_code)s
+		ORDER BY creation DESC
+		LIMIT %(limit)s
+		""",
+		{"item_code": resolved_item_code, "limit": resolved_limit},
+		as_dict=True,
+	)
+
+
 def _latest_recorded_replacement(item_code: str):
 	if not _table_exists():
 		return None

@@ -10,6 +10,7 @@ from myapp.services.wholesale_service import disable_product_v2 as disable_produ
 from myapp.services.wholesale_service import execute_product_uom_migration_v1 as execute_product_uom_migration_v1_service
 from myapp.services.wholesale_service import get_product_detail_v2 as get_product_detail_v2_service
 from myapp.services.wholesale_service import list_product_prices_v1 as list_product_prices_v1_service
+from myapp.services.wholesale_service import list_product_change_history_v1 as list_product_change_history_v1_service
 from myapp.services.wholesale_service import list_products_v2 as list_products_v2_service
 from myapp.services.wholesale_service import search_product as search_product_service
 from myapp.services.wholesale_service import search_product_v2 as search_product_v2_service
@@ -145,6 +146,15 @@ def get_product_detail_v2(
 @frappe.whitelist()
 def list_product_prices_v1(item_code: str):
 	return list_product_prices_v1_service(item_code=item_code)
+
+
+@frappe.whitelist()
+def list_product_change_history_v1(item_code: str, start: int = 0, limit: int = 50):
+	return list_product_change_history_v1_service(
+		item_code=item_code,
+		start=cint(start),
+		limit=cint(limit),
+	)
 
 
 @frappe.whitelist()

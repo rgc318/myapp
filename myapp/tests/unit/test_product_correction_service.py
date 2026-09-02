@@ -6,11 +6,25 @@ import frappe
 from myapp.services import product_correction_service
 from myapp.services.product_correction_service import (
 	_legacy_replacement,
+	list_product_corrections_for_history,
 	resolve_active_product_reference,
 )
 
 
 class TestProductCorrectionService(TestCase):
+	@patch("myapp.services.product_correction_service._table_exists", return_value=True)
+	def test_lists_corrections_for_source_or_target_product(self, _mock_table_exists):
+		fake_db = MagicMock()
+		fake_db.sql.return_value = [frappe._dict(name="CORRECTION-1")]
+
+		with patch.object(product_correction_service.frappe, "db", fake_db):
+			result = list_product_corrections_for_history("ITEM-001", limit=25)
+
+		self.assertEqual(result[0].name, "CORRECTION-1")
+		params = fake_db.sql.call_args.args[1]
+		self.assertEqual(params, {"item_code": "ITEM-001", "limit": 25})
+		self.assertTrue(fake_db.sql.call_args.kwargs["as_dict"])
+
 	@patch("myapp.services.product_correction_service.require_document_permission")
 	@patch("myapp.services.product_correction_service._legacy_replacement", return_value=None)
 	@patch("myapp.services.product_correction_service._latest_recorded_replacement")
