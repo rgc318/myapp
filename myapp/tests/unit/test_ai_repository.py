@@ -10,8 +10,10 @@ from myapp.services.ai_repository import (
 	_nearest_rank_percentile,
 	_normalize_agent_checkpoint,
 	_normalize_conversation_state,
+	append_message,
 	cancel_agent_run,
 	create_run,
+	create_or_reuse_action_draft,
 	expire_stale_ai_runs,
 	fail_run,
 	get_agent_run_control,
@@ -695,7 +697,52 @@ class TestAiRepository(TestCase):
 			"attachments": [{"attachment_id": "AI-ATT-1"}],
 		}])
 		self.assertIn("sequence_no >= %s", mock_frappe.db.sql.call_args.args[0])
+		self.assertIn("message_kind, 'chat'", mock_frappe.db.sql.call_args.args[0])
 		self.assertEqual(mock_frappe.db.sql.call_args.args[1], ("AI-CONV-1", 7, 20))
+
+	def test_append_message_persists_explicit_message_kind(self):
+		conversation = frappe._dict({
+			"name": "AI-CONV-1", "status": "active", "message_count": 2,
+		})
+		with patch.object(
+			ai_repository, "_get_owned_conversation", return_value=conversation,
+		), patch.object(ai_repository, "_name", return_value="AI-MSG-3"), patch.object(
+			ai_repository, "frappe",
+		) as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime", return_value="2026-09-02 10:00:00",
+		):
+			mock_frappe.as_json.side_effect = frappe.as_json
+			result = append_message(
+				conversation_id="AI-CONV-1", user="user@example.com",
+				role="assistant", message_kind="activity", content="历史业务操作",
+				scenario="product_setup_draft",
+			)
+
+		self.assertEqual(result, {"name": "AI-MSG-3", "sequence": 3})
+		insert_query, insert_parameters = mock_frappe.db.sql.call_args_list[0].args
+		self.assertIn("role, message_kind, content", insert_query)
+		self.assertEqual(insert_parameters[7:10], ("assistant", "activity", "历史业务操作"))
+
+	def test_create_or_reuse_action_draft_returns_existing_active_draft(self):
+		with patch.object(
+			ai_repository, "_get_owned_conversation",
+		), patch.object(ai_repository, "get_draft", return_value={"name": "AI-DRAFT-1"}), patch.object(
+			ai_repository, "create_draft",
+		) as mock_create, patch.object(ai_repository, "frappe") as mock_frappe:
+			mock_frappe.db.sql.return_value = [frappe._dict({"name": "AI-DRAFT-1"})]
+			result = create_or_reuse_action_draft(
+				user="user@example.com", conversation_id="AI-CONV-1",
+				source_run="AI-ACTION-1", draft_type="product_setup",
+				company="Demo Company", title="完善商品 ITEM-1",
+				payload={"item_code": "ITEM-1"}, validation={},
+				origin_action="product_update", origin_entity_type="Item",
+				origin_entity_name="ITEM-1", active_dedupe_key="dedupe-key",
+			)
+
+		self.assertFalse(result["created"])
+		self.assertEqual(result["draft"]["name"], "AI-DRAFT-1")
+		mock_create.assert_not_called()
+		self.assertIn("FOR UPDATE", mock_frappe.db.sql.call_args.args[0])
 	def test_refresh_conversation_citations_uses_latest_draft_state(self):
 		with patch.object(
 			ai_repository,
@@ -879,6 +926,7 @@ class TestAiRepository(TestCase):
 			)
 
 		self.assertEqual(result["status"], "executed")
+		self.assertIn("active_dedupe_key = NULL", mock_frappe.db.sql.call_args.args[0])
 		parameters = mock_frappe.db.sql.call_args.args[1]
 		self.assertEqual(parameters[2:8], ("REQ-1", "user@example.com", "2026-07-18 12:00:00", "Sales Order", "SO-001", mock_frappe.as_json.return_value))
 	def test_nearest_rank_percentile_uses_sorted_observations(self):

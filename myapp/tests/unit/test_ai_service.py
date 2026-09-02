@@ -27,6 +27,7 @@ from myapp.services.ai_service import (
 	_rebuild_order_draft_before_execution,
 	_authoritative_reference_price,
 	_refresh_ai_draft_before_execution,
+	_refresh_reused_inventory_action_draft,
 	_resolve_line_price_intent,
 	_execute_ai_draft_payload,
 	_fail_draft_generation_run,
@@ -43,6 +44,7 @@ from myapp.services.ai_service import (
 	_resolve_item_candidates,
 	_infer_ai_scenario,
 	_infer_ai_action_scenario,
+	_inventory_standard_buying_reference,
 	_is_simple_general_ai_message,
 	_issue_ai_scenario_resolution,
 	_prepare_chat_run,
@@ -140,12 +142,93 @@ class TestAiService(TestCase):
 			["product_update", "inventory_adjustment"],
 		)
 
+	@patch("myapp.services.ai_service.ai_repository.update_draft")
+	@patch("myapp.services.ai_service._build_inventory_adjustment_draft")
+	def test_reused_inventory_action_refreshes_legacy_zero_valuation(
+		self, mock_build, mock_update,
+	):
+		draft = {
+			"name": "AI-DRAFT-1", "version": 1,
+			"payload": {
+				"adjustment_type": "increase", "company": "Demo Company",
+				"quantity": 20, "reason": "盘点补录", "warehouse": "Stores - RD",
+				"items": [{
+					"item_code": "ITEM-1", "qty": 20, "uom": "Nos",
+					"valuation_rate": 0,
+				}],
+			},
+		}
+		refreshed_payload = {
+			**draft["payload"],
+			"items": [{
+				**draft["payload"]["items"][0],
+				"valuation_rate": 70,
+				"valuation_rate_source": "standard_buying_reference",
+			}],
+		}
+		refreshed_validation = {"ready_for_handoff": True, "errors": [], "warnings": []}
+		mock_build.return_value = (refreshed_payload, refreshed_validation)
+		mock_update.return_value = {**draft, "version": 2, "payload": refreshed_payload}
+
+		result = _refresh_reused_inventory_action_draft(
+			draft, user="user@example.com", company="Demo Company",
+		)
+
+		candidate = mock_build.call_args.args[0]
+		self.assertEqual(candidate["quantity"], 20)
+		self.assertEqual(candidate["reason"], "盘点补录")
+		self.assertNotIn("valuation_rate", candidate["items"][0])
+		mock_update.assert_called_once_with(
+			draft_id="AI-DRAFT-1", user="user@example.com",
+			payload=refreshed_payload, validation=refreshed_validation,
+			expected_version=1, change_source="system_revalidation",
+		)
+		self.assertEqual(result["version"], 2)
+
+	@patch("myapp.services.ai_service.ai_repository.update_draft")
+	@patch("myapp.services.ai_service._build_inventory_adjustment_draft")
+	def test_reused_inventory_action_preserves_explicit_user_zero(
+		self, mock_build, mock_update,
+	):
+		draft = {
+			"name": "AI-DRAFT-1", "version": 2,
+			"payload": {"items": [{
+				"item_code": "ITEM-1", "valuation_rate": 0,
+				"valuation_rate_source": "user",
+			}]},
+		}
+
+		result = _refresh_reused_inventory_action_draft(
+			draft, user="user@example.com", company="Demo Company",
+		)
+
+		self.assertIs(result, draft)
+		mock_build.assert_not_called()
+		mock_update.assert_not_called()
+
+	def test_inventory_standard_buying_reference_rejects_conflicting_uom_prices(self):
+		reference = _inventory_standard_buying_reference(
+			{
+				"uom": "Nos", "uom_display": "件",
+				"all_uoms": [
+					{"uom": "Nos", "uom_display": "件", "conversion_factor": 1},
+					{"uom": "Box", "uom_display": "箱", "conversion_factor": 24},
+				],
+				"price_summary": {"buying_prices": [
+					{"price_list": "Standard Buying", "rate": 70, "uom": "Nos"},
+					{"price_list": "Standard Buying", "rate": 70, "uom": "Box"},
+				]},
+			},
+			stock_uom="Nos",
+		)
+
+		self.assertTrue(reference["conflict"])
+		self.assertEqual(len(reference["candidates"]), 2)
+		self.assertEqual(reference["candidates"][0]["stock_unit_rate"], 70)
+		self.assertAlmostEqual(reference["candidates"][1]["stock_unit_rate"], 70 / 24)
+
 	@patch("myapp.services.ai_service._persist_prepared_draft_context")
-	@patch(
-		"myapp.services.ai_service._append_deterministic_draft_action_messages",
-		return_value=[{"name": "AI-MESSAGE-1"}],
-	)
-	@patch("myapp.services.ai_service.ai_repository.create_draft")
+	@patch("myapp.services.ai_service.ai_repository.create_or_reuse_action_draft")
 	@patch("myapp.services.ai_service._build_product_setup_draft")
 	@patch("myapp.services.ai_service.frappe.has_permission", return_value=True)
 	@patch("myapp.services.ai_service._resolve_deterministic_draft_action_context")
@@ -157,7 +240,6 @@ class TestAiService(TestCase):
 		_mock_has_permission,
 		mock_build_product_draft,
 		mock_create_draft,
-		_mock_append_messages,
 		_mock_persist_context,
 	):
 		resolution = {
@@ -180,10 +262,13 @@ class TestAiService(TestCase):
 			{"valid": True, "errors": [], "warnings": []},
 		)
 		mock_create_draft.return_value = {
-			"name": "AI-DRAFT-1",
-			"title": "完善商品 ITEM-NEW",
-			"draft_type": "product_setup",
-			"payload": {"operation": "update", "item_code": "ITEM-NEW"},
+			"created": True,
+			"draft": {
+				"name": "AI-DRAFT-1",
+				"title": "完善商品 ITEM-NEW",
+				"draft_type": "product_setup",
+				"payload": {"operation": "update", "item_code": "ITEM-NEW"},
+			},
 		}
 
 		result = _prepare_ai_product_action_draft_once(
@@ -203,6 +288,9 @@ class TestAiService(TestCase):
 		)
 		self.assertEqual(result["data"]["product_resolution"], resolution)
 		self.assertEqual(result["data"]["draft"]["payload"]["item_code"], "ITEM-NEW")
+		self.assertEqual(result["data"]["outcome"], "created")
+		self.assertEqual(result["data"]["messages"], [])
+		self.assertEqual(mock_create_draft.call_args.kwargs["origin_action"], "product_update")
 
 	@patch("myapp.services.ai_service.resolve_active_product_reference")
 	def test_product_action_rejects_disabled_item_without_successor(self, mock_resolve_product):
@@ -227,12 +315,11 @@ class TestAiService(TestCase):
 				conversation_id="AI-CONV-1",
 			)
 
-	@patch("myapp.services.ai_service._append_deterministic_draft_action_messages")
 	@patch("myapp.services.ai_service._update_ai_draft_once")
 	@patch("myapp.services.ai_service.ai_repository.get_draft")
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	def test_select_inventory_candidate_updates_original_draft_and_preserves_intent(
-		self, _user, mock_get_draft, mock_update, mock_messages,
+		self, _user, mock_get_draft, mock_update,
 	):
 		mock_get_draft.return_value = {
 			"name": "AI-DRAFT-1", "draft_type": "inventory_adjustment", "status": "draft",
@@ -250,11 +337,6 @@ class TestAiService(TestCase):
 			},
 		}
 		mock_update.return_value = {"status": "success", "data": {"name": "AI-DRAFT-1", "version": 2}}
-		mock_messages.return_value = [
-			{"name": "AI-MSG-USER", "role": "user", "content": "可口可乐"},
-			{"name": "AI-MSG-ASSISTANT", "role": "assistant", "content": "已选择"},
-		]
-
 		result = _select_ai_draft_product_candidate_once(
 			draft_id="AI-DRAFT-1", expected_version=1,
 			item_code="COKE-5000", selection_text="可口可乐",
@@ -269,6 +351,7 @@ class TestAiService(TestCase):
 		self.assertEqual(payload["items"][0]["item_code"], "COKE-5000")
 		self.assertEqual(mock_update.call_args.kwargs["change_source"], "candidate_selection")
 		self.assertEqual(result["data"]["draft"]["version"], 2)
+		self.assertEqual(result["data"]["messages"], [])
 
 	def test_product_update_context_marks_non_business_stock_uom_for_migration(self):
 		with patch("myapp.services.ai_service.frappe") as mock_frappe:
@@ -1746,15 +1829,147 @@ class TestAiService(TestCase):
 		}
 
 		result = _resolve_inventory_draft_item(
-			{"item_query": "ITEM-1", "adjustment_type": "increase", "quantity": 2, "uom": "Box"},
+			{
+				"item_query": "ITEM-1",
+				"adjustment_type": "increase",
+				"quantity": 2,
+				"uom": "Box",
+				"valuation_rate": 9.5,
+			},
 			company="Test Company", warehouse="Stores - TC",
 		)
 
 		self.assertEqual(result["current_stock_qty"], 5)
 		self.assertEqual(result["target_stock_qty"], 17)
 		self.assertEqual(result["qty_delta"], 12)
-		self.assertEqual(result["valuation_rate"], 12.5)
+		self.assertEqual(result["valuation_rate"], 9.5)
+		self.assertEqual(result["valuation_rate_source"], "user")
 		self.assertEqual(result["available_uoms"][0]["uom"], "Box")
+
+	@patch("myapp.services.ai_service.resolve_item_quantity_to_stock")
+	@patch("myapp.services.ai_service.resolve_item_uom")
+	@patch("myapp.services.ai_service.search_product_v2")
+	@patch("myapp.services.ai_service.frappe.get_list", return_value=["ITEM-1"])
+	def test_resolve_inventory_draft_item_suggests_standard_buying_when_valuation_missing(
+		self, _allowed, mock_search_product, mock_resolve_uom, mock_resolve_quantity,
+	):
+		mock_search_product.return_value = {"data": [{
+			"item_code": "ITEM-1", "item_name": "测试商品", "uom": "Nos",
+			"uom_display": "个", "qty": 0,
+			"all_uoms": [{"uom": "Nos", "uom_display": "个", "conversion_factor": 1}],
+			"price_summary": {
+				"valuation_rate": 0,
+				"standard_buying_rate": 7.5,
+				"buying_prices": [{
+					"price_list": "Standard Buying", "rate": 7.5, "uom": "Nos",
+				}],
+			},
+		}]}
+		mock_resolve_quantity.return_value = {
+			"qty": 10, "uom": "Nos", "stock_uom": "Nos", "stock_qty": 10,
+			"conversion_factor": 1,
+		}
+		mock_resolve_uom.return_value = {
+			"uom": "Nos", "uom_display": "个", "stock_uom": "Nos", "conversion_factor": 1,
+		}
+
+		result = _resolve_inventory_draft_item(
+			{"item_query": "ITEM-1", "adjustment_type": "increase", "quantity": 10, "uom": "Nos"},
+			company="Test Company", warehouse="Stores - TC",
+		)
+
+		self.assertEqual(result["valuation_rate"], 7.5)
+		self.assertEqual(result["valuation_rate_source"], "standard_buying_reference")
+		self.assertEqual(result["valuation_rate_reference"]["rate"], 7.5)
+		self.assertEqual(result["valuation_rate_reference"]["uom"], "Nos")
+
+		legacy_zero = _resolve_inventory_draft_item(
+			{
+				"item_query": "ITEM-1", "adjustment_type": "increase", "quantity": 10,
+				"uom": "Nos", "valuation_rate": 0,
+			},
+			company="Test Company", warehouse="Stores - TC",
+		)
+		self.assertEqual(legacy_zero["valuation_rate"], 7.5)
+		self.assertEqual(legacy_zero["valuation_rate_source"], "standard_buying_reference")
+
+		round_trip = _resolve_inventory_draft_item(
+			{
+				"item_query": "ITEM-1", "adjustment_type": "increase", "quantity": 10,
+				"uom": "Nos", "valuation_rate": 7.5,
+				"valuation_rate_source": "standard_buying_reference",
+			},
+			company="Test Company", warehouse="Stores - TC",
+		)
+		self.assertEqual(round_trip["valuation_rate_source"], "standard_buying_reference")
+
+		spoofed = _resolve_inventory_draft_item(
+			{
+				"item_query": "ITEM-1", "adjustment_type": "increase", "quantity": 10,
+				"uom": "Nos", "valuation_rate": 8,
+				"valuation_rate_source": "standard_buying_reference",
+			},
+			company="Test Company", warehouse="Stores - TC",
+		)
+		self.assertEqual(spoofed["valuation_rate_source"], "user")
+
+	@patch("myapp.services.ai_service.resolve_item_quantity_to_stock")
+	@patch("myapp.services.ai_service.resolve_item_uom")
+	@patch("myapp.services.ai_service.search_product_v2")
+	@patch("myapp.services.ai_service.frappe.get_list", return_value=["ITEM-1"])
+	def test_resolve_inventory_draft_item_converts_standard_buying_to_stock_unit(
+		self, _allowed, mock_search_product, mock_resolve_uom, mock_resolve_quantity,
+	):
+		mock_search_product.return_value = {"data": [{
+			"item_code": "ITEM-1", "item_name": "测试饮料", "uom": "Nos",
+			"uom_display": "件", "qty": 0,
+			"all_uoms": [
+				{"uom": "Nos", "uom_display": "件", "conversion_factor": 1},
+				{"uom": "Box", "uom_display": "箱", "conversion_factor": 24},
+			],
+			"price_summary": {
+				"valuation_rate": 0,
+				"standard_buying_rate": 70,
+				"buying_prices": [{
+					"price_list": "Standard Buying", "rate": 70, "uom": "Box",
+				}],
+			},
+		}]}
+		mock_resolve_quantity.return_value = {
+			"qty": 1, "uom": "Box", "stock_uom": "Nos", "stock_qty": 24,
+			"conversion_factor": 24,
+		}
+		mock_resolve_uom.return_value = {
+			"uom": "Box", "uom_display": "箱", "stock_uom": "Nos", "conversion_factor": 24,
+		}
+
+		result = _resolve_inventory_draft_item(
+			{"item_query": "ITEM-1", "adjustment_type": "increase", "quantity": 1, "uom": "Box"},
+			company="Test Company", warehouse="Stores - TC",
+		)
+
+		self.assertAlmostEqual(result["valuation_rate"], 70 / 24)
+		self.assertEqual(result["valuation_rate_source"], "standard_buying_reference")
+		self.assertEqual(result["valuation_rate_reference"]["rate"], 70)
+		self.assertEqual(result["valuation_rate_reference"]["uom"], "Box")
+		self.assertEqual(result["valuation_rate_reference"]["conversion_factor"], 24)
+
+		mock_search_product.return_value["data"][0]["all_uoms"] = [
+			{"uom": "Nos", "uom_display": "件", "conversion_factor": 1},
+		]
+		mock_resolve_quantity.return_value = {
+			"qty": 1, "uom": "Nos", "stock_uom": "Nos", "stock_qty": 1,
+			"conversion_factor": 1,
+		}
+		mock_resolve_uom.return_value = {
+			"uom": "Nos", "uom_display": "件", "stock_uom": "Nos", "conversion_factor": 1,
+		}
+		missing_conversion = _resolve_inventory_draft_item(
+			{"item_query": "ITEM-1", "adjustment_type": "increase", "quantity": 1, "uom": "Nos"},
+			company="Test Company", warehouse="Stores - TC",
+		)
+		self.assertIsNone(missing_conversion["valuation_rate"])
+		self.assertIsNone(missing_conversion["valuation_rate_source"])
 
 	@patch("myapp.services.ai_service.resolve_item_quantity_to_stock")
 	@patch("myapp.services.ai_service.resolve_item_uom")
@@ -1801,6 +2016,104 @@ class TestAiService(TestCase):
 		self.assertEqual(payload["adjustment_type"], "set_target")
 		self.assertFalse(validation["ready_for_handoff"])
 		self.assertIn("库存调整必须填写盘点差异或业务原因。", validation["errors"])
+
+	@patch("myapp.services.ai_service._resolve_inventory_draft_item")
+	@patch("myapp.services.ai_service._resolve_inventory_draft_warehouse")
+	@patch("myapp.services.ai_service.nowdate", return_value="2026-07-13")
+	def test_build_inventory_adjustment_draft_requires_cost_for_stock_increase(
+		self, _today, mock_warehouse, mock_item,
+	):
+		mock_warehouse.return_value = ("Stores - TC", [{"name": "Stores - TC"}])
+		mock_item.return_value = {
+			"item_code": "ITEM-1",
+			"qty": 2,
+			"uom": "Box",
+			"stock_uom": "Nos",
+			"target_stock_qty": 48,
+			"current_stock_qty": 0,
+			"valuation_rate": None,
+			"warnings": [],
+		}
+
+		_payload, validation = _build_inventory_adjustment_draft(
+			{
+				"item_query": "ITEM-1",
+				"warehouse_query": "Stores - TC",
+				"adjustment_type": "increase",
+				"quantity": 2,
+				"uom": "Box",
+				"reason": "盘点补录",
+			},
+			company="Test Company",
+		)
+
+		self.assertFalse(validation["ready_for_handoff"])
+		self.assertIn(
+			"库存增加会形成新的库存资产，必须填写有效的库存单位成本。",
+			validation["errors"],
+		)
+
+	@patch("myapp.services.ai_service._resolve_inventory_draft_item")
+	@patch("myapp.services.ai_service._resolve_inventory_draft_warehouse")
+	@patch("myapp.services.ai_service.nowdate", return_value="2026-07-13")
+	def test_build_inventory_adjustment_draft_does_not_require_cost_for_stock_decrease(
+		self, _today, mock_warehouse, mock_item,
+	):
+		mock_warehouse.return_value = ("Stores - TC", [{"name": "Stores - TC"}])
+		mock_item.return_value = {
+			"item_code": "ITEM-1",
+			"qty": 2,
+			"uom": "Box",
+			"stock_uom": "Nos",
+			"target_stock_qty": 0,
+			"current_stock_qty": 48,
+			"valuation_rate": None,
+			"warnings": [],
+		}
+
+		_payload, validation = _build_inventory_adjustment_draft(
+			{
+				"item_query": "ITEM-1",
+				"warehouse_query": "Stores - TC",
+				"adjustment_type": "decrease",
+				"quantity": 2,
+				"uom": "Box",
+				"reason": "盘点减少",
+			},
+			company="Test Company",
+		)
+
+		self.assertTrue(validation["ready_for_handoff"])
+		self.assertNotIn(
+			"库存增加会形成新的库存资产，必须填写有效的库存单位成本。",
+			validation["errors"],
+		)
+
+	@patch("myapp.services.ai_service._resolve_inventory_draft_item")
+	@patch("myapp.services.ai_service._resolve_inventory_draft_warehouse")
+	@patch("myapp.services.ai_service.nowdate", return_value="2026-07-13")
+	def test_build_inventory_adjustment_draft_warns_when_standard_buying_is_suggested(
+		self, _today, mock_warehouse, mock_item,
+	):
+		mock_warehouse.return_value = ("Stores - TC", [{"name": "Stores - TC"}])
+		mock_item.return_value = {
+			"item_code": "ITEM-1", "qty": 10, "uom": "Nos", "stock_uom": "Nos",
+			"target_stock_qty": 10, "current_stock_qty": 0, "valuation_rate": 7.5,
+			"valuation_rate_source": "standard_buying_reference", "warnings": [],
+		}
+
+		_payload, validation = _build_inventory_adjustment_draft(
+			{
+				"item_query": "ITEM-1", "warehouse_query": "Stores - TC",
+				"adjustment_type": "increase", "quantity": 10, "uom": "Nos",
+				"reason": "盘点补录",
+			},
+			company="Test Company",
+		)
+
+		self.assertTrue(validation["ready_for_handoff"])
+		self.assertIn("标准采购参考价 7.5", validation["warnings"][0])
+		self.assertIn("不会创建采购单或应付账款", validation["warnings"][0])
 
 	def test_build_draft_version_diff_tracks_fields_and_lines(self):
 		diff = _build_draft_version_diff(
@@ -3198,7 +3511,7 @@ class TestAiService(TestCase):
 		self.assertEqual(payload["standard_selling_rate"], 9999)
 		self.assertIsNone(payload["standard_buying_rate"])
 		self.assertFalse(validation["ready_for_handoff"])
-		self.assertTrue(any("默认采购价" in error for error in validation["errors"]))
+		self.assertTrue(any("标准采购参考价" in error for error in validation["errors"]))
 
 	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - TC")
 	@patch("myapp.services.ai_service._resolve_optional_master_name", return_value=None)

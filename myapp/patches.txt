@@ -44,3 +44,4 @@ myapp.patches.extend_ai_run_retry_fields
 myapp.patches.add_uom_business_selectable_field
 myapp.patches.govern_ambiguous_packaging_uoms
 myapp.patches.create_product_correction_table
+myapp.patches.govern_ai_draft_action_deduplication

@@ -254,21 +254,31 @@ class GatewayHttpTestCase(TestCase):
 					"inventory-adjustment",
 				),
 			):
-				status_code, payload = self._post_method(
-					f"myapp.api.gateway.{method}",
-					{
-						"company": SALES_COMPANY,
-						"conversation_id": conversation_id,
-						"item_code": self._sales_transaction_item_code,
-					},
-					headers={"Idempotency-Key": self._unique_request_id(f"http-{action_name}")},
-				)
-				self._assert_success(status_code, payload, code=expected_code)
-				data = payload["message"]["data"]
-				self.assertEqual(data["conversation"], conversation_id)
-				self.assertEqual(len(data["messages"]), 2)
-				self.assertIsNone(data.get("run_id"))
-				draft_ids.append(data["draft"]["name"])
+				prepared = []
+				for attempt in range(2):
+					status_code, payload = self._post_method(
+						f"myapp.api.gateway.{method}",
+						{
+							"company": SALES_COMPANY,
+							"conversation_id": conversation_id,
+							"item_code": self._sales_transaction_item_code,
+						},
+						headers={
+							"Idempotency-Key": self._unique_request_id(
+								f"http-{action_name}-{attempt}",
+							),
+						},
+					)
+					self._assert_success(status_code, payload, code=expected_code)
+					data = payload["message"]["data"]
+					self.assertEqual(data["conversation"], conversation_id)
+					self.assertEqual(data["messages"], [])
+					self.assertIsNone(data.get("run_id"))
+					prepared.append(data)
+				self.assertEqual(prepared[0]["outcome"], "created")
+				self.assertEqual(prepared[1]["outcome"], "reused")
+				self.assertEqual(prepared[0]["draft"]["name"], prepared[1]["draft"]["name"])
+				draft_ids.append(prepared[0]["draft"]["name"])
 		finally:
 			for draft_id in draft_ids:
 				self._post_method(

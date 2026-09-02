@@ -1353,6 +1353,221 @@ def get_product_detail_v2(
 	}
 
 
+def _serialize_product_price(price, *, price_list_type: str | None = None):
+	return {
+		"name": price.name,
+		"item_code": price.item_code,
+		"price_list": price.price_list,
+		"price_list_type": price_list_type,
+		"currency": price.currency,
+		"uom": _normalize_text(price.uom) or None,
+		"rate": flt(price.price_list_rate or 0),
+		"valid_from": str(price.valid_from) if price.valid_from else None,
+		"valid_upto": str(price.valid_upto) if price.valid_upto else None,
+		"modified": str(price.modified) if price.modified else None,
+	}
+
+
+def _resolve_price_list_type(price_list):
+	if cint(getattr(price_list, "selling", 0)) and cint(getattr(price_list, "buying", 0)):
+		return "both"
+	return "buying" if cint(getattr(price_list, "buying", 0)) else "selling"
+
+
+def _get_permitted_product_price_lists():
+	rows = frappe.get_list(
+		"Price List",
+		filters={"enabled": 1},
+		fields=["name", "selling", "buying", "currency"],
+		order_by="selling desc, buying desc, name asc",
+		limit_page_length=0,
+	)
+	return {
+		row.name: {
+			"buying": bool(cint(row.buying)),
+			"currency": _normalize_text(row.currency) or None,
+			"selling": bool(cint(row.selling)),
+		}
+		for row in rows
+	}
+
+
+def list_product_prices_v1(item_code: str):
+	item_code = _normalize_text(item_code)
+	if not item_code:
+		frappe.throw(_("商品编码不能为空。"))
+	item = require_document_permission("Item", item_code, "read")
+	price_lists = _get_permitted_product_price_lists()
+	if not price_lists:
+		return {
+			"status": "success",
+			"data": {
+				"item_code": item.name,
+				"item_modified": str(item.modified),
+				"permissions": {
+					"can_create": bool(frappe.has_permission("Item Price", ptype="create")),
+					"can_write": bool(frappe.has_permission("Item Price", ptype="write")),
+				},
+				"prices": [],
+				"price_lists": [],
+			},
+		}
+
+	rows = frappe.get_all(
+		"Item Price",
+		filters={"item_code": item.name, "price_list": ["in", list(price_lists)]},
+		fields=[
+			"name",
+			"item_code",
+			"price_list",
+			"currency",
+			"uom",
+			"price_list_rate",
+			"valid_from",
+			"valid_upto",
+			"modified",
+		],
+		order_by="price_list asc, currency asc, uom asc, valid_from desc, modified desc",
+	)
+	prices = []
+	for row in rows:
+		config = price_lists.get(row.price_list) or {}
+		price_list_type = (
+			"both"
+			if config.get("selling") and config.get("buying")
+			else ("buying" if config.get("buying") else "selling")
+		)
+		prices.append(_serialize_product_price(row, price_list_type=price_list_type))
+	return {
+		"status": "success",
+		"data": {
+			"item_code": item.name,
+			"item_modified": str(item.modified),
+			"permissions": {
+				"can_create": bool(frappe.has_permission("Item Price", ptype="create")),
+				"can_write": bool(frappe.has_permission("Item Price", ptype="write")),
+			},
+			"prices": prices,
+			"price_lists": [
+				{
+					"name": name,
+					"buying": config["buying"],
+					"selling": config["selling"],
+					"currency": config["currency"],
+				}
+				for name, config in price_lists.items()
+			],
+		},
+	}
+
+
+def _validate_product_price_dates(valid_from, valid_upto):
+	resolved_from = getdate(valid_from) if valid_from not in (None, "") else None
+	resolved_upto = getdate(valid_upto) if valid_upto not in (None, "") else None
+	if resolved_from and resolved_upto and resolved_from > resolved_upto:
+		frappe.throw(_("价格生效日期不能晚于失效日期。"))
+	return resolved_from, resolved_upto
+
+
+def upsert_product_price_v1(item_code: str, price_list: str, rate, **kwargs):
+	item_code = _normalize_text(item_code)
+	price_list = _normalize_text(price_list)
+	if not item_code or not price_list:
+		frappe.throw(_("商品编码和价格表不能为空。"))
+	request_id = get_current_request_id(kwargs.get("request_id"))
+
+	def _upsert_price():
+		item = require_document_permission("Item", item_code, "read")
+		expected_item_modified = _normalize_text(kwargs.get("item_modified"))
+		if expected_item_modified and expected_item_modified != str(item.modified):
+			frappe.throw(_("商品资料已被其他人修改，请刷新后重新维护价格。"))
+		price_list_doc = require_document_permission("Price List", price_list, "read")
+		resolved_rate = _normalize_product_uom_migration_price_rate(rate, field_label=_("价格"))
+		resolved_uom = _resolve_item_price_uom(item, kwargs.get("uom"), price_list_doc.name)
+		resolved_currency = _normalize_text(kwargs.get("currency")) or price_list_doc.currency or _normalize_currency(None)
+		valid_from, valid_upto = _validate_product_price_dates(
+			kwargs.get("valid_from"), kwargs.get("valid_upto")
+		)
+
+		price_name = _normalize_text(kwargs.get("price_name"))
+		if price_name:
+			price = require_document_permission("Item Price", price_name, "write")
+			if price.item_code != item.name:
+				frappe.throw(_("价格记录不属于当前商品。"))
+			if (
+				price.price_list != price_list_doc.name
+				or _normalize_text(price.currency) != _normalize_text(resolved_currency)
+				or _normalize_text(price.uom) != _normalize_text(resolved_uom)
+			):
+				frappe.throw(_("现有价格的价格表、币种和单位不能直接改写；请新增正确价格并终止旧记录。"))
+			expected_price_modified = _normalize_text(kwargs.get("price_modified"))
+			if expected_price_modified and expected_price_modified != str(price.modified):
+				frappe.throw(_("价格记录已被其他人修改，请刷新后重试。"))
+			price.price_list = price_list_doc.name
+			price.currency = resolved_currency
+			price.uom = resolved_uom
+			price.price_list_rate = resolved_rate
+			price.valid_from = valid_from
+			price.valid_upto = valid_upto
+			price.save()
+		else:
+			require_doctype_permission("Item Price", "create")
+			price = frappe.new_doc("Item Price")
+			price.item_code = item.name
+			price.price_list = price_list_doc.name
+			price.currency = resolved_currency
+			price.uom = resolved_uom
+			price.price_list_rate = resolved_rate
+			price.valid_from = valid_from
+			price.valid_upto = valid_upto
+			price.insert()
+
+		price.reload()
+		return {
+			"status": "success",
+			"data": _serialize_product_price(
+				price,
+				price_list_type=_resolve_price_list_type(price_list_doc),
+			),
+		}
+
+	return run_idempotent("upsert_product_price_v1", request_id, _upsert_price)
+
+
+def terminate_product_price_v1(item_code: str, price_name: str, **kwargs):
+	item_code = _normalize_text(item_code)
+	price_name = _normalize_text(price_name)
+	if not item_code or not price_name:
+		frappe.throw(_("商品编码和价格记录不能为空。"))
+	request_id = get_current_request_id(kwargs.get("request_id"))
+
+	def _terminate_price():
+		require_document_permission("Item", item_code, "read")
+		price = require_document_permission("Item Price", price_name, "write")
+		if price.item_code != item_code:
+			frappe.throw(_("价格记录不属于当前商品。"))
+		expected_price_modified = _normalize_text(kwargs.get("price_modified"))
+		if expected_price_modified and expected_price_modified != str(price.modified):
+			frappe.throw(_("价格记录已被其他人修改，请刷新后重试。"))
+		_, valid_upto = _validate_product_price_dates(
+			getattr(price, "valid_from", None),
+			kwargs.get("valid_upto") or nowdate(),
+		)
+		price.valid_upto = valid_upto
+		price.save()
+		price.reload()
+		price_list_doc = require_document_permission("Price List", price.price_list, "read")
+		return {
+			"status": "success",
+			"data": _serialize_product_price(
+				price,
+				price_list_type=_resolve_price_list_type(price_list_doc),
+			),
+		}
+
+	return run_idempotent("terminate_product_price_v1", request_id, _terminate_price)
+
+
 def _require_product_uom_migration_manager():
 	user = current_user()
 	if user == "Administrator":

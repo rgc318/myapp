@@ -196,11 +196,14 @@ from .wholesale_api import delete_product_barcode_v2 as delete_product_barcode_v
 from .wholesale_api import disable_product_v2 as disable_product_v2_service
 from .wholesale_api import execute_product_uom_migration_v1 as execute_product_uom_migration_v1_service
 from .wholesale_api import get_product_detail_v2 as get_product_detail_v2_service
+from .wholesale_api import list_product_prices_v1 as list_product_prices_v1_service
 from .wholesale_api import list_products_v2 as list_products_v2_service
 from .wholesale_api import resolve_active_product_v1 as resolve_active_product_v1_service
 from .wholesale_api import search_product as search_product_service
 from .wholesale_api import search_product_v2 as search_product_v2_service
 from .wholesale_api import set_primary_product_barcode_v2 as set_primary_product_barcode_v2_service
+from .wholesale_api import terminate_product_price_v1 as terminate_product_price_v1_service
+from .wholesale_api import upsert_product_price_v1 as upsert_product_price_v1_service
 from .wholesale_api import update_product_v2 as update_product_v2_service
 from .customers_api import update_customer_v2 as update_customer_v2_service
 from .uoms_api import update_uom_v2 as update_uom_v2_service
@@ -2763,6 +2766,14 @@ def get_product_detail_v2(
 
 
 @frappe.whitelist()
+def list_product_prices_v1(item_code: str):
+	return _handle_gateway_call(
+		lambda: list_product_prices_v1_service(item_code=item_code),
+		success_code="PRODUCT_PRICES_FETCHED",
+	)
+
+
+@frappe.whitelist()
 def resolve_active_product_v1(item_code: str):
 	return _handle_gateway_call(
 		lambda: resolve_active_product_v1_service(item_code=item_code),
@@ -2783,6 +2794,31 @@ def execute_product_uom_migration_v1(item_code: str, **kwargs):
 	return _handle_gateway_call(
 		lambda: execute_product_uom_migration_v1_service(item_code=item_code, **kwargs),
 		success_code="PRODUCT_UOM_MIGRATED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def upsert_product_price_v1(item_code: str, price_list: str, rate, **kwargs):
+	return _handle_gateway_call(
+		lambda: upsert_product_price_v1_service(
+			item_code=item_code,
+			price_list=price_list,
+			rate=rate,
+			**kwargs,
+		),
+		success_code="PRODUCT_PRICE_SAVED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def terminate_product_price_v1(item_code: str, price_name: str, **kwargs):
+	return _handle_gateway_call(
+		lambda: terminate_product_price_v1_service(
+			item_code=item_code,
+			price_name=price_name,
+			**kwargs,
+		),
+		success_code="PRODUCT_PRICE_TERMINATED",
 	)
 
 

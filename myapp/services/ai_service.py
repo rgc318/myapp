@@ -9,6 +9,7 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
+from copy import deepcopy
 from datetime import date, datetime, timedelta
 
 import frappe
@@ -3010,6 +3011,88 @@ def _is_business_selectable_uom(uom: str | None) -> bool:
 		raise
 
 
+def _inventory_standard_buying_reference(selected: dict, *, stock_uom: str | None) -> dict | None:
+	price_summary = selected.get("price_summary") if isinstance(selected.get("price_summary"), dict) else {}
+	entries = [
+		row for row in (price_summary.get("buying_prices") or [])
+		if isinstance(row, dict)
+		and str(row.get("price_list") or "") == "Standard Buying"
+		and flt(row.get("rate") or 0) > 0
+	]
+	resolved_stock_uom = str(stock_uom or "").strip()
+	def uom_display(uom: str | None) -> str | None:
+		resolved_uom = str(uom or "").strip()
+		if not resolved_uom:
+			return None
+		row = next(
+			(
+				value for value in (selected.get("all_uoms") or [])
+				if str(value.get("uom") or "").strip() == resolved_uom
+			),
+			None,
+		)
+		if row and str(row.get("uom_display") or "").strip():
+			return str(row.get("uom_display")).strip()
+		if resolved_uom == resolved_stock_uom and str(selected.get("uom_display") or "").strip():
+			return str(selected.get("uom_display")).strip()
+		return resolved_uom
+
+	if not entries:
+		# Compatibility for older internal product payloads that exposed only the
+		# stock-unit summary and did not include the underlying Item Price rows.
+		legacy_rate = flt(price_summary.get("standard_buying_rate") or 0)
+		if legacy_rate <= 0 or "buying_prices" in price_summary:
+			return None
+		return {
+			"rate": legacy_rate,
+			"uom": resolved_stock_uom or None,
+			"uom_display": uom_display(resolved_stock_uom),
+			"conversion_factor": 1,
+			"stock_unit_rate": legacy_rate,
+		}
+
+	resolved_references = []
+	for entry in entries:
+		reference_rate = flt(entry.get("rate") or 0)
+		reference_uom = str(entry.get("uom") or "").strip() or resolved_stock_uom
+		conversion_factor = 1.0
+		if reference_uom and resolved_stock_uom and reference_uom != resolved_stock_uom:
+			conversion_row = next(
+				(
+					row for row in (selected.get("all_uoms") or [])
+					if str(row.get("uom") or "").strip() == reference_uom
+				),
+				None,
+			)
+			conversion_factor = flt((conversion_row or {}).get("conversion_factor") or 0)
+			if conversion_factor <= 0:
+				continue
+		resolved_references.append({
+			"rate": reference_rate,
+			"uom": reference_uom or resolved_stock_uom or None,
+			"uom_display": uom_display(reference_uom or resolved_stock_uom),
+			"conversion_factor": conversion_factor,
+			"stock_unit_rate": flt(reference_rate / conversion_factor),
+		})
+	if not resolved_references:
+		return None
+	stock_unit_rates = {round(flt(row.get("stock_unit_rate")), 6) for row in resolved_references}
+	if len(stock_unit_rates) > 1:
+		return {
+			"conflict": True,
+			"stock_uom": resolved_stock_uom or None,
+			"stock_uom_display": uom_display(resolved_stock_uom),
+			"candidates": resolved_references,
+		}
+	return next(
+		(
+			row for row in resolved_references
+			if str(row.get("uom") or "").strip() == resolved_stock_uom
+		),
+		resolved_references[0],
+	)
+
+
 def _resolve_inventory_draft_item(
 	candidate: dict,
 	*,
@@ -3049,6 +3132,8 @@ def _resolve_inventory_draft_item(
 			"target_stock_qty": None,
 			"qty_delta": None,
 			"valuation_rate": None,
+			"valuation_rate_source": None,
+			"valuation_rate_reference": None,
 			"stock_uom_business_selectable": None,
 			"requires_uom_migration": False,
 			"uom_governance_error": None,
@@ -3098,8 +3183,66 @@ def _resolve_inventory_draft_item(
 		else:
 			target_stock_qty = resolved_stock_qty
 	price_summary = selected.get("price_summary") or {}
-	valuation_value = price_summary.get("valuation_rate")
-	valuation_rate = None if valuation_value in (None, "") else flt(valuation_value)
+	provided_valuation_value = candidate.get("valuation_rate")
+	provided_valuation_source = str(candidate.get("valuation_rate_source") or "").strip()
+	provided_valuation_rate = (
+		None if provided_valuation_value in (None, "") else flt(provided_valuation_value)
+	)
+	current_valuation_rate = flt(price_summary.get("valuation_rate") or 0)
+	standard_buying_reference = _inventory_standard_buying_reference(
+		selected, stock_uom=stock_uom,
+	)
+	standard_buying_rate = flt((standard_buying_reference or {}).get("stock_unit_rate") or 0)
+	standard_buying_conflict = bool((standard_buying_reference or {}).get("conflict"))
+	valuation_rate_reference = standard_buying_reference if standard_buying_conflict else None
+	if standard_buying_conflict:
+		conflict_details = "；".join(
+			_('{0}/{1} 折算为 {2}/{3}').format(
+				row.get("rate"), row.get("uom_display") or row.get("uom"),
+				row.get("stock_unit_rate"),
+				standard_buying_reference.get("stock_uom_display")
+					or standard_buying_reference.get("stock_uom"),
+			)
+			for row in standard_buying_reference.get("candidates") or []
+		)
+		warnings.append(_(
+			"商品存在多个折算结果不一致的 Standard Buying 标准采购参考价（{0}），"
+			"系统不能自动判断本次库存成本，请先确认正确价格单位或人工填写。"
+		).format(conflict_details))
+	if provided_valuation_rate is not None and (
+		provided_valuation_rate > 0 or provided_valuation_source == "user"
+	):
+		valuation_rate = provided_valuation_rate
+		if (
+			provided_valuation_source == "standard_buying_reference"
+			and standard_buying_rate > 0
+			and valuation_rate == standard_buying_rate
+		):
+			valuation_rate_source = "standard_buying_reference"
+			valuation_rate_reference = standard_buying_reference
+		elif (
+			provided_valuation_source == "current_valuation"
+			and current_valuation_rate > 0
+			and valuation_rate == current_valuation_rate
+		):
+			valuation_rate_source = "current_valuation"
+		else:
+			# Provenance is server-verified. A client may submit a value, but cannot
+			# label an arbitrary number as an authoritative Item or Item Price fact.
+			valuation_rate_source = "user"
+	elif current_valuation_rate > 0:
+		valuation_rate = current_valuation_rate
+		valuation_rate_source = "current_valuation"
+	elif standard_buying_rate > 0:
+		# Standard Buying is a procurement reference rather than an accounting fact.
+		# Use it as a visible suggestion only when no current valuation exists, and
+		# preserve its provenance so the review UI can require an informed check.
+		valuation_rate = standard_buying_rate
+		valuation_rate_source = "standard_buying_reference"
+		valuation_rate_reference = standard_buying_reference
+	else:
+		valuation_rate = None
+		valuation_rate_source = None
 	conversion_factor = (
 		None
 		if uom_resolution_error
@@ -3127,7 +3270,14 @@ def _resolve_inventory_draft_item(
 		},
 		fields={
 			"current_stock_qty": field_fact(current_stock_qty, source="Bin/actual_qty"),
-			"valuation_rate": field_fact(valuation_rate, source="Item/valuation_rate"),
+			"valuation_rate": field_fact(
+				valuation_rate,
+				source={
+					"current_valuation": "Item/valuation_rate",
+					"standard_buying_reference": "Item Price/Standard Buying",
+					"user": "user",
+				}.get(valuation_rate_source, valuation_rate_source or "unknown"),
+			),
 			"conversion_factor": field_fact(conversion_factor, source="UOM Conversion Detail"),
 		},
 		source_facts={
@@ -3166,6 +3316,8 @@ def _resolve_inventory_draft_item(
 		"target_stock_qty": target_stock_qty,
 		"qty_delta": flt(target_stock_qty - current_stock_qty) if target_stock_qty is not None else None,
 		"valuation_rate": valuation_rate,
+		"valuation_rate_source": valuation_rate_source,
+		"valuation_rate_reference": valuation_rate_reference,
 		"stock_uom_business_selectable": stock_uom_business_selectable,
 		"requires_uom_migration": bool(uom_governance_error),
 		"uom_governance_error": uom_governance_error,
@@ -3200,12 +3352,18 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 			"adjustment_type": adjustment_type,
 			"quantity": quantity,
 			"uom": candidate.get("uom") or source_item.get("uom"),
+			"valuation_rate": candidate.get("valuation_rate")
+				if candidate.get("valuation_rate") not in (None, "")
+				else source_item.get("valuation_rate"),
+			"valuation_rate_source": candidate.get("valuation_rate_source")
+				or source_item.get("valuation_rate_source"),
 		},
 		company=company,
 		warehouse=warehouse,
 	)
 	reason = str(candidate.get("reason") or candidate.get("remarks") or "").strip()[:1000] or None
 	errors = []
+	warnings = list(item.get("warnings") or [])
 	if not warehouse:
 		errors.append(_("仓库无法唯一匹配，请人工选择。"))
 	if not item.get("item_code"):
@@ -3216,6 +3374,35 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 		errors.append(_("增减库存数量必须大于 0。"))
 	if item.get("target_stock_qty") is not None and flt(item.get("target_stock_qty")) < 0:
 		errors.append(_("调整后的目标库存不能为负数。"))
+	if (
+		item.get("target_stock_qty") is not None
+		and item.get("current_stock_qty") is not None
+		and flt(item.get("target_stock_qty")) > flt(item.get("current_stock_qty"))
+		and flt(item.get("valuation_rate") or 0) <= 0
+	):
+		errors.append(_("库存增加会形成新的库存资产，必须填写有效的库存单位成本。"))
+	elif (
+		item.get("target_stock_qty") is not None
+		and item.get("current_stock_qty") is not None
+		and flt(item.get("target_stock_qty")) > flt(item.get("current_stock_qty"))
+		and item.get("valuation_rate_source") == "standard_buying_reference"
+	):
+		reference = item.get("valuation_rate_reference") or {}
+		if flt(reference.get("conversion_factor") or 1) != 1:
+			warnings.append(_(
+				"商品当前没有有效库存估值，系统已将 Standard Buying 的标准采购参考价 "
+				"{0}/{1} 按换算系数 {2} 折算为 {3}/{4}。该值不会创建采购单或应付账款，"
+				"请按本次库存来源核对后再执行。"
+			).format(
+				reference.get("rate"), reference.get("uom_display") or reference.get("uom"),
+				reference.get("conversion_factor"), item.get("valuation_rate"),
+				item.get("stock_uom_display") or item.get("stock_uom"),
+			))
+		else:
+			warnings.append(_(
+				"商品当前没有有效库存估值，系统已按 Standard Buying 的标准采购参考价 {0} "
+				"带出本次库存单位成本。该值不会创建采购单或应付账款，请按本次库存来源核对后再执行。"
+			).format(item.get("valuation_rate")))
 	if item.get("uom_resolution_error"):
 		errors.append(item.get("uom_resolution_error"))
 	if item.get("uom_governance_error"):
@@ -3241,7 +3428,7 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 	validation = {
 		"ready_for_handoff": not errors,
 		"errors": errors,
-		"warnings": item.get("warnings") or [],
+		"warnings": warnings,
 	}
 	return payload, validation
 
@@ -4770,7 +4957,7 @@ def _build_product_setup_draft(
 	standard_buying_rate_value = candidate.get("standard_buying_rate")
 	if standard_buying_rate_value in (None, ""):
 		# 兼容已经生成的旧版商品草稿和当前 Orchestrator 字段；Web 新版本
-		# 统一使用“成本价（默认采购价）”业务语义。
+		# 兼容旧版 valuation_rate 输入；新界面统一使用“标准采购参考价”语义。
 		standard_buying_rate_value = candidate.get("valuation_rate")
 	standard_buying_rate = (
 		None if standard_buying_rate_value in (None, "")
@@ -4832,7 +5019,10 @@ def _build_product_setup_draft(
 	if operation == "create" and opening_qty and not warehouse:
 		errors.append(_("填写初始库存时必须选择当前公司的叶子仓库。"))
 	if operation == "create" and opening_qty and standard_buying_rate is None:
-		errors.append(_("填写初始库存时必须补充成本价（默认采购价）；系统会将其作为首次入库成本，售价不会用于库存计价。"))
+		errors.append(_(
+			"填写初始库存时必须补充标准采购参考价并核对首次入库估值；"
+			"销售价格不会用于库存计价。"
+		))
 	if operation == "create" and opening_qty and not frappe.has_permission("Stock Entry", ptype="create"):
 		errors.append(_("当前账号无权创建初始库存入库单。"))
 	if operation == "create" and not frappe.has_permission("Item", ptype="create"):
@@ -4846,7 +5036,7 @@ def _build_product_setup_draft(
 	if retail_rate is not None and retail_rate < 0:
 		errors.append(_("零售价不能为负数。"))
 	if standard_buying_rate is not None and standard_buying_rate < 0:
-		errors.append(_("成本价（默认采购价）不能为负数。"))
+		errors.append(_("标准采购参考价不能为负数。"))
 	normalized = {
 		"item_name": item_name,
 		"image": image,
@@ -5177,39 +5367,6 @@ def _resolve_deterministic_draft_action_context(
 	return user, resolved_company, conversation
 
 
-def _append_deterministic_draft_action_messages(
-	*, conversation_id: str, user: str, scenario: str, user_content: str,
-	assistant_content: str, citations: list[dict] | None = None,
-) -> list[dict]:
-	user_message = ai_repository.append_message(
-		conversation_id=conversation_id,
-		user=user,
-		role="user",
-		content=user_content,
-		scenario=scenario,
-	)
-	assistant_message = ai_repository.append_message(
-		conversation_id=conversation_id,
-		user=user,
-		role="assistant",
-		content=assistant_content,
-		scenario=scenario,
-		citations=citations or [],
-	)
-	return [
-		{
-			"name": user_message["name"], "sequence": user_message["sequence"],
-			"role": "user", "content": user_content, "scenario": scenario,
-			"citations": [],
-		},
-		{
-			"name": assistant_message["name"], "sequence": assistant_message["sequence"],
-			"role": "assistant", "content": assistant_content, "scenario": scenario,
-			"citations": citations or [],
-		},
-	]
-
-
 def _persist_prepared_draft_context(*, conversation_id: str, user: str, draft: dict) -> None:
 	try:
 		state_record = ai_repository.get_conversation_state(
@@ -5226,6 +5383,50 @@ def _persist_prepared_draft_context(*, conversation_id: str, user: str, draft: d
 		frappe.log_error(frappe.get_traceback(), _("确定性业务草稿的会话状态同步失败"))
 
 
+def _refresh_reused_inventory_action_draft(
+	draft: dict, *, user: str, company: str,
+) -> dict:
+	payload = draft.get("payload") if isinstance(draft.get("payload"), dict) else {}
+	items = payload.get("items") if isinstance(payload.get("items"), list) else []
+	item = items[0] if items and isinstance(items[0], dict) else {}
+	valuation_source = str(item.get("valuation_rate_source") or "").strip()
+	if valuation_source == "user" or flt(item.get("valuation_rate") or 0) > 0:
+		return draft
+
+	refresh_candidate = deepcopy(payload)
+	refresh_items = (
+		refresh_candidate.get("items")
+		if isinstance(refresh_candidate.get("items"), list)
+		else []
+	)
+	refresh_item = refresh_items[0] if refresh_items and isinstance(refresh_items[0], dict) else None
+	if refresh_item is not None:
+		# Legacy drafts stored Item.valuation_rate=0 without provenance. Treat that
+		# as an absent system fact so current valuation / Standard Buying fallback
+		# can be resolved. Explicit user zero remains an invalid user input above.
+		refresh_item.pop("valuation_rate", None)
+		refresh_item.pop("valuation_rate_source", None)
+		refresh_item.pop("valuation_rate_reference", None)
+	refresh_candidate.pop("valuation_rate", None)
+	refresh_candidate.pop("valuation_rate_source", None)
+
+	refreshed_payload, refreshed_validation = _build_inventory_adjustment_draft(
+		refresh_candidate, company=company,
+	)
+	refreshed_item = (refreshed_payload.get("items") or [{}])[0]
+	refreshed_reference = refreshed_item.get("valuation_rate_reference") or {}
+	if (
+		flt(refreshed_item.get("valuation_rate") or 0) <= 0
+		and not refreshed_reference.get("conflict")
+	):
+		return draft
+	return ai_repository.update_draft(
+		draft_id=draft["name"], user=user,
+		payload=refreshed_payload, validation=refreshed_validation,
+		expected_version=draft["version"], change_source="system_revalidation",
+	)
+
+
 def _prepare_ai_product_action_draft_once(
 	*, action: str, item_code: str, company: str | None, conversation_id: str,
 ) -> dict:
@@ -5240,6 +5441,9 @@ def _prepare_ai_product_action_draft_once(
 		conversation_id=conversation_id, company=company,
 	)
 	conversation_id = conversation["name"]
+	active_dedupe_key = hashlib.sha256("\x1f".join((
+		user, conversation_id, resolved_company, action, "Item", resolved_item_code,
+	)).encode("utf-8")).hexdigest()
 	if action == "product_update":
 		if not frappe.has_permission("Item", ptype="write"):
 			raise frappe.PermissionError(_("无权完善现有商品。"))
@@ -5252,9 +5456,7 @@ def _prepare_ai_product_action_draft_once(
 			company=resolved_company,
 		)
 		draft_type = "product_setup"
-		scenario = "product_setup_draft"
 		title = _("完善商品 {0}").format(resolved_item_code)
-		user_content = _("编辑商品资料：{0}").format(resolved_item_code)
 		assistant_content = _("已读取当前商品资料、价格和库存上下文，请直接在编辑器中完善需要修改的字段。")
 	else:
 		if not frappe.has_permission("Stock Entry", ptype="create"):
@@ -5268,15 +5470,13 @@ def _prepare_ai_product_action_draft_once(
 			company=resolved_company,
 		)
 		draft_type = "inventory_adjustment"
-		scenario = "inventory_adjustment_draft"
 		title = _("调整商品 {0} 的库存").format(resolved_item_code)
-		user_content = _("调整商品库存：{0}").format(resolved_item_code)
 		assistant_content = (
 			_("已读取商品单位和当前库存，请填写仓库、数量及调整原因后复核。")
 			if not (payload.get("items") or [{}])[0].get("requires_uom_migration")
 			else _("该商品的库存基准单位异常，草稿已阻断执行；请先处理受控单位错误迁移。")
 		)
-	draft = ai_repository.create_draft(
+	prepared = ai_repository.create_or_reuse_action_draft(
 		user=user,
 		conversation_id=conversation_id,
 		source_run=f"AI-ACTION-{secrets.token_hex(12)}",
@@ -5285,30 +5485,29 @@ def _prepare_ai_product_action_draft_once(
 		title=title,
 		payload=payload,
 		validation=validation,
+		origin_action=action,
+		origin_entity_type="Item",
+		origin_entity_name=resolved_item_code,
+		active_dedupe_key=active_dedupe_key,
 	)
-	citation = {
-		"type": "ai_draft", "id": draft["name"], "label": draft["title"],
-		"href": None, "data": draft,
-	}
-	messages = _append_deterministic_draft_action_messages(
-		conversation_id=conversation_id,
-		user=user,
-		scenario=scenario,
-		user_content=user_content,
-		assistant_content=assistant_content,
-		citations=[citation],
-	)
-	_persist_prepared_draft_context(
-		conversation_id=conversation_id, user=user, draft=draft,
-	)
+	draft = prepared["draft"]
+	if not prepared["created"] and action == "inventory_adjustment":
+		draft = _refresh_reused_inventory_action_draft(
+			draft, user=user, company=resolved_company,
+		)
+	if prepared["created"]:
+		_persist_prepared_draft_context(
+			conversation_id=conversation_id, user=user, draft=draft,
+		)
 	return {
 		"status": "success",
 		"message": assistant_content,
 		"data": {
 			"conversation": conversation_id,
 			"draft": draft,
-			"messages": messages,
-			"message": messages[-1],
+			"outcome": "created" if prepared["created"] else "reused",
+			"messages": [],
+			"message": None,
 			"product_resolution": product_resolution,
 		},
 	}
@@ -5391,26 +5590,17 @@ def _select_ai_draft_product_candidate_once(
 		change_source="candidate_selection",
 	)
 	updated = updated_result["data"]
-	resolved_selection_text = " ".join(str(selection_text or "").split())[:140] or str(
-		selected_candidate.get("item_name") or resolved_item_code
-	)
 	assistant_content = _("已将原库存调整草稿绑定到商品 {0}，并按该商品的单位与实时库存重新校验。"
 	).format(selected_candidate.get("item_name") or resolved_item_code)
-	messages = _append_deterministic_draft_action_messages(
-		conversation_id=draft["conversation"],
-		user=user,
-		scenario="inventory_adjustment_draft",
-		user_content=resolved_selection_text,
-		assistant_content=assistant_content,
-	)
 	return {
 		"status": "success",
 		"message": assistant_content,
 		"data": {
 			"conversation": draft["conversation"],
 			"draft": updated,
-			"messages": messages,
-			"message": messages[-1],
+			"outcome": "updated",
+			"messages": [],
+			"message": None,
 		},
 	}
 

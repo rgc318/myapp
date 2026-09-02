@@ -9,10 +9,13 @@ from myapp.services.wholesale_service import delete_product_barcode_v2 as delete
 from myapp.services.wholesale_service import disable_product_v2 as disable_product_v2_service
 from myapp.services.wholesale_service import execute_product_uom_migration_v1 as execute_product_uom_migration_v1_service
 from myapp.services.wholesale_service import get_product_detail_v2 as get_product_detail_v2_service
+from myapp.services.wholesale_service import list_product_prices_v1 as list_product_prices_v1_service
 from myapp.services.wholesale_service import list_products_v2 as list_products_v2_service
 from myapp.services.wholesale_service import search_product as search_product_service
 from myapp.services.wholesale_service import search_product_v2 as search_product_v2_service
 from myapp.services.wholesale_service import set_primary_product_barcode_v2 as set_primary_product_barcode_v2_service
+from myapp.services.wholesale_service import terminate_product_price_v1 as terminate_product_price_v1_service
+from myapp.services.wholesale_service import upsert_product_price_v1 as upsert_product_price_v1_service
 from myapp.services.wholesale_service import update_product_v2 as update_product_v2_service
 from myapp.services.product_correction_service import resolve_active_product_v1 as resolve_active_product_v1_service
 
@@ -140,6 +143,11 @@ def get_product_detail_v2(
 
 
 @frappe.whitelist()
+def list_product_prices_v1(item_code: str):
+	return list_product_prices_v1_service(item_code=item_code)
+
+
+@frappe.whitelist()
 def resolve_active_product_v1(item_code: str):
 	return resolve_active_product_v1_service(item_code=item_code)
 
@@ -152,6 +160,25 @@ def assess_product_uom_migration_v1(item_code: str):
 @frappe.whitelist(methods=["POST"])
 def execute_product_uom_migration_v1(item_code: str, **kwargs):
 	return execute_product_uom_migration_v1_service(item_code=item_code, **kwargs)
+
+
+@frappe.whitelist(methods=["POST"])
+def upsert_product_price_v1(item_code: str, price_list: str, rate, **kwargs):
+	return upsert_product_price_v1_service(
+		item_code=item_code,
+		price_list=price_list,
+		rate=rate,
+		**kwargs,
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def terminate_product_price_v1(item_code: str, price_name: str, **kwargs):
+	return terminate_product_price_v1_service(
+		item_code=item_code,
+		price_name=price_name,
+		**kwargs,
+	)
 
 
 @frappe.whitelist(methods=["POST"])

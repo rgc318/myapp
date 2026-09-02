@@ -8,6 +8,9 @@
 - `myapp.api.gateway.create_product_and_stock`
 - `myapp.api.gateway.create_product_v2`
 - `myapp.api.gateway.get_product_detail_v2`
+- `myapp.api.gateway.list_product_prices_v1`
+- `myapp.api.gateway.upsert_product_price_v1`
+- `myapp.api.gateway.terminate_product_price_v1`
 - `myapp.api.gateway.assess_product_uom_migration_v1`
 - `myapp.api.gateway.execute_product_uom_migration_v1`
 - `myapp.api.gateway.list_products_v2`
@@ -270,7 +273,7 @@ Scheduler 每 10 分钟回收长时间没有持久更新的 `running` Run，并�
 
 商品查询后的指代表达使用服务端受控业务上下文，不依赖模型从助手文字猜测商品。`generate_ai_product_setup_draft_v1` 在本轮未提供 `item_code`，且用户明确表达修改/完善意图并使用“这个商品、刚才查询到的商品、它”等指代时，只允许继承当前有效会话中 `resolution_status=resolved` 的唯一商品，或最近商品结果集中唯一的 `entity_id`；即使结构化模型把操作降级为 `auto`，Backend 也只在该明确更新条件下纠正为 `update`。显式商品编码优先；多个候选、过期或已清除上下文、非商品结果集均不自动绑定。绑定后 Backend 仍按当前用户、公司和 Item 权限重新读取正式商品，并把不可变目标写入 `_state.entity`；Run 工具审计记录目标编码和来源。
 
-商品查询卡片的确定性动作不调用模型。`prepare_ai_product_update_draft_v1(item_code, company, conversation_id)` 直接按当前权限读取商品 baseline、价格和只读库存上下文并创建 `product_setup/update` 草稿；`prepare_ai_inventory_adjustment_draft_v1(...)` 直接创建已绑定商品的库存调整草稿，等待用户填写仓库、数量和原因。两者必须使用 POST 与 `Idempotency-Key`，并在来源会话中保存用户动作和确定性系统回执。库存草稿存在候选商品时，`select_ai_draft_product_candidate_v1(draft_id, expected_version, item_code, selection_text)` 只接受当前草稿候选列表内的编码，保留原增减方式、数量、单位、仓库、原因和日期，更新同一个草稿版本，不重新执行商品搜索或模型调用。
+商品查询卡片的确定性动作不调用模型。`prepare_ai_product_update_draft_v1(item_code, company, conversation_id)` 直接按当前权限读取商品 baseline、价格和只读库存上下文并准备 `product_setup/update` 草稿；`prepare_ai_inventory_adjustment_draft_v1(...)` 准备已绑定商品的库存调整草稿，等待用户填写仓库、数量和原因。调整后库存高于当前库存时，草稿按“用户明确填写 → 商品已有有效库存估值 → Standard Buying 标准采购参考价建议”解析按库存基准单位计价的 `valuation_rate`。Standard Buying 与库存单位相同时直接建议；按箱、包等其他已配置单位计价时，按商品 UOM conversion factor 折算为每库存基准单位成本；缺少可靠换算关系时不得自动采用。若同一商品存在多条 Standard Buying，系统会先统一折算为库存单位；折算结果不一致时返回 conflict 元数据和明细警告，不擅自选择其中一条。采用建议时同时返回 `valuation_rate_source=standard_buying_reference`、`valuation_rate_reference` 和可审计警告，要求界面展示原参考价、单位、换算系数并明确提示这只是估值建议。三者均无有效正数时草稿不得标记为可执行；减少库存不要求新的单位成本。库存调整执行 Stock Reconciliation，不创建采购订单、采购发票或供应商应付。两类卡片动作必须使用 POST 与 `Idempotency-Key`，同时按“用户 + 会话 + 公司 + 动作 + 当前有效商品”执行业务幂等：同一活动草稿首次返回 `outcome=created`，后续即使使用不同 request id 也返回同一草稿并标记 `outcome=reused`；复用历史库存草稿时会重新解析缺少来源的旧零估值并刷新价格/冲突提示，但保留 `valuation_rate_source=user` 的用户明确输入。草稿执行、交接或放弃后释放业务键，允许重新创建。直接 UI 动作返回 `messages=[]`，不伪造用户/助手聊天，也不进入后续模型上下文。库存草稿存在候选商品时，`select_ai_draft_product_candidate_v1(draft_id, expected_version, item_code, selection_text)` 只接受当前草稿候选列表内的编码，保留原增减方式、数量、单位、仓库、原因和日期，更新同一个草稿版本，不重新执行商品搜索、模型调用或追加聊天消息。
 
 库存调整会检查商品库存基准单位是否属于日常业务可选目录。未纳入目录的历史、科学或异常单位失败关闭，payload 返回 `requires_uom_migration` 和治理提示；用户必须先通过受控商品单位错误迁移处理，不能借 AI 草稿绕过历史库存与单位约束。
 
@@ -2577,6 +2580,79 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 下单页回填旧草稿商品图片与摘要
 - 商品编辑前预加载
 - 商品搜索结果中的“查看库存详情”
+
+### list_product_prices_v1
+
+方法：
+
+- `myapp.api.gateway.list_product_prices_v1`
+
+参数：
+
+- `item_code: str`
+
+行为：
+
+- 要求当前用户具有源 `Item` 读取权限。
+- 先通过当前用户可读取的启用 `Price List` 限定范围，再读取该商品全部正式 `Item Price`，不把完整价目表压缩成四个摘要字段。
+- 每条价格返回：
+  - `name`
+  - `price_list`
+  - `price_list_type = selling | buying | both`
+  - `currency`
+  - `uom`
+  - `rate`
+  - `valid_from`
+  - `valid_upto`
+  - `modified`
+- 顶层同时返回 `price_lists[]` 和 `permissions.can_create / can_write`，供 Web 隐藏或禁用无权限的维护动作。
+- 适用于商品详情和 AI 商品快捷窗口的完整单位化价格矩阵。
+
+### upsert_product_price_v1
+
+方法：
+
+- `myapp.api.gateway.upsert_product_price_v1`
+
+参数：
+
+- `item_code: str`
+- `price_list: str`
+- `rate: number >= 0`
+- `currency: str | None`
+- `uom: str`
+- `valid_from: date | None`
+- `valid_upto: date | None`
+- `price_name: str | None`，为空时新增，存在时更新指定价格
+- `item_modified: str | None`
+- `price_modified: str | None`
+
+行为：
+
+- POST，要求 `Idempotency-Key`；新增要求 `Item Price.create`，更新要求目标 `Item Price.write`。
+- 价格单位必须已经配置在商品单位换算表中。
+- 更新时校验价格记录归属、商品版本和价格版本，防止覆盖并发修改。
+- `valid_from` 不能晚于 `valid_upto`；同一商品、价格表、币种、单位和有效期冲突继续由 ERPNext `Item Price` 校验失败关闭。
+- Web 编辑现有价格时锁定价格表、币种和单位；如果定位键错误，应新增正确价格后终止旧价格，避免静默改写价格身份。
+
+### terminate_product_price_v1
+
+方法：
+
+- `myapp.api.gateway.terminate_product_price_v1`
+
+参数：
+
+- `item_code: str`
+- `price_name: str`
+- `valid_upto: date | None`，省略时使用当天
+- `price_modified: str | None`
+
+行为：
+
+- POST，要求目标 `Item Price.write` 与幂等键。
+- 通过设置 `valid_upto` 终止价格并保留正式记录，不执行物理删除。
+- 校验价格归属和乐观锁；如果价格在读取后已变化，要求刷新后重新操作。
 
 ### resolve_active_product_v1
 

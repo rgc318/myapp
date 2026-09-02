@@ -16,15 +16,126 @@ from myapp.services.wholesale_service import (
 	delete_product_barcode_v2,
 	disable_product_v2,
 	get_product_detail_v2,
+	list_product_prices_v1,
 	list_products_v2,
 	search_product,
 	search_product_v2,
 	set_primary_product_barcode_v2,
+	terminate_product_price_v1,
+	upsert_product_price_v1,
 	update_product_v2,
 )
 
 
 class TestWholesaleService(TestCase):
+	@patch("myapp.services.wholesale_service.frappe.has_permission", return_value=True)
+	@patch("myapp.services.wholesale_service.frappe.get_all")
+	@patch("myapp.services.wholesale_service._get_permitted_product_price_lists")
+	@patch("myapp.services.wholesale_service.require_document_permission")
+	def test_list_product_prices_returns_complete_unit_aware_matrix(
+		self,
+		mock_require_document_permission,
+		mock_price_lists,
+		mock_get_all,
+		_mock_has_permission,
+	):
+		mock_require_document_permission.return_value = frappe._dict(
+			name="ITEM-001", modified="2026-09-02 10:00:00"
+		)
+		mock_price_lists.return_value = {
+			"Standard Buying": {"buying": True, "selling": False, "currency": "CNY"},
+			"Wholesale": {"buying": False, "selling": True, "currency": "CNY"},
+		}
+		mock_get_all.return_value = [
+			frappe._dict(
+				name="PRICE-1",
+				item_code="ITEM-001",
+				price_list="Standard Buying",
+				currency="CNY",
+				uom="Box",
+				price_list_rate=70,
+				valid_from="2026-09-01",
+				valid_upto=None,
+				modified="2026-09-02 10:01:00",
+			)
+		]
+
+		result = list_product_prices_v1("ITEM-001")
+
+		self.assertEqual(result["data"]["prices"][0]["price_list_type"], "buying")
+		self.assertEqual(result["data"]["prices"][0]["uom"], "Box")
+		self.assertEqual(result["data"]["prices"][0]["rate"], 70)
+
+	@patch("myapp.services.wholesale_service.run_idempotent")
+	def test_upsert_product_price_uses_idempotent_runner(self, mock_run_idempotent):
+		mock_run_idempotent.return_value = {"status": "success", "data": {"name": "PRICE-1"}}
+
+		result = upsert_product_price_v1(
+			"ITEM-001",
+			"Wholesale",
+			120,
+			request_id="price-save-001",
+		)
+
+		self.assertEqual(result["data"]["name"], "PRICE-1")
+		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.wholesale_service.frappe.throw", side_effect=frappe.ValidationError)
+	@patch("myapp.services.wholesale_service._validate_product_price_dates", return_value=(None, None))
+	@patch("myapp.services.wholesale_service._resolve_item_price_uom", return_value="Nos")
+	@patch("myapp.services.wholesale_service._normalize_product_uom_migration_price_rate", return_value=12)
+	@patch("myapp.services.wholesale_service.require_document_permission")
+	@patch("myapp.services.wholesale_service.run_idempotent", side_effect=lambda _name, _key, operation: operation())
+	def test_upsert_product_price_rejects_identity_key_rewrite(
+		self,
+		_mock_run_idempotent,
+		mock_require_document_permission,
+		_mock_normalize_rate,
+		_mock_resolve_uom,
+		_mock_validate_dates,
+		_mock_throw,
+	):
+		item = frappe._dict(name="ITEM-001", modified="2026-09-02 10:00:00")
+		price_list = frappe._dict(
+			name="Standard Selling",
+			currency="CNY",
+			selling=1,
+			buying=0,
+		)
+		price = frappe._dict(
+			name="PRICE-1",
+			item_code="ITEM-001",
+			price_list="Standard Selling",
+			currency="CNY",
+			uom="Box",
+			modified="2026-09-02 10:01:00",
+		)
+		mock_require_document_permission.side_effect = [item, price_list, price]
+
+		with self.assertRaises(frappe.ValidationError):
+			upsert_product_price_v1(
+				"ITEM-001",
+				"Standard Selling",
+				12,
+				currency="CNY",
+				price_name="PRICE-1",
+				request_id="price-key-rewrite-001",
+				uom="Nos",
+			)
+
+	@patch("myapp.services.wholesale_service.run_idempotent")
+	def test_terminate_product_price_uses_idempotent_runner(self, mock_run_idempotent):
+		mock_run_idempotent.return_value = {"status": "success", "data": {"name": "PRICE-1"}}
+
+		result = terminate_product_price_v1(
+			"ITEM-001",
+			"PRICE-1",
+			request_id="price-stop-001",
+		)
+
+		self.assertEqual(result["data"]["name"], "PRICE-1")
+		mock_run_idempotent.assert_called_once()
+
 	@patch("myapp.services.wholesale_service.frappe.get_all")
 	@patch("myapp.services.wholesale_service.frappe.get_list", return_value=["Standard Selling"])
 	def test_price_lookup_uses_permitted_price_list_without_requiring_item_price_read(

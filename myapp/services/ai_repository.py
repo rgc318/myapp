@@ -663,7 +663,7 @@ def get_conversation(
 		params.append(resolved_before)
 	rows = frappe.db.sql(
 		f"""
-		SELECT m.name, m.sequence_no, m.role, m.content, m.scenario, m.run_id,
+		SELECT m.name, m.sequence_no, m.role, m.message_kind, m.content, m.scenario, m.run_id,
 			m.citations_json, m.attachments_json, m.prompt_version, m.creation,
 			r.status AS run_status, r.requested_model_alias, r.model_alias, r.model, r.trace_id,
 			COALESCE(mr.provider_model_display, r.model_alias) AS model_display,
@@ -700,6 +700,7 @@ def get_conversation(
 				"name": row.name,
 				"sequence": cint(row.sequence_no),
 				"role": row.role,
+				"message_kind": getattr(row, "message_kind", None) or "chat",
 				"content": row.content or "",
 				"scenario": row.scenario,
 				"run_id": row.run_id,
@@ -747,6 +748,7 @@ def append_message(
 	conversation_id: str,
 	user: str,
 	role: str,
+	message_kind: str = "chat",
 	content: str,
 	scenario: str,
 	run_id: str | None = None,
@@ -760,13 +762,16 @@ def append_message(
 	now = now_datetime()
 	sequence_no = cint(conversation.message_count) + 1
 	message_id = _name("AI-MSG")
+	resolved_message_kind = str(message_kind or "chat").strip().lower()
+	if resolved_message_kind not in {"chat", "activity"}:
+		frappe.throw(_("AI 消息类型不正确。"))
 	frappe.db.sql(
 		f"""
 		INSERT INTO `{MESSAGE_TABLE}`
 			(name, creation, modified, modified_by, owner, docstatus, idx,
-			 conversation, sequence_no, role, content, content_hash, scenario,
+			 conversation, sequence_no, role, message_kind, content, content_hash, scenario,
 			 run_id, citations_json, attachments_json, prompt_version)
-		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 		""",
 		(
 			message_id,
@@ -777,6 +782,7 @@ def append_message(
 			conversation_id,
 			sequence_no,
 			role,
+			resolved_message_kind,
 			content,
 			hashlib.sha256(content.encode("utf-8")).hexdigest(),
 			scenario,
@@ -807,6 +813,7 @@ def load_model_messages(*, conversation_id: str, user: str, limit: int = 20) -> 
 		FROM `{MESSAGE_TABLE}` m
 		LEFT JOIN `{RUN_TABLE}` r ON r.name = m.run_id
 		WHERE m.conversation = %s AND m.sequence_no >= %s
+			AND COALESCE(m.message_kind, 'chat') = 'chat'
 			AND (
 				m.role <> 'assistant'
 				OR (
@@ -2227,6 +2234,12 @@ def _serialize_draft(row, lines=None) -> dict:
 		"name": row.name,
 		"conversation": row.conversation,
 		"source_run": row.source_run,
+		"origin_kind": getattr(row, "origin_kind", None),
+		"origin_action": getattr(row, "origin_action", None),
+		"origin_entity_type": getattr(row, "origin_entity_type", None),
+		"origin_entity_name": getattr(row, "origin_entity_name", None),
+		"active_dedupe_key": getattr(row, "active_dedupe_key", None),
+		"superseded_by": getattr(row, "superseded_by", None),
 		"draft_type": row.draft_type,
 		"status": row.status,
 		"company": row.company,
@@ -2283,6 +2296,11 @@ def create_draft(
 	title: str,
 	payload: dict,
 	validation: dict,
+	origin_kind: str | None = None,
+	origin_action: str | None = None,
+	origin_entity_type: str | None = None,
+	origin_entity_name: str | None = None,
+	active_dedupe_key: str | None = None,
 ) -> dict:
 	_get_owned_conversation(conversation_id, user)
 	now = now_datetime()
@@ -2291,9 +2309,12 @@ def create_draft(
 		f"""
 		INSERT INTO `{DRAFT_TABLE}`
 			(name, creation, modified, modified_by, owner, docstatus, idx,
-			 conversation, source_run, draft_type, status, company, title,
+			 conversation, source_run, origin_kind, origin_action,
+			 origin_entity_type, origin_entity_name, active_dedupe_key,
+			 draft_type, status, company, title,
 			 version_no, payload_json, validation_json, retention_until)
-		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, 'draft', %s, %s, 1, %s, %s, %s)
+		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, %s, %s, %s,
+			%s, 'draft', %s, %s, 1, %s, %s, %s)
 		""",
 		(
 			draft_id,
@@ -2303,6 +2324,11 @@ def create_draft(
 			user,
 			conversation_id,
 			source_run,
+			origin_kind,
+			origin_action,
+			origin_entity_type,
+			origin_entity_name,
+			active_dedupe_key,
 			draft_type,
 			company,
 			title[:255],
@@ -2337,10 +2363,63 @@ def create_draft(
 	return get_draft(draft_id=draft_id, user=user)
 
 
+def create_or_reuse_action_draft(
+	*,
+	user: str,
+	conversation_id: str,
+	source_run: str,
+	draft_type: str,
+	company: str,
+	title: str,
+	payload: dict,
+	validation: dict,
+	origin_action: str,
+	origin_entity_type: str,
+	origin_entity_name: str,
+	active_dedupe_key: str,
+) -> dict:
+	_get_owned_conversation(conversation_id, user, for_update=True)
+	existing = frappe.db.sql(
+		f"""
+		SELECT name
+		FROM `{DRAFT_TABLE}`
+		WHERE owner = %s AND conversation = %s AND status = 'draft'
+			AND active_dedupe_key = %s
+		LIMIT 1
+		FOR UPDATE
+		""",
+		(user, conversation_id, active_dedupe_key),
+		as_dict=True,
+	)
+	if existing:
+		return {
+			"created": False,
+			"draft": get_draft(draft_id=existing[0].name, user=user),
+		}
+	draft = create_draft(
+		user=user,
+		conversation_id=conversation_id,
+		source_run=source_run,
+		draft_type=draft_type,
+		company=company,
+		title=title,
+		payload=payload,
+		validation=validation,
+		origin_kind="ui_product_action",
+		origin_action=origin_action,
+		origin_entity_type=origin_entity_type,
+		origin_entity_name=origin_entity_name,
+		active_dedupe_key=active_dedupe_key,
+	)
+	return {"created": True, "draft": draft}
+
+
 def get_draft(*, draft_id: str, user: str) -> dict:
 	rows = frappe.db.sql(
 		f"""
 		SELECT name, conversation, source_run, draft_type, status, company, title,
+			origin_kind, origin_action, origin_entity_type, origin_entity_name,
+			active_dedupe_key, superseded_by,
 			version_no, payload_json, validation_json, execution_request_id,
 			executed_by, executed_at, target_doctype, target_name,
 			execution_result_json, creation, modified
@@ -2360,7 +2439,7 @@ def list_drafts(
 ) -> dict:
 	_ensure_tables()
 	resolved_status = str(status or "draft").strip().lower()
-	if resolved_status not in {"draft", "executed", "handed_off", "discarded", "all"}:
+	if resolved_status not in {"draft", "executed", "handed_off", "discarded", "superseded", "all"}:
 		frappe.throw(_("AI 草稿状态筛选不正确。"))
 	resolved_type = str(draft_type or "").strip()
 	if resolved_type and resolved_type not in {
@@ -2385,6 +2464,8 @@ def list_drafts(
 	rows = frappe.db.sql(
 		f"""
 		SELECT name, conversation, source_run, draft_type, status, company, title,
+			origin_kind, origin_action, origin_entity_type, origin_entity_name,
+			active_dedupe_key, superseded_by,
 			version_no, payload_json, validation_json, execution_request_id,
 			executed_by, executed_at, target_doctype, target_name,
 			execution_result_json, creation, modified
@@ -2408,7 +2489,7 @@ def mark_draft_handed_off(*, draft_id: str, user: str) -> dict:
 	draft = get_draft(draft_id=draft_id, user=user)
 	if draft["status"] == "draft":
 		frappe.db.sql(
-			f"UPDATE `{DRAFT_TABLE}` SET status = 'handed_off', modified = %s, modified_by = %s WHERE name = %s",
+			f"UPDATE `{DRAFT_TABLE}` SET status = 'handed_off', active_dedupe_key = NULL, modified = %s, modified_by = %s WHERE name = %s",
 			(now_datetime(), user, draft_id),
 		)
 	return get_draft(draft_id=draft_id, user=user)
@@ -2426,7 +2507,8 @@ def mark_draft_executed(
 	now = now_datetime()
 	frappe.db.sql(
 		f"""
-		UPDATE `{DRAFT_TABLE}` SET status = 'executed', modified = %s, modified_by = %s,
+		UPDATE `{DRAFT_TABLE}` SET status = 'executed', active_dedupe_key = NULL,
+			modified = %s, modified_by = %s,
 			execution_request_id = %s, executed_by = %s, executed_at = %s,
 			target_doctype = %s, target_name = %s, execution_result_json = %s
 		WHERE name = %s AND owner = %s AND status = 'draft'
@@ -2557,7 +2639,7 @@ def discard_draft(*, draft_id: str, user: str) -> dict:
 		frappe.throw(_("已交接的 AI 草稿不能放弃。"))
 	if draft["status"] != "discarded":
 		frappe.db.sql(
-			f"UPDATE `{DRAFT_TABLE}` SET status = 'discarded', modified = %s, modified_by = %s WHERE name = %s",
+			f"UPDATE `{DRAFT_TABLE}` SET status = 'discarded', active_dedupe_key = NULL, modified = %s, modified_by = %s WHERE name = %s",
 			(now_datetime(), user, draft_id),
 		)
 	return get_draft(draft_id=draft_id, user=user)

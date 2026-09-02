@@ -129,6 +129,7 @@ from myapp.api.gateway import (
 	get_payment_entry_detail_v1,
 	get_delivery_note_detail_v2,
 	get_product_detail_v2,
+	list_product_prices_v1,
 	get_sales_order_detail,
 	get_sales_invoice_detail_v2,
 	get_sales_order_status_summary,
@@ -154,6 +155,7 @@ from myapp.api.gateway import (
 	search_product_v2,
 	set_print_default_template_v1,
 	set_primary_product_barcode_v2,
+	terminate_product_price_v1,
 	stream_ai_message_v1,
 	stream_ai_run_resume_v1,
 	submit_ai_feedback_v1,
@@ -167,6 +169,7 @@ from myapp.api.gateway import (
 	update_customer_v2,
 	update_current_user_workspace_preferences_v1,
 	update_product_v2,
+	upsert_product_price_v1,
 	update_uom_v2,
 	update_warehouse_v2,
 	update_order_items_v2,
@@ -1941,6 +1944,53 @@ class TestGatewayWrappers(TestCase):
 			company=None,
 			price_list="Standard Selling",
 			currency=None,
+		)
+
+	@patch("myapp.api.gateway.list_product_prices_v1_service")
+	def test_list_product_prices_forwards_item_code(self, mock_list_prices):
+		mock_list_prices.return_value = {"status": "success", "data": {"prices": []}}
+
+		result = list_product_prices_v1("ITEM-001")
+
+		self.assertEqual(result["data"]["prices"], [])
+		mock_list_prices.assert_called_once_with(item_code="ITEM-001")
+
+	@patch("myapp.api.gateway.upsert_product_price_v1_service")
+	def test_upsert_product_price_forwards_payload(self, mock_upsert_price):
+		mock_upsert_price.return_value = {"status": "success", "data": {"name": "PRICE-1"}}
+
+		result = upsert_product_price_v1(
+			"ITEM-001",
+			"Wholesale",
+			120,
+			currency="CNY",
+			uom="Box",
+		)
+
+		self.assertEqual(result["data"]["name"], "PRICE-1")
+		mock_upsert_price.assert_called_once_with(
+			item_code="ITEM-001",
+			price_list="Wholesale",
+			rate=120,
+			currency="CNY",
+			uom="Box",
+		)
+
+	@patch("myapp.api.gateway.terminate_product_price_v1_service")
+	def test_terminate_product_price_forwards_payload(self, mock_terminate_price):
+		mock_terminate_price.return_value = {"status": "success", "data": {"name": "PRICE-1"}}
+
+		result = terminate_product_price_v1(
+			"ITEM-001",
+			"PRICE-1",
+			valid_upto="2026-09-02",
+		)
+
+		self.assertEqual(result["data"]["name"], "PRICE-1")
+		mock_terminate_price.assert_called_once_with(
+			item_code="ITEM-001",
+			price_name="PRICE-1",
+			valid_upto="2026-09-02",
 		)
 
 	@patch("myapp.api.gateway.assess_product_uom_migration_v1_service")
