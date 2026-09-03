@@ -2856,11 +2856,16 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `warehouse_stock_qty: float | None = None`
 - `warehouse_stock_uom: str | None = None`
 - `company: str | None = None`
+- `item_modified: str | None`，前端读取详情时获得的 `Item.modified`
 - `request_id: str | None`
 
 行为：
 
-- 更新商品基础信息
+- 要求当前用户具有目标 `Item.write` 文档权限；不能只依赖前端隐藏按钮。
+- `get_product_detail_v2` 顶层返回 `permissions.can_write`，供维护工作区明确进入可编辑或只读模式。
+- 提交 `item_modified` 时执行乐观锁校验；如果商品在读取后已被其他请求修改，返回 HTTP 409、`code=DOCUMENT_VERSION_CONFLICT` 和 `data.conflict_type=document_modified`，不执行任何字段、图片、库存或价格写入。
+- `disable_product_v2`、`add_product_barcode_v2`、`set_primary_product_barcode_v2`、`delete_product_barcode_v2` 同样接受可选 `item_modified` 并执行相同的商品写权限与版本保护。
+- 更新商品基础信息。
 - `item_group` 当前支持更新商品分类
 - `brand` 当前支持更新商品品牌
 - `barcode` 当前支持更新商品主条码

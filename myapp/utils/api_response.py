@@ -84,6 +84,14 @@ def map_exception_to_error(exc: Exception):
 		pass
 
 	try:
+		from myapp.utils.concurrency import OptimisticLockConflictError
+
+		if isinstance(exc, OptimisticLockConflictError):
+			return "DOCUMENT_VERSION_CONFLICT", 409
+	except Exception:
+		pass
+
+	try:
 		from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
 
 		if isinstance(exc, AiDraftVersionConflictError):

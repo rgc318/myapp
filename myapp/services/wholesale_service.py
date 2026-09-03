@@ -14,6 +14,7 @@ from myapp.services.data_permission_service import (
 	current_user,
 	ensure_warehouse_access,
 	get_permitted_warehouse_names,
+	has_document_permission,
 	require_document_permission,
 	require_doctype_permission,
 )
@@ -22,6 +23,7 @@ from myapp.services.product_correction_service import (
 	record_product_correction,
 )
 from myapp.utils.idempotency import get_current_request_id, run_idempotent
+from myapp.utils.concurrency import OptimisticLockConflictError
 from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom_display import build_uom_display_map, sort_uom_rows
 from myapp.utils.uom import resolve_item_quantity_to_stock
@@ -68,6 +70,22 @@ PRODUCT_HISTORY_FIELD_LABELS = {
 
 def _normalize_text(value: str | None):
 	return (value or "").strip()
+
+
+def _require_current_document_version(doc, expected_modified, *, message: str):
+	expected = _normalize_text(expected_modified)
+	if not expected:
+		return
+	current = str(getattr(doc, "modified", None) or "")
+	if expected == current:
+		return
+	raise OptimisticLockConflictError(
+		message,
+		doctype=doc.doctype,
+		name=doc.name,
+		expected_modified=expected,
+		current_modified=current,
+	)
 
 
 def _normalize_currency(value: str | None):
@@ -1079,6 +1097,9 @@ def _build_product_detail_payload(
 		"company": company,
 		"creation": getattr(item, "creation", None),
 		"modified": getattr(item, "modified", None),
+		"permissions": {
+			"can_write": has_document_permission("Item", item, "write"),
+		},
 	}
 
 
@@ -3181,7 +3202,12 @@ def update_product_v2(
 	request_id = kwargs.get("request_id")
 
 	def _update_product():
-		item = frappe.get_doc("Item", item_code)
+		item = require_document_permission("Item", item_code, "write")
+		_require_current_document_version(
+			item,
+			kwargs.get("item_modified"),
+			message=_("商品资料已被其他人修改，请刷新最新资料后重新编辑。"),
+		)
 		previous_image_url = _normalize_text(getattr(item, "image", None)) or None
 		image_change_requested = "image" in kwargs
 		next_image_url = _normalize_text(kwargs.get("image")) or None
@@ -3473,7 +3499,12 @@ def disable_product_v2(item_code: str, disabled: bool | int = True, **kwargs):
 	request_id = kwargs.get("request_id")
 
 	def _disable_product():
-		item = frappe.get_doc("Item", item_code)
+		item = require_document_permission("Item", item_code, "write")
+		_require_current_document_version(
+			item,
+			kwargs.get("item_modified"),
+			message=_("商品资料已被其他人修改，请刷新最新资料后再启用或停用。"),
+		)
 		item.disabled = cint(disabled)
 		item.save()
 		item.reload()
@@ -3511,7 +3542,12 @@ def add_product_barcode_v2(
 	request_id = kwargs.get("request_id")
 
 	def _add_product_barcode():
-		item = frappe.get_doc("Item", item_code)
+		item = require_document_permission("Item", item_code, "write")
+		_require_current_document_version(
+			item,
+			kwargs.get("item_modified"),
+			message=_("商品资料已被其他人修改，请刷新最新资料后重新维护条码。"),
+		)
 		resolved_uom = _resolve_item_barcode_uom(item, kwargs.get("uom"))
 		existing_parent = frappe.db.get_value("Item Barcode", {"barcode": barcode}, "parent")
 		if existing_parent and existing_parent != item.name:
@@ -3575,7 +3611,12 @@ def set_primary_product_barcode_v2(
 	request_id = kwargs.get("request_id")
 
 	def _set_primary_product_barcode():
-		item = frappe.get_doc("Item", item_code)
+		item = require_document_permission("Item", item_code, "write")
+		_require_current_document_version(
+			item,
+			kwargs.get("item_modified"),
+			message=_("商品资料已被其他人修改，请刷新最新资料后重新维护条码。"),
+		)
 		target_row = None
 		for row in list(getattr(item, "barcodes", []) or []):
 			if _normalize_text(getattr(row, "barcode", None)) == barcode:
@@ -3616,7 +3657,12 @@ def delete_product_barcode_v2(
 	request_id = kwargs.get("request_id")
 
 	def _delete_product_barcode():
-		item = frappe.get_doc("Item", item_code)
+		item = require_document_permission("Item", item_code, "write")
+		_require_current_document_version(
+			item,
+			kwargs.get("item_modified"),
+			message=_("商品资料已被其他人修改，请刷新最新资料后重新维护条码。"),
+		)
 		rows = list(getattr(item, "barcodes", []) or [])
 		kept_rows = [row for row in rows if _normalize_text(getattr(row, "barcode", None)) != barcode]
 		if len(kept_rows) == len(rows):

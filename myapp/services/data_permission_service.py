@@ -54,6 +54,20 @@ def require_document_permission(doctype: str, name: str, ptype: str = "read"):
 	return doc
 
 
+def has_document_permission(doctype: str, document, ptype: str = "read") -> bool:
+	user = current_user()
+	if user == "Administrator":
+		return True
+	return bool(
+		frappe.has_permission(
+			doctype,
+			ptype=ptype,
+			doc=document,
+			user=user,
+		)
+	)
+
+
 def ensure_user_permission_value(
 	allow: str,
 	value: str | None,

@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, call, patch
 
 import frappe
 
+from myapp.utils.concurrency import OptimisticLockConflictError
 from myapp.services.wholesale_service import (
 	_apply_item_uom_updates,
 	_get_multi_price_map,
@@ -616,6 +617,7 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(result["data"]["stock_uom_display"], "件")
 		self.assertEqual(result["data"]["total_qty"], 21)
 		self.assertEqual(len(result["data"]["warehouse_stock_details"]), 2)
+		self.assertTrue(result["data"]["permissions"]["can_write"])
 
 	@patch("myapp.services.wholesale_service._get_warehouse_stock_detail_map")
 	@patch("myapp.services.wholesale_service._get_qty_map")
@@ -1017,6 +1019,34 @@ class TestWholesaleService(TestCase):
 
 		self.assertEqual(result["data"]["item_code"], "ITEM-001")
 		mock_run_idempotent.assert_called_once()
+
+	@patch("myapp.services.wholesale_service.require_document_permission")
+	@patch("myapp.services.wholesale_service.run_idempotent")
+	def test_update_product_v2_rejects_stale_item_version_before_mutation(
+		self,
+		mock_run_idempotent,
+		mock_require_document_permission,
+	):
+		mock_run_idempotent.side_effect = lambda _scope, _request_id, callback: callback()
+		item = frappe._dict(
+			doctype="Item",
+			name="ITEM-001",
+			modified="2026-09-03 11:00:00",
+		)
+		item.save = MagicMock()
+		mock_require_document_permission.return_value = item
+
+		with self.assertRaises(OptimisticLockConflictError) as raised:
+			update_product_v2(
+				item_code="ITEM-001",
+				item_modified="2026-09-03 10:00:00",
+				item_name="不会覆盖的新名称",
+			)
+
+		mock_require_document_permission.assert_called_once_with("Item", "ITEM-001", "write")
+		item.save.assert_not_called()
+		self.assertEqual(raised.exception.public_data["conflict_type"], "document_modified")
+		self.assertEqual(raised.exception.public_data["current_modified"], "2026-09-03 11:00:00")
 
 	@patch("myapp.services.wholesale_service.run_idempotent")
 	def test_create_product_v2_uses_idempotent_runner(self, mock_run_idempotent):

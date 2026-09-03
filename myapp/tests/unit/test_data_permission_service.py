@@ -7,12 +7,30 @@ from myapp.services.data_permission_service import (
 	ensure_user_permission_value,
 	filter_permitted_user_default,
 	get_permission_query_condition,
+	has_document_permission,
 	has_doctype_permission,
 	require_doctype_permission,
 )
 
 
 class TestDataPermissionService(TestCase):
+	@patch("myapp.services.data_permission_service.current_user", return_value="user@example.com")
+	@patch("myapp.services.data_permission_service.frappe.has_permission", return_value=False)
+	def test_has_document_permission_checks_record_scope_without_raising(
+		self,
+		mock_has_permission,
+		_mock_current_user,
+	):
+		document = frappe._dict(doctype="Item", name="ITEM-001")
+
+		self.assertFalse(has_document_permission("Item", document, "write"))
+		mock_has_permission.assert_called_once_with(
+			"Item",
+			ptype="write",
+			doc=document,
+			user="user@example.com",
+		)
+
 	@patch("myapp.services.data_permission_service.current_user", return_value="user@example.com")
 	@patch("myapp.services.data_permission_service.frappe.has_permission", return_value=False)
 	def test_has_doctype_permission_returns_false_without_raising(

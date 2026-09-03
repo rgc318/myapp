@@ -6,6 +6,7 @@ from myapp.api import ai_api as ai_api_module
 from myapp.api import gateway as gateway_module
 from myapp.api import wholesale_api as wholesale_api_module
 from myapp.utils.ai_errors import AiServiceError
+from myapp.utils.concurrency import OptimisticLockConflictError
 
 from myapp.api.gateway import (
 	add_product_barcode_v2,
@@ -232,6 +233,25 @@ class TestGatewayWrappers(TestCase):
 		self.assertIn("DeepSeek V4 Flash", result["message"])
 		self.assertEqual(result["data"]["provider_error_code"], "PROVIDER_HTTP_403")
 		self.assertEqual(mock_frappe.local.response["http_status_code"], 502)
+
+	def test_gateway_returns_document_version_conflict_as_recoverable_409(self):
+		error = OptimisticLockConflictError(
+			"商品资料已被其他人修改，请刷新最新资料后重新编辑。",
+			doctype="Item",
+			name="ITEM-001",
+			expected_modified="2026-09-03 10:00:00",
+			current_modified="2026-09-03 11:00:00",
+		)
+		with patch.object(gateway_module, "frappe") as mock_frappe:
+			mock_frappe.local.response = {}
+			result = gateway_module._handle_gateway_call(
+				lambda: (_ for _ in ()).throw(error),
+				success_code="UNUSED",
+			)
+
+		self.assertEqual(result["code"], "DOCUMENT_VERSION_CONFLICT")
+		self.assertEqual(result["data"]["conflict_type"], "document_modified")
+		self.assertEqual(mock_frappe.local.response["http_status_code"], 409)
 
 	@patch("myapp.api.gateway.resume_ai_run_v1_service")
 	def test_resume_ai_run_is_owner_scoped_service_wrapper(self, mock_resume):
