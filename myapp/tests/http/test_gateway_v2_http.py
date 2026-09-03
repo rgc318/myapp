@@ -633,6 +633,16 @@ class GatewayV2HttpTestCase(GatewayHttpTestCase):
 		self.assertEqual(detail_data["barcode"], extra_barcode)
 		self.assertEqual([row["barcode"] for row in detail_data["barcodes"]], [extra_barcode])
 
+		list_status, list_payload = self._call_gateway(
+			"myapp.api.gateway.list_products_v2",
+			{"search_key": item_code, "limit": 10},
+		)
+		self._assert_success(list_status, list_payload, code="PRODUCTS_FETCHED")
+		list_row = next(row for row in list_payload["message"]["data"] if row["item_code"] == item_code)
+		self.assertEqual(list_row["barcode"], extra_barcode)
+		self.assertEqual([row["barcode"] for row in list_row["barcodes"]], [extra_barcode])
+		self.assertEqual(list_row["barcodes"][0]["uom"], detail_data["barcodes"][0]["uom"])
+
 	def test_update_product_v2_success(self):
 		create_request, create_payload = self._create_product_and_stock(
 			item_name=f"HTTP-V2-更新商品-{time.time_ns()}",

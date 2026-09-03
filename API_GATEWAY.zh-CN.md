@@ -2481,6 +2481,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
   - `date_to` -> `23:59:59`
 - 当前返回重点包括：
   - 商品基础信息
+  - 主条码兼容字段 `barcode`
+  - 完整条码摘要 `barcodes[]`，每行包含 `name`、`barcode`、`idx`、`is_primary`、`uom`
   - 启停状态
   - 当前查询口径库存 `qty`
   - 总库存 `total_qty`

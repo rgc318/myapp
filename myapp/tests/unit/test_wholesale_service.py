@@ -6,6 +6,7 @@ import frappe
 from myapp.utils.concurrency import OptimisticLockConflictError
 from myapp.services.wholesale_service import (
 	_apply_item_uom_updates,
+	_get_item_barcode_map,
 	_get_multi_price_map,
 	_get_price_map,
 	_list_item_codes_by_filters,
@@ -30,6 +31,54 @@ from myapp.services.wholesale_service import (
 
 
 class TestWholesaleService(TestCase):
+	@patch("myapp.services.wholesale_service.frappe.get_all")
+	def test_get_item_barcode_map_preserves_units_and_primary_order(self, mock_get_all):
+		mock_get_all.return_value = [
+			frappe._dict(
+				name="BAR-1",
+				parent="ITEM-001",
+				barcode="690000000001",
+				uom="Nos",
+				idx=1,
+			),
+			frappe._dict(
+				name="BAR-2",
+				parent="ITEM-001",
+				barcode="16900000000018",
+				uom="Box",
+				idx=2,
+			),
+		]
+
+		result = _get_item_barcode_map(["ITEM-001", "ITEM-002"])
+
+		self.assertEqual(result["ITEM-002"], [])
+		self.assertEqual(
+			result["ITEM-001"],
+			[
+				{
+					"name": "BAR-1",
+					"barcode": "690000000001",
+					"idx": 1,
+					"is_primary": True,
+					"uom": "Nos",
+				},
+				{
+					"name": "BAR-2",
+					"barcode": "16900000000018",
+					"idx": 2,
+					"is_primary": False,
+					"uom": "Box",
+				},
+			],
+		)
+		mock_get_all.assert_called_once_with(
+			"Item Barcode",
+			filters={"parent": ["in", ["ITEM-001", "ITEM-002"]]},
+			fields=["name", "parent", "barcode", "uom", "idx"],
+			order_by="parent asc, idx asc",
+		)
+
 	@patch("myapp.services.wholesale_service.list_product_corrections_for_history")
 	@patch("myapp.services.wholesale_service.frappe.get_all")
 	@patch("myapp.services.wholesale_service._get_permitted_product_price_lists")
@@ -356,6 +405,7 @@ class TestWholesaleService(TestCase):
 			call("uoms", {"uom": "Box", "conversion_factor": 12.0}),
 		])
 
+	@patch("myapp.services.wholesale_service._get_item_barcode_map")
 	@patch("myapp.services.wholesale_service._get_warehouse_stock_detail_map")
 	@patch("myapp.services.wholesale_service._get_multi_price_map")
 	@patch("myapp.services.wholesale_service._get_price_map")
@@ -370,6 +420,7 @@ class TestWholesaleService(TestCase):
 		mock_get_price_map,
 		mock_get_multi_price_map,
 		mock_get_warehouse_stock_detail_map,
+		mock_get_item_barcode_map,
 	):
 		mock_get_item_rows.return_value = [
 			frappe._dict(
@@ -406,6 +457,24 @@ class TestWholesaleService(TestCase):
 				{"warehouse": "Stores - TC", "company": "Test Company", "qty": 33},
 			]
 		}
+		mock_get_item_barcode_map.return_value = {
+			"ITEM-001": [
+				{
+					"name": "BARCODE-ROW-1",
+					"barcode": "690000000001",
+					"idx": 1,
+					"is_primary": True,
+					"uom": "Nos",
+				},
+				{
+					"name": "BARCODE-ROW-2",
+					"barcode": "16900000000018",
+					"idx": 2,
+					"is_primary": False,
+					"uom": "Box",
+				},
+			]
+		}
 		mock_get_price_map.return_value = {"ITEM-001": 15}
 		mock_get_multi_price_map.side_effect = [
 			{
@@ -436,6 +505,8 @@ class TestWholesaleService(TestCase):
 		self.assertEqual(result["data"][0]["stock_uom_display"], "件")
 		self.assertEqual(result["data"][0]["uom_display"], "件")
 		self.assertEqual(result["data"][0]["valuation_rate"], 7.5)
+		self.assertEqual(result["data"][0]["barcode"], "690000000001")
+		self.assertEqual(result["data"][0]["barcodes"][1]["uom"], "Box")
 		self.assertEqual(result["data"][0]["total_qty"], 42)
 		self.assertEqual(result["meta"]["total_count"], 2)
 		self.assertEqual(result["pagination"]["total_count"], 2)
@@ -452,6 +523,7 @@ class TestWholesaleService(TestCase):
 			sort_order="desc",
 		)
 
+	@patch("myapp.services.wholesale_service._get_item_barcode_map", return_value={})
 	@patch("myapp.services.wholesale_service._get_warehouse_stock_detail_map", return_value={})
 	@patch("myapp.services.wholesale_service._get_multi_price_map")
 	@patch("myapp.services.wholesale_service._get_uom_map", return_value={})
@@ -466,6 +538,7 @@ class TestWholesaleService(TestCase):
 		_mock_get_uom_map,
 		mock_get_multi_price_map,
 		_mock_get_warehouse_stock_detail_map,
+		_mock_get_item_barcode_map,
 	):
 		mock_get_item_rows.return_value = [
 			frappe._dict(

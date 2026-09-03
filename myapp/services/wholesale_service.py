@@ -1002,6 +1002,36 @@ def _get_item_barcodes(item):
 	return rows
 
 
+def _get_item_barcode_map(item_codes: list[str]):
+	normalized_codes = [code for code in (_normalize_text(value) for value in item_codes) if code]
+	result = {code: [] for code in normalized_codes}
+	if not normalized_codes:
+		return result
+
+	rows = frappe.get_all(
+		"Item Barcode",
+		filters={"parent": ["in", normalized_codes]},
+		fields=["name", "parent", "barcode", "uom", "idx"],
+		order_by="parent asc, idx asc",
+	)
+	for row in rows:
+		parent = _normalize_text(getattr(row, "parent", None))
+		barcode = _normalize_text(getattr(row, "barcode", None))
+		if not parent or parent not in result or not barcode:
+			continue
+		entries = result[parent]
+		entries.append(
+			{
+				"name": getattr(row, "name", None),
+				"barcode": barcode,
+				"idx": cint(getattr(row, "idx", 0)) or len(entries) + 1,
+				"is_primary": len(entries) == 0,
+				"uom": _normalize_text(getattr(row, "uom", None)) or None,
+			}
+		)
+	return result
+
+
 def _update_primary_barcode(item, barcode: str | None):
 	if barcode is None:
 		return
@@ -1189,6 +1219,7 @@ def list_products_v2(
 		row_count=len(rows),
 	)
 	item_codes = [row.name for row in rows]
+	barcode_map = _get_item_barcode_map(item_codes)
 	total_qty_map = _get_qty_map(item_codes, warehouse=None, company=stock_company)
 	warehouse_stock_map = _get_warehouse_stock_detail_map(item_codes, company=stock_company)
 	global_total_qty_map = _get_qty_map(item_codes, warehouse=None, company=None)
@@ -1209,6 +1240,7 @@ def list_products_v2(
 		current_rate = flt(current_price_map.get(row.name, 0) or 0)
 		mode_default_uoms = _extract_mode_default_uoms(row)
 		row_uoms = uom_map.get(row.name, [])
+		barcodes = barcode_map.get(row.name, [])
 		items.append(
 			{
 				"item_code": row.name,
@@ -1221,6 +1253,8 @@ def list_products_v2(
 				"nickname": _extract_item_nickname(row),
 				"specification": _extract_item_specification(row),
 				"description": row.description,
+				"barcode": barcodes[0]["barcode"] if barcodes else None,
+				"barcodes": barcodes,
 				"disabled": cint(row.disabled),
 				"is_sales_item": cint(getattr(row, "is_sales_item", 0)),
 				"is_purchase_item": cint(getattr(row, "is_purchase_item", 0)),
