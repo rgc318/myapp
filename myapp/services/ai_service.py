@@ -60,6 +60,7 @@ from myapp.services.report_service import (
 from myapp.services.wholesale_service import (
 	create_product_v2,
 	get_product_detail_v2,
+	list_product_prices_v1,
 	search_product_v2,
 	update_product_v2,
 )
@@ -3011,15 +3012,58 @@ def _is_business_selectable_uom(uom: str | None) -> bool:
 		raise
 
 
-def _inventory_standard_buying_reference(selected: dict, *, stock_uom: str | None) -> dict | None:
+def _inventory_price_is_active(row: dict, *, posting_date: str | None) -> bool:
+	try:
+		resolved_date = getdate(posting_date) if posting_date else date.today()
+		valid_from = getdate(row.get("valid_from")) if row.get("valid_from") else None
+		valid_upto = getdate(row.get("valid_upto")) if row.get("valid_upto") else None
+	except Exception:
+		return False
+	return not ((valid_from and valid_from > resolved_date) or (valid_upto and valid_upto < resolved_date))
+
+
+def _inventory_buying_price_rows(selected: dict) -> list[dict]:
+	item_code = str(selected.get("item_code") or "").strip()
+	if item_code:
+		try:
+			frappe.local.site
+		except AttributeError:
+			item_code = ""
+	if item_code:
+		try:
+			result = list_product_prices_v1(item_code)
+			rows = ((result or {}).get("data") or {}).get("prices") or []
+			return [
+				dict(row) for row in rows
+				if isinstance(row, dict)
+				and row.get("price_list_type") in {"buying", "both"}
+			]
+		except RuntimeError as exc:
+			# Pure unit tests and older internal callers may not have a bound site.
+			# Their search payload still carries the compatible buying price summary.
+			if "not bound" not in str(exc):
+				raise
+	price_summary = selected.get("price_summary") if isinstance(selected.get("price_summary"), dict) else {}
+	return [dict(row) for row in (price_summary.get("buying_prices") or []) if isinstance(row, dict)]
+
+
+def _inventory_standard_buying_reference(
+	selected: dict,
+	*,
+	stock_uom: str | None,
+	selected_uom: str | None = None,
+	posting_date: str | None = None,
+	valuation_currency: str | None = None,
+) -> dict | None:
 	price_summary = selected.get("price_summary") if isinstance(selected.get("price_summary"), dict) else {}
 	entries = [
-		row for row in (price_summary.get("buying_prices") or [])
-		if isinstance(row, dict)
-		and str(row.get("price_list") or "") == "Standard Buying"
+		row for row in _inventory_buying_price_rows(selected)
+		if _inventory_price_is_active(row, posting_date=posting_date)
 		and flt(row.get("rate") or 0) > 0
 	]
 	resolved_stock_uom = str(stock_uom or "").strip()
+	resolved_selected_uom = str(selected_uom or resolved_stock_uom).strip()
+	resolved_valuation_currency = str(valuation_currency or "").strip()
 	def uom_display(uom: str | None) -> str | None:
 		resolved_uom = str(uom or "").strip()
 		if not resolved_uom:
@@ -3044,17 +3088,52 @@ def _inventory_standard_buying_reference(selected: dict, *, stock_uom: str | Non
 		if legacy_rate <= 0 or "buying_prices" in price_summary:
 			return None
 		return {
+			"reference_id": "legacy:Standard Buying",
+			"name": None,
+			"price_list": "Standard Buying",
+			"currency": None,
 			"rate": legacy_rate,
 			"uom": resolved_stock_uom or None,
 			"uom_display": uom_display(resolved_stock_uom),
 			"conversion_factor": 1,
 			"stock_unit_rate": legacy_rate,
+			"matches_selected_uom": resolved_selected_uom == resolved_stock_uom,
+			"selectable": True,
+			"selection_required": False,
+			"candidates": [],
 		}
 
 	resolved_references = []
 	for entry in entries:
 		reference_rate = flt(entry.get("rate") or 0)
-		reference_uom = str(entry.get("uom") or "").strip() or resolved_stock_uom
+		reference_uom = str(entry.get("uom") or "").strip()
+		price_name = str(entry.get("name") or "").strip() or None
+		price_list = str(entry.get("price_list") or "").strip() or "Standard Buying"
+		currency = str(entry.get("currency") or "").strip() or None
+		currency_matches = not (
+			currency
+			and resolved_valuation_currency
+			and currency != resolved_valuation_currency
+		)
+		if not reference_uom:
+			resolved_references.append({
+				"reference_id": price_name or f"legacy:{price_list}:{currency or ''}:missing-uom:{reference_rate}",
+				"name": price_name,
+				"price_list": price_list,
+				"currency": currency,
+				"rate": reference_rate,
+				"uom": None,
+				"uom_display": None,
+				"conversion_factor": None,
+				"stock_unit_rate": None,
+				"matches_selected_uom": False,
+				"selectable": False,
+				"unavailable_reason": _("价格记录没有明确计价单位。"),
+				"valid_from": str(entry.get("valid_from")) if entry.get("valid_from") else None,
+				"valid_upto": str(entry.get("valid_upto")) if entry.get("valid_upto") else None,
+				"modified": str(entry.get("modified")) if entry.get("modified") else None,
+			})
+			continue
 		conversion_factor = 1.0
 		if reference_uom and resolved_stock_uom and reference_uom != resolved_stock_uom:
 			conversion_row = next(
@@ -3066,31 +3145,104 @@ def _inventory_standard_buying_reference(selected: dict, *, stock_uom: str | Non
 			)
 			conversion_factor = flt((conversion_row or {}).get("conversion_factor") or 0)
 			if conversion_factor <= 0:
+				resolved_references.append({
+					"reference_id": price_name or f"legacy:{price_list}:{currency or ''}:{reference_uom}:{reference_rate}",
+					"name": price_name,
+					"price_list": price_list,
+					"currency": currency,
+					"rate": reference_rate,
+					"uom": reference_uom,
+					"uom_display": uom_display(reference_uom),
+					"conversion_factor": None,
+					"stock_unit_rate": None,
+					"matches_selected_uom": reference_uom == resolved_selected_uom,
+					"selectable": False,
+					"unavailable_reason": _("商品单位换算表缺少该价格单位。"),
+					"valid_from": str(entry.get("valid_from")) if entry.get("valid_from") else None,
+					"valid_upto": str(entry.get("valid_upto")) if entry.get("valid_upto") else None,
+					"modified": str(entry.get("modified")) if entry.get("modified") else None,
+				})
 				continue
 		resolved_references.append({
+			"reference_id": price_name or f"legacy:{price_list}:{currency or ''}:{reference_uom}:{reference_rate}",
+			"name": price_name,
+			"price_list": price_list,
+			"currency": currency,
 			"rate": reference_rate,
 			"uom": reference_uom or resolved_stock_uom or None,
 			"uom_display": uom_display(reference_uom or resolved_stock_uom),
 			"conversion_factor": conversion_factor,
 			"stock_unit_rate": flt(reference_rate / conversion_factor),
+			"matches_selected_uom": reference_uom == resolved_selected_uom,
+			"selectable": currency_matches,
+			"unavailable_reason": (
+				None
+				if currency_matches
+				else _("价格币种与公司库存估值币种不一致。")
+			),
+			"valid_from": str(entry.get("valid_from")) if entry.get("valid_from") else None,
+			"valid_upto": str(entry.get("valid_upto")) if entry.get("valid_upto") else None,
+			"modified": str(entry.get("modified")) if entry.get("modified") else None,
 		})
 	if not resolved_references:
 		return None
-	stock_unit_rates = {round(flt(row.get("stock_unit_rate")), 6) for row in resolved_references}
-	if len(stock_unit_rates) > 1:
-		return {
-			"conflict": True,
-			"stock_uom": resolved_stock_uom or None,
-			"stock_uom_display": uom_display(resolved_stock_uom),
-			"candidates": resolved_references,
-		}
-	return next(
-		(
-			row for row in resolved_references
-			if str(row.get("uom") or "").strip() == resolved_stock_uom
-		),
-		resolved_references[0],
-	)
+	resolved_references.sort(key=lambda row: (
+		0 if row.get("matches_selected_uom") else 1,
+		0 if row.get("price_list") == "Standard Buying" else 1,
+		str(row.get("price_list") or ""),
+		str(row.get("uom") or ""),
+		str(row.get("reference_id") or ""),
+	))
+	exact_matches = [
+		row for row in resolved_references
+		if row.get("selectable") and row.get("matches_selected_uom")
+	]
+	base = {
+		"stock_uom": resolved_stock_uom or None,
+		"stock_uom_display": uom_display(resolved_stock_uom),
+		"selected_uom": resolved_selected_uom or None,
+		"selected_uom_display": uom_display(resolved_selected_uom),
+		"valuation_currency": resolved_valuation_currency or None,
+		"candidates": resolved_references,
+	}
+	if len(exact_matches) == 1:
+		return {**base, **exact_matches[0], "selection_required": False, "selection_reason": None}
+	return {
+		**base,
+		"selection_required": True,
+		"selection_reason": "multiple_exact_matches" if len(exact_matches) > 1 else "no_exact_uom_price",
+	}
+
+
+def _inventory_bin_valuation_context(
+	selected: dict,
+	*,
+	warehouse: str | None,
+	current_stock_qty: float,
+) -> dict:
+	price_summary = selected.get("price_summary") if isinstance(selected.get("price_summary"), dict) else {}
+	valuation_rate = flt(price_summary.get("valuation_rate") or selected.get("valuation_rate") or 0)
+	stock_value = flt(current_stock_qty * valuation_rate)
+	item_code = str(selected.get("item_code") or "").strip()
+	resolved_warehouse = str(warehouse or "").strip()
+	if item_code and resolved_warehouse:
+		try:
+			row = frappe.db.get_value(
+				"Bin",
+				{"item_code": item_code, "warehouse": resolved_warehouse},
+				["valuation_rate", "stock_value"],
+				as_dict=True,
+			)
+			if row:
+				valuation_rate = flt(row.get("valuation_rate") or 0)
+				stock_value = flt(row.get("stock_value") or current_stock_qty * valuation_rate)
+		except RuntimeError as exc:
+			if "not bound" not in str(exc):
+				raise
+	return {
+		"current_valuation_rate": valuation_rate,
+		"current_stock_value": stock_value,
+	}
 
 
 def _resolve_inventory_draft_item(
@@ -3132,8 +3284,19 @@ def _resolve_inventory_draft_item(
 			"target_stock_qty": None,
 			"qty_delta": None,
 			"valuation_rate": None,
+			"valuation_input_rate": None,
+			"valuation_input_uom": None,
 			"valuation_rate_source": None,
+			"valuation_rate_reference_id": None,
 			"valuation_rate_reference": None,
+			"valuation_rate_candidates": [],
+			"valuation_selection_required": False,
+			"valuation_selection_error": None,
+			"current_valuation_rate": None,
+			"current_stock_value": None,
+			"target_stock_value": None,
+			"stock_value_difference": None,
+			"revalues_existing_stock": False,
 			"stock_uom_business_selectable": None,
 			"requires_uom_migration": False,
 			"uom_governance_error": None,
@@ -3182,67 +3345,6 @@ def _resolve_inventory_draft_item(
 			target_stock_qty = flt(current_stock_qty - resolved_stock_qty)
 		else:
 			target_stock_qty = resolved_stock_qty
-	price_summary = selected.get("price_summary") or {}
-	provided_valuation_value = candidate.get("valuation_rate")
-	provided_valuation_source = str(candidate.get("valuation_rate_source") or "").strip()
-	provided_valuation_rate = (
-		None if provided_valuation_value in (None, "") else flt(provided_valuation_value)
-	)
-	current_valuation_rate = flt(price_summary.get("valuation_rate") or 0)
-	standard_buying_reference = _inventory_standard_buying_reference(
-		selected, stock_uom=stock_uom,
-	)
-	standard_buying_rate = flt((standard_buying_reference or {}).get("stock_unit_rate") or 0)
-	standard_buying_conflict = bool((standard_buying_reference or {}).get("conflict"))
-	valuation_rate_reference = standard_buying_reference if standard_buying_conflict else None
-	if standard_buying_conflict:
-		conflict_details = "；".join(
-			_('{0}/{1} 折算为 {2}/{3}').format(
-				row.get("rate"), row.get("uom_display") or row.get("uom"),
-				row.get("stock_unit_rate"),
-				standard_buying_reference.get("stock_uom_display")
-					or standard_buying_reference.get("stock_uom"),
-			)
-			for row in standard_buying_reference.get("candidates") or []
-		)
-		warnings.append(_(
-			"商品存在多个折算结果不一致的 Standard Buying 标准采购参考价（{0}），"
-			"系统不能自动判断本次库存成本，请先确认正确价格单位或人工填写。"
-		).format(conflict_details))
-	if provided_valuation_rate is not None and (
-		provided_valuation_rate > 0 or provided_valuation_source == "user"
-	):
-		valuation_rate = provided_valuation_rate
-		if (
-			provided_valuation_source == "standard_buying_reference"
-			and standard_buying_rate > 0
-			and valuation_rate == standard_buying_rate
-		):
-			valuation_rate_source = "standard_buying_reference"
-			valuation_rate_reference = standard_buying_reference
-		elif (
-			provided_valuation_source == "current_valuation"
-			and current_valuation_rate > 0
-			and valuation_rate == current_valuation_rate
-		):
-			valuation_rate_source = "current_valuation"
-		else:
-			# Provenance is server-verified. A client may submit a value, but cannot
-			# label an arbitrary number as an authoritative Item or Item Price fact.
-			valuation_rate_source = "user"
-	elif current_valuation_rate > 0:
-		valuation_rate = current_valuation_rate
-		valuation_rate_source = "current_valuation"
-	elif standard_buying_rate > 0:
-		# Standard Buying is a procurement reference rather than an accounting fact.
-		# Use it as a visible suggestion only when no current valuation exists, and
-		# preserve its provenance so the review UI can require an informed check.
-		valuation_rate = standard_buying_rate
-		valuation_rate_source = "standard_buying_reference"
-		valuation_rate_reference = standard_buying_reference
-	else:
-		valuation_rate = None
-		valuation_rate_source = None
 	conversion_factor = (
 		None
 		if uom_resolution_error
@@ -3252,6 +3354,158 @@ def _resolve_inventory_draft_item(
 			or 1
 		)
 	)
+	valuation_context = _inventory_bin_valuation_context(
+		selected,
+		warehouse=warehouse,
+		current_stock_qty=current_stock_qty,
+	)
+	current_valuation_rate = flt(valuation_context.get("current_valuation_rate") or 0)
+	current_stock_value = flt(valuation_context.get("current_stock_value") or 0)
+	buying_reference_context = _inventory_standard_buying_reference(
+		selected,
+		stock_uom=stock_uom,
+		selected_uom=resolved_uom,
+		posting_date=candidate.get("posting_date"),
+		valuation_currency=selected.get("currency"),
+	)
+	valuation_rate_candidates = list((buying_reference_context or {}).get("candidates") or [])
+	if buying_reference_context and not valuation_rate_candidates and buying_reference_context.get("reference_id"):
+		valuation_rate_candidates = [{
+			key: buying_reference_context.get(key)
+			for key in (
+				"reference_id", "name", "price_list", "currency", "rate", "uom",
+				"uom_display", "conversion_factor", "stock_unit_rate",
+				"matches_selected_uom", "selectable", "unavailable_reason",
+				"valid_from", "valid_upto", "modified",
+			)
+		}]
+
+	provided_source = str(candidate.get("valuation_rate_source") or "").strip()
+	if provided_source == "standard_buying_reference":
+		provided_source = "buying_price_reference"
+	provided_reference_id = str(candidate.get("valuation_rate_reference_id") or "").strip() or None
+	provided_input_value = candidate.get("valuation_input_rate")
+	provided_input_rate = (
+		None if provided_input_value in (None, "") else flt(provided_input_value)
+	)
+	provided_input_uom = str(candidate.get("valuation_input_uom") or "").strip() or None
+	legacy_valuation_value = candidate.get("valuation_rate")
+	legacy_valuation_rate = (
+		None if legacy_valuation_value in (None, "") else flt(legacy_valuation_value)
+	)
+	if not provided_source and provided_input_rate is not None:
+		provided_source = "user"
+
+	valuation_rate = None
+	valuation_input_rate = None
+	valuation_input_uom = None
+	valuation_rate_source = None
+	valuation_rate_reference_id = None
+	valuation_rate_reference = None
+	valuation_selection_error = None
+
+	if provided_source == "buying_price_reference":
+		selected_reference = next(
+			(
+				row for row in valuation_rate_candidates
+				if str(row.get("reference_id") or "") == str(provided_reference_id or "")
+				and row.get("selectable")
+			),
+			None,
+		)
+		# Compatibility for drafts saved before stable Item Price references were
+		# submitted by the Web editor. The server still verifies the current rate.
+		if not selected_reference and not provided_reference_id and legacy_valuation_rate is not None:
+			matching_legacy = [
+				row for row in valuation_rate_candidates
+				if row.get("selectable")
+				and abs(flt(row.get("stock_unit_rate")) - legacy_valuation_rate) < 0.000001
+			]
+			selected_reference = matching_legacy[0] if len(matching_legacy) == 1 else None
+		if selected_reference:
+			valuation_rate = flt(selected_reference.get("stock_unit_rate"))
+			valuation_input_rate = flt(selected_reference.get("rate"))
+			valuation_input_uom = selected_reference.get("uom")
+			valuation_rate_source = "buying_price_reference"
+			valuation_rate_reference_id = selected_reference.get("reference_id")
+			valuation_rate_reference = selected_reference
+		else:
+			valuation_selection_error = _(
+				"所选采购价格已失效、不可用或不属于当前商品，请重新选择有效采购价。"
+			)
+	elif provided_source == "current_valuation":
+		if current_valuation_rate > 0 and (
+			legacy_valuation_rate is None
+			or abs(legacy_valuation_rate - current_valuation_rate) < 0.000001
+		):
+			valuation_rate = current_valuation_rate
+			valuation_input_rate = flt(current_valuation_rate * (conversion_factor or 1))
+			valuation_input_uom = resolved_uom
+			valuation_rate_source = "current_valuation"
+		else:
+			valuation_selection_error = _("当前仓库库存估值已经变化，请重新核对后保存。")
+	elif provided_source == "user":
+		if provided_input_rate is not None:
+			resolved_input_uom = provided_input_uom or resolved_uom
+			if resolved_input_uom != resolved_uom or not conversion_factor:
+				valuation_selection_error = _("人工计价单位必须与本次库存调整单位一致。")
+			else:
+				valuation_input_rate = provided_input_rate
+				valuation_input_uom = resolved_input_uom
+				valuation_rate = flt(provided_input_rate / conversion_factor)
+				valuation_rate_source = "user"
+		elif legacy_valuation_rate is not None:
+			# Legacy editors submitted the stock-unit rate directly.
+			valuation_rate = legacy_valuation_rate
+			valuation_input_rate = flt(legacy_valuation_rate * (conversion_factor or 1))
+			valuation_input_uom = resolved_uom
+			valuation_rate_source = "user"
+	elif legacy_valuation_rate is not None and legacy_valuation_rate > 0:
+		# An unlabelled legacy value is never promoted to an authoritative source.
+		valuation_rate = legacy_valuation_rate
+		valuation_input_rate = flt(legacy_valuation_rate * (conversion_factor or 1))
+		valuation_input_uom = resolved_uom
+		valuation_rate_source = "user"
+	elif current_valuation_rate > 0:
+		valuation_rate = current_valuation_rate
+		valuation_input_rate = flt(current_valuation_rate * (conversion_factor or 1))
+		valuation_input_uom = resolved_uom
+		valuation_rate_source = "current_valuation"
+	elif buying_reference_context and not buying_reference_context.get("selection_required"):
+		valuation_rate = flt(buying_reference_context.get("stock_unit_rate"))
+		valuation_input_rate = flt(buying_reference_context.get("rate"))
+		valuation_input_uom = buying_reference_context.get("uom")
+		valuation_rate_source = "buying_price_reference"
+		valuation_rate_reference_id = buying_reference_context.get("reference_id")
+		valuation_rate_reference = next(
+			(
+				row for row in valuation_rate_candidates
+				if row.get("reference_id") == valuation_rate_reference_id
+			),
+			buying_reference_context,
+		)
+
+	target_stock_value = (
+		flt(target_stock_qty * valuation_rate)
+		if target_stock_qty is not None and valuation_rate is not None
+		else None
+	)
+	stock_value_difference = (
+		flt(target_stock_value - current_stock_value)
+		if target_stock_value is not None
+		else None
+	)
+	revalues_existing_stock = bool(
+		current_stock_qty > 0
+		and valuation_rate is not None
+		and abs(valuation_rate - current_valuation_rate) >= 0.000001
+	)
+	valuation_selection_required = bool(
+		current_valuation_rate <= 0
+		and buying_reference_context
+		and buying_reference_context.get("selection_required")
+		and valuation_rate is None
+	)
 	line_state = build_draft_state(
 		operation="transaction",
 		entity_doctype="Item",
@@ -3260,21 +3514,25 @@ def _resolve_inventory_draft_item(
 		observed_at=datetime.now(),
 		baseline={
 			"current_stock_qty": current_stock_qty,
-			"valuation_rate": valuation_rate,
+			"current_valuation_rate": current_valuation_rate,
+			"current_stock_value": current_stock_value,
 			"conversion_factor": conversion_factor,
 		},
 		patch={
 			"adjustment_type": adjustment_type,
 			"quantity": input_qty,
 			"uom": resolved_uom,
+			"valuation_rate": valuation_rate,
+			"valuation_rate_source": valuation_rate_source,
+			"valuation_rate_reference_id": valuation_rate_reference_id,
 		},
 		fields={
 			"current_stock_qty": field_fact(current_stock_qty, source="Bin/actual_qty"),
 			"valuation_rate": field_fact(
 				valuation_rate,
 				source={
-					"current_valuation": "Item/valuation_rate",
-					"standard_buying_reference": "Item Price/Standard Buying",
+					"current_valuation": "Bin/valuation_rate",
+					"buying_price_reference": "Item Price",
 					"user": "user",
 				}.get(valuation_rate_source, valuation_rate_source or "unknown"),
 			),
@@ -3284,7 +3542,25 @@ def _resolve_inventory_draft_item(
 			"entity_modified": selected.get("modified"),
 			"warehouse": warehouse,
 			"current_stock_qty": current_stock_qty,
+			"current_valuation_rate": current_valuation_rate,
+			"current_stock_value": current_stock_value,
 			"valuation_rate": valuation_rate,
+			"valuation_rate_source": valuation_rate_source,
+			"valuation_rate_reference_id": valuation_rate_reference_id,
+			"valuation_rate_candidates": [
+				{
+					key: row.get(key)
+					for key in (
+						"reference_id", "rate", "uom", "conversion_factor",
+						"stock_unit_rate", "price_list", "currency", "valid_from",
+						"valid_upto", "modified", "selectable",
+					)
+				}
+				for row in valuation_rate_candidates
+			],
+			"target_stock_qty": target_stock_qty,
+			"target_stock_value": target_stock_value,
+			"stock_value_difference": stock_value_difference,
 			"uom": resolved_uom,
 			"conversion_factor": conversion_factor,
 		},
@@ -3316,8 +3592,19 @@ def _resolve_inventory_draft_item(
 		"target_stock_qty": target_stock_qty,
 		"qty_delta": flt(target_stock_qty - current_stock_qty) if target_stock_qty is not None else None,
 		"valuation_rate": valuation_rate,
+		"valuation_input_rate": valuation_input_rate,
+		"valuation_input_uom": valuation_input_uom,
 		"valuation_rate_source": valuation_rate_source,
+		"valuation_rate_reference_id": valuation_rate_reference_id,
 		"valuation_rate_reference": valuation_rate_reference,
+		"valuation_rate_candidates": valuation_rate_candidates,
+		"valuation_selection_required": valuation_selection_required,
+		"valuation_selection_error": valuation_selection_error,
+		"current_valuation_rate": current_valuation_rate,
+		"current_stock_value": current_stock_value,
+		"target_stock_value": target_stock_value,
+		"stock_value_difference": stock_value_difference,
+		"revalues_existing_stock": revalues_existing_stock,
 		"stock_uom_business_selectable": stock_uom_business_selectable,
 		"requires_uom_migration": bool(uom_governance_error),
 		"uom_governance_error": uom_governance_error,
@@ -3333,6 +3620,12 @@ def _resolve_inventory_draft_item(
 def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple[dict, dict]:
 	items = candidate.get("items") if isinstance(candidate.get("items"), list) else []
 	source_item = items[0] if items and isinstance(items[0], dict) else candidate
+	errors = []
+	try:
+		posting_date = str(getdate(candidate.get("posting_date") or nowdate()))
+	except Exception:
+		posting_date = str(nowdate())
+		errors.append(_("过账日期格式不正确。"))
 	adjustment_type = str(candidate.get("adjustment_type") or source_item.get("adjustment_type") or "set_target").strip()
 	if adjustment_type not in {"set_target", "increase", "decrease"}:
 		adjustment_type = "set_target"
@@ -3352,9 +3645,17 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 			"adjustment_type": adjustment_type,
 			"quantity": quantity,
 			"uom": candidate.get("uom") or source_item.get("uom"),
+			"posting_date": posting_date,
 			"valuation_rate": candidate.get("valuation_rate")
 				if candidate.get("valuation_rate") not in (None, "")
 				else source_item.get("valuation_rate"),
+			"valuation_input_rate": candidate.get("valuation_input_rate")
+				if candidate.get("valuation_input_rate") not in (None, "")
+				else source_item.get("valuation_input_rate"),
+			"valuation_input_uom": candidate.get("valuation_input_uom")
+				or source_item.get("valuation_input_uom"),
+			"valuation_rate_reference_id": candidate.get("valuation_rate_reference_id")
+				or source_item.get("valuation_rate_reference_id"),
 			"valuation_rate_source": candidate.get("valuation_rate_source")
 				or source_item.get("valuation_rate_source"),
 		},
@@ -3362,7 +3663,6 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 		warehouse=warehouse,
 	)
 	reason = str(candidate.get("reason") or candidate.get("remarks") or "").strip()[:1000] or None
-	errors = []
 	warnings = list(item.get("warnings") or [])
 	if not warehouse:
 		errors.append(_("仓库无法唯一匹配，请人工选择。"))
@@ -3380,40 +3680,57 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 		and flt(item.get("target_stock_qty")) > flt(item.get("current_stock_qty"))
 		and flt(item.get("valuation_rate") or 0) <= 0
 	):
-		errors.append(_("库存增加会形成新的库存资产，必须填写有效的库存单位成本。"))
+		if item.get("valuation_selection_required"):
+			errors.append(_(
+				"当前仓库没有有效库存估值，请选择一个有效采购价候选，"
+				"或填写有效的执行后库存估值单价。"
+			))
+		else:
+			errors.append(_("库存增加会形成新的库存资产，必须填写有效的执行后库存估值单价。"))
 	elif (
 		item.get("target_stock_qty") is not None
 		and item.get("current_stock_qty") is not None
 		and flt(item.get("target_stock_qty")) > flt(item.get("current_stock_qty"))
-		and item.get("valuation_rate_source") == "standard_buying_reference"
+		and item.get("valuation_rate_source") in {
+			"buying_price_reference", "standard_buying_reference",
+		}
 	):
 		reference = item.get("valuation_rate_reference") or {}
-		if flt(reference.get("conversion_factor") or 1) != 1:
-			warnings.append(_(
-				"商品当前没有有效库存估值，系统已将 Standard Buying 的标准采购参考价 "
-				"{0}/{1} 按换算系数 {2} 折算为 {3}/{4}。该值不会创建采购单或应付账款，"
-				"请按本次库存来源核对后再执行。"
-			).format(
-				reference.get("rate"), reference.get("uom_display") or reference.get("uom"),
-				reference.get("conversion_factor"), item.get("valuation_rate"),
-				item.get("stock_uom_display") or item.get("stock_uom"),
-			))
-		else:
-			warnings.append(_(
-				"商品当前没有有效库存估值，系统已按 Standard Buying 的标准采购参考价 {0} "
-				"带出本次库存单位成本。该值不会创建采购单或应付账款，请按本次库存来源核对后再执行。"
-			).format(item.get("valuation_rate")))
+		prefix = (
+			_("当前仓库没有有效库存估值，系统已采用")
+			if flt(item.get("current_valuation_rate") or 0) <= 0
+			else _("你已选择采用")
+		)
+		warnings.append(_(
+			"{0}采购价格表“{1}”中的 {2}/{3}，"
+			"按换算系数 {4} 得到执行后库存估值单价 {5}/{6}。"
+			"库存调整不会创建采购单、供应商应付或采购发票，请按本次库存来源核对。"
+		).format(
+			prefix,
+			reference.get("price_list") or _("未命名价格表"),
+			reference.get("rate"), reference.get("uom_display") or reference.get("uom"),
+			reference.get("conversion_factor"), item.get("valuation_rate"),
+			item.get("stock_uom_display") or item.get("stock_uom"),
+		))
+	if item.get("valuation_selection_error"):
+		errors.append(item.get("valuation_selection_error"))
+	if item.get("revalues_existing_stock"):
+		warnings.append(_(
+			"执行后库存估值单价将由 {0}/{1} 调整为 {2}/{1}，"
+			"当前已有库存也会随 Stock Reconciliation 一并重新估值；"
+			"预计库存价值差额为 {3}。"
+		).format(
+			item.get("current_valuation_rate"),
+			item.get("stock_uom_display") or item.get("stock_uom"),
+			item.get("valuation_rate"),
+			item.get("stock_value_difference"),
+		))
 	if item.get("uom_resolution_error"):
 		errors.append(item.get("uom_resolution_error"))
 	if item.get("uom_governance_error"):
 		errors.append(item.get("uom_governance_error"))
 	if not reason:
 		errors.append(_("库存调整必须填写盘点差异或业务原因。"))
-	try:
-		posting_date = str(getdate(candidate.get("posting_date") or nowdate()))
-	except Exception:
-		posting_date = str(nowdate())
-		errors.append(_("过账日期格式不正确。"))
 	payload = {
 		"company": company,
 		"posting_date": posting_date,
@@ -5390,7 +5707,7 @@ def _refresh_reused_inventory_action_draft(
 	items = payload.get("items") if isinstance(payload.get("items"), list) else []
 	item = items[0] if items and isinstance(items[0], dict) else {}
 	valuation_source = str(item.get("valuation_rate_source") or "").strip()
-	if valuation_source == "user" or flt(item.get("valuation_rate") or 0) > 0:
+	if valuation_source == "user":
 		return draft
 
 	refresh_candidate = deepcopy(payload)
@@ -5400,25 +5717,22 @@ def _refresh_reused_inventory_action_draft(
 		else []
 	)
 	refresh_item = refresh_items[0] if refresh_items and isinstance(refresh_items[0], dict) else None
-	if refresh_item is not None:
+	if refresh_item is not None and not valuation_source:
 		# Legacy drafts stored Item.valuation_rate=0 without provenance. Treat that
 		# as an absent system fact so current valuation / Standard Buying fallback
 		# can be resolved. Explicit user zero remains an invalid user input above.
 		refresh_item.pop("valuation_rate", None)
 		refresh_item.pop("valuation_rate_source", None)
 		refresh_item.pop("valuation_rate_reference", None)
-	refresh_candidate.pop("valuation_rate", None)
-	refresh_candidate.pop("valuation_rate_source", None)
+	if not valuation_source:
+		refresh_candidate.pop("valuation_rate", None)
+		refresh_candidate.pop("valuation_rate_source", None)
 
 	refreshed_payload, refreshed_validation = _build_inventory_adjustment_draft(
 		refresh_candidate, company=company,
 	)
-	refreshed_item = (refreshed_payload.get("items") or [{}])[0]
-	refreshed_reference = refreshed_item.get("valuation_rate_reference") or {}
-	if (
-		flt(refreshed_item.get("valuation_rate") or 0) <= 0
-		and not refreshed_reference.get("conflict")
-	):
+	previous_hashes = _draft_source_hashes(payload)
+	if previous_hashes and previous_hashes == _draft_source_hashes(refreshed_payload):
 		return draft
 	return ai_repository.update_draft(
 		draft_id=draft["name"], user=user,

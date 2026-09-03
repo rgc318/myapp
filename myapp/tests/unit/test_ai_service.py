@@ -206,26 +206,83 @@ class TestAiService(TestCase):
 		mock_build.assert_not_called()
 		mock_update.assert_not_called()
 
-	def test_inventory_standard_buying_reference_rejects_conflicting_uom_prices(self):
+	def test_inventory_buying_reference_matches_selected_uom_without_false_conflict(self):
+		product = {
+			"uom": "Nos", "uom_display": "件",
+			"all_uoms": [
+				{"uom": "Nos", "uom_display": "件", "conversion_factor": 1},
+				{"uom": "Box", "uom_display": "箱", "conversion_factor": 24},
+			],
+			"price_summary": {"buying_prices": [
+				{"name": "PRICE-NOS", "price_list": "Standard Buying", "rate": 2.5, "uom": "Nos"},
+				{"name": "PRICE-BOX", "price_list": "Standard Buying", "rate": 70, "uom": "Box"},
+			]},
+		}
+		box_reference = _inventory_standard_buying_reference(
+			product,
+			stock_uom="Nos",
+			selected_uom="Box",
+		)
+		each_reference = _inventory_standard_buying_reference(
+			product,
+			stock_uom="Nos",
+			selected_uom="Nos",
+		)
+
+		self.assertFalse(box_reference["selection_required"])
+		self.assertEqual(box_reference["reference_id"], "PRICE-BOX")
+		self.assertAlmostEqual(box_reference["stock_unit_rate"], 70 / 24)
+		self.assertFalse(each_reference["selection_required"])
+		self.assertEqual(each_reference["reference_id"], "PRICE-NOS")
+		self.assertEqual(each_reference["stock_unit_rate"], 2.5)
+		self.assertEqual(len(box_reference["candidates"]), 2)
+
+	def test_inventory_buying_reference_requires_choice_for_multiple_same_uom_prices(self):
 		reference = _inventory_standard_buying_reference(
 			{
 				"uom": "Nos", "uom_display": "件",
 				"all_uoms": [
 					{"uom": "Nos", "uom_display": "件", "conversion_factor": 1},
-					{"uom": "Box", "uom_display": "箱", "conversion_factor": 24},
 				],
 				"price_summary": {"buying_prices": [
-					{"price_list": "Standard Buying", "rate": 70, "uom": "Nos"},
-					{"price_list": "Standard Buying", "rate": 70, "uom": "Box"},
+					{"name": "PRICE-1", "price_list": "Standard Buying", "rate": 2.5, "uom": "Nos"},
+					{"name": "PRICE-2", "price_list": "Supplier A", "rate": 2.4, "uom": "Nos"},
 				]},
 			},
 			stock_uom="Nos",
+			selected_uom="Nos",
 		)
 
-		self.assertTrue(reference["conflict"])
+		self.assertTrue(reference["selection_required"])
+		self.assertEqual(reference["selection_reason"], "multiple_exact_matches")
 		self.assertEqual(len(reference["candidates"]), 2)
-		self.assertEqual(reference["candidates"][0]["stock_unit_rate"], 70)
-		self.assertAlmostEqual(reference["candidates"][1]["stock_unit_rate"], 70 / 24)
+
+	def test_inventory_buying_reference_keeps_invalid_uom_rows_unselectable(self):
+		reference = _inventory_standard_buying_reference(
+			{
+				"uom": "Nos", "uom_display": "件",
+				"all_uoms": [{"uom": "Nos", "uom_display": "件", "conversion_factor": 1}],
+				"price_summary": {"buying_prices": [
+					{"name": "PRICE-MISSING", "price_list": "Standard Buying", "rate": 70},
+					{"name": "PRICE-BOX", "price_list": "Standard Buying", "rate": 70, "uom": "Box"},
+					{
+						"name": "PRICE-USD", "price_list": "Supplier USD", "currency": "USD",
+						"rate": 2.5, "uom": "Nos",
+					},
+				]},
+			},
+			stock_uom="Nos",
+			selected_uom="Nos",
+			valuation_currency="CNY",
+		)
+
+		self.assertTrue(reference["selection_required"])
+		self.assertTrue(all(not row["selectable"] for row in reference["candidates"]))
+		self.assertTrue(all(row["unavailable_reason"] for row in reference["candidates"]))
+		self.assertIn(
+			"币种不一致",
+			next(row for row in reference["candidates"] if row["reference_id"] == "PRICE-USD")["unavailable_reason"],
+		)
 
 	@patch("myapp.services.ai_service._persist_prepared_draft_context")
 	@patch("myapp.services.ai_service.ai_repository.create_or_reuse_action_draft")
@@ -1846,6 +1903,51 @@ class TestAiService(TestCase):
 		self.assertEqual(result["valuation_rate_source"], "user")
 		self.assertEqual(result["available_uoms"][0]["uom"], "Box")
 
+	@patch(
+		"myapp.services.ai_service._inventory_bin_valuation_context",
+		return_value={"current_valuation_rate": 2.5, "current_stock_value": 25},
+	)
+	@patch("myapp.services.ai_service.resolve_item_quantity_to_stock")
+	@patch("myapp.services.ai_service.resolve_item_uom")
+	@patch("myapp.services.ai_service.search_product_v2")
+	@patch("myapp.services.ai_service.frappe.get_list", return_value=["ITEM-1"])
+	def test_resolve_inventory_draft_item_previews_value_impact_and_revaluation(
+		self, _allowed, mock_search_product, mock_resolve_uom, mock_resolve_quantity,
+		_mock_valuation_context,
+	):
+		mock_search_product.return_value = {"data": [{
+			"item_code": "ITEM-1", "item_name": "测试商品", "uom": "Nos",
+			"uom_display": "件", "qty": 10,
+			"all_uoms": [
+				{"uom": "Nos", "uom_display": "件", "conversion_factor": 1},
+				{"uom": "Box", "uom_display": "箱", "conversion_factor": 24},
+			],
+			"price_summary": {"valuation_rate": 2.5, "buying_prices": []},
+		}]}
+		mock_resolve_quantity.return_value = {
+			"qty": 1, "uom": "Box", "stock_uom": "Nos", "stock_qty": 24,
+			"conversion_factor": 24,
+		}
+		mock_resolve_uom.return_value = {
+			"uom": "Box", "uom_display": "箱", "stock_uom": "Nos", "conversion_factor": 24,
+		}
+
+		result = _resolve_inventory_draft_item(
+			{
+				"item_query": "ITEM-1", "adjustment_type": "increase", "quantity": 1,
+				"uom": "Box", "valuation_input_rate": 72,
+				"valuation_input_uom": "Box", "valuation_rate_source": "user",
+			},
+			company="Test Company", warehouse="Stores - TC",
+		)
+
+		self.assertEqual(result["valuation_rate"], 3)
+		self.assertEqual(result["target_stock_qty"], 34)
+		self.assertEqual(result["current_stock_value"], 25)
+		self.assertEqual(result["target_stock_value"], 102)
+		self.assertEqual(result["stock_value_difference"], 77)
+		self.assertTrue(result["revalues_existing_stock"])
+
 	@patch("myapp.services.ai_service.resolve_item_quantity_to_stock")
 	@patch("myapp.services.ai_service.resolve_item_uom")
 	@patch("myapp.services.ai_service.search_product_v2")
@@ -1861,7 +1963,7 @@ class TestAiService(TestCase):
 				"valuation_rate": 0,
 				"standard_buying_rate": 7.5,
 				"buying_prices": [{
-					"price_list": "Standard Buying", "rate": 7.5, "uom": "Nos",
+					"name": "PRICE-1", "price_list": "Standard Buying", "rate": 7.5, "uom": "Nos",
 				}],
 			},
 		}]}
@@ -1879,7 +1981,8 @@ class TestAiService(TestCase):
 		)
 
 		self.assertEqual(result["valuation_rate"], 7.5)
-		self.assertEqual(result["valuation_rate_source"], "standard_buying_reference")
+		self.assertEqual(result["valuation_rate_source"], "buying_price_reference")
+		self.assertEqual(result["valuation_rate_reference_id"], "PRICE-1")
 		self.assertEqual(result["valuation_rate_reference"]["rate"], 7.5)
 		self.assertEqual(result["valuation_rate_reference"]["uom"], "Nos")
 
@@ -1891,7 +1994,7 @@ class TestAiService(TestCase):
 			company="Test Company", warehouse="Stores - TC",
 		)
 		self.assertEqual(legacy_zero["valuation_rate"], 7.5)
-		self.assertEqual(legacy_zero["valuation_rate_source"], "standard_buying_reference")
+		self.assertEqual(legacy_zero["valuation_rate_source"], "buying_price_reference")
 
 		round_trip = _resolve_inventory_draft_item(
 			{
@@ -1901,17 +2004,31 @@ class TestAiService(TestCase):
 			},
 			company="Test Company", warehouse="Stores - TC",
 		)
-		self.assertEqual(round_trip["valuation_rate_source"], "standard_buying_reference")
+		self.assertEqual(round_trip["valuation_rate_source"], "buying_price_reference")
+
+		verified_reference = _resolve_inventory_draft_item(
+			{
+				"item_query": "ITEM-1", "adjustment_type": "increase", "quantity": 10,
+				"uom": "Nos", "valuation_rate": 999,
+				"valuation_rate_source": "buying_price_reference",
+				"valuation_rate_reference_id": "PRICE-1",
+			},
+			company="Test Company", warehouse="Stores - TC",
+		)
+		self.assertEqual(verified_reference["valuation_rate"], 7.5)
+		self.assertEqual(verified_reference["valuation_rate_reference_id"], "PRICE-1")
 
 		spoofed = _resolve_inventory_draft_item(
 			{
 				"item_query": "ITEM-1", "adjustment_type": "increase", "quantity": 10,
-				"uom": "Nos", "valuation_rate": 8,
-				"valuation_rate_source": "standard_buying_reference",
+				"uom": "Nos", "valuation_rate": 7.5,
+				"valuation_rate_source": "buying_price_reference",
+				"valuation_rate_reference_id": "PRICE-FORGED",
 			},
 			company="Test Company", warehouse="Stores - TC",
 		)
-		self.assertEqual(spoofed["valuation_rate_source"], "user")
+		self.assertIsNone(spoofed["valuation_rate_source"])
+		self.assertIn("重新选择有效采购价", spoofed["valuation_selection_error"])
 
 	@patch("myapp.services.ai_service.resolve_item_quantity_to_stock")
 	@patch("myapp.services.ai_service.resolve_item_uom")
@@ -1949,7 +2066,7 @@ class TestAiService(TestCase):
 		)
 
 		self.assertAlmostEqual(result["valuation_rate"], 70 / 24)
-		self.assertEqual(result["valuation_rate_source"], "standard_buying_reference")
+		self.assertEqual(result["valuation_rate_source"], "buying_price_reference")
 		self.assertEqual(result["valuation_rate_reference"]["rate"], 70)
 		self.assertEqual(result["valuation_rate_reference"]["uom"], "Box")
 		self.assertEqual(result["valuation_rate_reference"]["conversion_factor"], 24)
@@ -2049,7 +2166,7 @@ class TestAiService(TestCase):
 
 		self.assertFalse(validation["ready_for_handoff"])
 		self.assertIn(
-			"库存增加会形成新的库存资产，必须填写有效的库存单位成本。",
+			"库存增加会形成新的库存资产，必须填写有效的执行后库存估值单价。",
 			validation["errors"],
 		)
 
@@ -2085,7 +2202,7 @@ class TestAiService(TestCase):
 
 		self.assertTrue(validation["ready_for_handoff"])
 		self.assertNotIn(
-			"库存增加会形成新的库存资产，必须填写有效的库存单位成本。",
+			"库存增加会形成新的库存资产，必须填写有效的执行后库存估值单价。",
 			validation["errors"],
 		)
 
@@ -2099,7 +2216,12 @@ class TestAiService(TestCase):
 		mock_item.return_value = {
 			"item_code": "ITEM-1", "qty": 10, "uom": "Nos", "stock_uom": "Nos",
 			"target_stock_qty": 10, "current_stock_qty": 0, "valuation_rate": 7.5,
-			"valuation_rate_source": "standard_buying_reference", "warnings": [],
+			"valuation_rate_source": "buying_price_reference",
+			"valuation_rate_reference": {
+				"price_list": "Standard Buying", "rate": 7.5, "uom": "Nos",
+				"uom_display": "件", "conversion_factor": 1,
+			},
+			"warnings": [],
 		}
 
 		_payload, validation = _build_inventory_adjustment_draft(
@@ -2112,8 +2234,8 @@ class TestAiService(TestCase):
 		)
 
 		self.assertTrue(validation["ready_for_handoff"])
-		self.assertIn("标准采购参考价 7.5", validation["warnings"][0])
-		self.assertIn("不会创建采购单或应付账款", validation["warnings"][0])
+		self.assertIn("采购价格表“Standard Buying”中的 7.5/件", validation["warnings"][0])
+		self.assertIn("不会创建采购单、供应商应付或采购发票", validation["warnings"][0])
 
 	def test_build_draft_version_diff_tracks_fields_and_lines(self):
 		diff = _build_draft_version_diff(
