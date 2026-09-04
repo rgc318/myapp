@@ -102,10 +102,10 @@ PROMPT_VERSION_BY_SCENARIO = {
 	"product_search": "erp-readonly-v11",
 	"order_query": "erp-readonly-v11",
 	"report_summary": "erp-readonly-v11",
-	"sales_order_draft": "sales-order-draft-v4",
-	"purchase_order_draft": "purchase-order-draft-v4",
-	"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
-	"product_setup_draft": "product-setup-draft-v6",
+	"sales_order_draft": "sales-order-draft-v5",
+	"purchase_order_draft": "purchase-order-draft-v5",
+	"inventory_adjustment_draft": "inventory-adjustment-draft-v3",
+	"product_setup_draft": "product-setup-draft-v7",
 }
 
 PRODUCT_SETUP_EDITABLE_FIELDS = (
@@ -123,6 +123,10 @@ PRODUCT_SETUP_EDITABLE_FIELDS = (
 	"currency",
 	"description",
 )
+ORDER_HEADER_CLEAR_FIELDS = {
+	"sales_order": frozenset({"remarks"}),
+	"purchase_order": frozenset({"remarks", "supplier_ref"}),
+}
 PRODUCT_SEARCH_PREFIX_PATTERN = re.compile(
 	r"^(?:请|麻烦|可以|能否|帮我|给我|我想|我要)*(?:查询|查看|查找|搜索|检索|找一下|找一找|找找|找)?(?:一下|下)?"
 )
@@ -373,16 +377,6 @@ def _infer_ai_scenario(content: str) -> str:
 	):
 		return "product_search"
 	return "general"
-
-
-def _is_simple_general_ai_message(content: str) -> bool:
-	text = re.sub(r"[\s,.!?，。！？、~～]+", "", (content or "").strip().casefold())
-	return text in {
-		"你好", "您好", "你好呀", "您好呀", "嗨", "哈喽", "在吗",
-		"早上好", "上午好", "中午好", "下午好", "晚上好",
-		"hi", "hello", "hey", "谢谢", "多谢", "感谢",
-		"你是谁", "你能做什么", "帮助", "help",
-	}
 
 
 def _scenario_resolution_attachment_ids(attachment_refs: list[dict] | None) -> list[str]:
@@ -819,7 +813,7 @@ def _resolve_ai_action_scenario(
 	conversation_state: dict | None,
 	semantic_intent: dict | None,
 ) -> tuple[str, str, float | None]:
-	"""Resolve semantic routing first while keeping deterministic write safety."""
+	"""Use structured model routing when valid; local rules are degradation only."""
 	local_scenario = _infer_ai_action_scenario(content, conversation_state)
 	intent = semantic_intent if isinstance(semantic_intent, dict) else {}
 	candidate = str(intent.get("intent") or "").strip()
@@ -828,16 +822,7 @@ def _resolve_ai_action_scenario(
 	except (TypeError, ValueError):
 		confidence = 0
 	if candidate not in AI_ACTION_SCENARIOS or confidence < 0.6:
-		return local_scenario, "local_rules", None
-
-	# A confident semantic router is authoritative for normal routing.  The
-	# deterministic layer only prevents an explicit write request from being
-	# downgraded into a read-only Agent path, and preserves the typed document
-	# target when both layers identify different draft workflows.
-	if local_scenario in AI_DRAFT_SCENARIOS and (
-		candidate not in AI_DRAFT_SCENARIOS or candidate != local_scenario
-	):
-		return local_scenario, "structured_intent_write_guard", confidence
+		return local_scenario, "degraded_local_rules", confidence or None
 	return candidate, "structured_intent", confidence
 
 
@@ -977,7 +962,7 @@ def _call_ai_intent_orchestrator(
 		with urllib.request.urlopen(request, timeout=45) as response:
 			result = json.loads(response.read().decode("utf-8") or "{}")
 	except Exception:
-		frappe.log_error(frappe.get_traceback(), _("AI 意图解析调用失败，已回退本地规则"))
+		frappe.log_error(frappe.get_traceback(), _("AI 意图解析调用失败，将进入显式降级路由"))
 		return {}
 	intent = result.get("intent") if isinstance(result, dict) else None
 	return intent if isinstance(intent, dict) else {}
@@ -2620,32 +2605,23 @@ def resolve_ai_scenario_v1(
 		requested_company or conversation_company, required=False,
 	)
 	resolved_model_alias = resolve_ai_selected_model_alias(model_alias)
-	local_scenario = _infer_ai_action_scenario(resolved_content, conversation_state)
-	if not attachment_payloads and (
-		local_scenario in AI_DRAFT_SCENARIOS or _is_simple_general_ai_message(resolved_content)
-	):
-		resolved_scenario = local_scenario
-		intent = {"intent": local_scenario, "confidence": 1.0}
-		resolution_mode = "local_fast_path"
-		resolution_confidence = 1.0
-	else:
-		intent = _call_ai_intent_orchestrator(
-			content=resolved_content,
-			user=user,
-			company=resolved_company,
-			conversation_state=conversation_state,
-			model_alias=resolved_model_alias,
-			attachments=attachment_payloads,
-		)
-		intent = _merge_intent_with_conversation_state(
-			resolved_content,
-			intent,
-			conversation_state,
-			has_current_attachments=bool(attachment_payloads),
-		)
-		resolved_scenario, resolution_mode, resolution_confidence = _resolve_ai_action_scenario(
-			resolved_content, conversation_state, intent,
-		)
+	intent = _call_ai_intent_orchestrator(
+		content=resolved_content,
+		user=user,
+		company=resolved_company,
+		conversation_state=conversation_state,
+		model_alias=resolved_model_alias,
+		attachments=attachment_payloads,
+	)
+	intent = _merge_intent_with_conversation_state(
+		resolved_content,
+		intent,
+		conversation_state,
+		has_current_attachments=bool(attachment_payloads),
+	)
+	resolved_scenario, resolution_mode, resolution_confidence = _resolve_ai_action_scenario(
+		resolved_content, conversation_state, intent,
+	)
 	resolution_id = _issue_ai_scenario_resolution(
 		user=user,
 		content=resolved_content,
@@ -2662,7 +2638,12 @@ def resolve_ai_scenario_v1(
 	return {
 		"status": "success",
 		"message": _("AI 场景识别完成。"),
-		"data": {"scenario": resolved_scenario, "resolution_id": resolution_id},
+		"data": {
+			"scenario": resolved_scenario,
+			"resolution_id": resolution_id,
+			"resolution_mode": resolution_mode,
+			"confidence": resolution_confidence,
+		},
 	}
 
 
@@ -3254,7 +3235,7 @@ def _resolve_inventory_draft_item(
 	query = str(candidate.get("item_query") or "").strip()
 	target_source = str(candidate.get("_target_source") or "").strip() or "explicit_or_model_query"
 	target_context_ref = str(candidate.get("_target_context_ref") or "").strip() or None
-	adjustment_type = str(candidate.get("adjustment_type") or "set_target").strip()
+	adjustment_type = str(candidate.get("adjustment_type") or "").strip() or None
 	quantity_value = candidate.get("quantity")
 	input_qty = None if quantity_value in (None, "") else flt(quantity_value)
 	warnings = []
@@ -3343,7 +3324,7 @@ def _resolve_inventory_draft_item(
 			target_stock_qty = flt(current_stock_qty + resolved_stock_qty)
 		elif adjustment_type == "decrease":
 			target_stock_qty = flt(current_stock_qty - resolved_stock_qty)
-		else:
+		elif adjustment_type == "set_target":
 			target_stock_qty = resolved_stock_qty
 	conversion_factor = (
 		None
@@ -3621,14 +3602,27 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 	items = candidate.get("items") if isinstance(candidate.get("items"), list) else []
 	source_item = items[0] if items and isinstance(items[0], dict) else candidate
 	errors = []
+	issues = []
+
+	def add_error(code: str, field: str | None, message: str, meta: dict | None = None):
+		errors.append(message)
+		issues.append({
+			"code": code, "field": field, "message": str(message), "meta": meta or {},
+		})
+
 	try:
 		posting_date = str(getdate(candidate.get("posting_date") or nowdate()))
 	except Exception:
 		posting_date = str(nowdate())
-		errors.append(_("过账日期格式不正确。"))
-	adjustment_type = str(candidate.get("adjustment_type") or source_item.get("adjustment_type") or "set_target").strip()
+		add_error("INVENTORY_POSTING_DATE_INVALID", "posting_date", _("过账日期格式不正确。"))
+	adjustment_type = str(
+		candidate.get("adjustment_type") or source_item.get("adjustment_type") or ""
+	).strip() or None
 	if adjustment_type not in {"set_target", "increase", "decrease"}:
-		adjustment_type = "set_target"
+		adjustment_type = (
+			None if candidate.get("_semantic_contract") == "inventory-adjustment-command-v3"
+			else "set_target"
+		)
 	warehouse_query = candidate.get("warehouse") or candidate.get("warehouse_query") or source_item.get("warehouse")
 	warehouse, warehouse_candidates = _resolve_inventory_draft_warehouse(warehouse_query, company)
 	quantity = candidate.get("quantity")
@@ -3664,16 +3658,21 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 	)
 	reason = str(candidate.get("reason") or candidate.get("remarks") or "").strip()[:1000] or None
 	warnings = list(item.get("warnings") or [])
+	if not adjustment_type:
+		add_error(
+			"INVENTORY_ADJUSTMENT_TYPE_REQUIRED", "adjustment_type",
+			_("请明确选择盘点后数量、增加库存或减少库存。"),
+		)
 	if not warehouse:
-		errors.append(_("仓库无法唯一匹配，请人工选择。"))
+		add_error("WAREHOUSE_TARGET_UNRESOLVED", "warehouse", _("仓库无法唯一匹配，请人工选择。"))
 	if not item.get("item_code"):
-		errors.append(_("商品无法唯一匹配，请人工选择。"))
+		add_error("PRODUCT_TARGET_UNRESOLVED", "items.0.item_code", _("商品无法唯一匹配，请人工选择。"))
 	if item.get("qty") is None:
-		errors.append(_("请填写库存调整数量。"))
+		add_error("INVENTORY_QUANTITY_REQUIRED", "items.0.qty", _("请填写库存调整数量。"))
 	elif adjustment_type in {"increase", "decrease"} and flt(item.get("qty")) <= 0:
-		errors.append(_("增减库存数量必须大于 0。"))
+		add_error("INVENTORY_QUANTITY_INVALID", "items.0.qty", _("增减库存数量必须大于 0。"))
 	if item.get("target_stock_qty") is not None and flt(item.get("target_stock_qty")) < 0:
-		errors.append(_("调整后的目标库存不能为负数。"))
+		add_error("INVENTORY_TARGET_NEGATIVE", "items.0.qty", _("调整后的目标库存不能为负数。"))
 	if (
 		item.get("target_stock_qty") is not None
 		and item.get("current_stock_qty") is not None
@@ -3681,12 +3680,15 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 		and flt(item.get("valuation_rate") or 0) <= 0
 	):
 		if item.get("valuation_selection_required"):
-			errors.append(_(
+			add_error("INVENTORY_VALUATION_SELECTION_REQUIRED", "items.0.valuation_rate", _(
 				"当前仓库没有有效库存估值，请选择一个有效采购价候选，"
 				"或填写有效的执行后库存估值单价。"
 			))
 		else:
-			errors.append(_("库存增加会形成新的库存资产，必须填写有效的执行后库存估值单价。"))
+			add_error(
+				"INVENTORY_VALUATION_REQUIRED", "items.0.valuation_rate",
+				_("库存增加会形成新的库存资产，必须填写有效的执行后库存估值单价。"),
+			)
 	elif (
 		item.get("target_stock_qty") is not None
 		and item.get("current_stock_qty") is not None
@@ -3713,7 +3715,10 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 			item.get("stock_uom_display") or item.get("stock_uom"),
 		))
 	if item.get("valuation_selection_error"):
-		errors.append(item.get("valuation_selection_error"))
+		add_error(
+			"INVENTORY_VALUATION_REFERENCE_INVALID", "items.0.valuation_rate",
+			item.get("valuation_selection_error"),
+		)
 	if item.get("revalues_existing_stock"):
 		warnings.append(_(
 			"执行后库存估值单价将由 {0}/{1} 调整为 {2}/{1}，"
@@ -3726,11 +3731,14 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 			item.get("stock_value_difference"),
 		))
 	if item.get("uom_resolution_error"):
-		errors.append(item.get("uom_resolution_error"))
+		add_error("INVENTORY_UOM_INVALID", "items.0.uom", item.get("uom_resolution_error"))
 	if item.get("uom_governance_error"):
-		errors.append(item.get("uom_governance_error"))
+		add_error("INVENTORY_UOM_GOVERNANCE_BLOCKED", "items.0.uom", item.get("uom_governance_error"))
 	if not reason:
-		errors.append(_("库存调整必须填写盘点差异或业务原因。"))
+		add_error(
+			"INVENTORY_REASON_REQUIRED", "reason",
+			_("库存调整必须填写盘点差异或业务原因。"),
+		)
 	payload = {
 		"company": company,
 		"posting_date": posting_date,
@@ -3742,12 +3750,31 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 		"remarks": reason,
 		"items": [item],
 	}
-	validation = {
+	validation = _build_draft_validation(errors, warnings, issues)
+	return payload, validation
+
+
+def _build_draft_validation(
+	errors: list[str], warnings: list[str], issues: list[dict] | None = None,
+) -> dict:
+	"""Build a structured validation contract while retaining legacy strings."""
+	structured = [dict(issue) for issue in (issues or []) if isinstance(issue, dict)]
+	covered_messages = {str(issue.get("message") or "") for issue in structured}
+	for message in errors:
+		if str(message) in covered_messages:
+			continue
+		structured.append({
+			"code": "DRAFT_VALIDATION_ERROR",
+			"field": None,
+			"message": str(message),
+			"meta": {},
+		})
+	return {
 		"ready_for_handoff": not errors,
 		"errors": errors,
 		"warnings": warnings,
+		"issues": structured,
 	}
-	return payload, validation
 
 
 def _resolve_sales_draft_warehouse(query: str | None, company: str) -> str | None:
@@ -3888,6 +3915,7 @@ def _resolve_order_update_source(
 def _existing_order_draft_items(detail: dict) -> list[dict]:
 	return [
 		{
+			"row_id": row.get("name"),
 			"item_query": row.get("item_code"),
 			"item_code": row.get("item_code"),
 			"item_name": row.get("item_name"),
@@ -3906,6 +3934,224 @@ def _existing_order_draft_items(detail: dict) -> list[dict]:
 		for row in detail.get("items") or []
 		if isinstance(row, dict)
 	]
+
+
+def _normalize_order_semantic_candidate(candidate: dict, *, draft_type: str) -> dict:
+	"""Flatten the V2 order command while preserving explicit line operations."""
+	result = dict(candidate or {})
+	target = result.get("target") if isinstance(result.get("target"), dict) else None
+	header_patch = (
+		result.get("header_patch") if isinstance(result.get("header_patch"), dict) else None
+	)
+	line_changes = result.get("line_changes") if isinstance(result.get("line_changes"), list) else None
+	if target is None and header_patch is None and line_changes is None:
+		return result
+
+	header_fields = (
+		("customer_query", "transaction_date", "delivery_date", "default_sales_mode",
+		 "warehouse_query", "remarks")
+		if draft_type == "sales_order"
+		else ("supplier_query", "transaction_date", "schedule_date", "default_purchase_mode",
+			  "warehouse_query", "currency", "supplier_ref", "remarks")
+	)
+	clear_fields = {
+		str(field).strip()
+		for field in (header_patch or {}).get("clear_fields") or []
+		if str(field).strip() in header_fields
+	}
+	for field in header_fields:
+		if field in clear_fields:
+			result[field] = None
+		elif header_patch is not None and header_patch.get(field) is not None:
+			result[field] = header_patch.get(field)
+
+	result.update({
+		"_semantic_contract": "order-command-v2",
+		"order_number": (target or {}).get("order_number"),
+		"_target_order_context_ref_requested": (target or {}).get("context_ref"),
+		"_clear_header_fields": sorted(clear_fields),
+		"line_update_mode": str(result.get("line_update_mode") or "none").strip().lower(),
+	})
+	if result.get("order_number"):
+		result["source_document_type"] = "our_system_order"
+
+	rows = []
+	for change in line_changes or []:
+		if not isinstance(change, dict):
+			continue
+		line_target = change.get("target") if isinstance(change.get("target"), dict) else {}
+		line_patch = change.get("patch") if isinstance(change.get("patch"), dict) else {}
+		explicit_patch = {
+			field: value for field, value in line_patch.items()
+			if field != "clear_fields" and value is not None
+		}
+		operation = str(change.get("operation") or "").strip().lower()
+		rows.append({
+			"_line_operation": operation,
+			"_line_target_row_id": line_target.get("row_id"),
+			"_line_target_item_query": line_target.get("item_query"),
+			"_replacement_item_query": explicit_patch.get("replacement_item_query"),
+			"_target_context_ref_requested": line_target.get("context_ref"),
+			"_line_patch_fields": sorted(explicit_patch),
+			"item_query": (
+				explicit_patch.get("replacement_item_query") or line_target.get("item_query")
+				if operation == "add" else line_target.get("item_query")
+			),
+			**{
+				field: value for field, value in explicit_patch.items()
+				if field != "replacement_item_query"
+			},
+		})
+	result["items"] = rows
+	return result
+
+
+def _order_header_value(candidate: dict, existing_meta: dict, field: str):
+	"""Resolve an order header patch without confusing explicit clear with omission."""
+	if field in set(candidate.get("_clear_header_fields") or []):
+		return None
+	value = candidate.get(field)
+	return value if value is not None else existing_meta.get(field)
+
+
+def _normalize_order_header_clear_fields(
+	payload: dict,
+	*,
+	original_payload: dict | None,
+	draft_type: str,
+) -> list[str]:
+	"""Preserve explicit clears across edits while dropping them after a replacement value."""
+	allowed_fields = ORDER_HEADER_CLEAR_FIELDS.get(draft_type, frozenset())
+	if str(payload.get("operation") or (original_payload or {}).get("operation") or "create") != "update":
+		return []
+	original_payload = original_payload or {}
+	requested_value = payload.get("header_clear_fields")
+	requested_fields = (
+		set(requested_value)
+		if isinstance(requested_value, list)
+		else set(original_payload.get("header_clear_fields") or [])
+	)
+	clear_fields = {str(field) for field in requested_fields if str(field) in allowed_fields}
+	for field in allowed_fields:
+		if field not in payload:
+			continue
+		value = payload.get(field)
+		if str(value or "").strip():
+			clear_fields.discard(field)
+		elif str(original_payload.get(field) or "").strip():
+			# A user/API edit that removes an existing value is itself an explicit clear,
+			# even if an older client did not yet send header_clear_fields.
+			clear_fields.add(field)
+	return sorted(clear_fields)
+
+
+def _match_existing_order_line(existing_items: list[dict], change: dict) -> tuple[int | None, str | None]:
+	row_id = str(change.get("_line_target_row_id") or "").strip()
+	if row_id:
+		matches = [index for index, row in enumerate(existing_items) if str(row.get("row_id") or "") == row_id]
+	else:
+		query = str(change.get("_line_target_item_query") or change.get("item_query") or "").strip().casefold()
+		matches = [
+			index for index, row in enumerate(existing_items)
+			if query and query in {
+				str(row.get("item_code") or "").strip().casefold(),
+				str(row.get("item_name") or "").strip().casefold(),
+			}
+		]
+	if len(matches) == 1:
+		return matches[0], None
+	if not matches:
+		return None, _("订单中未找到要修改的唯一商品行，请提供行标识或准确商品。")
+	return None, _("订单中存在多条相同商品行，请提供具体行标识后再修改。")
+
+
+def _apply_order_line_changes(
+	candidate: dict,
+	*,
+	operation: str,
+	existing_order: dict | None,
+	resolve_line,
+) -> tuple[list[dict], bool, list[str]]:
+	"""Apply semantic line changes to a full order snapshot; omitted rows survive."""
+	if candidate.get("_semantic_contract") != "order-command-v2":
+		extracted = [resolve_line(row) for row in candidate.get("items") or []]
+		items = extracted or (
+			_existing_order_draft_items(existing_order)
+			if operation == "update" and existing_order else []
+		)
+		return items, bool(extracted), []
+
+	mode = str(candidate.get("line_update_mode") or "none").strip().lower()
+	changes = [row for row in candidate.get("items") or [] if isinstance(row, dict)]
+	if mode not in {"none", "patch", "replace_all"}:
+		return [], False, [_('订单明细修改模式无效。')]
+	if mode == "none":
+		if changes:
+			return [], False, [_('明细修改模式为 none 时不能包含行变更。')]
+		return (
+			_existing_order_draft_items(existing_order) if operation == "update" and existing_order else [],
+			False,
+			[],
+		)
+	if not changes:
+		return [], False, [_('已声明修改订单明细，但没有提供任何行变更。')]
+
+	errors = []
+	if operation == "create" or mode == "replace_all":
+		items = []
+		for change in changes:
+			line_operation = str(change.get("_line_operation") or "add").strip().lower()
+			if line_operation != "add":
+				errors.append(_("整单替换或新建订单只能包含 add 行。"))
+				continue
+			query = str(change.get("item_query") or change.get("_line_target_item_query") or "").strip()
+			items.append(resolve_line({**change, "item_query": query}))
+		return items, True, errors
+
+	items = _existing_order_draft_items(existing_order or {})
+	for change in changes:
+		line_operation = str(change.get("_line_operation") or "").strip().lower()
+		if line_operation == "add":
+			items.append(resolve_line(change))
+			continue
+		if line_operation not in {"update", "remove"}:
+			errors.append(_("订单行变更操作无效。"))
+			continue
+		index, match_error = _match_existing_order_line(items, change)
+		if match_error:
+			errors.append(match_error)
+			continue
+		if line_operation == "remove":
+			items.pop(index)
+			continue
+		base = items[index]
+		explicit_fields = set(change.get("_line_patch_fields") or [])
+		query = str(change.get("_replacement_item_query") or change.get("item_query") or "").strip()
+		if "replacement_item_query" not in explicit_fields:
+			query = str(base.get("item_code") or base.get("item_query") or "").strip()
+		resolved = resolve_line({
+			"item_query": query,
+			"qty": change.get("qty") if "qty" in explicit_fields else base.get("qty"),
+			"uom": change.get("uom") if "uom" in explicit_fields else base.get("uom"),
+			"price": change.get("price") if "price" in explicit_fields else base.get("price"),
+			"warehouse_query": (
+				change.get("warehouse_query")
+				if "warehouse_query" in explicit_fields else base.get("warehouse")
+			),
+		})
+		resolved["row_id"] = base.get("row_id")
+		price_basis_changed = (
+			str(resolved.get("item_code") or "").strip()
+			!= str(base.get("item_code") or "").strip()
+			or str(resolved.get("uom") or "").strip()
+			!= str(base.get("uom") or "").strip()
+		)
+		if "price" not in explicit_fields and not price_basis_changed:
+			resolved["price"] = base.get("price")
+			resolved["reference_price"] = base.get("reference_price")
+			resolved["price_source"] = "existing_order"
+		items[index] = resolved
+	return items, True, errors
 
 
 def _resolve_draft_retry_request(
@@ -4005,15 +4251,30 @@ def _bind_context_product_candidates(
 		root_candidate = True
 	else:
 		root_candidate = False
+	semantic_context_only = bound.get("_semantic_contract") == "order-command-v2"
 	bound_rows = []
 	for row in rows:
 		resolved_row = dict(row) if isinstance(row, dict) else {}
 		explicit_item_code = str(resolved_row.get("item_code") or "").strip()
-		target = None if explicit_item_code else _resolve_conversation_product_target(
-			content=content,
-			item_query=resolved_row.get("item_query"),
-			conversation_state=conversation_state,
-		)
+		requested_context_ref = resolved_row.get("_target_context_ref_requested")
+		if not explicit_item_code and requested_context_ref == "active_product":
+			resolved = _resolved_conversation_entity(
+				conversation_state, slot="product", allowed_entity_types={"product"},
+			)
+			target = ({
+				"item_code": resolved["entity_id"],
+				"item_name": resolved.get("display_name"),
+				"source": resolved["source"],
+				"context_ref": resolved["context_ref"],
+			} if resolved else None)
+		elif semantic_context_only:
+			target = None
+		else:
+			target = None if explicit_item_code else _resolve_conversation_product_target(
+				content=content,
+				item_query=resolved_row.get("item_query"),
+				conversation_state=conversation_state,
+			)
 		if target:
 			resolved_row["item_query"] = target["item_code"]
 			resolved_row["_target_source"] = target["source"]
@@ -4037,15 +4298,29 @@ def _bind_context_order_candidate(
 	bound = dict(candidate or {})
 	if str(bound.get("order_number") or "").strip():
 		return bound, None
-	if not ORDER_UPDATE_ACTION_PATTERN.search(str(content or "")):
-		return bound, None
 	entity_type = "sales_order" if draft_type == "sales_order" else "purchase_order"
-	target = _resolve_conversation_order_target(
-		content=content,
-		order_number=bound.get("order_number"),
-		conversation_state=conversation_state,
-		allowed_entity_type=entity_type,
-	)
+	if bound.get("_semantic_contract") == "order-command-v2":
+		if bound.get("_target_order_context_ref_requested") != "active_order":
+			return bound, None
+		resolved = _resolved_conversation_entity(
+			conversation_state,
+			slot="business_document",
+			allowed_entity_types={entity_type},
+		)
+		target = ({
+			"order_number": resolved["entity_id"],
+			"source": resolved["source"],
+			"context_ref": resolved["context_ref"],
+		} if resolved else None)
+	else:
+		if not ORDER_UPDATE_ACTION_PATTERN.search(str(content or "")):
+			return bound, None
+		target = _resolve_conversation_order_target(
+			content=content,
+			order_number=bound.get("order_number"),
+			conversation_state=conversation_state,
+			allowed_entity_type=entity_type,
+		)
 	if not target:
 		return bound, None
 	bound["order_number"] = target["order_number"]
@@ -4295,8 +4570,11 @@ def generate_ai_sales_order_draft_v1(
 				)},
 			}
 		)
+		candidate = _normalize_order_semantic_candidate(
+			result["draft"], draft_type="sales_order",
+		)
 		candidate, order_context_target = _bind_context_order_candidate(
-			result["draft"], content=content,
+			candidate, content=content,
 			conversation_state=conversation_state_record.get("state") or {},
 			draft_type="sales_order",
 		)
@@ -4340,16 +4618,16 @@ def generate_ai_sales_order_draft_v1(
 			else "wholesale"
 		)
 		default_warehouse = _resolve_sales_draft_warehouse(candidate.get("warehouse_query"), company)
-		extracted_items = [
-			_resolve_sales_draft_item(
+		items, update_items_explicit, line_change_errors = _apply_order_line_changes(
+			candidate,
+			operation=operation,
+			existing_order=existing_order,
+			resolve_line=lambda row: _resolve_sales_draft_item(
 				row, company=company, default_warehouse=default_warehouse,
 				default_sales_mode=default_sales_mode, allow_user_price=True,
-			)
-			for row in candidate.get("items") or []
-		]
-		items = extracted_items or (
-			_existing_order_draft_items(existing_order) if operation == "update" and existing_order else []
+			),
 		)
+		errors.extend(line_change_errors)
 		if not customer:
 			errors.append(_("客户无法唯一匹配，请人工选择。"))
 		if operation == "create" and not items:
@@ -4386,7 +4664,10 @@ def generate_ai_sales_order_draft_v1(
 			),
 			"source_order_modified": existing_meta.get("modified") if operation == "update" else None,
 			"source_document_type": candidate.get("source_document_type") or "unstructured",
-			"update_items_explicit": bool(extracted_items),
+			"line_update_mode": candidate.get("line_update_mode") or (
+				"replace_all" if update_items_explicit else "none"
+			),
+			"update_items_explicit": update_items_explicit,
 			"company": company,
 			"customer_query": candidate.get("customer_query"),
 			"customer": customer.get("name") if customer else None,
@@ -4397,14 +4678,16 @@ def generate_ai_sales_order_draft_v1(
 			"default_sales_mode": default_sales_mode,
 			"warehouse_query": candidate.get("warehouse_query"),
 			"warehouse": default_warehouse,
-			"remarks": candidate.get("remarks") if candidate.get("remarks") is not None else existing_meta.get("remarks"),
+			"header_clear_fields": (
+				sorted(candidate.get("_clear_header_fields") or [])
+				if operation == "update" else []
+			),
+			"remarks": _order_header_value(candidate, existing_meta, "remarks"),
 			"items": items,
 		}
-		validation = {
-			"ready_for_handoff": not errors,
-			"errors": errors,
-			"warnings": [warning for row in items for warning in row.get("warnings") or []],
-		}
+		validation = _build_draft_validation(
+			errors, [warning for row in items for warning in row.get("warnings") or []],
+		)
 		draft = ai_repository.create_draft(
 			user=user, conversation_id=conversation_id, source_run=run_id,
 			draft_type="sales_order", company=company, title=content,
@@ -4524,8 +4807,11 @@ def generate_ai_purchase_order_draft_v1(
 				conversation_state_record.get("state") or {},
 			)},
 		})
+		candidate = _normalize_order_semantic_candidate(
+			result["draft"], draft_type="purchase_order",
+		)
 		candidate, order_context_target = _bind_context_order_candidate(
-			result["draft"], content=content,
+			candidate, content=content,
 			conversation_state=conversation_state_record.get("state") or {},
 			draft_type="purchase_order",
 		)
@@ -4555,16 +4841,16 @@ def generate_ai_purchase_order_draft_v1(
 			supplier = existing_supplier
 			supplier_candidates = []
 		default_warehouse = _resolve_sales_draft_warehouse(candidate.get("warehouse_query"), company)
-		extracted_items = [
-			_resolve_purchase_draft_item(
+		items, update_items_explicit, line_change_errors = _apply_order_line_changes(
+			candidate,
+			operation=operation,
+			existing_order=existing_order,
+			resolve_line=lambda row: _resolve_purchase_draft_item(
 				row, company=company, default_warehouse=default_warehouse,
 				allow_user_price=True,
-			)
-			for row in candidate.get("items") or []
-		]
-		items = extracted_items or (
-			_existing_order_draft_items(existing_order) if operation == "update" and existing_order else []
+			),
 		)
+		errors.extend(line_change_errors)
 		if not supplier:
 			errors.append(_("供应商无法唯一匹配，请人工选择。"))
 		if operation == "create" and not items:
@@ -4586,7 +4872,9 @@ def generate_ai_purchase_order_draft_v1(
 			candidate.get("schedule_date") or existing_meta.get("schedule_date") or transaction_date
 		))
 		supplier_name = supplier.get("name") if supplier else None
-		currency = str(candidate.get("currency") or "").strip() or None
+		currency = str(
+			_order_header_value(candidate, existing_meta, "currency") or ""
+		).strip() or None
 		if supplier_name and not currency:
 			currency = frappe.db.get_value("Supplier", supplier_name, "default_currency") or None
 		if not currency:
@@ -4603,7 +4891,10 @@ def generate_ai_purchase_order_draft_v1(
 			),
 			"source_order_modified": existing_meta.get("modified") if operation == "update" else None,
 			"source_document_type": candidate.get("source_document_type") or "unstructured",
-			"update_items_explicit": bool(extracted_items),
+			"line_update_mode": candidate.get("line_update_mode") or (
+				"replace_all" if update_items_explicit else "none"
+			),
+			"update_items_explicit": update_items_explicit,
 			"company": company, "supplier_query": candidate.get("supplier_query"),
 			"supplier": supplier_name,
 			"supplier_display_name": supplier.get("display_name") if supplier else None,
@@ -4612,14 +4903,17 @@ def generate_ai_purchase_order_draft_v1(
 			"default_purchase_mode": candidate.get("default_purchase_mode") or "wholesale",
 			"warehouse_query": candidate.get("warehouse_query"),
 			"warehouse": default_warehouse, "currency": currency,
-			"supplier_ref": candidate.get("supplier_ref") if candidate.get("supplier_ref") is not None else existing_meta.get("supplier_ref"),
-			"remarks": candidate.get("remarks") if candidate.get("remarks") is not None else existing_meta.get("remarks"),
+			"header_clear_fields": (
+				sorted(candidate.get("_clear_header_fields") or [])
+				if operation == "update" else []
+			),
+			"supplier_ref": _order_header_value(candidate, existing_meta, "supplier_ref"),
+			"remarks": _order_header_value(candidate, existing_meta, "remarks"),
 			"items": items,
 		}
-		validation = {
-			"ready_for_handoff": not errors, "errors": errors,
-			"warnings": [warning for row in items for warning in row.get("warnings") or []],
-		}
+		validation = _build_draft_validation(
+			errors, [warning for row in items for warning in row.get("warnings") or []],
+		)
 		draft = ai_repository.create_draft(
 			user=user, conversation_id=conversation_id, source_run=run_id,
 			draft_type="purchase_order", company=company, title=content,
@@ -4743,8 +5037,12 @@ def generate_ai_inventory_adjustment_draft_v1(
 				)},
 			}
 		)
+		semantic_candidate = {
+			**dict(result["draft"] or {}),
+			"_semantic_contract": "inventory-adjustment-command-v3",
+		}
 		candidate, product_context_targets = _bind_context_product_candidates(
-			result["draft"], content=content,
+			semantic_candidate, content=content,
 			conversation_state=conversation_state_record.get("state") or {},
 		)
 		payload, validation = _build_inventory_adjustment_draft(candidate, company=company)
@@ -4893,9 +5191,21 @@ def _resolve_optional_master_name(doctype: str, query: str | None) -> str | None
 def _resolve_existing_product_for_setup(candidate: dict) -> tuple[dict | None, list[dict]]:
 	state = candidate.get("_state") if isinstance(candidate.get("_state"), dict) else {}
 	state_entity = state.get("entity") if isinstance(state.get("entity"), dict) else {}
-	item_code = str(state_entity.get("name") or candidate.get("item_code") or "").strip()
-	item_name = str(candidate.get("item_name") or "").strip()
-	barcode = str(candidate.get("barcode") or "").strip()
+	item_code = str(
+		state_entity.get("name") or candidate.get("_target_item_code") or (
+			candidate.get("item_code") if not candidate.get("_semantic_contract") else None
+		) or ""
+	).strip()
+	target_query = str(
+		candidate.get("_target_query") or (
+			candidate.get("item_name") if not candidate.get("_semantic_contract") else None
+		) or ""
+	).strip()
+	barcode = str(
+		candidate.get("_target_barcode") or (
+			candidate.get("barcode") if not candidate.get("_semantic_contract") else None
+		) or ""
+	).strip()
 	matches: dict[str, dict] = {}
 	if item_code:
 		rows = frappe.get_list(
@@ -4909,9 +5219,9 @@ def _resolve_existing_product_for_setup(candidate: dict) -> tuple[dict | None, l
 		# An explicit or state-bound item code is authoritative. Never fall back
 		# to a same-name item when that code is missing or invalid.
 		return None, []
-	if item_name:
+	if target_query:
 		for row in frappe.get_list(
-			"Item", filters={"item_name": item_name}, fields=["name", "item_name", "modified"], limit_page_length=5,
+			"Item", filters={"item_name": target_query}, fields=["name", "item_name", "modified"], limit_page_length=5,
 		):
 			matches[str(row.get("name"))] = dict(row)
 	if barcode:
@@ -4930,17 +5240,10 @@ def _resolve_existing_product_for_setup(candidate: dict) -> tuple[dict | None, l
 		return detail, rows
 	if rows:
 		return None, rows
-	query = " ".join(
-		value for value in (
-			item_name,
-			str(candidate.get("brand") or candidate.get("brand_query") or "").strip(),
-			str(candidate.get("specification") or "").strip(),
-		) if value
-	).strip()
-	if not query:
+	if not target_query:
 		return None, []
 	resolution = _resolve_item_candidates(
-		query, company=candidate.get("company"), context="sales", limit=5,
+		target_query, company=candidate.get("company"), context="inventory", limit=5,
 	)
 	return None, [
 		{
@@ -4954,13 +5257,76 @@ def _resolve_existing_product_for_setup(candidate: dict) -> tuple[dict | None, l
 	]
 
 
+def _normalize_product_setup_semantic_candidate(candidate: dict) -> dict:
+	"""Flatten V2 model output without mixing target identity and patch values."""
+	result = dict(candidate or {})
+	target = result.get("target") if isinstance(result.get("target"), dict) else None
+	patch = result.get("patch") if isinstance(result.get("patch"), dict) else None
+	if target is None or patch is None:
+		return result
+
+	clear_fields = [
+		str(field).strip()
+		for field in patch.get("clear_fields") or []
+		if str(field).strip() in PRODUCT_SETUP_EDITABLE_FIELDS
+	]
+	explicit_fields = {
+		field
+		for field in PRODUCT_SETUP_EDITABLE_FIELDS
+		if field in patch and patch.get(field) not in (None, "")
+	}
+	explicit_fields.update(clear_fields)
+	for field in PRODUCT_SETUP_EDITABLE_FIELDS:
+		if field in patch:
+			result[field] = None if field in clear_fields else patch.get(field)
+	result.update({
+		"item_group_query": patch.get("item_group_query"),
+		"brand_query": patch.get("brand_query"),
+		"warehouse_query": patch.get("warehouse_query"),
+		"opening_qty": patch.get("opening_qty"),
+		"opening_uom": patch.get("opening_uom"),
+		"valuation_rate": patch.get("valuation_rate"),
+		"_semantic_contract": "product-setup-command-v2",
+		"_target_item_code": target.get("item_code"),
+		"_target_barcode": target.get("barcode"),
+		"_target_query": target.get("query"),
+		"_target_context_ref": target.get("context_ref"),
+		"_new_item_code": patch.get("new_item_code"),
+		"_explicit_patch_fields": sorted(explicit_fields),
+		"_clear_fields": clear_fields,
+	})
+	if str(result.get("operation") or "auto").strip().lower() == "create":
+		result["item_code"] = patch.get("new_item_code")
+	else:
+		result.pop("item_code", None)
+	return result
+
+
 def _resolve_product_setup_context_target(
 	*, content: str, candidate: dict, conversation_state: dict | None,
 ) -> dict | None:
 	"""Resolve a deictic product reference from bounded, server-owned conversation state."""
 	operation = str(candidate.get("operation") or "auto").strip().lower()
-	if operation == "create" or str(candidate.get("item_code") or "").strip():
+	if operation == "create" or str(
+		candidate.get("_target_item_code") or (
+			candidate.get("item_code") if not candidate.get("_semantic_contract") else None
+		) or ""
+	).strip():
 		return None
+	if candidate.get("_semantic_contract"):
+		if candidate.get("_target_context_ref") != "active_product":
+			return None
+		target = _resolved_conversation_entity(
+			conversation_state, slot="product", allowed_entity_types={"product"},
+		)
+		if not target:
+			return None
+		return {
+			"item_code": target["entity_id"],
+			"item_name": target.get("display_name"),
+			"source": target["source"],
+			"context_ref": target["context_ref"],
+		}
 	compact = re.sub(r"\s+", "", str(content or ""))
 	if (
 		not compact
@@ -5053,8 +5419,9 @@ def _initial_product_patch(candidate: dict, normalized: dict, *, operation: str)
 			if field in normalized and normalized.get(field) not in (None, "")
 		}
 	patch = {}
+	explicit_fields = set(candidate.get("_explicit_patch_fields") or [])
 	for field in PRODUCT_SETUP_EDITABLE_FIELDS:
-		if field == "item_name":
+		if field == "item_name" and not candidate.get("_semantic_contract"):
 			continue
 		if field in {"item_group", "brand", "stock_uom"}:
 			explicit = {
@@ -5062,9 +5429,9 @@ def _initial_product_patch(candidate: dict, normalized: dict, *, operation: str)
 				"brand": candidate.get("brand") or candidate.get("brand_query"),
 				"stock_uom": candidate.get("stock_uom"),
 			}[field]
-			if explicit not in (None, ""):
+			if field in explicit_fields or explicit not in (None, ""):
 				patch[field] = normalized.get(field)
-		elif candidate.get(field) not in (None, ""):
+		elif field in explicit_fields or candidate.get(field) not in (None, ""):
 			patch[field] = normalized.get(field)
 	return patch
 
@@ -5167,7 +5534,11 @@ def _resolve_product_setup_source_attachments(
 		return _deduplicate_attachment_refs(evidence_refs)
 	if current_refs:
 		return current_refs
-	if _references_prior_product_image(content) and message_ref_groups:
+	if (
+		candidate.get("_semantic_contract") != "product-setup-command-v2"
+		and _references_prior_product_image(content)
+		and message_ref_groups
+	):
 		# 商品封面只有一个主图字段；没有精确 evidence 时只回退到最近带图消息的第一张图。
 		return message_ref_groups[-1][:1]
 	return []
@@ -5197,12 +5568,14 @@ def _prepare_product_setup_image_binding(
 		and str(evidence.get("field") or "").strip().lower() == "image"
 		and str(evidence.get("value") or "").strip().lower() == "use_as_product_image"
 	}
+	model_declared_image_application = (
+		_candidate_requests_product_image_application(candidate)
+		and bool(source_attachment_ids & candidate_image_attachment_ids)
+	)
 	apply_source_image = (
-		_requests_product_image_application(content)
-		or (
-			_candidate_requests_product_image_application(candidate)
-			and bool(source_attachment_ids & candidate_image_attachment_ids)
-		)
+		model_declared_image_application
+		if candidate.get("_semantic_contract") == "product-setup-command-v2"
+		else _requests_product_image_application(content) or model_declared_image_application
 	)
 	should_stage_default_image = bool(
 		source_attachments
@@ -5234,7 +5607,7 @@ def _build_product_setup_draft(
 	candidate: dict, *, company: str, default_image_url: str | None = None,
 	source_attachments: list[dict] | None = None,
 ) -> tuple[dict, dict]:
-	candidate = dict(candidate or {})
+	candidate = _normalize_product_setup_semantic_candidate(candidate)
 	candidate["company"] = company
 	previous_state = candidate.get("_state") if isinstance(candidate.get("_state"), dict) else {}
 	requested_operation = str(
@@ -5248,7 +5621,7 @@ def _build_product_setup_draft(
 	if operation == "auto":
 		operation = "update" if existing_detail else "create"
 	item_name = str(candidate.get("item_name") or "").strip()[:140] or None
-	item_code = str(candidate.get("item_code") or "").strip()[:140] or None
+	item_code = str(candidate.get("_new_item_code") or candidate.get("item_code") or "").strip()[:140] or None
 	item_group_query = str(candidate.get("item_group") or candidate.get("item_group_query") or "").strip() or None
 	brand_query = str(candidate.get("brand") or candidate.get("brand_query") or "").strip() or None
 	item_group = _resolve_optional_master_name("Item Group", item_group_query)
@@ -5497,7 +5870,7 @@ def _build_product_setup_draft(
 	}
 	if operation == "update" and existing_detail and not patch:
 		errors.append(_("尚未修改现有商品字段；请填写需要完善的资料。"))
-	return payload, {"ready_for_handoff": not errors, "errors": errors, "warnings": warnings}
+	return payload, _build_draft_validation(errors, warnings)
 
 
 def generate_ai_product_setup_draft_v1(
@@ -5559,7 +5932,7 @@ def generate_ai_product_setup_draft_v1(
 				conversation_state_record.get("state") or {},
 			)},
 		})
-		candidate = dict(result["draft"] or {})
+		candidate = _normalize_product_setup_semantic_candidate(result["draft"] or {})
 		candidate["company"] = company
 		context_target = _resolve_product_setup_context_target(
 			content=content,
@@ -5567,7 +5940,7 @@ def generate_ai_product_setup_draft_v1(
 			conversation_state=conversation_state_record.get("state") or {},
 		)
 		if context_target:
-			candidate["item_code"] = context_target["item_code"]
+			candidate["_target_item_code"] = context_target["item_code"]
 			candidate["operation"] = "update"
 		existing_detail, existing_matches = _resolve_existing_product_for_setup(candidate)
 		requested_operation = str(candidate.get("operation") or "auto").strip().lower()
@@ -5612,6 +5985,10 @@ def generate_ai_product_setup_draft_v1(
 				"未在当前有效会话上下文中找到用户指定的图片，请重新上传或明确选择图片。"
 			))
 			validation["ready_for_handoff"] = False
+		validation = _build_draft_validation(
+			validation.get("errors") or [], validation.get("warnings") or [],
+			validation.get("issues") or [],
+		)
 		draft = ai_repository.create_draft(
 			user=user, conversation_id=conversation_id, source_run=run_id,
 			draft_type="product_setup", company=company, title=content,
@@ -6090,6 +6467,9 @@ def _update_ai_draft_once(
 			currency = frappe.db.get_value("Supplier", supplier_name, "default_currency") or None
 		if not currency:
 			currency = frappe.db.get_value("Company", company, "default_currency") or None
+		header_clear_fields = _normalize_order_header_clear_fields(
+			payload, original_payload=original_payload, draft_type="purchase_order",
+		)
 		next_payload = {
 			"source_attachments": payload.get("source_attachments") or original_payload.get("source_attachments") or [],
 			"operation": payload.get("operation") or original_payload.get("operation") or "create",
@@ -6108,11 +6488,20 @@ def _update_ai_draft_once(
 			"default_purchase_mode": "retail" if payload.get("default_purchase_mode") == "retail" else "wholesale",
 			"warehouse_query": warehouse_query, "warehouse": default_warehouse,
 			"currency": currency,
-			"supplier_ref": str(payload.get("supplier_ref") or "")[:140] or None,
-			"remarks": str(payload.get("remarks") or "")[:1000] or None, "items": items,
+			"header_clear_fields": header_clear_fields,
+			"supplier_ref": (
+				None if "supplier_ref" in header_clear_fields
+				else str(payload.get("supplier_ref") or "")[:140] or None
+			),
+			"remarks": (
+				None if "remarks" in header_clear_fields
+				else str(payload.get("remarks") or "")[:1000] or None
+			),
+			"items": items,
 		}
-		validation = {"ready_for_handoff": not errors, "errors": errors,
-			"warnings": [warning for row in items for warning in row.get("warnings") or []]}
+		validation = _build_draft_validation(
+			errors, [warning for row in items for warning in row.get("warnings") or []],
+		)
 		updated = ai_repository.update_draft(
 			draft_id=draft_id, user=user, payload=next_payload, validation=validation,
 			expected_version=expected_version, change_source=change_source,
@@ -6153,6 +6542,9 @@ def _update_ai_draft_once(
 			errors.append(_("第 {0} 行需要人工补充商品、数量或仓库。" ).format(index))
 	transaction_date = str(getdate(payload.get("transaction_date") or nowdate()))
 	delivery_date = str(getdate(payload.get("delivery_date") or transaction_date))
+	header_clear_fields = _normalize_order_header_clear_fields(
+		payload, original_payload=original_payload, draft_type="sales_order",
+	)
 	next_payload = {
 		"source_attachments": payload.get("source_attachments") or original_payload.get("source_attachments") or [],
 		"operation": payload.get("operation") or original_payload.get("operation") or "create",
@@ -6170,13 +6562,16 @@ def _update_ai_draft_once(
 		"delivery_date": delivery_date,
 		"default_sales_mode": default_sales_mode,
 		"warehouse_query": warehouse_query, "warehouse": default_warehouse,
-		"remarks": str(payload.get("remarks") or "")[:1000] or None,
+		"header_clear_fields": header_clear_fields,
+		"remarks": (
+			None if "remarks" in header_clear_fields
+			else str(payload.get("remarks") or "")[:1000] or None
+		),
 		"items": items,
 	}
-	validation = {
-		"ready_for_handoff": not errors, "errors": errors,
-		"warnings": [warning for row in items for warning in row.get("warnings") or []],
-	}
+	validation = _build_draft_validation(
+		errors, [warning for row in items for warning in row.get("warnings") or []],
+	)
 	updated = ai_repository.update_draft(
 		draft_id=draft_id, user=user, payload=next_payload, validation=validation,
 		expected_version=expected_version, change_source=change_source,
@@ -6241,6 +6636,8 @@ def _build_draft_version_diff(previous: dict | None, current: dict) -> dict:
 		"warehouse",
 		"reason",
 		"remarks",
+		"supplier_ref",
+		"header_clear_fields",
 		"item_name",
 		"image",
 		"barcode",
@@ -6391,6 +6788,7 @@ def prepare_ai_draft_handoff_v1(draft_id: str):
 			"transaction_date": payload.get("transaction_date"), "schedule_date": payload.get("schedule_date"),
 			"default_purchase_mode": payload.get("default_purchase_mode"), "warehouse": payload.get("warehouse"),
 			"currency": payload.get("currency"), "supplier_ref": payload.get("supplier_ref"),
+			"header_clear_fields": payload.get("header_clear_fields") or [],
 			"remarks": payload.get("remarks"),
 			"items": [{key: row.get(key) for key in ("item_code", "item_name", "qty", "uom", "uom_display", "stock_uom", "stock_uom_display", "price", "warehouse", "conversion_factor")} for row in payload.get("items") or []],
 		}
@@ -6400,6 +6798,7 @@ def prepare_ai_draft_handoff_v1(draft_id: str):
 			"company": payload.get("company"), "customer": payload.get("customer"),
 			"transaction_date": payload.get("transaction_date"), "delivery_date": payload.get("delivery_date"),
 			"default_sales_mode": payload.get("default_sales_mode"), "warehouse": payload.get("warehouse"),
+			"header_clear_fields": payload.get("header_clear_fields") or [],
 			"remarks": payload.get("remarks"),
 			"items": [{key: row.get(key) for key in ("item_code", "item_name", "qty", "uom", "uom_display", "stock_uom", "stock_uom_display", "price", "warehouse", "conversion_factor")} for row in payload.get("items") or []],
 		}
@@ -6444,6 +6843,11 @@ def _record_ai_draft_execution_audit(
 			parameter_hash, result_hash, frappe.as_json(metadata), priority,
 		),
 	)
+
+
+def _order_execution_header_value(payload: dict, field: str):
+	"""Translate an explicit clear marker into the domain service's clear sentinel."""
+	return "" if field in set(payload.get("header_clear_fields") or []) else payload.get(field)
 
 
 def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
@@ -6559,8 +6963,8 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 				order_name=order_number,
 				transaction_date=payload.get("transaction_date"),
 				schedule_date=payload.get("schedule_date"),
-				supplier_ref=payload.get("supplier_ref"),
-				remarks=payload.get("remarks"),
+				supplier_ref=_order_execution_header_value(payload, "supplier_ref"),
+				remarks=_order_execution_header_value(payload, "remarks"),
 				expected_modified=payload.get("source_order_modified"),
 				request_id=request_id,
 			)
@@ -6596,7 +7000,7 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 				transaction_date=payload.get("transaction_date"),
 				delivery_date=payload.get("delivery_date"),
 				default_sales_mode=payload.get("default_sales_mode"),
-				remarks=payload.get("remarks"),
+				remarks=_order_execution_header_value(payload, "remarks"),
 				expected_modified=payload.get("source_order_modified"),
 				request_id=request_id,
 			)
@@ -6738,11 +7142,9 @@ def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
 	for index, row in enumerate(items, 1):
 		if not row.get("item_code") or flt(row.get("qty")) <= 0 or not row.get("warehouse"):
 			errors.append(_("第 {0} 行当前无法通过商品、数量或仓库校验。").format(index))
-	return next_payload, {
-		"ready_for_handoff": not errors,
-		"errors": errors,
-		"warnings": [warning for row in items for warning in row.get("warnings") or []],
-	}
+	return next_payload, _build_draft_validation(
+		errors, [warning for row in items for warning in row.get("warnings") or []],
+	)
 
 
 def _refresh_ai_draft_before_execution(*, draft: dict, user: str) -> dict:
@@ -7154,41 +7556,30 @@ def _prepare_chat_run(
 		if cached_resolution:
 			requested_action_scenario = cached_resolution["scenario"]
 			preparsed_intent = cached_resolution["intent"]
-			route_mode = "preflight_reuse"
+			route_mode = cached_resolution.get("mode") or "structured_intent"
 			route_confidence = cached_resolution.get("confidence")
 		else:
-			local_scenario = _infer_ai_action_scenario(current_content, conversation_state)
-			if not attachment_payloads and (
-				local_scenario in AI_DRAFT_SCENARIOS
-				or _is_simple_general_ai_message(current_content)
-			):
-				requested_action_scenario = local_scenario
-				preparsed_intent = {"intent": local_scenario, "confidence": 1.0}
-				route_mode = "local_fast_path"
-				route_confidence = 1.0
-			else:
-				preparsed_intent = _call_ai_intent_orchestrator(
-					content=current_content,
-					user=user,
-					company=resolved_intent_company,
-					conversation_state=conversation_state,
-					model_alias=model_alias,
-					attachments=attachment_payloads,
-				)
-				preparsed_intent = _merge_intent_with_conversation_state(
-					current_content,
-					preparsed_intent,
-					conversation_state,
-					has_current_attachments=bool(attachment_payloads),
-				)
-				requested_action_scenario, route_mode, route_confidence = _resolve_ai_action_scenario(
-					current_content, conversation_state, preparsed_intent,
-				)
+			preparsed_intent = _call_ai_intent_orchestrator(
+				content=current_content,
+				user=user,
+				company=resolved_intent_company,
+				conversation_state=conversation_state,
+				model_alias=model_alias,
+				attachments=attachment_payloads,
+			)
+			preparsed_intent = _merge_intent_with_conversation_state(
+				current_content,
+				preparsed_intent,
+				conversation_state,
+				has_current_attachments=bool(attachment_payloads),
+			)
+			requested_action_scenario, route_mode, route_confidence = _resolve_ai_action_scenario(
+				current_content, conversation_state, preparsed_intent,
+			)
 	else:
 		requested_action_scenario = requested_scenario
-	# Keep established draft workflows outside the read-only Agent Runtime.  The
-	# semantic router proposes the workflow; deterministic rules only fail closed
-	# when an explicit write would otherwise be downgraded to a read-only path.
+	# Keep established draft workflows outside the read-only Agent Runtime. The
+	# structured semantic router selects the workflow; local rules are degradation only.
 	agent_runtime_requested = os.environ.get("MYAPP_AI_AGENT_RUNTIME_ENABLED", "1").strip().lower() in {
 		"1", "true", "yes",
 	}
@@ -7202,6 +7593,11 @@ def _prepare_chat_run(
 	)
 	agent_runtime_readiness = None
 	compatibility_warnings = []
+	if route_mode == "degraded_local_rules":
+		compatibility_warnings.append(_(
+			"结构化意图模型本次不可用或置信度不足，已进入保守降级路由；"
+			"请在执行任何草稿前重点核对业务场景和目标对象。"
+		))
 	if agent_runtime_candidate:
 		agent_scenario = "general" if requested_scenario == "auto" else requested_scenario
 		try:

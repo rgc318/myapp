@@ -2,7 +2,7 @@ import io
 import json
 import os
 import urllib.error
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from datetime import date
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
@@ -15,6 +15,7 @@ from myapp.services.ai_service import (
 	_build_inventory_adjustment_draft,
 	_build_order_query_context,
 	_build_order_query_dsl,
+	_apply_order_line_changes,
 	_build_next_conversation_state,
 	_build_draft_conversation_state,
 	_bind_context_business_partner_candidate,
@@ -40,12 +41,14 @@ from myapp.services.ai_service import (
 	_hybrid_rerank_product_rows,
 	_extract_product_search_terms,
 	_normalize_product_entity_text,
+	_normalize_product_setup_semantic_candidate,
+	_normalize_order_semantic_candidate,
+	_order_header_value,
 	_merge_intent_with_conversation_state,
 	_resolve_item_candidates,
 	_infer_ai_scenario,
 	_infer_ai_action_scenario,
 	_inventory_standard_buying_reference,
-	_is_simple_general_ai_message,
 	_issue_ai_scenario_resolution,
 	_prepare_chat_run,
 	_prepare_ai_product_action_draft_once,
@@ -506,7 +509,7 @@ class TestAiService(TestCase):
 			}]},
 		]
 		result = _resolve_product_setup_source_attachments(
-			candidate={"evidence": [{
+			candidate={"_semantic_contract": "product-setup-command-v2", "evidence": [{
 				"field": "image", "value": "use_as_product_image",
 				"attachment_id": "AI-ATT-1", "confidence": 1,
 			}]},
@@ -537,18 +540,78 @@ class TestAiService(TestCase):
 		self.assertEqual([row["attachment_id"] for row in selected], ["AI-ATT-PRODUCT"])
 		self.assertEqual(ignored, [])
 
+	def test_product_v2_history_image_requires_model_evidence(self):
+		messages = [{
+			"role": "user", "content": "商品照片",
+			"attachments": [{"attachment_id": "AI-ATT-PRODUCT"}],
+		}]
+		candidate = _normalize_product_setup_semantic_candidate({
+			"operation": "update",
+			"target": {
+				"item_code": "ITEM-1", "barcode": None,
+				"query": None, "context_ref": None,
+			},
+			"patch": {"clear_fields": []},
+			"evidence": [],
+		})
+
+		selected = _resolve_product_setup_source_attachments(
+			candidate=candidate, model_messages=messages, current_attachment_refs=[],
+			content="把刚才图片设为商品主图",
+		)
+
+		self.assertEqual(selected, [])
+
+	@patch("myapp.services.ai_service.stage_attachment_as_item_image")
+	def test_product_v2_image_binding_does_not_reparse_user_text(self, mock_stage):
+		candidate = _normalize_product_setup_semantic_candidate({
+			"operation": "update",
+			"target": {
+				"item_code": "ITEM-1", "barcode": None,
+				"query": None, "context_ref": None,
+			},
+			"patch": {"clear_fields": []},
+			"evidence": [],
+		})
+
+		_candidate, sources, image_url, should_stage, apply_image = (
+			_prepare_product_setup_image_binding(
+				candidate=candidate,
+				model_messages=[{
+					"role": "user", "content": "商品照片",
+					"attachments": [{"attachment_id": "AI-ATT-HISTORY"}],
+				}],
+				current_attachment_refs=[],
+				content="把刚才图片设为商品主图",
+				user="user@example.com", resolved_operation="update",
+				requested_operation="update", existing_matches=[{"name": "ITEM-1"}],
+			)
+		)
+
+		self.assertEqual(sources, [])
+		self.assertIsNone(image_url)
+		self.assertFalse(should_stage)
+		self.assertFalse(apply_image)
+		mock_stage.assert_not_called()
+
 	@patch("myapp.services.ai_service.stage_attachment_as_item_image", return_value="/files/history.webp")
-	def test_product_image_binding_stages_explicit_history_image_for_update(self, mock_stage):
+	def test_product_v2_image_binding_stages_model_selected_history_image(self, mock_stage):
 		candidate, sources, image_url, should_stage, apply_image = _prepare_product_setup_image_binding(
-			candidate={"operation": "update", "item_code": "ITEM-1"},
+			candidate={
+				"operation": "update", "_semantic_contract": "product-setup-command-v2",
+				"_target_item_code": "ITEM-1", "evidence": [{
+					"field": "image", "value": "use_as_product_image",
+					"attachment_id": "AI-ATT-HISTORY", "confidence": 1,
+				}],
+			},
 			model_messages=[
 				{"role": "user", "content": "商品照片", "attachments": [{
 					"attachment_id": "AI-ATT-HISTORY", "mime_type": "image/webp",
 				}]},
-				{"role": "user", "content": "完善商品，图片使用我发的图片"},
+				{"role": "user", "content": "执行模型已经解析的修改"},
 			],
 			current_attachment_refs=[],
-			content="完善商品，图片使用我发的图片",
+			content="执行模型已经解析的修改",
 			user="user@example.com",
 			resolved_operation="update",
 			requested_operation="update",
@@ -576,7 +639,7 @@ class TestAiService(TestCase):
 			"source_run_id": "AI-RUN-FAILED",
 		}
 		run_id = _start_draft_generation_run(
-			scenario="product_setup_draft", prompt_version="product-setup-draft-v6",
+			scenario="product_setup_draft", prompt_version="product-setup-draft-v7",
 			user="user@example.com", content="按照照片新增商品", conversation_id="AI-CONV-1",
 			model_alias="vision-model", attachment_ids=["AI-ATT-1"],
 			attachment_refs=[{"attachment_id": "AI-ATT-1"}],
@@ -1019,6 +1082,41 @@ class TestAiService(TestCase):
 		mock_create_sales.assert_not_called()
 		mock_create_purchase.assert_not_called()
 
+	@patch("myapp.services.ai_service.update_order_v2")
+	@patch("myapp.services.ai_service.update_purchase_order_v2")
+	def test_execute_order_updates_apply_explicit_header_clears(
+		self, mock_update_purchase, mock_update_sales,
+	):
+		mock_update_sales.return_value = {"status": "success", "order": "SO-001"}
+		mock_update_purchase.return_value = {
+			"status": "success", "purchase_order": "PO-001",
+		}
+		common = {
+			"operation": "update", "source_order_modified": "2026-09-04 10:00:00",
+			"update_items_explicit": False, "transaction_date": "2026-09-04", "items": [],
+		}
+
+		_execute_ai_draft_payload({
+			"draft_type": "sales_order",
+			"payload": {
+				**common, "order_number": "SO-001", "delivery_date": "2026-09-05",
+				"default_sales_mode": "wholesale", "remarks": None,
+				"header_clear_fields": ["remarks"],
+			},
+		}, request_id="REQ-CLEAR-S")
+		_execute_ai_draft_payload({
+			"draft_type": "purchase_order",
+			"payload": {
+				**common, "order_number": "PO-001", "schedule_date": "2026-09-06",
+				"supplier_ref": None, "remarks": None,
+				"header_clear_fields": ["remarks", "supplier_ref"],
+			},
+		}, request_id="REQ-CLEAR-P")
+
+		self.assertEqual(mock_update_sales.call_args.kwargs["remarks"], "")
+		self.assertEqual(mock_update_purchase.call_args.kwargs["remarks"], "")
+		self.assertEqual(mock_update_purchase.call_args.kwargs["supplier_ref"], "")
+
 	@patch("myapp.services.ai_service.get_sales_order_detail")
 	@patch("myapp.services.ai_service._resolve_sales_draft_customer")
 	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - DC")
@@ -1274,6 +1372,62 @@ class TestAiService(TestCase):
 		self.assertEqual(call["payload"]["supplier_ref"], "SUP-REF-001")
 
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_update_order_drafts_preserve_and_infer_explicit_header_clears(self, _user):
+		cases = (
+			(
+				"sales_order",
+				{"remarks": "原销售备注", "header_clear_fields": ["remarks"]},
+				{"remarks": None, "header_clear_fields": ["remarks"]},
+				["remarks"],
+			),
+			(
+				"purchase_order",
+				{"supplier_ref": "REF-OLD", "remarks": "原采购备注"},
+				{"supplier_ref": None, "remarks": None},
+				["remarks", "supplier_ref"],
+			),
+		)
+		for draft_type, original_headers, edited_headers, expected_clears in cases:
+			with self.subTest(draft_type=draft_type):
+				draft = {
+					"draft_type": draft_type, "company": "Demo Company",
+					"payload": {
+						"operation": "update", "items": [], **original_headers,
+					},
+				}
+				party_resolver = (
+					"_resolve_sales_draft_customer"
+					if draft_type == "sales_order" else "_resolve_purchase_draft_supplier"
+				)
+				party_key = "customer" if draft_type == "sales_order" else "supplier"
+				date_key = "delivery_date" if draft_type == "sales_order" else "schedule_date"
+				payload = {
+					"operation": "update", party_key: "PARTY-1", "warehouse": "Stores - DC",
+					"transaction_date": "2026-09-04", date_key: "2026-09-05",
+					"items": [], **edited_headers,
+				}
+				with patch(
+					"myapp.services.ai_service.ai_repository.get_draft", return_value=draft,
+				), patch(
+					f"myapp.services.ai_service.{party_resolver}",
+					return_value=({"name": "PARTY-1", "display_name": "往来单位"}, []),
+				), patch(
+					"myapp.services.ai_service._resolve_sales_draft_warehouse",
+					return_value="Stores - DC",
+				), patch(
+					"myapp.services.ai_service.ai_repository.update_draft",
+					return_value={"name": "AI-DRAFT-1", "version": 3},
+				) as mock_update, patch("myapp.services.ai_service.frappe"):
+					_update_ai_draft_once(
+						draft_id="AI-DRAFT-1", payload=payload, expected_version=2,
+					)
+
+				saved = mock_update.call_args.kwargs["payload"]
+				self.assertEqual(saved["header_clear_fields"], expected_clears)
+				for field in expected_clears:
+					self.assertIsNone(saved[field])
+
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	def test_update_inventory_and_product_drafts_pass_expected_version(self, _user):
 		for draft_type, builder_name in (
 			("inventory_adjustment", "_build_inventory_adjustment_draft"),
@@ -1328,13 +1482,13 @@ class TestAiService(TestCase):
 		self.assertEqual(persist_state.call_args.kwargs["payload"], updated["payload"])
 		self.assertEqual(persist_state.call_args.kwargs["draft_type"], "inventory_adjustment")
 
-	def test_semantic_router_leads_and_deterministic_rules_only_guard_writes(self):
+	def test_semantic_router_is_authoritative_when_confident(self):
 		resolved, mode, confidence = _resolve_ai_action_scenario(
 			"帮我看看迪莫还有没有",
 			{},
 			{"intent": "product_search", "confidence": 0.94},
 		)
-		guarded, guard_mode, _ = _resolve_ai_action_scenario(
+		model_selected, selected_mode, selected_confidence = _resolve_ai_action_scenario(
 			"修改这个商品，把价格设为 12 元",
 			{"active_entities": {"product": {
 				"entity_type": "product", "entity_id": "ITEM-1", "resolution_status": "resolved",
@@ -1343,8 +1497,11 @@ class TestAiService(TestCase):
 		)
 
 		self.assertEqual((resolved, mode, confidence), ("product_search", "structured_intent", 0.94))
-		self.assertEqual(guarded, "product_setup_draft")
-		self.assertEqual(guard_mode, "structured_intent_write_guard")
+		self.assertEqual(
+			(model_selected, selected_mode, selected_confidence),
+			("general", "structured_intent", 0.91),
+		)
+
 	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
 		"intent": "product_search", "confidence": 0.96, "product_query": "莫",
 		"entities": [], "report_type": None, "date_preset": "all",
@@ -1392,11 +1549,13 @@ class TestAiService(TestCase):
 			build_context.call_args.kwargs["structured_intent"]["product_query"], "莫",
 		)
 
-	@patch("myapp.services.ai_service._call_ai_intent_orchestrator")
+	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
+		"intent": "general", "confidence": 0.98,
+	})
 	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
-	def test_auto_simple_general_chat_run_skips_intent_model(
+	def test_auto_simple_general_chat_run_uses_intent_model(
 		self, _resolve_model, _current_user, _resolve_company, mock_intent,
 	):
 		with patch.dict(os.environ, {"MYAPP_AI_AGENT_RUNTIME_ENABLED": "0"}, clear=False), patch(
@@ -1415,8 +1574,8 @@ class TestAiService(TestCase):
 
 		self.assertEqual(prepared["scenario"], "general")
 		self.assertEqual(prepared["tool_calls"][0]["tool"], "parse_ai_intent")
-		self.assertEqual(prepared["tool_calls"][0]["mode"], "local_fast_path")
-		mock_intent.assert_not_called()
+		self.assertEqual(prepared["tool_calls"][0]["mode"], "structured_intent")
+		mock_intent.assert_called_once()
 
 	@patch("myapp.services.ai_service._call_ai_intent_orchestrator")
 	@patch("myapp.services.ai_service._take_ai_scenario_resolution", return_value={
@@ -1454,11 +1613,48 @@ class TestAiService(TestCase):
 			)
 
 		self.assertEqual(prepared["scenario"], "product_search")
-		self.assertEqual(prepared["tool_calls"][0]["mode"], "preflight_reuse")
+		self.assertEqual(prepared["tool_calls"][0]["mode"], "structured_intent")
 		self.assertEqual(
 			build_context.call_args.kwargs["structured_intent"]["product_query"], "迪莫",
 		)
 		mock_take.assert_called_once()
+		mock_intent.assert_not_called()
+
+	@patch("myapp.services.ai_service._call_ai_intent_orchestrator")
+	@patch("myapp.services.ai_service._take_ai_scenario_resolution", return_value={
+		"scenario": "product_search",
+		"intent": {
+			"intent": "product_search", "confidence": 0.2, "product_query": "迪莫",
+			"entities": [], "report_type": None, "date_preset": "all",
+			"date_from": None, "date_to": None, "status": "all", "sort": "latest",
+			"min_amount": None, "limit": 10,
+		},
+		"mode": "degraded_local_rules", "confidence": 0.2,
+	})
+	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
+	def test_auto_chat_preserves_degraded_mode_from_preflight(
+		self, _resolve_model, _current_user, _resolve_company, _take, mock_intent,
+	):
+		with patch.dict(os.environ, {"MYAPP_AI_AGENT_RUNTIME_ENABLED": "0"}, clear=False), patch(
+			"myapp.services.ai_service.ai_repository.create_conversation",
+			return_value={"name": "AI-CONV-1", "company": "Demo Company"},
+		), patch("myapp.services.ai_service.ai_repository.append_message"), patch(
+			"myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-1",
+		), patch("myapp.services.ai_service.ai_repository.load_model_messages", return_value=[]), patch(
+			"myapp.services.ai_service._build_product_search_context",
+			return_value=({"tool": "search_products", "products": []}, [], []),
+		), patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.local.lang = "zh-CN"
+			mock_frappe.get_roles.return_value = []
+			prepared = _prepare_chat_run(
+				content="查询迪莫", scenario="auto", company="Demo Company",
+				scenario_resolution_id="AI-RESOLUTION-DEGRADED",
+			)
+
+		self.assertEqual(prepared["tool_calls"][0]["mode"], "degraded_local_rules")
+		self.assertTrue(any("保守降级路由" in warning for warning in prepared["warnings"]))
 		mock_intent.assert_not_called()
 
 	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
@@ -2137,6 +2333,29 @@ class TestAiService(TestCase):
 	@patch("myapp.services.ai_service._resolve_inventory_draft_item")
 	@patch("myapp.services.ai_service._resolve_inventory_draft_warehouse")
 	@patch("myapp.services.ai_service.nowdate", return_value="2026-07-13")
+	def test_semantic_inventory_draft_does_not_default_ambiguous_adjustment_type(
+		self, _today, mock_warehouse, mock_item,
+	):
+		mock_warehouse.return_value = ("Stores - TC", [{"name": "Stores - TC"}])
+		mock_item.return_value = {
+			"item_code": "ITEM-1", "qty": 8, "uom": "Nos", "warehouse": "Stores - TC",
+			"target_stock_qty": None, "current_stock_qty": 5, "warnings": [],
+		}
+
+		payload, validation = _build_inventory_adjustment_draft({
+			"_semantic_contract": "inventory-adjustment-command-v3",
+			"item_query": "ITEM-1", "warehouse_query": "Stores - TC",
+			"quantity": 8, "adjustment_type": None, "reason": "盘点差异",
+		}, company="Test Company")
+
+		self.assertIsNone(payload["adjustment_type"])
+		self.assertFalse(validation["ready_for_handoff"])
+		self.assertTrue(any("明确选择" in error for error in validation["errors"]))
+		self.assertTrue(validation["issues"])
+
+	@patch("myapp.services.ai_service._resolve_inventory_draft_item")
+	@patch("myapp.services.ai_service._resolve_inventory_draft_warehouse")
+	@patch("myapp.services.ai_service.nowdate", return_value="2026-07-13")
 	def test_build_inventory_adjustment_draft_requires_cost_for_stock_increase(
 		self, _today, mock_warehouse, mock_item,
 	):
@@ -2239,8 +2458,8 @@ class TestAiService(TestCase):
 
 	def test_build_draft_version_diff_tracks_fields_and_lines(self):
 		diff = _build_draft_version_diff(
-			{"payload": {"customer": "CUST-1", "image": "/files/old.png", "items": [{"item_code": "ITEM-1", "qty": 1, "uom": "Box"}]}},
-			{"payload": {"customer": "CUST-2", "image": "/files/new.png", "items": [
+			{"payload": {"customer": "CUST-1", "image": "/files/old.png", "supplier_ref": "REF-OLD", "header_clear_fields": [], "items": [{"item_code": "ITEM-1", "qty": 1, "uom": "Box"}]}},
+			{"payload": {"customer": "CUST-2", "image": "/files/new.png", "supplier_ref": None, "header_clear_fields": ["supplier_ref"], "items": [
 				{"item_code": "ITEM-1", "qty": 2, "uom": "Box"},
 				{"item_code": "ITEM-2", "qty": 1, "uom": "Nos"},
 			]}},
@@ -2248,6 +2467,8 @@ class TestAiService(TestCase):
 
 		self.assertEqual(diff["fields"][0]["field"], "customer")
 		self.assertIn("image", [row["field"] for row in diff["fields"]])
+		self.assertIn("supplier_ref", [row["field"] for row in diff["fields"]])
+		self.assertIn("header_clear_fields", [row["field"] for row in diff["fields"]])
 		self.assertEqual(diff["items"][0]["change"], "modified")
 		self.assertEqual(diff["items"][0]["fields"], ["qty"])
 		self.assertEqual(diff["items"][1]["change"], "added")
@@ -2386,10 +2607,10 @@ class TestAiService(TestCase):
 	def test_prompt_versions_are_mapped_by_scenario(self):
 		self.assertEqual(_resolve_prompt_version("general"), "erp-readonly-v11")
 		draft_versions = {
-			"sales_order_draft": "sales-order-draft-v4",
-			"purchase_order_draft": "purchase-order-draft-v4",
-			"inventory_adjustment_draft": "inventory-adjustment-draft-v2",
-			"product_setup_draft": "product-setup-draft-v6",
+			"sales_order_draft": "sales-order-draft-v5",
+			"purchase_order_draft": "purchase-order-draft-v5",
+			"inventory_adjustment_draft": "inventory-adjustment-draft-v3",
+			"product_setup_draft": "product-setup-draft-v7",
 		}
 		for scenario, expected in draft_versions.items():
 			with self.subTest(scenario=scenario):
@@ -2490,7 +2711,7 @@ class TestAiService(TestCase):
 		mock_call.return_value = {
 			"draft": {
 				"operation": "update", "order_number": "PO-001",
-				"source_document_type": "our_system_order", "currency": "CNY",
+				"source_document_type": "our_system_order", "currency": None,
 				"remarks": "新采购备注", "items": [],
 			},
 			"model": "vision-model", "model_alias": "erp-vision",
@@ -2499,7 +2720,7 @@ class TestAiService(TestCase):
 		mock_detail.return_value = {"data": {
 			"meta": {
 				"company": "Test Company", "transaction_date": "2026-07-02",
-				"schedule_date": "2026-07-06", "supplier_ref": "REF-OLD",
+				"schedule_date": "2026-07-06", "currency": "USD", "supplier_ref": "REF-OLD",
 				"remarks": "原采购备注",
 			},
 			"supplier": {"name": "SUP-1", "display_name": "供应商A"},
@@ -2527,10 +2748,110 @@ class TestAiService(TestCase):
 		self.assertEqual(payload["supplier"], "SUP-1")
 		self.assertEqual(payload["transaction_date"], "2026-07-02")
 		self.assertEqual(payload["schedule_date"], "2026-07-06")
+		self.assertEqual(payload["currency"], "USD")
 		self.assertEqual(payload["supplier_ref"], "REF-OLD")
 		self.assertEqual(payload["remarks"], "新采购备注")
 		self.assertEqual(payload["items"][0]["price_source"], "existing_order")
 		self.assertTrue(mock_create_draft.call_args.kwargs["validation"]["ready_for_handoff"])
+
+	def test_generated_order_update_payload_keeps_explicit_header_clear_markers(self):
+		cases = (
+			{
+				"draft_type": "sales_order", "generator": generate_ai_sales_order_draft_v1,
+				"orchestrator": "_call_ai_orchestrator_sales_draft",
+				"detail_service": "get_sales_order_detail",
+				"party_resolver": "_resolve_sales_draft_customer",
+				"candidate": {
+					"operation": "update", "target": {"order_number": "SO-001", "context_ref": None},
+					"header_patch": {"remarks": None, "clear_fields": ["remarks"]},
+					"line_update_mode": "none", "line_changes": [],
+				},
+				"detail": {"data": {
+					"meta": {
+						"company": "Test Company", "modified": "2026-09-04 10:00:00",
+						"transaction_date": "2026-09-04", "delivery_date": "2026-09-05",
+						"default_sales_mode": "wholesale", "remarks": "原销售备注",
+					},
+					"customer": {"name": "CUST-1", "display_name": "客户A"}, "items": [],
+				}},
+				"expected": ["remarks"],
+			},
+			{
+				"draft_type": "purchase_order", "generator": generate_ai_purchase_order_draft_v1,
+				"orchestrator": "_call_ai_orchestrator_purchase_draft",
+				"detail_service": "get_purchase_order_detail_v2",
+				"party_resolver": "_resolve_purchase_draft_supplier",
+				"candidate": {
+					"operation": "update", "target": {"order_number": "PO-001", "context_ref": None},
+					"header_patch": {
+						"supplier_ref": None, "remarks": None,
+						"clear_fields": ["supplier_ref", "remarks"],
+					},
+					"line_update_mode": "none", "line_changes": [],
+				},
+				"detail": {"data": {
+					"meta": {
+						"company": "Test Company", "modified": "2026-09-04 10:00:00",
+						"transaction_date": "2026-09-04", "schedule_date": "2026-09-06",
+						"currency": "CNY", "supplier_ref": "REF-OLD", "remarks": "原采购备注",
+					},
+					"supplier": {"name": "SUP-1", "display_name": "供应商A"}, "items": [],
+				}},
+				"expected": ["remarks", "supplier_ref"],
+			},
+		)
+		for case in cases:
+			with self.subTest(draft_type=case["draft_type"]), ExitStack() as stack:
+				stack.enter_context(patch("myapp.services.ai_service._resolve_company_scope", return_value="Test Company"))
+				mock_call = stack.enter_context(patch(f"myapp.services.ai_service.{case['orchestrator']}"))
+				mock_call.return_value = {
+					"draft": case["candidate"], "model": "structured-model",
+					"model_alias": "erp-structured", "trace_id": "trace-clear", "usage": {},
+				}
+				stack.enter_context(patch(
+					f"myapp.services.ai_service.{case['detail_service']}", return_value=case["detail"],
+				))
+				stack.enter_context(patch(
+					f"myapp.services.ai_service.{case['party_resolver']}", return_value=(None, []),
+				))
+				stack.enter_context(patch(
+					"myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - TC",
+				))
+				stack.enter_context(patch(
+					"myapp.services.ai_service.ai_repository.create_conversation",
+					return_value={"name": "AI-CONV-CLEAR", "company": "Test Company"},
+				))
+				stack.enter_context(patch("myapp.services.ai_service.ai_repository.append_message"))
+				stack.enter_context(patch(
+					"myapp.services.ai_service.ai_repository.create_run", return_value="AI-RUN-CLEAR",
+				))
+				stack.enter_context(patch(
+					"myapp.services.ai_service.ai_repository.load_model_messages", return_value=[],
+				))
+				stack.enter_context(patch("myapp.services.ai_service.ai_repository.complete_run"))
+				stack.enter_context(patch("myapp.services.ai_service.ai_repository.fail_run"))
+				mock_create_draft = stack.enter_context(patch(
+					"myapp.services.ai_service.ai_repository.create_draft",
+					return_value={
+						"name": "AI-DRAFT-CLEAR", "title": "清空字段",
+						"validation": {"ready_for_handoff": True},
+					},
+				))
+				stack.enter_context(patch(
+					"myapp.services.ai_service._persist_draft_conversation_state",
+					return_value={"tool": "update_conversation_state"},
+				))
+				mock_frappe = stack.enter_context(patch("myapp.services.ai_service.frappe"))
+				mock_frappe.session.user = "user@example.com"
+				mock_frappe.local.lang = "zh-CN"
+				mock_frappe.has_permission.return_value = True
+
+				case["generator"]("清空字段", company="Test Company")
+
+				payload = mock_create_draft.call_args.kwargs["payload"]
+				self.assertEqual(payload["header_clear_fields"], case["expected"])
+				for field in case["expected"]:
+					self.assertIsNone(payload[field])
 
 	@patch("myapp.services.ai_service._persist_draft_conversation_state", return_value={"tool": "update_conversation_state"})
 	@patch("myapp.services.ai_service.ai_repository.create_draft")
@@ -3022,6 +3343,265 @@ class TestAiService(TestCase):
 		self.assertIsNone(detail)
 		self.assertTrue(any("不属于当前公司" in error for error in errors))
 
+	def test_order_semantic_candidate_separates_target_header_and_lines(self):
+		candidate = _normalize_order_semantic_candidate({
+			"operation": "update",
+			"target": {"order_number": "SO-001", "context_ref": None},
+			"header_patch": {
+				"delivery_date": "2026-09-10", "remarks": None, "clear_fields": [],
+			},
+			"line_update_mode": "patch",
+			"line_changes": [{
+				"operation": "update",
+				"target": {"row_id": None, "item_query": "可口可乐", "context_ref": None},
+				"patch": {
+					"replacement_item_query": None, "qty": 5, "uom": "箱",
+					"price": None, "warehouse_query": None, "specification_query": None,
+				},
+				"evidence": [],
+			}],
+		}, draft_type="sales_order")
+
+		self.assertEqual(candidate["order_number"], "SO-001")
+		self.assertEqual(candidate["delivery_date"], "2026-09-10")
+		self.assertNotIn("remarks", candidate)
+		self.assertEqual(candidate["line_update_mode"], "patch")
+		self.assertEqual(candidate["items"][0]["_line_target_item_query"], "可口可乐")
+		self.assertEqual(candidate["items"][0]["qty"], 5)
+
+	def test_order_v2_product_context_is_only_bound_from_schema_reference(self):
+		candidate = _normalize_order_semantic_candidate({
+			"operation": "update",
+			"target": {"order_number": "SO-001", "context_ref": None},
+			"header_patch": {"clear_fields": []},
+			"line_update_mode": "patch",
+			"line_changes": [{
+				"operation": "update",
+				"target": {"row_id": None, "item_query": "这个商品", "context_ref": None},
+				"patch": {"qty": 5}, "evidence": [],
+			}],
+		}, draft_type="sales_order")
+		state = {"active_entities": {"product": {
+			"entity_type": "product", "entity_id": "ITEM-OLD",
+			"display_name": "旧商品", "resolution_status": "resolved",
+			"source": "product_search", "context_ref": "product:ITEM-OLD",
+		}}}
+
+		bound, targets = _bind_context_product_candidates(
+			candidate, content="把这个商品数量改成5", conversation_state=state,
+		)
+
+		self.assertEqual(bound["items"][0]["item_query"], "这个商品")
+		self.assertEqual(targets, [])
+
+	def test_order_line_patch_preserves_unmentioned_existing_rows(self):
+		candidate = _normalize_order_semantic_candidate({
+			"operation": "update",
+			"target": {"order_number": "SO-001", "context_ref": None},
+			"header_patch": {"clear_fields": []},
+			"line_update_mode": "patch",
+			"line_changes": [{
+				"operation": "update",
+				"target": {"row_id": "ROW-COLA", "item_query": None, "context_ref": None},
+				"patch": {
+					"replacement_item_query": None, "qty": 5, "uom": None,
+					"price": None, "warehouse_query": None, "specification_query": None,
+				},
+				"evidence": [],
+			}],
+		}, draft_type="sales_order")
+		existing = {"items": [
+			{"name": "ROW-COLA", "item_code": "COLA", "item_name": "可口可乐", "qty": 2,
+			 "uom": "Box", "rate": 70, "warehouse": "Stores", "conversion_factor": 6},
+			{"name": "ROW-WATER", "item_code": "WATER", "item_name": "矿泉水", "qty": 3,
+			 "uom": "Bottle", "rate": 2, "warehouse": "Stores", "conversion_factor": 1},
+		]}
+
+		def resolve_line(row):
+			return {
+				"item_code": row["item_query"], "item_name": row["item_query"],
+				"qty": row["qty"], "uom": row["uom"], "price": 999,
+				"warehouse": row["warehouse_query"], "warnings": [],
+			}
+
+		items, explicit, errors = _apply_order_line_changes(
+			candidate, operation="update", existing_order=existing, resolve_line=resolve_line,
+		)
+
+		self.assertTrue(explicit)
+		self.assertEqual(errors, [])
+		self.assertEqual([row["item_code"] for row in items], ["COLA", "WATER"])
+		self.assertEqual(items[0]["qty"], 5)
+		self.assertEqual(items[0]["price"], 70)
+		self.assertEqual(items[1]["qty"], 3)
+
+	def test_order_line_reprices_when_item_or_uom_price_basis_changes(self):
+		existing = {"items": [{
+			"name": "ROW-COLA", "item_code": "COLA", "item_name": "可口可乐",
+			"qty": 2, "uom": "Box", "rate": 70, "warehouse": "Stores",
+		}]}
+		changes = (
+			({"replacement_item_query": "WATER"}, "WATER", "Box"),
+			({"uom": "Unit"}, "COLA", "Unit"),
+		)
+		for patch_values, expected_item, expected_uom in changes:
+			with self.subTest(patch=patch_values):
+				candidate = _normalize_order_semantic_candidate({
+					"operation": "update", "target": {"order_number": "SO-001"},
+					"header_patch": {"clear_fields": []}, "line_update_mode": "patch",
+					"line_changes": [{
+						"operation": "update", "target": {"row_id": "ROW-COLA"},
+						"patch": patch_values,
+					}],
+				}, draft_type="sales_order")
+
+				items, explicit, errors = _apply_order_line_changes(
+					candidate, operation="update", existing_order=existing,
+					resolve_line=lambda row: {
+						"item_code": row["item_query"], "item_name": row["item_query"],
+						"qty": row["qty"], "uom": row["uom"], "price": 99,
+						"reference_price": 99, "price_source": "price_list",
+						"warehouse": row["warehouse_query"], "warnings": [],
+					},
+				)
+
+				self.assertTrue(explicit)
+				self.assertEqual(errors, [])
+				self.assertEqual(items[0]["item_code"], expected_item)
+				self.assertEqual(items[0]["uom"], expected_uom)
+				self.assertEqual(items[0]["price"], 99)
+				self.assertEqual(items[0]["price_source"], "price_list")
+
+	def test_order_semantic_candidate_preserves_explicit_header_clears(self):
+		sales = _normalize_order_semantic_candidate({
+			"operation": "update",
+			"target": {"order_number": "SO-001", "context_ref": None},
+			"header_patch": {"remarks": None, "clear_fields": ["remarks"]},
+			"line_update_mode": "none",
+			"line_changes": [],
+		}, draft_type="sales_order")
+		purchase = _normalize_order_semantic_candidate({
+			"operation": "update",
+			"target": {"order_number": "PO-001", "context_ref": None},
+			"header_patch": {
+				"supplier_ref": None, "remarks": None,
+				"clear_fields": ["supplier_ref", "remarks"],
+			},
+			"line_update_mode": "none",
+			"line_changes": [],
+		}, draft_type="purchase_order")
+
+		self.assertEqual(sales["_clear_header_fields"], ["remarks"])
+		self.assertIsNone(_order_header_value(sales, {"remarks": "原销售备注"}, "remarks"))
+		self.assertEqual(purchase["_clear_header_fields"], ["remarks", "supplier_ref"])
+		self.assertIsNone(
+			_order_header_value(purchase, {"supplier_ref": "REF-OLD"}, "supplier_ref")
+		)
+		self.assertIsNone(_order_header_value(purchase, {"remarks": "原采购备注"}, "remarks"))
+
+	def test_order_line_add_accepts_item_query_from_target(self):
+		candidate = _normalize_order_semantic_candidate({
+			"operation": "update",
+			"target": {"order_number": "SO-001", "context_ref": None},
+			"header_patch": {"clear_fields": []},
+			"line_update_mode": "patch",
+			"line_changes": [{
+				"operation": "add",
+				"target": {"row_id": None, "item_query": "矿泉水", "context_ref": None},
+				"patch": {"qty": 2, "uom": "箱"},
+				"evidence": [],
+			}],
+		}, draft_type="sales_order")
+		existing = {"items": [{
+			"name": "ROW-COLA", "item_code": "COLA", "item_name": "可口可乐",
+			"qty": 1, "uom": "Box", "rate": 70, "warehouse": "Stores",
+		}]}
+
+		items, explicit, errors = _apply_order_line_changes(
+			candidate, operation="update", existing_order=existing,
+			resolve_line=lambda row: {
+				"item_code": row.get("item_query"), "item_name": row.get("item_query"),
+				"qty": row.get("qty"), "uom": row.get("uom"), "price": 2,
+				"warehouse": "Stores", "warnings": [],
+			},
+		)
+
+		self.assertTrue(explicit)
+		self.assertEqual(errors, [])
+		self.assertEqual([row["item_code"] for row in items], ["COLA", "矿泉水"])
+		self.assertEqual(items[1]["qty"], 2)
+
+	def test_replace_all_and_create_reject_non_add_line_operations(self):
+		for operation, mode in (("update", "replace_all"), ("create", "patch")):
+			with self.subTest(operation=operation, mode=mode):
+				candidate = _normalize_order_semantic_candidate({
+					"operation": operation,
+					"target": {"order_number": "SO-001" if operation == "update" else None},
+					"header_patch": {"clear_fields": []},
+					"line_update_mode": mode,
+					"line_changes": [{
+						"operation": "update",
+						"target": {"item_query": "旧商品"},
+						"patch": {"qty": 2},
+					}],
+				}, draft_type="sales_order")
+
+				items, explicit, errors = _apply_order_line_changes(
+					candidate, operation=operation,
+					existing_order={"items": []}, resolve_line=lambda row: row,
+				)
+
+				self.assertTrue(explicit)
+				self.assertEqual(items, [])
+				self.assertTrue(any("只能包含 add 行" in error for error in errors))
+
+	def test_order_header_only_update_never_replaces_items(self):
+		candidate = _normalize_order_semantic_candidate({
+			"operation": "update",
+			"target": {"order_number": "SO-001", "context_ref": None},
+			"header_patch": {"delivery_date": "2026-09-10", "clear_fields": []},
+			"line_update_mode": "none",
+			"line_changes": [],
+		}, draft_type="sales_order")
+		existing = {"items": [{
+			"name": "ROW-1", "item_code": "ITEM-1", "item_name": "商品一",
+			"qty": 2, "uom": "Unit", "rate": 5, "warehouse": "Stores",
+		}]}
+
+		items, explicit, errors = _apply_order_line_changes(
+			candidate, operation="update", existing_order=existing,
+			resolve_line=lambda _row: self.fail("header-only update must not resolve order lines"),
+		)
+
+		self.assertFalse(explicit)
+		self.assertEqual(errors, [])
+		self.assertEqual(items[0]["item_code"], "ITEM-1")
+
+	def test_order_line_patch_requires_row_id_when_same_item_repeats(self):
+		candidate = _normalize_order_semantic_candidate({
+			"operation": "update",
+			"target": {"order_number": "SO-001", "context_ref": None},
+			"header_patch": {"clear_fields": []},
+			"line_update_mode": "patch",
+			"line_changes": [{
+				"operation": "remove",
+				"target": {"row_id": None, "item_query": "ITEM-1", "context_ref": None},
+				"patch": {}, "evidence": [],
+			}],
+		}, draft_type="sales_order")
+		existing = {"items": [
+			{"name": "ROW-1", "item_code": "ITEM-1", "item_name": "商品一", "qty": 1},
+			{"name": "ROW-2", "item_code": "ITEM-1", "item_name": "商品一", "qty": 2},
+		]}
+
+		items, explicit, errors = _apply_order_line_changes(
+			candidate, operation="update", existing_order=existing, resolve_line=lambda row: row,
+		)
+
+		self.assertTrue(explicit)
+		self.assertEqual(len(items), 2)
+		self.assertTrue(any("多条相同商品行" in error for error in errors))
+
 	@patch("myapp.services.ai_service.get_product_detail_v2")
 	def test_product_setup_explicit_item_code_is_authoritative(self, mock_detail):
 		mock_detail.return_value = {
@@ -3103,8 +3683,16 @@ class TestAiService(TestCase):
 		mock_orchestrator.return_value = {
 			"draft": {
 				"operation": "update",
-				"specification": "500ml",
-				"standard_selling_rate": 52,
+				"target": {
+					"item_code": None, "barcode": None,
+					"query": None, "context_ref": "active_product",
+				},
+				"patch": {
+					"item_name": None, "new_item_code": None,
+					"specification": "500ml", "standard_selling_rate": 52,
+					"clear_fields": [],
+				},
+				"evidence": [],
 			},
 			"model": "gpt-5.6-luna",
 			"model_alias": "gpt-5.6-luna",
@@ -3118,9 +3706,9 @@ class TestAiService(TestCase):
 		)
 
 		def build(candidate, **_kwargs):
-			self.assertEqual(candidate["item_code"], "ITEM-COLA-5000ML")
+			self.assertEqual(candidate["_target_item_code"], "ITEM-COLA-5000ML")
 			return (
-				{"item_code": candidate["item_code"], "operation": "update"},
+				{"item_code": candidate["_target_item_code"], "operation": "update"},
 				{"ready_for_handoff": True, "errors": [], "warnings": []},
 			)
 
@@ -3514,11 +4102,6 @@ class TestAiService(TestCase):
 			"inventory_adjustment_draft",
 		)
 
-	def test_simple_general_message_fast_path_is_exact_and_normalized(self):
-		self.assertTrue(_is_simple_general_ai_message(" 你好！ "))
-		self.assertTrue(_is_simple_general_ai_message("HELLO"))
-		self.assertFalse(_is_simple_general_ai_message("你好，请查询最新销售订单"))
-
 	@patch("myapp.services.ai_service.secrets.token_urlsafe", return_value="AI-RESOLUTION-1")
 	def test_scenario_resolution_is_one_time_and_bound_to_request_context(self, _token):
 		cache = MagicMock()
@@ -3566,28 +4149,34 @@ class TestAiService(TestCase):
 		self.assertEqual(cache.delete_value.call_count, 2)
 
 	@patch("myapp.services.ai_service._issue_ai_scenario_resolution", return_value="AI-RESOLUTION-1")
-	@patch("myapp.services.ai_service._call_ai_intent_orchestrator")
+	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
+		"intent": "general", "confidence": 0.98,
+	})
 	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
 	@patch("myapp.services.ai_service._resolve_company_scope", return_value="Demo Company")
 	@patch("myapp.services.ai_service.resolve_ai_attachments", return_value=([], []))
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
-	def test_resolve_scenario_skips_intent_model_for_simple_general_message(
+	def test_resolve_scenario_uses_intent_model_for_simple_general_message(
 		self, _user, _attachments, _company, _model, mock_intent, mock_issue,
 	):
 		result = resolve_ai_scenario_v1(content="你好！", company="Demo Company")
 
 		self.assertEqual(result["data"]["scenario"], "general")
 		self.assertEqual(result["data"]["resolution_id"], "AI-RESOLUTION-1")
+		self.assertEqual(result["data"]["resolution_mode"], "structured_intent")
+		self.assertEqual(result["data"]["confidence"], 0.98)
 		mock_issue.assert_called_once()
-		mock_intent.assert_not_called()
+		mock_intent.assert_called_once()
 
 	@patch("myapp.services.ai_service._issue_ai_scenario_resolution", return_value="AI-RESOLUTION-2")
-	@patch("myapp.services.ai_service._call_ai_intent_orchestrator")
+	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
+		"intent": "inventory_adjustment_draft", "confidence": 0.96,
+	})
 	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
 	@patch("myapp.services.ai_service._resolve_company_scope", return_value="Demo Company")
 	@patch("myapp.services.ai_service.resolve_ai_attachments", return_value=([], []))
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
-	def test_resolve_scenario_skips_intent_model_for_explicit_draft_action(
+	def test_resolve_scenario_uses_intent_model_for_explicit_draft_action(
 		self, _user, _attachments, _company, _model, mock_intent, mock_issue,
 	):
 		result = resolve_ai_scenario_v1(
@@ -3596,8 +4185,9 @@ class TestAiService(TestCase):
 
 		self.assertEqual(result["data"]["scenario"], "inventory_adjustment_draft")
 		self.assertEqual(result["data"]["resolution_id"], "AI-RESOLUTION-2")
+		self.assertEqual(result["data"]["resolution_mode"], "structured_intent")
 		mock_issue.assert_called_once()
-		mock_intent.assert_not_called()
+		mock_intent.assert_called_once()
 
 	def test_auto_scenario_routes_product_stock_status_queries_to_product_search(self):
 		self.assertEqual(
@@ -3611,6 +4201,138 @@ class TestAiService(TestCase):
 		self.assertEqual(_extract_product_search_terms("查询一下煌星是否已经正常入库"), ["煌星"])
 		self.assertEqual(_extract_product_search_terms("查询迪莫商品是否已正常入库"), ["迪莫"])
 		self.assertEqual(_extract_product_search_terms("煌星现在有现货吗"), ["煌星"])
+
+	def test_product_setup_semantic_candidate_separates_target_and_patch(self):
+		candidate = _normalize_product_setup_semantic_candidate({
+			"operation": "update",
+			"target": {
+				"item_code": None, "barcode": None,
+				"query": "可口可乐", "context_ref": None,
+			},
+			"patch": {
+				"item_name": None, "new_item_code": None,
+				"specification": "500ml", "clear_fields": [],
+			},
+		})
+
+		self.assertEqual(candidate["_target_query"], "可口可乐")
+		self.assertEqual(candidate["specification"], "500ml")
+		self.assertNotIn("item_code", candidate)
+		self.assertEqual(candidate["_explicit_patch_fields"], ["specification"])
+
+	@patch("myapp.services.ai_service._resolve_item_candidates", return_value={
+		"selected": None, "candidates": [], "match_method": "hybrid",
+	})
+	@patch("myapp.services.ai_service.frappe.get_list", return_value=[])
+	def test_product_setup_resolver_never_searches_with_patch_values(
+		self, _get_list, mock_resolve,
+	):
+		candidate = _normalize_product_setup_semantic_candidate({
+			"operation": "update",
+			"target": {
+				"item_code": None, "barcode": None,
+				"query": "可口可乐", "context_ref": None,
+			},
+			"patch": {
+				"item_name": "无糖可乐", "new_item_code": None,
+				"brand_query": "新品牌", "specification": "500ml",
+				"clear_fields": [],
+			},
+		})
+
+		detail, matches = _resolve_existing_product_for_setup(candidate)
+
+		self.assertIsNone(detail)
+		self.assertEqual(matches, [])
+		mock_resolve.assert_called_once_with(
+			"可口可乐", company=None, context="inventory", limit=5,
+		)
+
+	def test_product_setup_context_ref_uses_resolved_server_state_without_text_rules(self):
+		candidate = _normalize_product_setup_semantic_candidate({
+			"operation": "update",
+			"target": {
+				"item_code": None, "barcode": None,
+				"query": None, "context_ref": "active_product",
+			},
+			"patch": {"item_name": "无糖可乐", "new_item_code": None, "clear_fields": []},
+		})
+		state = {"active_entities": {"product": {
+			"entity_type": "product", "entity_id": "ITEM-COLA",
+			"display_name": "可口可乐", "resolution_status": "resolved",
+			"source": "product_search", "context_ref": "product:ITEM-COLA",
+		}}}
+
+		resolved = _resolve_product_setup_context_target(
+			content="完全不包含旧版指代关键词", candidate=candidate, conversation_state=state,
+		)
+
+		self.assertEqual(resolved["item_code"], "ITEM-COLA")
+		self.assertEqual(resolved["context_ref"], "active_entities.product")
+
+	@patch("myapp.services.ai_service._resolve_existing_product_for_setup")
+	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value=None)
+	@patch("myapp.services.ai_service._resolve_optional_master_name", side_effect=lambda _doctype, value: value)
+	@patch("myapp.services.ai_service._resolve_product_setup_uom", return_value=("Unit", [{"name": "Unit"}]))
+	def test_product_setup_v2_update_keeps_name_patch_and_clear_fields(
+		self, _uom, _master, _warehouse, mock_existing,
+	):
+		mock_existing.return_value = ({
+			"item_code": "ITEM-COLA", "item_name": "可口可乐", "item_group": "Products",
+			"brand": "旧品牌", "stock_uom": "Unit", "stock_uom_display": "件",
+			"barcode": "OLD-BARCODE", "specification": "330ml",
+			"description": "旧描述", "image": None, "modified": "2026-09-03 10:00:00",
+			"standard_rate": 0, "total_qty": 0, "warehouse_stock_details": [],
+			"price_summary": {"selling_prices": [], "buying_prices": []},
+		}, [{"name": "ITEM-COLA", "item_name": "可口可乐"}])
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.db.get_value.return_value = "CNY"
+			mock_frappe.has_permission.return_value = True
+			payload, validation = _build_product_setup_draft({
+				"operation": "update",
+				"target": {
+					"item_code": None, "barcode": None,
+					"query": "可口可乐", "context_ref": None,
+				},
+				"patch": {
+					"item_name": "无糖可乐", "new_item_code": None,
+					"specification": "500ml", "clear_fields": ["barcode", "description"],
+				},
+			}, company="Test Company")
+
+		self.assertTrue(validation["ready_for_handoff"])
+		self.assertEqual(payload["item_code"], "ITEM-COLA")
+		self.assertEqual(payload["item_name"], "无糖可乐")
+		self.assertEqual(payload["specification"], "500ml")
+		self.assertIsNone(payload["barcode"])
+		self.assertIsNone(payload["description"])
+		self.assertEqual(payload["_state"]["patch"]["item_name"], "无糖可乐")
+		self.assertEqual(payload["_state"]["patch"]["barcode"], None)
+
+	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value=None)
+	@patch("myapp.services.ai_service._resolve_optional_master_name", side_effect=lambda _doctype, value: value)
+	@patch("myapp.services.ai_service._resolve_product_setup_uom", return_value=("Unit", [{"name": "Unit"}]))
+	@patch("myapp.services.ai_service._resolve_existing_product_for_setup", return_value=(None, []))
+	def test_product_setup_v2_new_item_code_is_create_only(
+		self, _existing, _uom, _master, _warehouse,
+	):
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.db.get_value.return_value = "CNY"
+			mock_frappe.db.exists.return_value = False
+			mock_frappe.has_permission.return_value = True
+			payload, _validation = _build_product_setup_draft({
+				"operation": "create",
+				"target": {
+					"item_code": None, "barcode": None, "query": None, "context_ref": None,
+				},
+				"patch": {
+					"item_name": "新商品", "new_item_code": "ITEM-NEW",
+					"stock_uom": "Unit", "clear_fields": [],
+				},
+			}, company="Test Company")
+
+		self.assertEqual(payload["operation"], "create")
+		self.assertEqual(payload["item_code"], "ITEM-NEW")
 
 	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - TC")
 	@patch("myapp.services.ai_service._resolve_optional_master_name", return_value=None)
