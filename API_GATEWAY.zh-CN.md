@@ -83,6 +83,7 @@
 - `myapp.api.gateway.generate_ai_purchase_order_draft_v1`
 - `myapp.api.gateway.generate_ai_inventory_adjustment_draft_v1`
 - `myapp.api.gateway.generate_ai_product_setup_draft_v1`
+- `myapp.api.gateway.get_ai_runtime_readiness_v1`
 - `myapp.api.gateway.prepare_ai_product_update_draft_v1`
 - `myapp.api.gateway.prepare_ai_inventory_adjustment_draft_v1`
 - `myapp.api.gateway.select_ai_draft_product_candidate_v1`
@@ -118,7 +119,7 @@
 - 报表与分析：`get_business_report_v1`、`get_business_report_overview_v1`、`get_sales_report_v1`、`get_purchase_report_v1`、`get_receivable_payable_report_v1`、`get_cashflow_report_v1`、`list_cashflow_entries_v1`、`list_stock_ledger_entries_v1`
 - 库存：`list_inventory_stock_summary_v1`、`list_stock_ledger_entries_v1`、`transfer_inventory_stock_v1`、`reconcile_inventory_stock_v1`、`submit_inventory_stock_count_v1`
 - 通用辅助：`confirm_pending_document`、`get_mobile_release_info_v1`
-- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`rename_ai_conversation_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`upload_ai_image_attachment_v1`、`discard_ai_attachment_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`cancel_ai_run_v1`、`resume_ai_run_v1`、`stream_ai_run_resume_v1`、`get_ai_agent_approval_v1`、`list_ai_agent_approvals_v1`、`review_ai_agent_approval_v1`、`resume_ai_agent_approval_v1`、`list_ai_selectable_models_v1`、`resolve_ai_scenario_v1`、`refresh_ai_business_result_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1`、`prepare_ai_product_update_draft_v1`、`prepare_ai_inventory_adjustment_draft_v1`、`select_ai_draft_product_candidate_v1`、`get_ai_draft_v1`、`list_ai_drafts_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`execute_ai_draft_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
+- AI Copilot：`create_ai_conversation_v1`、`list_ai_conversations_v1`、`rename_ai_conversation_v1`、`get_ai_conversation_v1`、`archive_ai_conversation_v1`、`upload_ai_image_attachment_v1`、`discard_ai_attachment_v1`、`chat_ai_v1`、`stream_ai_message_v1`、`cancel_ai_run_v1`、`resume_ai_run_v1`、`stream_ai_run_resume_v1`、`get_ai_agent_approval_v1`、`list_ai_agent_approvals_v1`、`review_ai_agent_approval_v1`、`resume_ai_agent_approval_v1`、`list_ai_selectable_models_v1`、`get_ai_runtime_readiness_v1`、`resolve_ai_scenario_v1`、`refresh_ai_business_result_v1`、`submit_ai_feedback_v1`、`generate_ai_sales_order_draft_v1`、`generate_ai_purchase_order_draft_v1`、`generate_ai_inventory_adjustment_draft_v1`、`generate_ai_product_setup_draft_v1`、`prepare_ai_product_update_draft_v1`、`prepare_ai_inventory_adjustment_draft_v1`、`select_ai_draft_product_candidate_v1`、`get_ai_draft_v1`、`list_ai_drafts_v1`、`update_ai_draft_v1`、`discard_ai_draft_v1`、`list_ai_draft_versions_v1`、`restore_ai_draft_version_v1`、`prepare_ai_draft_handoff_v1`、`execute_ai_draft_v1`、`get_ai_product_vector_status_v1`、`rebuild_ai_product_vector_index_v1`、`cleanup_excluded_ai_product_vectors_v1`
 - AI 模型管理：`get_ai_model_governance_overview_v1`、`list_ai_audit_events_v1`、`sync_ai_model_registry_v1`、`check_ai_model_availability_v1`、`list_ai_models_v1`、`update_ai_model_registry_v1`、`list_ai_model_policies_v1`、`get_ai_model_policy_v1`、`save_ai_model_policy_draft_v1`、`validate_ai_model_policy_v1`、`approve_ai_model_policy_v1`、`publish_ai_model_policy_v1`、`rollback_ai_model_policy_v1`、`get_ai_model_usage_summary_v1`
   - `update_ai_model_registry_v1` 只维护治理字段：状态、数据区域、留存策略、敏感数据许可、输入/输出成本和币种；供应商能力字段由同步维护。请求必须包含 `reason` 和幂等键，响应返回递增后的 `registry_version` 与受影响的已发布策略。
   - `get_ai_model_usage_summary_v1` 支持 `date_from`、`date_to`、`environment`、`company`，返回延迟/首 Token 平均值与 p50/p95、反馈计数和正向率。
@@ -208,6 +209,8 @@ Web/Mobile → myapp.api.gateway → myapp.api.*_api → myapp.services.*
 
 `auto` 场景统一先调用结构化意图解析器，因此“它”“刚才那个”“这个商品”“这个订单”“这个客户/供应商”“只看未完成的”“换成上个月”等自然语言省略表达可以继承上一轮 typed entity 和筛选。Web 前置识别成功后，Backend 把解析结果保存在短期服务端缓存，只向浏览器返回 opaque `resolution_id`；正式 Chat/SSE 仅在当前用户、规范化内容、公司、会话 ID、`conversation-state-v2` 版本、附件 ID 和固定模型全部一致时一次性复用。凭据过期、重复使用、字段被改动或上下文版本变化时自动回退正常解析，Backend 不接受浏览器提交可篡改的 intent JSON。Orchestrator 的意图 Prompt 版本为 `erp-intent-v6`；商品查询同时返回核心词、明确属性线索和未确认身份假设，避免把用户整句话硬编码成唯一搜索词。语义路由优先决定当前场景，本地规则只在模型不可用、低置信度、输出非法，或需要防止明确写操作被降级到只读 Agent 路径时兜底。状态只用于解析辅助，不能把历史业务事实当作实时事实，也不能替代本轮 Frappe 查询。
 
+Backend 与 Orchestrator 使用 `ai-runtime-contract-v1` 协商。fresh Chat、意图解析、Agent 和四类草稿请求发送 `protocol_version`、对应 `supported_schema_versions[]` 和 `client_capabilities[]`，不再发送 Backend 当前 Prompt 常量；Orchestrator 返回实际 `protocol_version / schema_version / prompt_version / runtime_revision / release_id`，Backend 严格校验后写入 `MyApp AI Run`。缺失元数据、协议不符或 Schema 无交集分别失败关闭为稳定契约错误，不得泛化为模型不可用。`get_ai_runtime_readiness_v1` 比较协议和 7 个 Schema family，Prompt revision 仅供审计显示。Agent resume 使用 Run 已持久化的实际 Prompt revision，并由 Orchestrator 精确匹配原 checkpoint。
+
 Agent Runtime 会按实际成功工具结果的顺序合并会话状态，而不是只读取最后一个工具结果。失败、拒绝或可重试错误信封没有 typed `model_context.tool`，不得清空先前已解析实体；成功的空查询仍会写入 `not_found`。订单查询结果会从权限过滤后的 citation 投影唯一客户/供应商；多工具 Run 可以同时保留商品、单据和往来单位槽位。草稿生成、人工编辑和正式执行都会重新投影相同槽位；新建商品和新建订单只有正式执行成功后才成为活动正式实体。
 
 AI 同步、流式失败事件和持久化 Run 必须保留稳定 `error_code`。运行时限流、预算、并发、模型熔断、配置版本、检查点持久化、内部认证和服务不可用等错误不得统一折叠为 Python 异常类名或通用文案；同步异常、SSE `error.code` 与 Run `error_code` 应保持一致，供 Web 区分“使用当前模型重试、修改输入、权限拒绝和系统/治理故障”。未知异常统一记录为 `AI_RUN_FAILED`，不得把堆栈或供应商原始错误正文暴露给普通用户。
@@ -219,6 +222,8 @@ AI 同步、流式失败事件和持久化 Run 必须保留稳定 `error_code`�
 - `requested_model_alias`：本次请求显式固定的模型；自动模式为空。
 - `model_alias`：实际执行或最终失败尝试的模型。
 - `retry_of_run_id`：消息级重试来源；普通新 Run 为空。
+- `protocol_version / schema_version`：请求协商并由响应确认的跨服务契约版本。
+- `prompt_version / runtime_revision / release_id`：Orchestrator 本次实际运行事实；用于审计、诊断和安全恢复，不由浏览器指定。
 
 Run 摘要返回 `model_selection=auto/fixed`、安全的 `requested_model_display` 和实际 `model_display`；具备高级诊断权限时再返回请求/实际 alias。失败 Run 必须持久化空正文助手占位，使刷新页面后仍能在原会话位置恢复诊断和重试入口。加载模型上下文时排除失败/取消的空助手消息，避免把错误占位发送给模型。
 

@@ -347,6 +347,11 @@ def _serialize_message_run(row, *, include_advanced_diagnostics: bool) -> dict |
 			"model_alias": row.model_alias,
 			"model": row.model,
 			"trace_id": row.trace_id,
+			"protocol_version": getattr(row, "protocol_version", None) or None,
+			"schema_version": getattr(row, "schema_version", None) or None,
+			"prompt_version": getattr(row, "prompt_version", None) or None,
+			"runtime_revision": getattr(row, "runtime_revision", None) or None,
+			"release_id": getattr(row, "release_id", None) or None,
 			"usage": {
 				"prompt_tokens": cint(row.prompt_tokens),
 				"completion_tokens": cint(row.completion_tokens),
@@ -364,7 +369,8 @@ def _get_latest_conversation_run(
 	rows = frappe.db.sql(
 		f"""
 		SELECT r.name AS run_id, r.status AS run_status, r.requested_model_alias,
-			r.model_alias, r.model, r.trace_id,
+			r.model_alias, r.model, r.trace_id, r.protocol_version, r.schema_version,
+			r.prompt_version, r.runtime_revision, r.release_id,
 			(SELECT m.name FROM `{MESSAGE_TABLE}` m
 				WHERE m.run_id = r.name AND m.role = 'assistant'
 				ORDER BY m.sequence_no DESC LIMIT 1) AS message_id,
@@ -840,7 +846,9 @@ def load_model_messages(*, conversation_id: str, user: str, limit: int = 20) -> 
 def create_run(
 	*, conversation_id: str, user: str, scenario: str,
 	tool_calls: list[dict] | None = None, model_alias: str | None = None,
-	retry_of_run_id: str | None = None,
+	retry_of_run_id: str | None = None, protocol_version: str | None = None,
+	supported_schema_versions: list[str] | None = None,
+	client_capabilities: list[str] | None = None,
 ) -> str:
 	_get_owned_conversation(conversation_id, user)
 	now = now_datetime()
@@ -850,16 +858,43 @@ def create_run(
 		INSERT INTO `{RUN_TABLE}`
 			(name, creation, modified, modified_by, owner, docstatus, idx,
 			 conversation, requested_by, scenario, environment, status, requested_model_alias,
-			 retry_of_run_id, model_alias, tool_calls_json, started_at)
-		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, 'running', %s, %s, %s, %s, %s)
+			 retry_of_run_id, model_alias, tool_calls_json, protocol_version, schema_version,
+			 runtime_capabilities_json, started_at)
+		VALUES (%s, %s, %s, %s, %s, 0, 0, %s, %s, %s, %s, 'running', %s, %s, %s, %s, %s, %s, %s, %s)
 		""",
 		(
 			run_id, now, now, user, user, conversation_id, user, scenario,
 			os.environ.get("MYAPP_AI_ENVIRONMENT", "development").strip() or "development",
-			model_alias, retry_of_run_id, model_alias, frappe.as_json(tool_calls or []), now,
+			model_alias, retry_of_run_id, model_alias, frappe.as_json(tool_calls or []),
+			protocol_version,
+			str((supported_schema_versions or [None])[0] or "")[:80] or None,
+			frappe.as_json(client_capabilities or []),
+			now,
 		),
 	)
 	return run_id
+
+
+def update_run_runtime_contract(*, run_id: str, user: str, metadata: dict) -> None:
+	frappe.db.sql(
+		f"""
+		UPDATE `{RUN_TABLE}`
+		SET protocol_version = %s, schema_version = %s, prompt_version = %s,
+			runtime_revision = %s, release_id = %s, modified = %s, modified_by = %s
+		WHERE name = %s AND requested_by = %s
+		""",
+		(
+			str(metadata.get("protocol_version") or "")[:80] or None,
+			str(metadata.get("schema_version") or "")[:80] or None,
+			str(metadata.get("prompt_version") or "")[:80] or None,
+			str(metadata.get("runtime_revision") or "")[:140] or None,
+			str(metadata.get("release_id") or "")[:140] or None,
+			now_datetime(),
+			user,
+			run_id,
+			user,
+		),
+	)
 
 
 def append_failed_run_message(*, run_id: str, user: str) -> None:
@@ -937,7 +972,7 @@ def prepare_failed_run_retry(*, run_id: str, user: str) -> dict:
 
 def rebind_failed_run_message_for_retry(
 	*, message_id: str, source_run_id: str, retry_run_id: str, user: str,
-	scenario: str, prompt_version: str,
+	scenario: str, prompt_version: str | None,
 ) -> None:
 	now = now_datetime()
 	empty_content = ""
@@ -1936,6 +1971,8 @@ def complete_run(
 			total_tokens = %s, reasoning_tokens = %s, latency_ms = %s, first_token_ms = %s,
 			tool_calls_json = %s, policy_code = %s, policy_version = %s,
 			fallback_reason = %s, estimated_cost = %s, cost_currency = %s,
+			protocol_version = %s, schema_version = %s, prompt_version = %s,
+			runtime_revision = %s, release_id = %s,
 			completed_at = %s, error_code = NULL, error = NULL
 		WHERE name = %s AND requested_by = %s AND status = 'running'
 		""",
@@ -1957,6 +1994,11 @@ def complete_run(
 			str(result.get("fallback_reason") or "")[:255] or None,
 			result.get("estimated_cost") or 0,
 			str(result.get("cost_currency") or "")[:10] or None,
+			str(result.get("protocol_version") or "")[:80] or None,
+			str(result.get("schema_version") or "")[:80] or None,
+			str(result.get("prompt_version") or "")[:80] or None,
+			str(result.get("runtime_revision") or "")[:140] or None,
+			str(result.get("release_id") or "")[:140] or None,
 			now,
 			run_id,
 			user,

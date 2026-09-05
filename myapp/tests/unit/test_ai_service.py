@@ -10,6 +10,11 @@ from unittest.mock import MagicMock, patch
 import frappe
 from frappe.exceptions import QueryDeadlockError
 
+from myapp.ai_runtime_contract import (
+	AI_RUNTIME_SCHEMA_FAMILIES,
+	ai_runtime_request_contract,
+	evaluate_ai_runtime_compatibility,
+)
 from myapp.services.ai_service import (
 	_build_draft_version_diff,
 	_build_inventory_adjustment_draft,
@@ -83,6 +88,7 @@ from myapp.services.ai_service import (
 	generate_ai_product_setup_draft_v1,
 	generate_ai_sales_order_draft_v1,
 	get_ai_conversation_v1,
+	get_ai_runtime_readiness_v1,
 	list_ai_conversations_v1,
 	list_ai_drafts_v1,
 	prepare_ai_inventory_adjustment_draft_v1,
@@ -104,6 +110,16 @@ from myapp.utils.api_response import UpstreamServiceUnavailableError, map_except
 
 def _raise_validation_error(message, *args, **kwargs):
 	raise frappe.ValidationError(message)
+
+
+def _runtime_metadata(schema_family: str, prompt_version: str) -> dict:
+	return {
+		"protocol_version": "ai-runtime-contract-v1",
+		"schema_version": AI_RUNTIME_SCHEMA_FAMILIES[schema_family][0],
+		"prompt_version": prompt_version,
+		"runtime_revision": "runtime-test",
+		"release_id": "release-test",
+	}
 
 
 class TestAiService(TestCase):
@@ -652,6 +668,7 @@ class TestAiService(TestCase):
 		mock_create_run.assert_called_once_with(
 			conversation_id="AI-CONV-1", user="user@example.com", scenario="product_setup_draft",
 			model_alias="vision-model", retry_of_run_id="AI-RUN-FAILED",
+			**ai_runtime_request_contract("product_setup_draft"),
 		)
 		mock_rebind.assert_called_once()
 
@@ -712,6 +729,186 @@ class TestAiService(TestCase):
 			"retryable": True,
 		})
 		self.assertIn("DeepSeek V4 Flash", str(raised.exception))
+
+	@patch("myapp.services.ai_service._can_view_advanced_diagnostics", return_value=True)
+	@patch("myapp.services.ai_service._current_user", return_value="manager@example.com")
+	@patch("myapp.services.ai_service._get_ai_orchestrator_settings", return_value=("http://ai", "token"))
+	@patch("myapp.services.ai_service.urllib.request.urlopen")
+	def test_structured_draft_old_string_prompt_conflict_is_not_reported_as_model_failure(
+		self, mock_urlopen, _settings, _user, _advanced,
+	):
+		body = json.dumps({
+			"detail": (
+				"Prompt version mismatch for product_setup_draft: "
+				"received product-setup-draft-v7, expected product-setup-draft-v6"
+			),
+		}).encode()
+		mock_urlopen.side_effect = urllib.error.HTTPError(
+			"http://ai/internal/v1/drafts/product-setup", 409, "Conflict", {}, io.BytesIO(body),
+		)
+
+		with self.assertRaises(AiServiceError) as raised:
+			_call_ai_orchestrator_product_setup_draft({
+				"messages": [{"role": "user", "content": "修改商品规格"}],
+			})
+
+		self.assertEqual(raised.exception.code, "AI_PROMPT_VERSION_MISMATCH")
+		self.assertEqual(raised.exception.http_status, 409)
+		self.assertFalse(raised.exception.public_data["retryable"])
+		self.assertEqual(raised.exception.public_data["category"], "contract")
+		self.assertEqual(raised.exception.public_data["layer"], "orchestrator")
+		self.assertEqual(raised.exception.public_data["contract"], {
+			"scenario": "product_setup_draft",
+			"received_version": "product-setup-draft-v7",
+			"expected_version": "product-setup-draft-v6",
+		})
+		self.assertIn("运行版本不一致", str(raised.exception))
+
+	@patch("myapp.services.ai_service._can_view_advanced_diagnostics", return_value=True)
+	@patch("myapp.services.ai_service._current_user", return_value="manager@example.com")
+	@patch("myapp.services.ai_service._get_ai_orchestrator_settings", return_value=("http://ai", "token"))
+	@patch("myapp.services.ai_service.urllib.request.urlopen")
+	def test_structured_draft_new_contract_error_preserves_structured_details(
+		self, mock_urlopen, _settings, _user, _advanced,
+	):
+		body = json.dumps({
+			"detail": {
+				"code": "AI_PROMPT_VERSION_MISMATCH",
+				"category": "contract",
+				"layer": "orchestrator",
+				"retryable": False,
+				"scenario": "product_setup_draft",
+				"received_version": "product-setup-draft-v6",
+				"expected_version": "product-setup-draft-v7",
+			},
+		}).encode()
+		mock_urlopen.side_effect = urllib.error.HTTPError(
+			"http://ai/internal/v1/drafts/product-setup", 409, "Conflict", {}, io.BytesIO(body),
+		)
+
+		with self.assertRaises(AiServiceError) as raised:
+			_call_ai_orchestrator_product_setup_draft({"messages": []})
+
+		self.assertEqual(raised.exception.code, "AI_PROMPT_VERSION_MISMATCH")
+		self.assertFalse(raised.exception.public_data["retryable"])
+		self.assertEqual(
+			raised.exception.public_data["contract"]["expected_version"],
+			"product-setup-draft-v7",
+		)
+
+	@patch("myapp.services.ai_service._can_view_advanced_diagnostics", return_value=True)
+	@patch("myapp.services.ai_service._current_user", return_value="manager@example.com")
+	@patch("myapp.services.ai_service._get_ai_orchestrator_settings", return_value=("http://ai", "token"))
+	@patch("myapp.services.ai_service.urllib.request.urlopen")
+	def test_structured_draft_schema_conflict_preserves_compatibility_matrix_details(
+		self, mock_urlopen, _settings, _user, _advanced,
+	):
+		body = json.dumps({
+			"detail": {
+				"code": "AI_SCHEMA_VERSION_MISMATCH",
+				"category": "contract",
+				"layer": "orchestrator",
+				"retryable": False,
+				"received": ["product-setup-draft-v0"],
+				"supported": ["product-setup-draft-v1"],
+			},
+		}).encode()
+		mock_urlopen.side_effect = urllib.error.HTTPError(
+			"http://ai/internal/v1/drafts/product-setup", 409, "Conflict", {}, io.BytesIO(body),
+		)
+
+		with self.assertRaises(AiServiceError) as raised:
+			_call_ai_orchestrator_product_setup_draft({"messages": []})
+
+		self.assertEqual(raised.exception.code, "AI_SCHEMA_VERSION_MISMATCH")
+		self.assertFalse(raised.exception.public_data["retryable"])
+		self.assertEqual(raised.exception.public_data["contract"], {
+			"received": ["product-setup-draft-v0"],
+			"supported": ["product-setup-draft-v1"],
+		})
+
+	def test_runtime_compatibility_separates_protocol_and_scenario_readiness(self):
+		readiness = evaluate_ai_runtime_compatibility({
+			"ready": True,
+			"status": "degraded",
+			"protocol_version": "ai-runtime-contract-v1",
+			"runtime_revision": "revision-1",
+			"schema_versions": {
+				family: list(versions) for family, versions in AI_RUNTIME_SCHEMA_FAMILIES.items()
+			},
+			"prompt_versions": {
+				"general": "erp-readonly-v11",
+				"intent_parse": "erp-intent-v6",
+				"product_search": "erp-readonly-v11",
+				"order_query": "erp-readonly-v11",
+				"report_summary": "erp-readonly-v11",
+				"sales_order_draft": "sales-order-draft-v5",
+				"purchase_order_draft": "purchase-order-draft-v5",
+				"inventory_adjustment_draft": "inventory-adjustment-draft-v3",
+				"product_setup_draft": "product-setup-draft-v6",
+			},
+		})
+
+		self.assertTrue(readiness["ready"])
+		self.assertIsNone(readiness["code"])
+		self.assertEqual(readiness["protocol"]["status"], "ready")
+		self.assertEqual(readiness["scenarios"]["general"]["status"], "ready")
+		self.assertEqual(readiness["scenarios"]["product_setup_draft"]["status"], "ready")
+		self.assertEqual(
+			readiness["scenarios"]["product_setup_draft"]["prompt_version"],
+			"product-setup-draft-v6",
+		)
+
+	def test_runtime_compatibility_blocks_incompatible_schema_family(self):
+		schema_versions = {
+			family: list(versions) for family, versions in AI_RUNTIME_SCHEMA_FAMILIES.items()
+		}
+		schema_versions["product_setup_draft"] = ["product-setup-draft-v0"]
+		readiness = evaluate_ai_runtime_compatibility({
+			"ready": True,
+			"status": "ready",
+			"protocol_version": "ai-runtime-contract-v1",
+			"schema_versions": schema_versions,
+		})
+
+		self.assertFalse(readiness["ready"])
+		self.assertEqual(readiness["code"], "AI_SCHEMA_VERSION_MISMATCH")
+		self.assertEqual(readiness["scenarios"]["product_setup_draft"]["status"], "blocked")
+
+	@patch("myapp.services.ai_service._can_view_advanced_diagnostics", return_value=False)
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service._get_ai_orchestrator_readiness")
+	def test_runtime_readiness_returns_public_scenario_status_without_technical_versions(
+		self, mock_readiness, _user, _advanced,
+	):
+		mock_readiness.return_value = {
+			"ready": True,
+			"status": "ready",
+			"protocol_version": "ai-runtime-contract-v1",
+			"runtime_revision": "revision-1",
+			"schema_versions": {
+				family: list(versions) for family, versions in AI_RUNTIME_SCHEMA_FAMILIES.items()
+			},
+			"prompt_versions": {
+				"general": "erp-readonly-v11",
+				"intent_parse": "erp-intent-v6",
+				"product_search": "erp-readonly-v11",
+				"order_query": "erp-readonly-v11",
+				"report_summary": "erp-readonly-v11",
+				"sales_order_draft": "sales-order-draft-v5",
+				"purchase_order_draft": "purchase-order-draft-v5",
+				"inventory_adjustment_draft": "inventory-adjustment-draft-v3",
+				"product_setup_draft": "product-setup-draft-v7",
+			},
+		}
+
+		result = get_ai_runtime_readiness_v1()
+
+		self.assertTrue(result["data"]["ready"])
+		self.assertEqual(result["data"]["scenarios"]["product_setup_draft"], {
+			"status": "ready", "code": None,
+		})
+		self.assertNotIn("diagnostics", result["data"])
 
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	@patch("myapp.services.ai_service.ai_repository.list_conversations")
@@ -777,6 +974,29 @@ class TestAiService(TestCase):
 
 		self.assertEqual(caught.exception.code, "AI_DAILY_BUDGET_EXCEEDED")
 		self.assertEqual(caught.exception.http_status, 429)
+
+	@patch("myapp.services.ai_service._can_view_advanced_diagnostics", return_value=True)
+	@patch("myapp.services.ai_service._current_user", return_value="manager@example.com")
+	@patch("myapp.services.ai_service._get_ai_orchestrator_settings", return_value=("http://ai", "token"))
+	@patch("myapp.services.ai_service.urllib.request.urlopen")
+	def test_chat_response_without_runtime_metadata_fails_closed_as_contract_mismatch(
+		self, mock_urlopen, _settings, _user, _advanced,
+	):
+		response = MagicMock()
+		response.read.return_value = json.dumps({
+			"message": {"role": "assistant", "content": "你好"},
+		}).encode()
+		mock_urlopen.return_value.__enter__.return_value = response
+
+		with self.assertRaises(AiServiceError) as raised:
+			_call_ai_orchestrator({"messages": [{"role": "user", "content": "你好"}]})
+
+		self.assertEqual(raised.exception.code, "AI_RUNTIME_CONTRACT_MISMATCH")
+		self.assertFalse(raised.exception.public_data["retryable"])
+		self.assertEqual(
+			raised.exception.public_data["contract"]["expected_protocol_version"],
+			"ai-runtime-contract-v1",
+		)
 
 	@patch("myapp.services.ai_service.search_product_v2")
 	@patch("myapp.services.ai_service.frappe.get_list")
@@ -1941,6 +2161,7 @@ class TestAiService(TestCase):
 			scenario="general",
 			model_alias="gpt-5.6-luna",
 			retry_of_run_id="AI-RUN-FAILED",
+			**ai_runtime_request_contract("chat"),
 		)
 		rebind.assert_called_once_with(
 			message_id="AI-MSG-2",
@@ -2533,10 +2754,14 @@ class TestAiService(TestCase):
 		)
 		self.assertEqual(_complete.call_args.kwargs["tool_calls"][0]["risk_level"], "L2_DRAFT_ONLY")
 		expected_prompt_version = _resolve_prompt_version("sales_order_draft")
-		self.assertEqual(mock_call.call_args.args[0]["prompt_version"], expected_prompt_version)
+		request_payload = mock_call.call_args.args[0]
+		self.assertNotIn("prompt_version", request_payload)
+		self.assertEqual(
+			request_payload["supported_schema_versions"], ["sales-order-draft-v1"],
+		)
 		self.assertEqual(
 			{call.kwargs["prompt_version"] for call in _append.call_args_list},
-			{expected_prompt_version},
+			{None, expected_prompt_version},
 		)
 
 	@patch("myapp.services.ai_service._persist_draft_conversation_state", return_value={"tool": "update_conversation_state"})
@@ -2673,10 +2898,14 @@ class TestAiService(TestCase):
 			)
 
 		expected_prompt_version = _resolve_prompt_version("purchase_order_draft")
-		self.assertEqual(mock_call.call_args.args[0]["prompt_version"], expected_prompt_version)
+		request_payload = mock_call.call_args.args[0]
+		self.assertNotIn("prompt_version", request_payload)
+		self.assertEqual(
+			request_payload["supported_schema_versions"], ["purchase-order-draft-v1"],
+		)
 		self.assertEqual(
 			{call.kwargs["prompt_version"] for call in mock_append.call_args_list},
-			{expected_prompt_version},
+			{None, expected_prompt_version},
 		)
 		self.assertEqual(mock_run.call_args.kwargs["scenario"], "purchase_order_draft")
 		mock_item.assert_called_once_with(
@@ -2897,10 +3126,14 @@ class TestAiService(TestCase):
 			)
 
 		expected_prompt_version = _resolve_prompt_version("inventory_adjustment_draft")
-		self.assertEqual(mock_call.call_args.args[0]["prompt_version"], expected_prompt_version)
+		request_payload = mock_call.call_args.args[0]
+		self.assertNotIn("prompt_version", request_payload)
+		self.assertEqual(
+			request_payload["supported_schema_versions"], ["inventory-adjustment-draft-v1"],
+		)
 		self.assertEqual(
 			{call.kwargs["prompt_version"] for call in mock_append.call_args_list},
-			{expected_prompt_version},
+			{None, expected_prompt_version},
 		)
 		self.assertEqual(mock_run.call_args.kwargs["scenario"], "inventory_adjustment_draft")
 
@@ -2965,6 +3198,7 @@ class TestAiService(TestCase):
 				"date_from": None, "date_to": None, "status": "all", "sort": "latest",
 				"min_amount": None, "limit": 10,
 			},
+			**_runtime_metadata("intent_parse", "erp-intent-v6"),
 		}).encode("utf-8")
 		mock_urlopen.return_value.__enter__.return_value = response
 
@@ -2982,7 +3216,9 @@ class TestAiService(TestCase):
 		payload = json.loads(request.data.decode("utf-8"))
 		self.assertEqual(result["intent"], "general")
 		self.assertEqual(payload["model_alias"], "gpt-5.5")
-		self.assertEqual(payload["prompt_version"], "erp-intent-v6")
+		self.assertNotIn("prompt_version", payload)
+		self.assertEqual(payload["protocol_version"], "ai-runtime-contract-v1")
+		self.assertEqual(payload["supported_schema_versions"], ["intent-parse-v1"])
 		self.assertEqual(payload["attachments"][0]["attachment_id"], "AI-ATT-1")
 		self.assertEqual(request.full_url, "http://ai/internal/v1/intent/parse")
 
@@ -4979,7 +5215,10 @@ class TestAiService(TestCase):
 		}
 		mock_stream.return_value = iter(
 			[
-				{"type": "started", "trace_id": "trace-1"},
+				{
+					"type": "started", "trace_id": "trace-1",
+					**_runtime_metadata("chat", "erp-readonly-v11"),
+				},
 				{"type": "message_delta", "delta": "你"},
 				{"type": "message_delta", "delta": "好"},
 				{
@@ -4990,6 +5229,7 @@ class TestAiService(TestCase):
 					"trace_id": "trace-1",
 					"usage": {"total_tokens": 10},
 					"warnings": [],
+					**_runtime_metadata("chat", "erp-readonly-v11"),
 				},
 			]
 		)
@@ -5037,7 +5277,10 @@ class TestAiService(TestCase):
 			"payload": {"messages": [{"role": "user", "content": "你好"}]},
 		}
 		mock_stream.return_value = iter([
-			{"type": "started", "model_alias": "internal-alias"},
+			{
+				"type": "started", "model_alias": "internal-alias",
+				**_runtime_metadata("chat", "erp-readonly-v11"),
+			},
 			{"type": "message_delta", "delta": "你好"},
 			{
 				"type": "completed",
@@ -5045,6 +5288,7 @@ class TestAiService(TestCase):
 				"model": "provider-model", "model_alias": "internal-alias",
 				"trace_id": "trace-secret", "usage": {"total_tokens": 10},
 				"warnings": [],
+				**_runtime_metadata("chat", "erp-readonly-v11"),
 			},
 		])
 		mock_complete.return_value = {

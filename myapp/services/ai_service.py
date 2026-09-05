@@ -19,6 +19,14 @@ from frappe.utils import cint, flt, getdate, now_datetime, nowdate
 from frappe.utils.synchronization import filelock
 from werkzeug.wrappers import Response
 
+from myapp.ai_runtime_contract import (
+	AI_RUNTIME_EXPECTED_PROMPT_VERSIONS,
+	AI_RUNTIME_PROTOCOL_VERSION,
+	AiRuntimeResponseMismatch,
+	ai_runtime_request_contract,
+	evaluate_ai_runtime_compatibility,
+	validate_ai_runtime_response,
+)
 from myapp.services import ai_repository
 from myapp.services.product_correction_service import resolve_active_product_reference
 from myapp.services.ai_attachment_service import (
@@ -83,7 +91,6 @@ MAX_AI_MESSAGES = 20
 MAX_AI_MESSAGE_CHARS = 8000
 MAX_AI_PRODUCT_RESULTS = 8
 CONVERSATION_STATE_SCHEMA_VERSION = "conversation-state-v2"
-AI_INTENT_PROMPT_VERSION = "erp-intent-v6"
 CONVERSATION_STATE_BUSINESS_SCENARIOS = {"product_search", "order_query", "report_summary"}
 ALLOWED_AI_ROLES = {"user", "assistant"}
 ALLOWED_AI_SCENARIOS = {"auto", "general", "product_search", "order_query", "report_summary"}
@@ -98,14 +105,9 @@ AI_DRAFT_SCENARIOS = {
 }
 AI_SCENARIO_RESOLUTION_TTL_SECONDS = 120
 PROMPT_VERSION_BY_SCENARIO = {
-	"general": "erp-readonly-v11",
-	"product_search": "erp-readonly-v11",
-	"order_query": "erp-readonly-v11",
-	"report_summary": "erp-readonly-v11",
-	"sales_order_draft": "sales-order-draft-v5",
-	"purchase_order_draft": "purchase-order-draft-v5",
-	"inventory_adjustment_draft": "inventory-adjustment-draft-v3",
-	"product_setup_draft": "product-setup-draft-v7",
+	scenario: version
+	for scenario, version in AI_RUNTIME_EXPECTED_PROMPT_VERSIONS.items()
+	if scenario != "intent_parse"
 }
 
 PRODUCT_SETUP_EDITABLE_FIELDS = (
@@ -272,6 +274,10 @@ def _public_run_summary(run: dict, *, include_advanced_diagnostics: bool) -> dic
 	if include_advanced_diagnostics:
 		public["first_token_ms"] = run.get("first_token_ms")
 		public["requested_model_alias"] = run.get("requested_model_alias")
+		for key in (
+			"protocol_version", "schema_version", "prompt_version", "runtime_revision", "release_id",
+		):
+			public[key] = run.get(key)
 	return public
 
 
@@ -841,6 +847,109 @@ def _get_ai_orchestrator_settings():
 	return base_url, service_token
 
 
+def _get_ai_orchestrator_readiness() -> dict:
+	base_url, _service_token = _get_ai_orchestrator_settings()
+	request = urllib.request.Request(
+		f"{base_url}/readyz",
+		headers={"Accept": "application/json"},
+		method="GET",
+	)
+	try:
+		with urllib.request.urlopen(request, timeout=5) as response:
+			result = json.loads(response.read().decode("utf-8") or "{}")
+	except urllib.error.HTTPError as error:
+		if error.code != 503:
+			raise
+		result = json.loads(error.read().decode("utf-8") or "{}")
+	if not isinstance(result, dict):
+		raise ValueError("AI Orchestrator readiness response is invalid")
+	return result
+
+
+def get_ai_runtime_readiness_v1() -> dict:
+	user = _current_user()
+	include_diagnostics = _can_view_advanced_diagnostics(user)
+	try:
+		runtime_status = _get_ai_orchestrator_readiness()
+		readiness = evaluate_ai_runtime_compatibility(runtime_status)
+	except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError):
+		frappe.log_error(frappe.get_traceback(), _("AI Runtime 就绪状态读取失败"))
+		readiness = {
+			"ready": False,
+			"status": "unavailable",
+			"code": "AI_RUNTIME_NOT_READY",
+			"retryable": True,
+			"protocol": {"status": "unknown"},
+			"runtime": {"status": "unavailable", "revision": None},
+			"scenarios": {},
+		}
+		runtime_status = {}
+
+	data = {
+		"ready": readiness["ready"],
+		"status": readiness["status"],
+		"code": readiness["code"],
+		"retryable": readiness["retryable"],
+		"scenarios": {
+			scenario: {"status": row["status"], "code": row["code"]}
+			for scenario, row in readiness["scenarios"].items()
+		},
+	}
+	if include_diagnostics:
+		data["diagnostics"] = {
+			"expected_protocol_version": AI_RUNTIME_PROTOCOL_VERSION,
+			"protocol": readiness["protocol"],
+			"runtime": readiness["runtime"],
+			"schema_families": readiness.get("schema_families"),
+			"scenarios": readiness["scenarios"],
+			"checks": runtime_status.get("checks") if isinstance(runtime_status, dict) else None,
+			"release_id": runtime_status.get("release_id"),
+			"prompt_manifest_sha256": runtime_status.get("prompt_manifest_sha256"),
+			"schema_manifest_sha256": runtime_status.get("schema_manifest_sha256"),
+			"tool_manifest_sha256": runtime_status.get("tool_manifest_sha256"),
+		}
+	return {"status": "success", "data": data}
+
+
+def _runtime_contract_error(error: AiRuntimeResponseMismatch) -> AiServiceError:
+	user = _diagnostic_user()
+	public_data = {
+		"retryable": False,
+		"category": "contract",
+		"layer": "backend",
+	}
+	if _can_view_advanced_diagnostics(user):
+		public_data["contract"] = error.details
+	return AiServiceError(
+		_("AI 运行契约不兼容，请联系管理员同步 Backend 与 Orchestrator。"),
+		code=error.code,
+		http_status=409,
+		public_data=public_data,
+	)
+
+
+def _validate_runtime_result(result: dict, *, schema_family: str) -> dict:
+	try:
+		return validate_ai_runtime_response(result, schema_family=schema_family)
+	except AiRuntimeResponseMismatch as error:
+		raise _runtime_contract_error(error) from error
+
+
+def _capture_runtime_metadata(prepared: dict, result: dict) -> dict:
+	metadata = {
+		key: str(result.get(key) or "").strip() or None
+		for key in (
+			"protocol_version", "schema_version", "prompt_version", "runtime_revision", "release_id",
+		)
+	}
+	if not metadata["prompt_version"]:
+		metadata["prompt_version"] = prepared.get("prompt_version") or _resolve_prompt_version(
+			prepared.get("scenario") or "general"
+		)
+	prepared.update({key: value for key, value in metadata.items() if value})
+	return metadata
+
+
 def _call_ai_orchestrator(payload: dict, *, resume: bool = False) -> dict:
 	base_url, service_token = _get_ai_orchestrator_settings()
 	endpoint = (
@@ -895,6 +1004,8 @@ def _call_ai_orchestrator(payload: dict, *, resume: bool = False) -> dict:
 			"AI_MODEL_CIRCUIT_OPEN": _("当前模型暂时不可用，请稍后重试。"),
 			"AI_MONTHLY_BUDGET_EXCEEDED": _("本月 AI 使用预算已达到上限。"),
 			"AI_PROMPT_VERSION_MISMATCH": _("AI 配置版本不一致，请联系管理员处理。"),
+			"AI_RUNTIME_CONTRACT_MISMATCH": _("AI 运行协议不兼容，请联系管理员同步服务版本。"),
+			"AI_SCHEMA_VERSION_MISMATCH": _("AI 数据契约不兼容，请联系管理员同步服务版本。"),
 			"AI_REQUEST_INVALID": _("AI 请求内容未通过校验，请修改后重试。"),
 			"AI_REQUEST_RATE_LIMITED": _("AI 请求过于频繁，请稍后重试。"),
 			"AI_RUNTIME_GOVERNANCE_UNAVAILABLE": _("AI 运行治理服务暂时不可用。"),
@@ -924,6 +1035,10 @@ def _call_ai_orchestrator(payload: dict, *, resume: bool = False) -> dict:
 	message = result.get("message") if isinstance(result, dict) else None
 	if not isinstance(message, dict) or not str(message.get("content") or "").strip():
 		raise UpstreamServiceUnavailableError(_("AI 服务返回了无效响应。"))
+	_validate_runtime_result(
+		result,
+		schema_family="agent" if payload.get("capability_token") else "chat",
+	)
 	return result
 
 
@@ -939,8 +1054,8 @@ def _call_ai_intent_orchestrator(
 			"user": user,
 			"company": company,
 			"locale": getattr(frappe.local, "lang", None) or "zh-CN",
-			"prompt_version": AI_INTENT_PROMPT_VERSION,
 			"context": {"conversation_state": _conversation_state_for_intent(conversation_state)},
+			**ai_runtime_request_contract("intent_parse"),
 		}
 		if attachments:
 			payload["attachments"] = attachments
@@ -961,6 +1076,7 @@ def _call_ai_intent_orchestrator(
 		# a 20s ceiling caused valid contextual follow-ups to silently fall back.
 		with urllib.request.urlopen(request, timeout=45) as response:
 			result = json.loads(response.read().decode("utf-8") or "{}")
+		_validate_runtime_result(result, schema_family="intent_parse")
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), _("AI 意图解析调用失败，将进入显式降级路由"))
 		return {}
@@ -992,9 +1108,19 @@ def _sync_ai_feedback_to_orchestrator(payload: dict) -> bool:
 
 
 def _draft_provider_error(error: urllib.error.HTTPError, *, payload: dict) -> AiServiceError:
-	code = "AI_SERVICE_UNAVAILABLE"
+	code = {
+		401: "AI_SERVICE_AUTHENTICATION_FAILED",
+		403: "AI_SERVICE_AUTHENTICATION_FAILED",
+		409: "AI_PROMPT_VERSION_MISMATCH",
+		422: "AI_REQUEST_INVALID",
+		429: "AI_REQUEST_RATE_LIMITED",
+	}.get(error.code, "AI_SERVICE_UNAVAILABLE")
 	model_alias = str(payload.get("model_alias") or "").strip() or None
 	provider_error_code = None
+	category = None
+	layer = None
+	retryable = None
+	contract_details = {}
 	try:
 		body = json.loads(error.read().decode("utf-8") or "{}")
 		detail = body.get("detail") if isinstance(body, dict) else None
@@ -1004,6 +1130,31 @@ def _draft_provider_error(error: urllib.error.HTTPError, *, payload: dict) -> Ai
 				code = candidate
 			model_alias = str(detail.get("model_alias") or model_alias or "").strip() or None
 			provider_error_code = str(detail.get("provider_error_code") or "").strip() or None
+			category = str(detail.get("category") or "").strip() or None
+			layer = str(detail.get("layer") or "").strip() or None
+			if isinstance(detail.get("retryable"), bool):
+				retryable = detail["retryable"]
+			contract_details = {
+				key: detail.get(key)
+				for key in (
+					"scenario", "received_version", "expected_version", "received", "supported",
+				)
+				if detail.get(key) not in (None, "", [], {})
+			}
+		elif isinstance(detail, str) and error.code == 409:
+			match = re.search(
+				r"Prompt version mismatch for ([^:]+): received ([^,]+), expected (.+)$",
+				detail,
+			)
+			if match:
+				contract_details = {
+					"scenario": match.group(1).strip(),
+					"received_version": match.group(2).strip(),
+					"expected_version": match.group(3).strip(),
+				}
+			category = "contract"
+			layer = "orchestrator"
+			retryable = False
 	except (UnicodeDecodeError, json.JSONDecodeError):
 		pass
 	user = _diagnostic_user()
@@ -1014,12 +1165,34 @@ def _draft_provider_error(error: urllib.error.HTTPError, *, payload: dict) -> Ai
 		message = _("当前固定模型不支持图片输入，请切换为自动模型或选择多模态模型。")
 	elif code == "AI_VISION_MODEL_REQUIRED":
 		message = _("当前策略没有可用的多模态模型，请联系管理员完成视觉能力检测。")
+	elif code in {
+		"AI_PROMPT_VERSION_MISMATCH", "AI_RUNTIME_CONTRACT_MISMATCH", "AI_SCHEMA_VERSION_MISMATCH",
+	}:
+		message = _("AI 运行版本不一致，请联系管理员同步 Backend 与 Orchestrator。")
+	elif code == "AI_REQUEST_INVALID":
+		message = _("AI 请求内容未通过校验，请修改后重试。")
+	elif code == "AI_REQUEST_RATE_LIMITED":
+		message = _("AI 请求过于频繁，请稍后重试。")
+	elif code == "AI_SERVICE_AUTHENTICATION_FAILED":
+		message = _("AI 内部服务认证失败，请联系管理员。")
 	else:
 		message = _("AI 草稿服务暂时不可用，请稍后重试。")
+	if retryable is None:
+		retryable = code in {
+			"AI_SERVICE_UNAVAILABLE",
+			"AI_REQUEST_RATE_LIMITED",
+			"MODEL_PROVIDER_REJECTED",
+		}
 	public_data = {
 		**_public_model_details(model_alias, user=user),
-		"retryable": code not in {"AI_SELECTED_MODEL_NO_VISION", "AI_VISION_MODEL_REQUIRED"},
+		"retryable": retryable,
 	}
+	if category:
+		public_data["category"] = category
+	if layer:
+		public_data["layer"] = layer
+	if contract_details and _can_view_advanced_diagnostics(user):
+		public_data["contract"] = contract_details
 	if provider_error_code and _can_view_advanced_diagnostics(user):
 		public_data["provider_error_code"] = provider_error_code
 	return AiServiceError(
@@ -1055,6 +1228,13 @@ def _call_ai_orchestrator_draft(payload: dict, *, endpoint: str, log_title: str)
 		raise UpstreamServiceUnavailableError(_("AI 草稿服务暂时不可用，请稍后重试。"))
 	if not isinstance(result.get("draft"), dict):
 		raise UpstreamServiceUnavailableError(_("AI 草稿服务返回了无效响应。"))
+	schema_family = {
+		"/internal/v1/drafts/sales-order": "sales_order_draft",
+		"/internal/v1/drafts/purchase-order": "purchase_order_draft",
+		"/internal/v1/drafts/inventory-adjustment": "inventory_adjustment_draft",
+		"/internal/v1/drafts/product-setup": "product_setup_draft",
+	}[endpoint]
+	_validate_runtime_result(result, schema_family=schema_family)
 	return result
 
 
@@ -4174,7 +4354,7 @@ def _resolve_draft_retry_request(
 
 
 def _start_draft_generation_run(
-	*, scenario: str, prompt_version: str, user: str, content: str,
+	*, scenario: str, prompt_version: str | None, user: str, content: str,
 	conversation_id: str, model_alias: str | None, attachment_ids,
 	attachment_refs: list[dict], attachment_payloads: list[dict], retry_context: dict | None,
 ) -> str:
@@ -4190,6 +4370,7 @@ def _start_draft_generation_run(
 		scenario=scenario,
 		model_alias=model_alias,
 		retry_of_run_id=retry_context.get("source_run_id") if retry_context else None,
+		**ai_runtime_request_contract(scenario),
 	)
 	if attachment_payloads and not retry_context:
 		resolve_ai_attachments(
@@ -4210,7 +4391,7 @@ def _start_draft_generation_run(
 
 def _save_draft_generation_assistant_message(
 	*, retry_context: dict | None, conversation_id: str, user: str, content: str,
-	scenario: str, run_id: str, citations: list[dict], prompt_version: str,
+	scenario: str, run_id: str, citations: list[dict], prompt_version: str | None,
 ) -> None:
 	if retry_context:
 		ai_repository.complete_retried_run_message(
@@ -4518,7 +4699,7 @@ def generate_ai_sales_order_draft_v1(
 	retry_run_id: str | None = None,
 ):
 	scenario = "sales_order_draft"
-	prompt_version = _resolve_prompt_version(scenario)
+	prompt_version = None
 	user = _current_user()
 	content, company, conversation_id, attachment_ids, retry_context = _resolve_draft_retry_request(
 		scenario=scenario, user=user, content=content, company=company,
@@ -4563,13 +4744,15 @@ def generate_ai_sales_order_draft_v1(
 			{
 				"messages": model_messages, "scenario": scenario, "user": user,
 				"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
-				"prompt_version": prompt_version, "conversation_id": conversation_id, "run_id": run_id,
+				"conversation_id": conversation_id, "run_id": run_id,
 				"model_alias": model_alias,
+				**ai_runtime_request_contract("sales_order_draft"),
 				"context": {"conversation_state": _conversation_state_for_intent(
 					conversation_state_record.get("state") or {},
 				)},
 			}
 		)
+		prompt_version = str(result.get("prompt_version") or _resolve_prompt_version(scenario))
 		candidate = _normalize_order_semantic_candidate(
 			result["draft"], draft_type="sales_order",
 		)
@@ -4757,7 +4940,7 @@ def generate_ai_purchase_order_draft_v1(
 	retry_run_id: str | None = None,
 ):
 	scenario = "purchase_order_draft"
-	prompt_version = _resolve_prompt_version(scenario)
+	prompt_version = None
 	user = _current_user()
 	content, company, conversation_id, attachment_ids, retry_context = _resolve_draft_retry_request(
 		scenario=scenario, user=user, content=content, company=company,
@@ -4801,8 +4984,9 @@ def generate_ai_purchase_order_draft_v1(
 		result = _call_ai_orchestrator_purchase_draft({
 			"messages": model_messages, "scenario": scenario, "user": user,
 			"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
-			"prompt_version": prompt_version, "conversation_id": conversation_id, "run_id": run_id,
+			"conversation_id": conversation_id, "run_id": run_id,
 			"model_alias": model_alias,
+			**ai_runtime_request_contract("purchase_order_draft"),
 			"context": {"conversation_state": _conversation_state_for_intent(
 				conversation_state_record.get("state") or {},
 			)},
@@ -4810,6 +4994,7 @@ def generate_ai_purchase_order_draft_v1(
 		candidate = _normalize_order_semantic_candidate(
 			result["draft"], draft_type="purchase_order",
 		)
+		prompt_version = str(result.get("prompt_version") or _resolve_prompt_version(scenario))
 		candidate, order_context_target = _bind_context_order_candidate(
 			candidate, content=content,
 			conversation_state=conversation_state_record.get("state") or {},
@@ -4983,7 +5168,7 @@ def generate_ai_inventory_adjustment_draft_v1(
 	retry_run_id: str | None = None,
 ):
 	scenario = "inventory_adjustment_draft"
-	prompt_version = _resolve_prompt_version(scenario)
+	prompt_version = None
 	user = _current_user()
 	content, company, conversation_id, attachment_ids, retry_context = _resolve_draft_retry_request(
 		scenario=scenario, user=user, content=content, company=company,
@@ -5028,15 +5213,16 @@ def generate_ai_inventory_adjustment_draft_v1(
 				"user": user,
 				"company": company,
 				"locale": getattr(frappe.local, "lang", None) or "zh-CN",
-				"prompt_version": prompt_version,
 				"conversation_id": conversation_id,
 				"run_id": run_id,
 				"model_alias": model_alias,
+				**ai_runtime_request_contract("inventory_adjustment_draft"),
 				"context": {"conversation_state": _conversation_state_for_intent(
 					conversation_state_record.get("state") or {},
 				)},
 			}
 		)
+		prompt_version = str(result.get("prompt_version") or _resolve_prompt_version(scenario))
 		semantic_candidate = {
 			**dict(result["draft"] or {}),
 			"_semantic_contract": "inventory-adjustment-command-v3",
@@ -5882,7 +6068,7 @@ def generate_ai_product_setup_draft_v1(
 	retry_run_id: str | None = None,
 ):
 	scenario = "product_setup_draft"
-	prompt_version = _resolve_prompt_version(scenario)
+	prompt_version = None
 	user = _current_user()
 	content, company, conversation_id, attachment_ids, retry_context = _resolve_draft_retry_request(
 		scenario=scenario, user=user, content=content, company=company,
@@ -5926,8 +6112,9 @@ def generate_ai_product_setup_draft_v1(
 		result = _call_ai_orchestrator_product_setup_draft({
 			"messages": model_messages, "scenario": scenario, "user": user,
 			"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
-			"prompt_version": prompt_version, "conversation_id": conversation_id, "run_id": run_id,
+			"conversation_id": conversation_id, "run_id": run_id,
 			"model_alias": model_alias,
+			**ai_runtime_request_contract("product_setup_draft"),
 			"context": {"conversation_state": _conversation_state_for_intent(
 				conversation_state_record.get("state") or {},
 			)},
@@ -5939,6 +6126,7 @@ def generate_ai_product_setup_draft_v1(
 			candidate=candidate,
 			conversation_state=conversation_state_record.get("state") or {},
 		)
+		prompt_version = str(result.get("prompt_version") or _resolve_prompt_version(scenario))
 		if context_target:
 			candidate["_target_item_code"] = context_target["item_code"]
 			candidate["operation"] = "update"
@@ -7693,7 +7881,7 @@ def _prepare_chat_run(
 						"mode": "structured_intent_fallback",
 						"resolved_scenario": resolved_scenario,
 					}
-	prompt_version = _resolve_prompt_version(resolved_scenario)
+	prompt_version = None
 
 	resolved_company = _resolve_company_scope(
 		requested_company or conversation_company,
@@ -7739,6 +7927,7 @@ def _prepare_chat_run(
 		scenario=resolved_scenario,
 		model_alias=model_alias,
 		retry_of_run_id=retry_context.get("source_run_id") if retry_context else None,
+		**ai_runtime_request_contract("agent" if agent_mode else "chat"),
 	)
 	if attachment_payloads and not retry_context:
 		resolve_ai_attachments(
@@ -7880,7 +8069,6 @@ def _prepare_chat_run(
 				{"conversation_state": _conversation_state_for_intent(conversation_state)}
 				if agent_mode else tool_context
 			),
-			"prompt_version": prompt_version,
 			"conversation_id": conversation_id,
 			"run_id": run_id,
 			"policy_context": {
@@ -7888,6 +8076,7 @@ def _prepare_chat_run(
 				"environment": os.environ.get("MYAPP_AI_ENVIRONMENT", "development").strip() or "development",
 			},
 			"model_alias": model_alias,
+			**ai_runtime_request_contract("agent" if agent_mode else "chat"),
 			**(
 				{
 					"capability_token": capability_token,
@@ -7919,8 +8108,8 @@ def _prepare_agent_resume(run_id: str) -> dict:
 		)
 		scenario = str(resume_context.get("scenario") or "general")
 		prompt_version = str(resume_context.get("prompt_version") or "").strip()
-		if prompt_version != _resolve_prompt_version(scenario):
-			frappe.throw(_("AI Run 使用的 Prompt 版本已不可用，不能安全恢复。"))
+		if not prompt_version:
+			frappe.throw(_("AI Run 缺少实际 Prompt revision，不能安全恢复。"))
 		model_alias = resolve_ai_selected_model_alias(resume_context.get("model_alias"))
 		company = _resolve_company_scope(resume_context.get("company"), required=True)
 		model_messages = _load_model_messages(conversation_id=conversation_id, user=user)
@@ -7968,6 +8157,7 @@ def _prepare_agent_resume(run_id: str) -> dict:
 			"model_alias": model_alias,
 			"capability_token": resume_context["capability_token"],
 			"allowed_tools": allowed_tools,
+			**ai_runtime_request_contract("agent"),
 			**({"approval": resume_context["approval"]} if resume_context.get("approval") else {}),
 		},
 	}
@@ -7988,8 +8178,8 @@ def _prepare_agent_approval_resume(approval_id: str) -> dict:
 		)
 		scenario = str(resume_context.get("scenario") or "general")
 		prompt_version = str(resume_context.get("prompt_version") or "").strip()
-		if prompt_version != _resolve_prompt_version(scenario):
-			frappe.throw(_("AI Run 使用的 Prompt 版本已不可用，不能安全恢复。"))
+		if not prompt_version:
+			frappe.throw(_("AI Run 缺少实际 Prompt revision，不能安全恢复。"))
 		model_alias = resolve_ai_selected_model_alias(resume_context.get("model_alias"))
 		company = _resolve_company_scope(resume_context.get("company"), required=True)
 		model_messages = _load_model_messages(conversation_id=conversation_id, user=user)
@@ -8028,6 +8218,7 @@ def _prepare_agent_approval_resume(approval_id: str) -> dict:
 			},
 			"model_alias": model_alias, "capability_token": resume_context["capability_token"],
 			"allowed_tools": list(resume_context["allowed_tools"]), "approval": approval,
+			**ai_runtime_request_contract("agent"),
 		},
 	}
 
@@ -8076,6 +8267,7 @@ def _apply_agent_result(prepared: dict, result: dict) -> None:
 def _complete_chat_run(
 	prepared: dict, result: dict, assistant_content: str, *, first_token_ms: int | None = None,
 ):
+	_capture_runtime_metadata(prepared, result)
 	_apply_agent_result(prepared, result)
 	latency_ms = int((time.perf_counter() - prepared["started"]) * 1000)
 	base_tool_calls = list(prepared["tool_calls"])
@@ -8157,10 +8349,20 @@ def _complete_chat_run(
 		"requested_model_display": _resolve_ai_model_display(
 			prepared.get("requested_model_alias")
 		),
+		"protocol_version": prepared.get("protocol_version"),
+		"schema_version": prepared.get("schema_version"),
+		"prompt_version": prepared.get("prompt_version"),
+		"runtime_revision": prepared.get("runtime_revision"),
+		"release_id": prepared.get("release_id"),
 	}
 
 
 def _pause_chat_run(prepared: dict, result: dict) -> dict:
+	metadata = _capture_runtime_metadata(prepared, result)
+	if metadata.get("protocol_version"):
+		ai_repository.update_run_runtime_contract(
+			run_id=prepared["run_id"], user=prepared["user"], metadata=metadata,
+		)
 	approval = result.get("approval") or {}
 	if not approval or str(approval.get("run_id") or "") != prepared["run_id"]:
 		raise UpstreamServiceUnavailableError(_("AI 审批暂停响应无效。"))
@@ -8490,6 +8692,11 @@ def _stream_prepared_ai_run(prepared: dict, *, resume: bool = False):
 			)
 			for event in _stream_ai_orchestrator(prepared["payload"], resume=resume):
 				event_type = event.get("type")
+				if event_type in {"started", "completed", "paused"}:
+					prepared.update(_validate_runtime_result(
+						event,
+						schema_family="agent" if prepared.get("agent_mode") else "chat",
+					))
 				if event_type == "started":
 					active_model_alias = str(event.get("model_alias") or active_model_alias or "").strip() or None
 					yield _encode_sse(

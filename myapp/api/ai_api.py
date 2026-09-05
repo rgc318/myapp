@@ -12,6 +12,7 @@ from myapp.services.ai_service import (
 	get_ai_draft_v1 as get_ai_draft_v1_service,
 	get_ai_agent_approval_v1 as get_ai_agent_approval_v1_service,
 	get_ai_conversation_v1 as get_ai_conversation_v1_service,
+	get_ai_runtime_readiness_v1 as get_ai_runtime_readiness_v1_service,
 	list_ai_conversations_v1 as list_ai_conversations_v1_service,
 	list_ai_drafts_v1 as list_ai_drafts_v1_service,
 	list_ai_agent_approvals_v1 as list_ai_agent_approvals_v1_service,
@@ -304,6 +305,10 @@ def generate_ai_product_setup_draft_v1(
 
 def list_ai_selectable_models_v1():
 	return list_ai_selectable_models_v1_service()
+
+
+def get_ai_runtime_readiness_v1():
+	return get_ai_runtime_readiness_v1_service()
 
 
 def get_ai_draft_v1(draft_id: str):

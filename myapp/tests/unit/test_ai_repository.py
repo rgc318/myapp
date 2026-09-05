@@ -12,6 +12,7 @@ from myapp.services.ai_repository import (
 	_normalize_conversation_state,
 	append_message,
 	cancel_agent_run,
+	complete_run,
 	create_run,
 	create_or_reuse_action_draft,
 	expire_stale_ai_runs,
@@ -61,15 +62,60 @@ class TestAiRepository(TestCase):
 				scenario="general",
 				model_alias="gpt-5.6-luna",
 				retry_of_run_id="AI-RUN-FAILED",
+				protocol_version="ai-runtime-contract-v1",
+				supported_schema_versions=["chat-v1"],
+				client_capabilities=["runtime-response-metadata-v1"],
 			)
 
 		self.assertEqual(result, "AI-RUN-RETRY")
 		query, parameters = mock_frappe.db.sql.call_args.args
 		self.assertIn("requested_model_alias", query)
 		self.assertIn("retry_of_run_id", query)
-		self.assertEqual(parameters[-5], "gpt-5.6-luna")
-		self.assertEqual(parameters[-4], "AI-RUN-FAILED")
-		self.assertEqual(parameters[-3], "gpt-5.6-luna")
+		self.assertIn("runtime_capabilities_json", query)
+		self.assertEqual(parameters[9], "gpt-5.6-luna")
+		self.assertEqual(parameters[10], "AI-RUN-FAILED")
+		self.assertEqual(parameters[11], "gpt-5.6-luna")
+		self.assertEqual(parameters[13], "ai-runtime-contract-v1")
+		self.assertEqual(parameters[14], "chat-v1")
+		self.assertEqual(
+			frappe.parse_json(parameters[15]), ["runtime-response-metadata-v1"],
+		)
+
+	def test_complete_run_persists_actual_runtime_contract_metadata(self):
+		with patch.object(ai_repository, "frappe") as mock_frappe, patch(
+			"myapp.services.ai_repository.now_datetime",
+			return_value="2026-09-04 12:00:00",
+		):
+			mock_frappe.as_json.side_effect = frappe.as_json
+			mock_frappe.db.table_exists.return_value = False
+			complete_run(
+				run_id="AI-RUN-1",
+				user="user@example.com",
+				result={
+					"model_alias": "erp-fast-chat",
+					"model": "provider-model",
+					"trace_id": "trace-1",
+					"usage": {},
+					"protocol_version": "ai-runtime-contract-v1",
+					"schema_version": "chat-v1",
+					"prompt_version": "erp-readonly-v12",
+					"runtime_revision": "revision-12",
+					"release_id": "release-12",
+				},
+				latency_ms=25,
+			)
+
+		query, parameters = mock_frappe.db.sql.call_args_list[0].args
+		self.assertIn("protocol_version = %s", query)
+		self.assertIn("schema_version = %s", query)
+		self.assertIn("prompt_version = %s", query)
+		self.assertIn("runtime_revision = %s", query)
+		self.assertIn("release_id = %s", query)
+		self.assertIn("ai-runtime-contract-v1", parameters)
+		self.assertIn("chat-v1", parameters)
+		self.assertIn("erp-readonly-v12", parameters)
+		self.assertIn("revision-12", parameters)
+		self.assertIn("release-12", parameters)
 
 	def test_prepare_failed_run_retry_locks_latest_assistant_message(self):
 		with patch.object(ai_repository, "frappe") as mock_frappe:

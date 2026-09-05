@@ -54,6 +54,7 @@ from myapp.api.gateway import (
 	get_ai_model_governance_overview_v1,
 	get_ai_model_policy_v1,
 	get_ai_product_vector_status_v1,
+	get_ai_runtime_readiness_v1,
 	get_ai_vector_release_v1,
 	get_ai_runtime_policy_snapshot_v1,
 	get_ai_agent_checkpoint_v1,
@@ -779,6 +780,29 @@ class TestGatewayWrappers(TestCase):
 		get_ai_product_vector_status_v1(failure_limit=10)
 
 		mock_status_service.assert_called_once_with(failure_limit=10)
+
+	@patch("myapp.api.gateway.get_ai_runtime_readiness_v1_service")
+	def test_get_ai_runtime_readiness_preserves_gateway_contract(self, mock_readiness_service):
+		mock_readiness_service.return_value = {
+			"status": "success", "data": {"ready": True, "status": "ready"},
+		}
+
+		result = get_ai_runtime_readiness_v1()
+
+		mock_readiness_service.assert_called_once_with()
+		self.assertEqual(result["code"], "AI_RUNTIME_READINESS_FETCHED")
+		self.assertTrue(result["data"]["ready"])
+
+	@patch("myapp.api.ai_api.get_ai_runtime_readiness_v1_service")
+	def test_get_ai_runtime_readiness_preserves_adapter_contract(self, mock_readiness_service):
+		mock_readiness_service.return_value = {
+			"status": "success", "data": {"ready": False, "status": "blocked"},
+		}
+
+		result = ai_api_module.get_ai_runtime_readiness_v1()
+
+		mock_readiness_service.assert_called_once_with()
+		self.assertEqual(result["data"]["status"], "blocked")
 
 	@patch("myapp.api.gateway.rebuild_ai_product_vector_index_v1_service")
 	def test_rebuild_ai_product_vector_index_passes_governed_scope(self, mock_rebuild_service):
