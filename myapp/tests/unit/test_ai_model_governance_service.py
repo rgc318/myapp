@@ -201,6 +201,8 @@ class TestAiModelGovernanceService(TestCase):
 					"model_alias": "erp-fast-chat", "capability": "fast_chat",
 					"available": True, "latency_ms": 123.8,
 					"provider_model": "openai/gpt-5", "error_code": None,
+					"supports_json_schema": False,
+					"supports_structured_output": True,
 				},
 				{
 					"model_alias": "erp-embedding", "capability": "embedding",
@@ -222,11 +224,13 @@ class TestAiModelGovernanceService(TestCase):
 				[
 					frappe._dict(
 						model_alias="erp-embedding", last_health_status="available",
-						supports_tools=1, supports_vision=1,
+						supports_tools=1, supports_json_schema=0,
+						supports_structured_output=0, supports_vision=1,
 					),
 					frappe._dict(
 						model_alias="erp-fast-chat", last_health_status="available",
-						supports_tools=1, supports_vision=0,
+						supports_tools=1, supports_json_schema=0,
+						supports_structured_output=0, supports_vision=0,
 					),
 				],
 				None,
@@ -259,7 +263,8 @@ class TestAiModelGovernanceService(TestCase):
 		self.assertEqual(update_calls[1].args[1][3], 1)
 		self.assertEqual(update_calls[1].args[1][5], "PROVIDER_HTTP_429")
 		self.assertEqual(update_calls[1].args[1][7], 1)
-		self.assertEqual(update_calls[1].args[1][8], 1)
+		self.assertEqual(update_calls[1].args[1][10], 1)
+		self.assertTrue(result["data"]["items"][0]["supports_structured_output"])
 		mock_frappe.db.commit.assert_called_once()
 		mock_audit.assert_called_once()
 		self.assertEqual(mock_audit.call_args.kwargs["action"], "check_model_availability")
@@ -278,6 +283,8 @@ class TestAiModelGovernanceService(TestCase):
 				"model_alias": "gpt-5.5", "capability": "structured",
 				"available": True, "latency_ms": 210,
 				"provider_model": "openai/gpt-5.5", "error_code": None,
+				"supports_json_schema": False,
+				"supports_structured_output": True,
 			}],
 		}
 		mock_orchestrator.side_effect = [availability_result, {"invalidated": True}]
@@ -289,7 +296,8 @@ class TestAiModelGovernanceService(TestCase):
 				[frappe._dict(model_alias="gpt-5.5")],
 				[frappe._dict(
 					model_alias="gpt-5.5", last_health_status="available",
-					supports_tools=1, supports_vision=1,
+					supports_tools=1, supports_json_schema=0,
+					supports_structured_output=0, supports_vision=1,
 				)],
 				None,
 			]
@@ -315,13 +323,15 @@ class TestAiModelGovernanceService(TestCase):
 		rows = [
 			frappe._dict(
 				model_alias="gpt-5.5", capability="fast_chat", provider_model_display="GPT 5.5",
-				supports_streaming=1, supports_json_schema=0, status="active",
+				supports_streaming=1, supports_json_schema=0,
+				supports_structured_output=1, status="active",
 				last_health_at="2026-08-03 09:00:00", last_health_status="available",
 				last_error_code=None,
 			),
 			frappe._dict(
 				model_alias="opencode-glm-5.2", capability="reasoning", provider_model_display=None,
-				supports_streaming=1, supports_json_schema=1, status="validated",
+				supports_streaming=1, supports_json_schema=1,
+				supports_structured_output=1, status="validated",
 			),
 		]
 		with patch.object(ai_model_governance_service, "frappe") as mock_frappe, patch.object(
@@ -341,6 +351,7 @@ class TestAiModelGovernanceService(TestCase):
 		self.assertEqual(result["data"]["items"][0]["last_health_status"], "available")
 		self.assertEqual(result["data"]["items"][0]["effective_health_status"], "stale")
 		self.assertEqual(result["data"]["items"][0]["health_expires_at"], "2026-08-04 15:00:00")
+		self.assertTrue(result["data"]["items"][0]["supports_structured_output"])
 		self.assertIn("status IN ('active', 'validated')", mock_frappe.db.sql.call_args.args[0])
 		self.assertIn("capability IN ('fast_chat', 'reasoning', 'structured')", mock_frappe.db.sql.call_args.args[0])
 
@@ -518,6 +529,21 @@ class TestAiModelGovernanceService(TestCase):
 
 		self.assertTrue(any("数据区域" in error for error in errors))
 		self.assertTrue(any("留存策略" in error for error in errors))
+
+	def test_structured_policy_validation_uses_effective_output_capability_not_native_schema(self):
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+			mock_frappe.db.sql.return_value = [frappe._dict({
+				"model_alias": "erp-fast-chat", "capability": "fast_chat", "status": "active",
+				"supports_tools": 0, "supports_json_schema": 0,
+				"supports_structured_output": 1,
+				"data_region": "cn-east", "retention_policy": "no-training-30d",
+			})]
+			errors = _validate_registry_models({
+				"primary_model_alias": "erp-fast-chat", "fallback_model_aliases": [],
+				"scenario": "sales_order_draft", "capability": "fast_chat",
+			})
+
+		self.assertFalse(any("结构化输出" in error for error in errors))
 
 	@patch("myapp.services.ai_model_governance_service.frappe.throw", side_effect=frappe.ValidationError)
 	def test_model_metadata_rejects_provider_managed_fields(self, _mock_throw):

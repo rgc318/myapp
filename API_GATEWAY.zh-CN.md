@@ -324,7 +324,7 @@ Scheduler 每 10 分钟回收长时间没有持久更新的 `running` Run，并�
 
 模型管理接口只面向 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 的职责范围。模型注册同步只从受服务 Token 保护的 Orchestrator 读取当前 LiteLLM Key 可见的完整模型库存，不保存供应商 Key；同步中已消失的 LiteLLM 模型标记为 `degraded / missing`，人工维护的 `disabled / retired` 状态不会被同步覆盖。同步只证明当前 Key 在 LiteLLM `/v1/models` 中可见，不证明推理可用。
 
-`check_ai_model_availability_v1` 会对 Chat 模型执行最小回答与强制 Function Calling 探测，对 Embedding 模型执行最小向量请求，持久化 `available / degraded / unavailable`、`supports_tools` 和 `supports_vision`。选择语义如下：
+`check_ai_model_availability_v1` 会对 Chat 模型执行最小回答、结构化输出、强制 Function Calling 和双图片探测，对 Embedding 模型执行最小向量请求，持久化 `available / degraded / unavailable`、`supports_json_schema`、`supports_structured_output`、`supports_tools` 和 `supports_vision`。`supports_json_schema` 只表示 Provider 原生 strict JSON Schema；`supports_structured_output` 表示原生模式或仅在明确 HTTP 400 后启用的受控 JSON 回退，最终能够生成通过本地 Schema 校验的对象。选择语义如下：
 
 | `model_aliases` | 检测范围 | `trigger` |
 |---|---|---|
@@ -333,7 +333,9 @@ Scheduler 每 10 分钟回收长时间没有持久更新的 `running` Run，并�
 | `["alias-a", "alias-b"]` | 多个指定模型 | `manual_selected` |
 | 显式空列表 | 拒绝请求，避免把误操作解释为全量检测 | - |
 
-未知、停用或退役 alias 会整体拒绝，不进行部分检测。单次最多选择 100 个模型。检查返回 `requested_count`、`checked_count`、`available_count`、`degraded_count`、`unavailable_count`、`health_ttl_seconds`、`trigger`、`runtime_cache_invalidated` 和逐模型 `health_status`、`effective_health_status`、`health_expires_at`、`health_failure_count`、稳定错误码。Agent 场景策略要求所有主/降级模型均通过工具能力验证。检查可能产生少量 Provider 费用，但不会自动修改 `active / validated / disabled / retired` 等人工治理状态。
+未知、停用或退役 alias 会整体拒绝，不进行部分检测。单次最多选择 100 个模型。检查返回 `requested_count`、`checked_count`、`available_count`、`degraded_count`、`unavailable_count`、`health_ttl_seconds`、`trigger`、`runtime_cache_invalidated` 和逐模型 `health_status`、`effective_health_status`、`health_expires_at`、`health_failure_count`、能力标记及稳定错误码。Agent 场景策略要求所有主/降级模型均通过工具能力验证；`intent_parse` 与四类草稿策略要求 `supports_structured_output=true`，不要求 Provider 必须原生支持 strict JSON Schema。检查可能产生少量 Provider 费用，但不会自动修改 `active / validated / disabled / retired` 等人工治理状态。
+
+基础可用性与单项能力彼此独立：结构化、工具或视觉探测失败不会把仍能完成基础文本请求的模型整体标成 `unavailable`。结构化探测遇到 429、超时、5xx 或连接异常时不会误当作“不支持 Schema”并切换兼容模式；Backend 会保留上一次已验证的 `supports_structured_output` 资格，同时记录本次 `last_structured_error_code`，避免单次 Provider 波动造成草稿链整体抖动。
 
 健康状态采用有界状态机和带租约快照：成功立即恢复为 `available`；401/403、alias 不存在等确定性错误立即进入 `unavailable`；429、超时、5xx 和连接异常第一次只进入 `degraded`，连续瞬态失败才进入 `unavailable`。每次真实探测写入 `health_expires_at`、连续失败次数和 `last_health_trigger`。TTL 内使用记录状态；从未真实探测为 `unknown`；过期的 `available / degraded` 派生为 `stale`；过期的 `unavailable` 派生为 `half_open`。`degraded / stale / unknown` 不阻止运行，`half_open` 由 Orchestrator 使用 Redis NX 15 秒租约只放行一个恢复请求，其他并发请求尝试 fallback 或返回 `AI_MODEL_HEALTH_HALF_OPEN_BUSY`。健康写入和审计提交后，Backend 会通知 Orchestrator 使运行时 Policy 缓存过期；通知失败不回滚健康结果，响应中的 `runtime_cache_invalidated=false` 供运维诊断。
 
@@ -372,6 +374,9 @@ Authorization: Bearer <jwt>
       "health_expires_at": "2026-08-03 21:15:00",
       "health_failure_count": 0,
       "supports_tools": true,
+      "supports_json_schema": false,
+      "supports_structured_output": true,
+      "structured_error_code": null,
       "latency_ms": 1580,
       "provider_model": "gpt-5.5",
       "error_code": null
@@ -384,6 +389,9 @@ Authorization: Bearer <jwt>
       "health_expires_at": "2026-08-03 21:15:00",
       "health_failure_count": 1,
       "supports_tools": false,
+      "supports_json_schema": false,
+      "supports_structured_output": false,
+      "structured_error_code": null,
       "latency_ms": 8708,
       "provider_model": null,
       "error_code": "PROVIDER_HTTP_403"

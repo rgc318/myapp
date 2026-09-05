@@ -47,3 +47,4 @@ myapp.patches.create_product_correction_table
 myapp.patches.govern_ai_draft_action_deduplication
 myapp.patches.extend_ai_run_runtime_contract_fields
 myapp.patches.extend_ai_model_health_state_fields
+myapp.patches.add_ai_model_structured_output_fields
