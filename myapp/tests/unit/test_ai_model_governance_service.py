@@ -1,3 +1,4 @@
+from datetime import datetime
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
@@ -7,6 +8,7 @@ import frappe
 from myapp.services.ai_model_governance_service import (
 	_normalize_model_metadata_payload,
 	_normalize_policy_payload,
+	_effective_model_health,
 	_resolve_health_status,
 	_validate_budget_and_cost,
 	_validate_policy_conflicts,
@@ -30,6 +32,19 @@ def _run_immediately(_namespace, _request_id, callback, **_kwargs):
 
 
 class TestAiModelGovernanceService(TestCase):
+	def test_effective_health_distinguishes_unknown_stale_and_half_open(self):
+		self.assertEqual(_effective_model_health(
+			last_health_status=None, current_time="2026-09-05 00:00:00",
+		)["effective_status"], "unknown")
+		self.assertEqual(_effective_model_health(
+			last_health_status="available", last_health_at="2026-09-01 00:00:00",
+			health_expires_at="2026-09-02 00:00:00", current_time="2026-09-05 00:00:00",
+		)["effective_status"], "stale")
+		self.assertEqual(_effective_model_health(
+			last_health_status="unavailable", last_health_at="2026-09-01 00:00:00",
+			health_expires_at="2026-09-02 00:00:00", current_time="2026-09-05 00:00:00",
+		)["effective_status"], "half_open")
+
 	def test_health_status_requires_two_transient_failures_before_unavailable(self):
 		self.assertEqual(_resolve_health_status(
 			available=False, error_code="PROVIDER_HTTP_429", previous_status="available",
@@ -226,11 +241,13 @@ class TestAiModelGovernanceService(TestCase):
 		update_calls = mock_frappe.db.sql.call_args_list[2:]
 		self.assertTrue(all("SET last_health_at" in call.args[0] for call in update_calls))
 		self.assertTrue(all("SET status" not in call.args[0] for call in update_calls))
-		self.assertEqual(update_calls[0].args[1][1], "available")
-		self.assertEqual(update_calls[1].args[1][1], "degraded")
-		self.assertEqual(update_calls[1].args[1][2], "PROVIDER_HTTP_429")
-		self.assertEqual(update_calls[1].args[1][4], 1)
-		self.assertEqual(update_calls[1].args[1][5], 1)
+		self.assertEqual(update_calls[0].args[1][2], "available")
+		self.assertEqual(update_calls[0].args[1][3], 0)
+		self.assertEqual(update_calls[1].args[1][2], "degraded")
+		self.assertEqual(update_calls[1].args[1][3], 1)
+		self.assertEqual(update_calls[1].args[1][5], "PROVIDER_HTTP_429")
+		self.assertEqual(update_calls[1].args[1][7], 1)
+		self.assertEqual(update_calls[1].args[1][8], 1)
 		mock_frappe.db.commit.assert_called_once()
 		mock_audit.assert_called_once()
 		self.assertEqual(mock_audit.call_args.kwargs["action"], "check_model_availability")
@@ -295,7 +312,10 @@ class TestAiModelGovernanceService(TestCase):
 				supports_streaming=1, supports_json_schema=1, status="validated",
 			),
 		]
-		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe, patch.object(
+			ai_model_governance_service, "now_datetime", return_value=datetime(2026, 9, 5),
+		):
+			mock_frappe.conf = {}
 			mock_frappe.get_roles.return_value = ["AI Model Manager"]
 			mock_frappe.db.sql.return_value = rows
 			result = list_ai_selectable_models_v1()
@@ -307,6 +327,8 @@ class TestAiModelGovernanceService(TestCase):
 		self.assertTrue(result["data"]["capabilities"]["can_select_fixed_model"])
 		self.assertTrue(result["data"]["capabilities"]["can_view_advanced_diagnostics"])
 		self.assertEqual(result["data"]["items"][0]["last_health_status"], "available")
+		self.assertEqual(result["data"]["items"][0]["effective_health_status"], "stale")
+		self.assertEqual(result["data"]["items"][0]["health_expires_at"], "2026-08-04 15:00:00")
 		self.assertIn("status IN ('active', 'validated')", mock_frappe.db.sql.call_args.args[0])
 		self.assertIn("capability IN ('fast_chat', 'reasoning', 'structured')", mock_frappe.db.sql.call_args.args[0])
 
@@ -366,17 +388,40 @@ class TestAiModelGovernanceService(TestCase):
 	@patch("myapp.services.ai_model_governance_service._ensure_tables")
 	@patch("myapp.services.ai_model_governance_service._current_user", return_value="user@example.com")
 	def test_selected_model_rejects_latest_unavailable_health(self, _user, _tables):
-		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe, patch.object(
+			ai_model_governance_service, "now_datetime", return_value=datetime(2026, 9, 5),
+		):
 			mock_frappe.get_roles.return_value = ["AI Model Manager"]
 			mock_frappe.ValidationError = frappe.ValidationError
 			mock_frappe.throw.side_effect = frappe.ValidationError
 			mock_frappe.db.sql.return_value = [frappe._dict(
 				model_alias="opencode-deepseek-v4-flash",
+				last_health_at="2026-09-05 00:00:00",
+				health_expires_at="2099-09-05 00:00:00",
 				last_health_status="unavailable",
 			)]
 
 			with self.assertRaises(frappe.ValidationError):
 				resolve_ai_selected_model_alias("opencode-deepseek-v4-flash")
+
+	@patch("myapp.services.ai_model_governance_service._ensure_tables")
+	@patch("myapp.services.ai_model_governance_service._current_user", return_value="user@example.com")
+	def test_selected_model_allows_expired_unavailable_health_as_half_open(self, _user, _tables):
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe, patch.object(
+			ai_model_governance_service, "now_datetime", return_value=datetime(2026, 9, 5),
+		):
+			mock_frappe.get_roles.return_value = ["AI Model Manager"]
+			mock_frappe.db.sql.return_value = [frappe._dict(
+				model_alias="opencode-deepseek-v4-flash",
+				last_health_at="2026-08-01 00:00:00",
+				health_expires_at="2026-08-02 00:00:00",
+				last_health_status="unavailable",
+				last_error_code="PROVIDER_TIMEOUT",
+			)]
+
+			result = resolve_ai_selected_model_alias("opencode-deepseek-v4-flash")
+
+		self.assertEqual(result, "opencode-deepseek-v4-flash")
 
 	@patch("myapp.services.ai_model_governance_service._current_user", return_value="user@example.com")
 	def test_selected_model_rejects_business_user_override(self, _user):

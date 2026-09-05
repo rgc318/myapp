@@ -193,9 +193,9 @@ Web/Mobile → myapp.api.gateway → myapp.api.*_api → myapp.services.*
 }
 ```
 
-`model_alias` 可省略。省略时继续使用已发布模型策略；只有 `System Manager` 和 `AI Model Manager` 可以显式提供固定模型。Frappe 同时校验角色，以及注册表中的 `active / validated` 状态、`fast_chat / reasoning / structured` 能力和最近健康状态；最近健康状态为 `unavailable` 的固定模型直接拒绝。未授权账号即使绕过 Web 提交别名也会被拒绝。`list_ai_selectable_models_v1` 为所有已登录 AI 用户返回工作台能力位，但只向上述两个角色返回受控模型清单，不返回 Embedding、停用、退役、缺失或未验证模型。清单同时返回 `last_health_at`、`last_health_status` 和 `last_error_code`，供 Web 禁用不可用项并解释原因。浏览器不能自行提交注册表外别名，也不能直连 Orchestrator 或 LiteLLM。显式选择会传给同步 Chat、SSE、普通聊天前置的结构化意图解析和四类草稿，并禁用该次请求的静默模型 fallback。
+`model_alias` 可省略。省略时继续使用已发布模型策略；只有 `System Manager` 和 `AI Model Manager` 可以显式提供固定模型。Frappe 同时校验角色，以及注册表中的 `active / validated` 状态、`fast_chat / reasoning / structured` 能力和有效健康状态；只有 TTL 内仍为 `unavailable` 的固定模型直接拒绝，过期的旧失败转为 `half_open` 并允许受控恢复探测。未授权账号即使绕过 Web 提交别名也会被拒绝。`list_ai_selectable_models_v1` 为所有已登录 AI 用户返回工作台能力位，但只向上述两个角色返回受控模型清单，不返回 Embedding、停用、退役、缺失或未验证模型。清单同时返回原始 `last_health_status`、派生 `effective_health_status`、`last_health_at`、`health_expires_at`、连续失败次数、探测来源和稳定错误码，供 Web 解释并只禁用仍新鲜的不可用项。浏览器不能自行提交注册表外别名，也不能直连 Orchestrator 或 LiteLLM。显式选择会传给同步 Chat、SSE、普通聊天前置的结构化意图解析和四类草稿，并禁用该次请求的静默模型 fallback。
 
-`list_ai_selectable_models_v1` 的 `data.capabilities` 包含 `can_select_fixed_model` 和 `can_view_advanced_diagnostics`。后者仅对 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 为真。模型清单的 `provider_model_display` 用作友好名称，技术 `model_alias` 仅供获授权治理人员核对。健康状态不会自动修改人工生命周期，但 `unavailable` 会阻止新的固定模型请求；自动模式由 Orchestrator 跳过不可用候选并按治理链选择后续模型。
+`list_ai_selectable_models_v1` 的 `data.capabilities` 包含 `can_select_fixed_model` 和 `can_view_advanced_diagnostics`。后者仅对 `System Manager`、`AI Model Manager`、`AI Model Approver` 和 `AI Auditor` 为真。模型清单的 `provider_model_display` 用作友好名称，技术 `model_alias` 仅供获授权治理人员核对。健康状态不会自动修改人工生命周期；`effective_health_status=unavailable` 会阻止新的固定模型请求，`stale / unknown` 允许正常尝试，`half_open` 允许一个分布式恢复探测。自动模式由 Orchestrator 跳过新鲜不可用候选并按治理链选择后续模型。
 
 当前聊天场景支持 `auto`、`general`、`product_search`、`order_query`、`report_summary`。省略场景或传 `auto` 时，Frappe 根据当前用户问题确定实际场景，并把解析后的场景写入 Message、Run、Prompt 和 Orchestrator 请求。商品工具复用 `search_product_v2`；单据工具支持销售订单、销售发票、采购订单和采购发票的单类型或混合查询，订单复用销售/采购工作台服务，发票复用 `list_business_documents_v1`；报表工具复用既有经营报表服务。所有工具都强制 DocType、公司和记录级读取权限。商品 citation 记录 `company` 和 `queried_at`，作为库存、价格等“回答时数据”的快照范围。单据查询 citation 首项为版本化 `business_result_set`，包含 `queried_at`、`snapshot_source`、`permission_filtered`、查询范围，以及每类请求数、返回数、权限安全的可见总量、截断状态和业务模块入口；`status_semantics=result_coverage_only` 明确 `success / partial / empty` 只表示结果覆盖，不代表单据业务健康或异常判断。后续 citation 保留逐单据详情与受控跳转，供 Web 聚合表格和历史会话恢复。
 
@@ -331,9 +331,9 @@ Scheduler 每 10 分钟回收长时间没有持久更新的 `running` Run，并�
 | `["alias-a", "alias-b"]` | 多个指定模型 | `manual_selected` |
 | 显式空列表 | 拒绝请求，避免把误操作解释为全量检测 | - |
 
-未知、停用或退役 alias 会整体拒绝，不进行部分检测。单次最多选择 100 个模型。检查返回 `requested_count`、`checked_count`、`available_count`、`degraded_count`、`unavailable_count`、`trigger`、`runtime_cache_invalidated` 和逐模型 `health_status`、稳定错误码。Agent 场景策略要求所有主/降级模型均通过工具能力验证。检查可能产生少量 Provider 费用，但不会自动修改 `active / validated / disabled / retired` 等人工治理状态。
+未知、停用或退役 alias 会整体拒绝，不进行部分检测。单次最多选择 100 个模型。检查返回 `requested_count`、`checked_count`、`available_count`、`degraded_count`、`unavailable_count`、`health_ttl_seconds`、`trigger`、`runtime_cache_invalidated` 和逐模型 `health_status`、`effective_health_status`、`health_expires_at`、`health_failure_count`、稳定错误码。Agent 场景策略要求所有主/降级模型均通过工具能力验证。检查可能产生少量 Provider 费用，但不会自动修改 `active / validated / disabled / retired` 等人工治理状态。
 
-健康状态采用有界状态机：成功立即恢复为 `available`；401/403、alias 不存在等确定性错误立即进入 `unavailable`；429、超时、5xx 和连接异常第一次只进入 `degraded`，连续瞬态失败才进入 `unavailable`。`degraded` 不阻止运行，并保留上一次已验证的工具和视觉能力，避免一次 Provider 限流清空能力事实。健康写入和审计提交后，Backend 会通知 Orchestrator 使运行时 Policy 缓存过期；通知失败不回滚健康结果，响应中的 `runtime_cache_invalidated=false` 供运维诊断。
+健康状态采用有界状态机和带租约快照：成功立即恢复为 `available`；401/403、alias 不存在等确定性错误立即进入 `unavailable`；429、超时、5xx 和连接异常第一次只进入 `degraded`，连续瞬态失败才进入 `unavailable`。每次真实探测写入 `health_expires_at`、连续失败次数和 `last_health_trigger`。TTL 内使用记录状态；从未真实探测为 `unknown`；过期的 `available / degraded` 派生为 `stale`；过期的 `unavailable` 派生为 `half_open`。`degraded / stale / unknown` 不阻止运行，`half_open` 由 Orchestrator 使用 Redis NX 15 秒租约只放行一个恢复请求，其他并发请求尝试 fallback 或返回 `AI_MODEL_HEALTH_HALF_OPEN_BUSY`。健康写入和审计提交后，Backend 会通知 Orchestrator 使运行时 Policy 缓存过期；通知失败不回滚健康结果，响应中的 `runtime_cache_invalidated=false` 供运维诊断。
 
 单项或多选请求示例：
 
@@ -359,12 +359,16 @@ Authorization: Bearer <jwt>
   "available_count": 1,
   "degraded_count": 0,
   "unavailable_count": 1,
+  "health_ttl_seconds": 108000,
   "runtime_cache_invalidated": true,
   "items": [
     {
       "model_alias": "gpt-5.5",
       "available": true,
       "health_status": "available",
+      "effective_health_status": "available",
+      "health_expires_at": "2026-08-03 21:15:00",
+      "health_failure_count": 0,
       "supports_tools": true,
       "latency_ms": 1580,
       "provider_model": "gpt-5.5",
@@ -374,6 +378,9 @@ Authorization: Bearer <jwt>
       "model_alias": "opencode-deepseek-v4-flash",
       "available": false,
       "health_status": "unavailable",
+      "effective_health_status": "unavailable",
+      "health_expires_at": "2026-08-03 21:15:00",
+      "health_failure_count": 1,
       "supports_tools": false,
       "latency_ms": 8708,
       "provider_model": null,
@@ -383,9 +390,9 @@ Authorization: Bearer <jwt>
 }
 ```
 
-健康结果是带时间戳的运行快照，不是永久 SLA。Provider 可在两次检测之间恢复或退化；页面和策略验证必须结合 `last_health_at`、`last_health_status`、能力标记和发布门禁判断，不能把一次成功当成长期保证。
+健康结果是带时间戳和过期时间的运行快照，不是永久 SLA。Provider 可在两次检测之间恢复或退化；页面和策略验证使用 `effective_health_status`，同时保留 `last_health_status` 作为审计事实，不能把一次成功或失败无限期当成当前 Provider 状态。
 
-模型健康检查默认由 Frappe Scheduler 每天站点时区 03:15 执行，并使用 Redis 锁防止并发重复探测。站点配置 `myapp_ai_model_healthcheck_enabled=0` 可关闭；`myapp_ai_model_healthcheck_aliases=["alias-a", "alias-b"]` 可把定时范围限制到指定模型，未配置时检查全部未停用模型。治理总览返回 `model_health_schedule`，模型管理页展示启停状态、范围和最近检测时间。
+模型健康检查默认由 Frappe Scheduler 每天站点时区 03:15 执行，并使用 Redis 锁防止并发重复探测。健康 TTL 默认 108000 秒（30 小时），允许配置范围为 300～604800 秒；站点配置 `myapp_ai_model_health_ttl_seconds` 可调整。`myapp_ai_model_healthcheck_enabled=0` 可关闭定时检查；`myapp_ai_model_healthcheck_aliases=["alias-a", "alias-b"]` 可把定时范围限制到指定模型，未配置时检查全部未停用模型。治理总览返回 `model_health_schedule.ttl_seconds`，模型管理页展示启停状态、范围、TTL 和最近检测时间。
 
 部署或修改站点配置后应确认 Scheduler 正在运行，并在 `Scheduled Job Type` 中存在以下记录：
 

@@ -62,7 +62,10 @@ def execute():
 			`output_cost` decimal(21,9) NOT NULL DEFAULT 0,
 			`currency` varchar(10) DEFAULT NULL,
 			`last_health_at` datetime(6) DEFAULT NULL,
+			`health_expires_at` datetime(6) DEFAULT NULL,
 			`last_health_status` varchar(20) DEFAULT NULL,
+			`health_failure_count` int NOT NULL DEFAULT 0,
+			`last_health_trigger` varchar(40) DEFAULT NULL,
 			`last_error_code` varchar(140) DEFAULT NULL,
 			`last_tool_error_code` varchar(140) DEFAULT NULL,
 			`last_vision_error_code` varchar(140) DEFAULT NULL,
@@ -72,7 +75,7 @@ def execute():
 			PRIMARY KEY (`name`),
 			UNIQUE KEY `uniq_myapp_ai_model_alias` (`model_alias`),
 			KEY `idx_myapp_ai_model_capability_status` (`capability`, `status`),
-			KEY `idx_myapp_ai_model_health` (`last_health_status`, `last_health_at`)
+			KEY `idx_myapp_ai_model_health` (`last_health_status`, `health_expires_at`)
 		) ENGINE=InnoDB ROW_FORMAT=DYNAMIC
 		"""
 	)

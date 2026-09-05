@@ -6,12 +6,12 @@ import os
 import urllib.error
 import urllib.request
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 import frappe
 from frappe import _
-from frappe.utils import cint, now_datetime
+from frappe.utils import cint, get_datetime, now_datetime
 
 from myapp.utils.idempotency import run_idempotent
 
@@ -45,6 +45,9 @@ BUDGET_ACTIONS = {"warn", "use_lower_cost_fallback", "reject_noncritical"}
 ENVIRONMENTS = {"development", "test", "staging", "production"}
 MAX_PAGE_SIZE = 100
 MODEL_HEALTHCHECK_CRON = "15 3 * * *"
+DEFAULT_MODEL_HEALTH_TTL_SECONDS = 30 * 60 * 60
+MIN_MODEL_HEALTH_TTL_SECONDS = 5 * 60
+MAX_MODEL_HEALTH_TTL_SECONDS = 7 * 24 * 60 * 60
 
 _DETERMINISTIC_HEALTH_ERROR_CODES = {
 	"MODEL_ALIAS_NOT_FOUND",
@@ -184,8 +187,49 @@ def get_ai_model_healthcheck_schedule() -> dict:
 		"enabled": enabled,
 		"cron": MODEL_HEALTHCHECK_CRON,
 		"timezone": "site",
+		"ttl_seconds": _model_health_ttl_seconds(),
 		"model_aliases": model_aliases,
 		"scope": "selected" if model_aliases else "all_enabled",
+	}
+
+
+def _model_health_ttl_seconds() -> int:
+	conf = frappe.conf or {}
+	try:
+		value = int(conf.get("myapp_ai_model_health_ttl_seconds") or DEFAULT_MODEL_HEALTH_TTL_SECONDS)
+	except (TypeError, ValueError):
+		value = DEFAULT_MODEL_HEALTH_TTL_SECONDS
+	return max(MIN_MODEL_HEALTH_TTL_SECONDS, min(value, MAX_MODEL_HEALTH_TTL_SECONDS))
+
+
+def _model_health_expiry(checked_at):
+	return get_datetime(checked_at) + timedelta(seconds=_model_health_ttl_seconds())
+
+
+def _effective_model_health(
+	*, last_health_status, last_health_at=None, health_expires_at=None,
+	last_error_code=None, current_time=None,
+) -> dict:
+	recorded_status = _normalize_text(last_health_status, max_length=20).lower() or None
+	checked_at = get_datetime(last_health_at) if last_health_at else None
+	expires_at = get_datetime(health_expires_at) if health_expires_at else None
+	if checked_at and not expires_at:
+		expires_at = checked_at + timedelta(seconds=_model_health_ttl_seconds())
+	if recorded_status in {None, "listed", "discovered"} or not checked_at:
+		effective_status = "unknown"
+	else:
+		now = get_datetime(current_time) if current_time else now_datetime()
+		if expires_at and expires_at <= now:
+			effective_status = "half_open" if recorded_status == "unavailable" else "stale"
+		else:
+			effective_status = recorded_status
+	return {
+		"recorded_status": recorded_status,
+		"effective_status": effective_status,
+		"checked_at": checked_at,
+		"expires_at": expires_at,
+		"is_stale": effective_status in {"stale", "half_open"},
+		"last_error_code": _normalize_text(last_error_code, max_length=140) or None,
 	}
 
 
@@ -257,6 +301,12 @@ def _normalize_policy_payload(payload) -> dict:
 
 
 def _serialize_registry(row) -> dict:
+	health = _effective_model_health(
+		last_health_status=row.last_health_status,
+		last_health_at=row.last_health_at,
+		health_expires_at=getattr(row, "health_expires_at", None),
+		last_error_code=row.last_error_code,
+	)
 	return {
 		"model_alias": row.model_alias,
 		"capability": row.capability,
@@ -277,6 +327,12 @@ def _serialize_registry(row) -> dict:
 		"currency": row.currency,
 		"last_health_at": str(row.last_health_at or "") or None,
 		"last_health_status": row.last_health_status,
+		"recorded_health_status": health["recorded_status"],
+		"effective_health_status": health["effective_status"],
+		"health_expires_at": str(health["expires_at"] or "") or None,
+		"health_is_stale": health["is_stale"],
+		"health_failure_count": cint(getattr(row, "health_failure_count", 0)),
+		"last_health_trigger": getattr(row, "last_health_trigger", None),
 		"last_error_code": row.last_error_code,
 		"last_tool_error_code": getattr(row, "last_tool_error_code", None),
 		"last_vision_error_code": getattr(row, "last_vision_error_code", None),
@@ -802,12 +858,19 @@ def _is_transient_health_error(error_code: str | None) -> bool:
 	return not any(token in resolved for token in ("AUTH", "CREDENTIAL", "INVALID", "NOT_FOUND", "NOT_LISTED"))
 
 
-def _resolve_health_status(*, available: bool, error_code: str | None, previous_status: str | None) -> str:
+def _resolve_health_status(
+	*, available: bool, error_code: str | None, previous_status: str | None,
+	previous_failure_count: int = 0,
+) -> str:
 	if available:
 		return "available"
 	if not _is_transient_health_error(error_code):
 		return "unavailable"
-	return "unavailable" if previous_status in {"degraded", "unavailable"} else "degraded"
+	previous_failures = max(
+		cint(previous_failure_count),
+		1 if previous_status in {"degraded", "unavailable"} else 0,
+	)
+	return "unavailable" if previous_failures + 1 >= 2 else "degraded"
 
 
 def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str) -> dict:
@@ -816,7 +879,7 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 	placeholders = ", ".join(["%s"] * len(resolved_aliases))
 	previous_rows = frappe.db.sql(
 		f"""
-		SELECT model_alias, last_health_status, supports_tools, supports_vision
+		SELECT model_alias, last_health_status, health_failure_count, supports_tools, supports_vision
 		FROM `{REGISTRY_TABLE}`
 		WHERE model_alias IN ({placeholders})
 		""",
@@ -835,6 +898,7 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 		frappe.throw(_("Orchestrator 未返回有效的模型可用性结果。"))
 
 	now = now_datetime()
+	health_expires_at = _model_health_expiry(now)
 	normalized_items = []
 	for item in items:
 		if not isinstance(item, dict):
@@ -858,6 +922,11 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 			available=available,
 			error_code=error_code,
 			previous_status=previous_status,
+			previous_failure_count=cint(getattr(previous, "health_failure_count", 0)),
+		)
+		failure_count = (
+			0 if available else
+			max(1, cint(getattr(previous, "health_failure_count", 0)) + 1)
 		)
 		if health_status == "degraded" and previous:
 			supports_tools = bool(previous.supports_tools)
@@ -865,14 +934,16 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 		frappe.db.sql(
 			f"""
 			UPDATE `{REGISTRY_TABLE}`
-			SET last_health_at = %s, last_health_status = %s, last_error_code = %s,
+			SET last_health_at = %s, health_expires_at = %s,
+				last_health_status = %s, health_failure_count = %s, last_health_trigger = %s,
+				last_error_code = %s,
 				provider_model_display = COALESCE(%s, provider_model_display), supports_tools = %s,
 				supports_vision = %s, last_tool_error_code = %s, last_vision_error_code = %s,
 				modified = %s, modified_by = %s
 			WHERE model_alias = %s
 			""",
 			(
-				now, health_status, error_code,
+				now, health_expires_at, health_status, failure_count, trigger, error_code,
 				provider_model, cint(supports_tools), cint(supports_vision),
 				tool_error_code, vision_error_code, now, actor, model_alias,
 			),
@@ -882,6 +953,9 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 			"capability": _normalize_text(item.get("capability"), max_length=30) or None,
 			"available": available,
 			"health_status": health_status,
+			"effective_health_status": health_status,
+			"health_expires_at": str(health_expires_at),
+			"health_failure_count": failure_count,
 			"supports_tools": supports_tools,
 			"supports_vision": supports_vision,
 			"latency_ms": latency_ms,
@@ -902,6 +976,7 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 		"available_count": available_count,
 		"degraded_count": degraded_count,
 		"unavailable_count": unavailable_count,
+		"health_ttl_seconds": _model_health_ttl_seconds(),
 		"items": normalized_items,
 	}
 	_record_audit(
@@ -1001,7 +1076,8 @@ def list_ai_selectable_models_v1() -> dict:
 		rows = frappe.db.sql(
 			f"""
 			SELECT model_alias, capability, provider_model_display, supports_streaming, supports_tools,
-				supports_json_schema, supports_vision, status, last_health_at, last_health_status,
+				supports_json_schema, supports_vision, status, last_health_at, health_expires_at,
+				last_health_status, health_failure_count, last_health_trigger,
 				last_error_code, last_vision_error_code
 			FROM `{REGISTRY_TABLE}`
 			WHERE status IN ('active', 'validated')
@@ -1010,27 +1086,37 @@ def list_ai_selectable_models_v1() -> dict:
 			""",
 			as_dict=True,
 		)
+	items = []
+	for row in rows:
+		health = _effective_model_health(
+			last_health_status=row.last_health_status,
+			last_health_at=row.last_health_at,
+			health_expires_at=getattr(row, "health_expires_at", None),
+			last_error_code=row.last_error_code,
+		)
+		items.append({
+			"model_alias": row.model_alias,
+			"capability": row.capability,
+			"display_name": row.provider_model_display or row.model_alias,
+			"supports_streaming": bool(cint(row.supports_streaming)),
+			"supports_tools": bool(cint(row.supports_tools)),
+			"supports_json_schema": bool(cint(row.supports_json_schema)),
+			"supports_vision": bool(cint(row.supports_vision)),
+			"status": row.status,
+			"last_health_at": str(row.last_health_at or "") or None,
+			"last_health_status": row.last_health_status,
+			"effective_health_status": health["effective_status"],
+			"health_expires_at": str(health["expires_at"] or "") or None,
+			"health_failure_count": cint(getattr(row, "health_failure_count", 0)),
+			"last_health_trigger": getattr(row, "last_health_trigger", None),
+			"last_error_code": row.last_error_code,
+			"last_vision_error_code": row.last_vision_error_code,
+		})
 	return {
 		"status": "success",
 		"data": {
 			"capabilities": capabilities,
-			"items": [
-				{
-					"model_alias": row.model_alias,
-					"capability": row.capability,
-					"display_name": row.provider_model_display or row.model_alias,
-					"supports_streaming": bool(cint(row.supports_streaming)),
-					"supports_tools": bool(cint(row.supports_tools)),
-					"supports_json_schema": bool(cint(row.supports_json_schema)),
-					"supports_vision": bool(cint(row.supports_vision)),
-					"status": row.status,
-					"last_health_at": str(row.last_health_at or "") or None,
-					"last_health_status": row.last_health_status,
-					"last_error_code": row.last_error_code,
-					"last_vision_error_code": row.last_vision_error_code,
-				}
-				for row in rows
-			],
+			"items": items,
 		},
 	}
 
@@ -1045,7 +1131,8 @@ def resolve_ai_selected_model_alias(model_alias: str | None) -> str | None:
 	_ensure_tables()
 	row = frappe.db.sql(
 		f"""
-		SELECT model_alias, last_health_status FROM `{REGISTRY_TABLE}`
+		SELECT model_alias, last_health_at, health_expires_at, last_health_status, last_error_code
+		FROM `{REGISTRY_TABLE}`
 		WHERE model_alias = %s
 			AND status IN ('active', 'validated')
 			AND capability IN ('fast_chat', 'reasoning', 'structured')
@@ -1056,7 +1143,13 @@ def resolve_ai_selected_model_alias(model_alias: str | None) -> str | None:
 	)
 	if not row:
 		frappe.throw(_("所选 AI 模型不可用，请刷新模型列表后重试。"))
-	if str(row[0].last_health_status or "").strip() == "unavailable":
+	health = _effective_model_health(
+		last_health_status=row[0].last_health_status,
+		last_health_at=getattr(row[0], "last_health_at", None),
+		health_expires_at=getattr(row[0], "health_expires_at", None),
+		last_error_code=getattr(row[0], "last_error_code", None),
+	)
+	if health["effective_status"] == "unavailable":
 		frappe.throw(_("所选 AI 模型最近一次健康检查不可用，请选择其他模型。"))
 	return str(row[0].model_alias)
 
@@ -1855,7 +1948,8 @@ def get_published_ai_model_policies_for_runtime() -> dict:
 		SELECT model_alias, capability, status, supports_tools, supports_json_schema, supports_vision,
 			input_cost, output_cost, currency,
 			data_region, retention_policy, sensitive_data_allowed, registry_version,
-			last_health_at, last_health_status, last_error_code
+			last_health_at, health_expires_at, last_health_status, health_failure_count,
+			last_health_trigger, last_error_code
 		FROM `{REGISTRY_TABLE}`
 		WHERE status IN ('active', 'validated')
 			OR model_alias IN ({', '.join(['%s'] * len(policy_aliases))})
@@ -1867,31 +1961,43 @@ def get_published_ai_model_policies_for_runtime() -> dict:
 		SELECT model_alias, capability, status, supports_tools, supports_json_schema, supports_vision,
 			input_cost, output_cost, currency,
 			data_region, retention_policy, sensitive_data_allowed, registry_version,
-			last_health_at, last_health_status, last_error_code
+			last_health_at, health_expires_at, last_health_status, health_failure_count,
+			last_health_trigger, last_error_code
 		FROM `{REGISTRY_TABLE}` WHERE status IN ('active', 'validated')
 		""",
 		as_dict=True,
 	)
+	models = {}
+	for row in model_rows:
+		health = _effective_model_health(
+			last_health_status=row.last_health_status,
+			last_health_at=row.last_health_at,
+			health_expires_at=getattr(row, "health_expires_at", None),
+			last_error_code=row.last_error_code,
+		)
+		models[row.model_alias] = {
+			"capability": row.capability,
+			"status": row.status,
+			"supports_json_schema": bool(cint(row.supports_json_schema)),
+			"supports_tools": bool(cint(row.supports_tools)),
+			"supports_vision": bool(cint(row.supports_vision)),
+			"input_cost": str(row.input_cost or 0),
+			"output_cost": str(row.output_cost or 0),
+			"currency": row.currency,
+			"data_region": row.data_region,
+			"retention_policy": row.retention_policy,
+			"sensitive_data_allowed": bool(cint(row.sensitive_data_allowed)),
+			"registry_version": cint(row.registry_version),
+			"last_health_at": str(row.last_health_at or "") or None,
+			"last_health_status": row.last_health_status,
+			"effective_health_status": health["effective_status"],
+			"health_expires_at": str(health["expires_at"] or "") or None,
+			"health_is_stale": health["is_stale"],
+			"health_failure_count": cint(getattr(row, "health_failure_count", 0)),
+			"last_health_trigger": getattr(row, "last_health_trigger", None),
+			"last_error_code": row.last_error_code,
+		}
 	return {
 		"policies": policies,
-		"models": {
-			row.model_alias: {
-				"capability": row.capability,
-				"status": row.status,
-				"supports_json_schema": bool(cint(row.supports_json_schema)),
-				"supports_tools": bool(cint(row.supports_tools)),
-				"supports_vision": bool(cint(row.supports_vision)),
-				"input_cost": str(row.input_cost or 0),
-				"output_cost": str(row.output_cost or 0),
-				"currency": row.currency,
-				"data_region": row.data_region,
-				"retention_policy": row.retention_policy,
-				"sensitive_data_allowed": bool(cint(row.sensitive_data_allowed)),
-				"registry_version": cint(row.registry_version),
-				"last_health_at": str(row.last_health_at or "") or None,
-				"last_health_status": row.last_health_status,
-				"last_error_code": row.last_error_code,
-			}
-			for row in model_rows
-		},
+		"models": models,
 	}
