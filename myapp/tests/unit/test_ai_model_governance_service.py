@@ -78,22 +78,29 @@ class TestAiModelGovernanceService(TestCase):
 		})
 
 	@patch("myapp.services.ai_model_governance_service._ensure_tables")
-	def test_runtime_readiness_matches_scope_and_requires_tools_on_all_models(self, _mock_tables):
+	def test_runtime_readiness_promotes_eligible_fallback_when_primary_capability_drifts(self, _mock_tables):
 		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:
 			mock_frappe.get_roles.return_value = ["Sales User"]
 			mock_frappe.db.sql.side_effect = [
 				[SimpleNamespace(
 					policy_code="product-demo", published_version=3,
 					snapshot_json=frappe.as_json({
-						"scenario": "product_search", "environment": "staging",
+						"scenario": "product_search", "capability": "fast_chat",
+						"environment": "staging",
 						"company_scope": ["Demo Company"], "role_scope": ["Sales User"],
 						"rollout_percentage": "100", "primary_model_alias": "erp-fast-chat",
 						"fallback_model_aliases": ["erp-fallback"],
 					}),
 				)],
 				[
-					SimpleNamespace(model_alias="erp-fast-chat", status="active", supports_tools=1),
-					SimpleNamespace(model_alias="erp-fallback", status="validated", supports_tools=0),
+					SimpleNamespace(
+						model_alias="erp-fast-chat", capability="fast_chat", status="active",
+						supports_tools=0, supports_json_schema=0,
+					),
+					SimpleNamespace(
+						model_alias="erp-fallback", capability="fast_chat", status="validated",
+						supports_tools=1, supports_json_schema=0,
+					),
 				],
 			]
 			result = resolve_ai_agent_runtime_readiness(
@@ -101,10 +108,12 @@ class TestAiModelGovernanceService(TestCase):
 				company="Demo Company", user="user@example.com",
 			)
 
-		self.assertFalse(result["ready"])
-		self.assertEqual(result["reason"], "model_tools_unverified")
+		self.assertTrue(result["ready"])
+		self.assertEqual(result["reason"], "ready")
 		self.assertEqual(result["policy_code"], "product-demo")
-		self.assertEqual(result["unverified_model_aliases"], ["erp-fallback"])
+		self.assertEqual(result["selected_model_alias"], "erp-fallback")
+		self.assertEqual(result["eligible_model_aliases"], ["erp-fallback"])
+		self.assertEqual(result["ineligible_models"], {"erp-fast-chat": ["tools_unverified"]})
 
 	@patch("myapp.services.ai_model_governance_service._ensure_tables")
 	def test_runtime_readiness_rejects_ambiguous_highest_priority_policies(self, _mock_tables):
@@ -134,14 +143,16 @@ class TestAiModelGovernanceService(TestCase):
 				[SimpleNamespace(
 					policy_code="general-staging", published_version=2,
 					snapshot_json=frappe.as_json({
-						"scenario": "general", "environment": "staging",
+						"scenario": "general", "capability": "fast_chat", "environment": "staging",
 						"company_scope": [], "role_scope": [], "rollout_percentage": "100",
 						"primary_model_alias": "erp-fast-chat", "fallback_model_aliases": [],
 					}),
 				)],
 				[
-					SimpleNamespace(model_alias="erp-fast-chat", status="active", supports_tools=1),
-					SimpleNamespace(model_alias="erp-fixed", status="validated", supports_tools=1),
+					SimpleNamespace(
+						model_alias="erp-fixed", capability="fast_chat", status="validated",
+						supports_tools=1, supports_json_schema=0,
+					),
 				],
 			]
 			result = resolve_ai_agent_runtime_readiness(
@@ -151,7 +162,8 @@ class TestAiModelGovernanceService(TestCase):
 
 		self.assertEqual(result, {
 			"ready": True, "reason": "ready", "policy_code": "general-staging",
-			"policy_version": 2,
+			"policy_version": 2, "selected_model_alias": "erp-fixed",
+			"eligible_model_aliases": ["erp-fixed"], "ineligible_models": {},
 		})
 
 	@patch("myapp.services.ai_model_governance_service._ensure_tables")

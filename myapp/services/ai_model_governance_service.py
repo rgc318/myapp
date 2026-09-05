@@ -1478,6 +1478,32 @@ def _runtime_policy_priority(
 	return 2
 
 
+def _runtime_model_ineligibility_reasons(snapshot: dict, model) -> list[str]:
+	if not model:
+		return ["model_not_registered"]
+	reasons = []
+	if str(model.status or "") not in {"active", "validated"}:
+		reasons.append("lifecycle_not_runnable")
+	if str(model.capability or "") != str(snapshot.get("capability") or ""):
+		reasons.append("capability_mismatch")
+	if snapshot.get("capability") == "structured" and not cint(model.supports_json_schema):
+		reasons.append("json_schema_unverified")
+	if (
+		snapshot.get("scenario") in {"general", "product_search", "order_query", "report_summary"}
+		and not cint(model.supports_tools)
+	):
+		reasons.append("tools_unverified")
+	health = _effective_model_health(
+		last_health_status=getattr(model, "last_health_status", None),
+		last_health_at=getattr(model, "last_health_at", None),
+		health_expires_at=getattr(model, "health_expires_at", None),
+		last_error_code=getattr(model, "last_error_code", None),
+	)
+	if health["effective_status"] == "unavailable":
+		reasons.append("health_unavailable")
+	return reasons
+
+
 def resolve_ai_agent_runtime_readiness(
 	*, scenario: str, environment: str, company: str | None, user: str,
 	model_alias: str | None = None,
@@ -1543,43 +1569,52 @@ def resolve_ai_agent_runtime_readiness(
 		return {"ready": False, "reason": "ambiguous_policy", "policy_code": None}
 
 	row, snapshot = winners[0]
-	aliases = {
-		str(snapshot.get("primary_model_alias") or "").strip(),
-		*(str(value or "").strip() for value in snapshot.get("fallback_model_aliases") or []),
-	}
-	if resolved_model_alias:
-		aliases.add(resolved_model_alias)
-	aliases.discard("")
+	policy_aliases = list(dict.fromkeys(
+		str(value or "").strip()
+		for value in [
+			snapshot.get("primary_model_alias"),
+			*(snapshot.get("fallback_model_aliases") or []),
+		]
+		if str(value or "").strip()
+	))
+	candidate_aliases = [resolved_model_alias] if resolved_model_alias else policy_aliases
 	model_rows = frappe.db.sql(
 		f"""
-		SELECT model_alias, status, supports_tools
+		SELECT model_alias, capability, status, supports_tools, supports_json_schema,
+			last_health_at, health_expires_at, last_health_status, last_error_code
 		FROM `{REGISTRY_TABLE}`
-		WHERE model_alias IN ({', '.join(['%s'] * len(aliases))})
+		WHERE model_alias IN ({', '.join(['%s'] * len(candidate_aliases))})
 		""",
-		tuple(sorted(aliases)),
+		tuple(candidate_aliases),
 		as_dict=True,
-	) if aliases else []
+	) if candidate_aliases else []
 	models = {str(model.model_alias): model for model in model_rows}
-	unverified_aliases = sorted(
-		alias for alias in aliases
-		if alias not in models
-		or str(models[alias].status or "") not in {"active", "validated"}
-		or not cint(models[alias].supports_tools)
-	)
+	eligibility = {
+		alias: _runtime_model_ineligibility_reasons(snapshot, models.get(alias))
+		for alias in candidate_aliases
+	}
+	eligible_aliases = [alias for alias in candidate_aliases if not eligibility[alias]]
+	ineligible_models = {
+		alias: reasons for alias, reasons in eligibility.items() if reasons
+	}
 	policy_code = str(row.policy_code or "") or None
-	if unverified_aliases:
+	if not eligible_aliases:
 		return {
 			"ready": False,
-			"reason": "model_tools_unverified",
+			"reason": "selected_model_ineligible" if resolved_model_alias else "no_eligible_model",
 			"policy_code": policy_code,
 			"policy_version": cint(row.published_version) or None,
-			"unverified_model_aliases": unverified_aliases,
+			"eligible_model_aliases": [],
+			"ineligible_models": ineligible_models,
 		}
 	return {
 		"ready": True,
 		"reason": "ready",
 		"policy_code": policy_code,
 		"policy_version": cint(row.published_version) or None,
+		"selected_model_alias": eligible_aliases[0],
+		"eligible_model_aliases": eligible_aliases,
+		"ineligible_models": ineligible_models,
 	}
 
 
