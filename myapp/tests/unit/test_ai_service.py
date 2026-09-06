@@ -975,6 +975,41 @@ class TestAiService(TestCase):
 		self.assertEqual(caught.exception.code, "AI_DAILY_BUDGET_EXCEEDED")
 		self.assertEqual(caught.exception.http_status, 429)
 
+	@patch("myapp.services.ai_service._get_ai_orchestrator_settings", return_value=("http://ai", "token"))
+	@patch("myapp.services.ai_service.urllib.request.urlopen")
+	def test_agent_resume_sends_release_affinity_header(self, mock_urlopen, _settings):
+		response = MagicMock()
+		response.read.return_value = json.dumps({
+			"message": {"role": "assistant", "content": "恢复完成。"},
+			**_runtime_metadata("agent", "erp-readonly-v11"),
+		}).encode()
+		mock_urlopen.return_value.__enter__.return_value = response
+
+		_call_ai_orchestrator(
+			{"capability_token": "token"}, resume=True, release_affinity="release-1",
+		)
+
+		request = mock_urlopen.call_args.args[0]
+		headers = {key.lower(): value for key, value in request.header_items()}
+		self.assertEqual(headers["x-myapp-ai-release-affinity"], "release-1")
+		self.assertTrue(request.full_url.endswith("/internal/v1/agent/run/resume"))
+
+	@patch("myapp.services.ai_service._get_ai_orchestrator_settings", return_value=("http://ai", "token"))
+	@patch("myapp.services.ai_service.urllib.request.urlopen")
+	def test_stream_agent_resume_sends_release_affinity_header(self, mock_urlopen, _settings):
+		mock_urlopen.return_value.__enter__.return_value = [
+			b'data: {"type":"completed"}\n',
+		]
+
+		self.assertEqual(list(_stream_ai_orchestrator(
+			{"capability_token": "token"}, resume=True, release_affinity="release-1",
+		)), [{"type": "completed"}])
+
+		request = mock_urlopen.call_args.args[0]
+		headers = {key.lower(): value for key, value in request.header_items()}
+		self.assertEqual(headers["x-myapp-ai-release-affinity"], "release-1")
+		self.assertTrue(request.full_url.endswith("/internal/v1/agent/run/resume/stream"))
+
 	@patch("myapp.services.ai_service._can_view_advanced_diagnostics", return_value=True)
 	@patch("myapp.services.ai_service._current_user", return_value="manager@example.com")
 	@patch("myapp.services.ai_service._get_ai_orchestrator_settings", return_value=("http://ai", "token"))
@@ -2217,6 +2252,7 @@ class TestAiService(TestCase):
 				"run_id": "AI-RUN-1", "conversation_id": "AI-CONV-1", "scenario": "general",
 				"company": "Demo Company", "model_alias": "erp-fast-chat",
 				"prompt_version": "erp-readonly-v11", "allowed_tools": ["search_products"],
+				"release_id": "release-1",
 				"capability_token": "new-capability-token", "checkpoint_stage": "tool_completed",
 			},
 		), patch(
@@ -2243,6 +2279,7 @@ class TestAiService(TestCase):
 			prepared = _prepare_agent_resume("AI-RUN-1")
 
 		self.assertEqual(prepared["run_id"], "AI-RUN-1")
+		self.assertEqual(prepared["release_id"], "release-1")
 		self.assertEqual(prepared["payload"]["capability_token"], "new-capability-token")
 		self.assertEqual(prepared["payload"]["model_alias"], "erp-fast-chat")
 		self.assertEqual(prepared["payload"]["prompt_version"], "erp-readonly-v11")
@@ -5347,6 +5384,7 @@ class TestAiService(TestCase):
 		prepared = {
 			"payload": {"run_id": "AI-RUN-1", "capability_token": "token"},
 			"conversation_id": "AI-CONV-1", "run_id": "AI-RUN-1", "user": "user@example.com",
+			"release_id": "release-1",
 			"started": 1.0, "citations": [], "tool_calls": [],
 			"can_view_advanced_diagnostics": False,
 		}
@@ -5356,7 +5394,9 @@ class TestAiService(TestCase):
 		result = resume_ai_run_v1("AI-RUN-1")
 
 		self.assertTrue(result["data"]["resumed"])
-		mock_call.assert_called_once_with(prepared["payload"], resume=True)
+		mock_call.assert_called_once_with(
+			prepared["payload"], resume=True, release_affinity="release-1",
+		)
 		mock_complete.assert_called_once()
 
 	@patch("myapp.services.ai_service._prepare_agent_resume")

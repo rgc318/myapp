@@ -1565,7 +1565,7 @@ def prepare_reviewed_agent_approval_resume(*, approval_id: str, user: str) -> di
 	rows = frappe.db.sql(
 		f"""
 		SELECT a.*, r.conversation, r.scenario, r.status AS run_status, r.model_alias,
-			r.allowed_tools_json, r.agent_state_json, c.company_scope,
+			r.release_id, r.allowed_tools_json, r.agent_state_json, c.company_scope,
 			c.status AS conversation_status
 		FROM `{AGENT_APPROVAL_TABLE}` a
 		JOIN `{RUN_TABLE}` r ON r.name = a.run_id
@@ -1585,6 +1585,9 @@ def prepare_reviewed_agent_approval_resume(*, approval_id: str, user: str) -> di
 		frappe.throw(_("Agent Run 已被其他请求恢复或结束。"))
 	if str(row.conversation_status or "") != "active":
 		frappe.throw(_("归档会话中的 Agent Run 不能恢复。"))
+	release_id = str(row.release_id or "").strip()
+	if not release_id:
+		frappe.throw(_("Agent Run 缺少 Orchestrator 发布标识，不能安全恢复。"))
 	checkpoint = _normalize_agent_checkpoint(row.agent_state_json, run_id=row.run_id)
 	call, arguments = _agent_checkpoint_pending_call(checkpoint)
 	_arguments, _encoded, arguments_hash = _canonical_agent_arguments(arguments)
@@ -1615,6 +1618,7 @@ def prepare_reviewed_agent_approval_resume(*, approval_id: str, user: str) -> di
 		"run_id": row.run_id, "conversation_id": row.conversation,
 		"scenario": row.scenario, "company": row.company_scope,
 		"model_alias": checkpoint.get("model_alias") or row.model_alias,
+		"release_id": release_id,
 		"prompt_version": checkpoint.get("prompt_version"),
 		"allowed_tools": allowed_tools, "capability_token": capability_token,
 		"checkpoint_stage": checkpoint.get("stage"),
@@ -1742,7 +1746,7 @@ def prepare_agent_run_resume(*, run_id: str, user: str) -> dict:
 	rows = frappe.db.sql(
 		f"""
 		SELECT r.name, r.conversation, r.requested_by, r.scenario, r.status,
-			r.model_alias, r.allowed_tools_json, r.agent_state_json,
+			r.model_alias, r.release_id, r.allowed_tools_json, r.agent_state_json,
 			c.company_scope, c.status AS conversation_status
 		FROM `{RUN_TABLE}` r
 		JOIN `{CONVERSATION_TABLE}` c ON c.name = r.conversation
@@ -1760,6 +1764,9 @@ def prepare_agent_run_resume(*, run_id: str, user: str) -> dict:
 		frappe.throw(_("归档会话中的 AI Run 不能恢复。"))
 	if str(row.status or "") not in {"failed", "expired"}:
 		frappe.throw(_("只有失败或过期的 Agent Run 可以恢复。"))
+	release_id = str(row.release_id or "").strip()
+	if not release_id:
+		frappe.throw(_("AI Run 缺少 Orchestrator 发布标识，不能安全恢复。"))
 	checkpoint = _normalize_agent_checkpoint(row.agent_state_json, run_id=run_id)
 	if checkpoint is None:
 		frappe.throw(_("AI Run 没有可恢复的安全检查点。"))
@@ -1801,6 +1808,7 @@ def prepare_agent_run_resume(*, run_id: str, user: str) -> dict:
 		"scenario": row.scenario,
 		"company": row.company_scope,
 		"model_alias": checkpoint.get("model_alias") or row.model_alias,
+		"release_id": release_id,
 		"prompt_version": checkpoint.get("prompt_version"),
 		"allowed_tools": allowed_tools,
 		"capability_token": capability_token,

@@ -436,6 +436,7 @@ class TestAiRepository(TestCase):
 			"decision_reason": None, "expires_at": now + timedelta(minutes=10),
 			"executed_at": None, "version": 2, "conversation": "AI-CONV-1",
 			"scenario": "general", "run_status": "waiting_approval", "model_alias": "erp-fast-chat",
+			"release_id": "release-1",
 			"allowed_tools_json": '["search_products"]',
 			"agent_state_json": frappe.as_json(checkpoint), "company_scope": "Demo Company",
 			"conversation_status": "active",
@@ -454,6 +455,7 @@ class TestAiRepository(TestCase):
 
 		self.assertEqual(result["run_id"], "AI-RUN-1")
 		self.assertEqual(result["capability_token"], "new-token")
+		self.assertEqual(result["release_id"], "release-1")
 		self.assertEqual(result["approval"]["status"], "approved")
 		self.assertIn("status = 'running'", mock_frappe.db.sql.call_args_list[1].args[0])
 
@@ -498,6 +500,7 @@ class TestAiRepository(TestCase):
 				[frappe._dict({
 					"name": "AI-RUN-1", "conversation": "AI-CONV-1", "requested_by": "user@example.com",
 					"scenario": "general", "status": "failed", "model_alias": "erp-fast-chat",
+					"release_id": "release-1",
 					"allowed_tools_json": '["search_products"]',
 					"agent_state_json": frappe.as_json(checkpoint), "company_scope": "Demo Company",
 					"conversation_status": "active",
@@ -510,6 +513,7 @@ class TestAiRepository(TestCase):
 
 		self.assertEqual(result["capability_token"], "new-capability-token")
 		self.assertEqual(result["checkpoint_stage"], "tool_completed")
+		self.assertEqual(result["release_id"], "release-1")
 		self.assertEqual(mock_frappe.db.sql.call_count, 4)
 		self.assertIn("status = 'running'", mock_frappe.db.sql.call_args_list[1].args[0])
 

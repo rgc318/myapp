@@ -950,20 +950,25 @@ def _capture_runtime_metadata(prepared: dict, result: dict) -> dict:
 	return metadata
 
 
-def _call_ai_orchestrator(payload: dict, *, resume: bool = False) -> dict:
+def _call_ai_orchestrator(
+	payload: dict, *, resume: bool = False, release_affinity: str | None = None,
+) -> dict:
 	base_url, service_token = _get_ai_orchestrator_settings()
 	endpoint = (
 		"/internal/v1/agent/run/resume"
 		if resume else "/internal/v1/agent/run"
 	) if payload.get("capability_token") else "/internal/v1/chat"
+	headers = {
+		"Authorization": f"Bearer {service_token}",
+		"Content-Type": "application/json",
+		"Accept": "application/json",
+	}
+	if release_affinity:
+		headers["X-MyApp-AI-Release-Affinity"] = release_affinity
 	request = urllib.request.Request(
 		f"{base_url}{endpoint}",
 		data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-		headers={
-			"Authorization": f"Bearer {service_token}",
-			"Content-Type": "application/json",
-			"Accept": "application/json",
-		},
+		headers=headers,
 		method="POST",
 	)
 	try:
@@ -1270,20 +1275,25 @@ def _call_ai_orchestrator_product_setup_draft(payload: dict) -> dict:
 	)
 
 
-def _stream_ai_orchestrator(payload: dict, *, resume: bool = False):
+def _stream_ai_orchestrator(
+	payload: dict, *, resume: bool = False, release_affinity: str | None = None,
+):
 	base_url, service_token = _get_ai_orchestrator_settings()
 	endpoint = (
 		"/internal/v1/agent/run/resume/stream"
 		if resume else "/internal/v1/agent/run/stream"
 	) if payload.get("capability_token") else "/internal/v1/chat/stream"
+	headers = {
+		"Authorization": f"Bearer {service_token}",
+		"Content-Type": "application/json",
+		"Accept": "text/event-stream",
+	}
+	if release_affinity:
+		headers["X-MyApp-AI-Release-Affinity"] = release_affinity
 	request = urllib.request.Request(
 		f"{base_url}{endpoint}",
 		data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-		headers={
-			"Authorization": f"Bearer {service_token}",
-			"Content-Type": "application/json",
-			"Accept": "text/event-stream",
-		},
+		headers=headers,
 		method="POST",
 	)
 	try:
@@ -8130,6 +8140,7 @@ def _prepare_agent_resume(run_id: str) -> dict:
 		"run_id": resolved_run_id,
 		"started": time.perf_counter(),
 		"prompt_version": prompt_version,
+		"release_id": str(resume_context.get("release_id") or "").strip() or None,
 		"citations": [],
 		"tool_calls": [{
 			"tool": "resume_agent_run", "risk_level": "L0_RUNTIME_CONTROL",
@@ -8196,6 +8207,7 @@ def _prepare_agent_approval_resume(approval_id: str) -> dict:
 		"scenario": scenario, "company": company,
 		"conversation_id": conversation_id, "run_id": resume_context["run_id"],
 		"started": time.perf_counter(), "prompt_version": prompt_version,
+		"release_id": str(resume_context.get("release_id") or "").strip() or None,
 		"citations": [],
 		"tool_calls": [{
 			"tool": "resume_agent_after_approval", "risk_level": "L0_RUNTIME_CONTROL",
@@ -8503,7 +8515,9 @@ def list_ai_agent_approvals_v1(
 def _resume_reviewed_agent_approval(approval_id: str):
 	prepared = _prepare_agent_approval_resume(approval_id)
 	try:
-		result = _call_ai_orchestrator(prepared["payload"], resume=True)
+		result = _call_ai_orchestrator(
+			prepared["payload"], resume=True, release_affinity=prepared.get("release_id"),
+		)
 		if result.get("status") == "waiting_approval":
 			pause = _pause_chat_run(prepared, result)
 			return {
@@ -8569,7 +8583,9 @@ def resume_ai_agent_approval_v1(approval_id: str):
 def resume_ai_run_v1(run_id: str):
 	prepared = _prepare_agent_resume(run_id)
 	try:
-		result = _call_ai_orchestrator(prepared["payload"], resume=True)
+		result = _call_ai_orchestrator(
+			prepared["payload"], resume=True, release_affinity=prepared.get("release_id"),
+		)
 		if result.get("status") == "waiting_approval":
 			pause = _pause_chat_run(prepared, result)
 			return {
@@ -8690,7 +8706,11 @@ def _stream_prepared_ai_run(prepared: dict, *, resume: bool = False):
 					"message": _("正在请求模型，等待首个 Token"),
 				}
 			)
-			for event in _stream_ai_orchestrator(prepared["payload"], resume=resume):
+			for event in _stream_ai_orchestrator(
+				prepared["payload"],
+				resume=resume,
+				release_affinity=prepared.get("release_id") if resume else None,
+			):
 				event_type = event.get("type")
 				if event_type in {"started", "completed", "paused"}:
 					prepared.update(_validate_runtime_result(
