@@ -718,6 +718,19 @@ def _merge_intent_with_conversation_state(
 	content: str, candidate: dict, conversation_state: dict | None, *,
 	has_current_attachments: bool = False,
 ) -> dict:
+	from myapp.services.ai_action_contract import apply_query_clears
+	merged = _merge_intent_with_conversation_state_legacy(
+		content, candidate, conversation_state, has_current_attachments=has_current_attachments,
+	)
+	if not isinstance(candidate, dict) or not _structured_intent_is_confident(candidate):
+		return merged
+	return apply_query_clears(candidate, merged)
+
+
+def _merge_intent_with_conversation_state_legacy(
+	content: str, candidate: dict, conversation_state: dict | None, *,
+	has_current_attachments: bool = False,
+) -> dict:
 	"""Merge only omitted/default parser fields from state; explicit current text wins."""
 	if not isinstance(candidate, dict) or not _structured_intent_is_confident(candidate):
 		return candidate if isinstance(candidate, dict) else {}
@@ -822,12 +835,22 @@ def _resolve_ai_action_scenario(
 	"""Use structured model routing when valid; local rules are degradation only."""
 	local_scenario = _infer_ai_action_scenario(content, conversation_state)
 	intent = semantic_intent if isinstance(semantic_intent, dict) else {}
+	from myapp.services.ai_action_contract import assess_action_contract
+	assessment = assess_action_contract(intent)
+	if assessment in {"unsupported", "clarification_required"}:
+		return "general", f"action_{assessment}", None
 	candidate = str(intent.get("intent") or "").strip()
 	try:
 		confidence = min(1.0, max(0.0, float(intent.get("confidence") or 0)))
 	except (TypeError, ValueError):
 		confidence = 0
 	if candidate not in AI_ACTION_SCENARIOS or confidence < 0.6:
+		if local_scenario in {
+			"product_setup_draft", "sales_order_draft", "purchase_order_draft",
+			"inventory_adjustment_draft",
+		}:
+			# Lexical fallback cannot establish affirmative authorization to write.
+			return "general", "write_intent_requires_clarification", confidence or None
 		return local_scenario, "degraded_local_rules", confidence or None
 	return candidate, "structured_intent", confidence
 
@@ -2812,6 +2835,13 @@ def resolve_ai_scenario_v1(
 	resolved_scenario, resolution_mode, resolution_confidence = _resolve_ai_action_scenario(
 		resolved_content, conversation_state, intent,
 	)
+	from myapp.services.ai_action_contract import WRITE_CAPABILITIES, assess_action_contract
+	if resolved_scenario in WRITE_CAPABILITIES and assess_action_contract(intent) != "supported":
+		raise frappe.ValidationError(_("AI 尚未返回完整动作契约，不能安全生成写入草稿；请更新 AI 服务或重新明确操作目标。"))
+	if resolution_mode == "action_unsupported":
+		raise frappe.ValidationError(_("当前 AI 不支持执行该动作，未创建或修改任何业务对象。删除、取消、合并和启停不能自动替换为编辑，请进入对应业务模块处理。"))
+	if resolution_mode == "action_clarification_required":
+		raise frappe.ValidationError(_("当前请求是咨询、否定或包含尚未确认的多个动作/对象，未生成写入草稿。请明确一个需要执行的动作和目标；系统不会自动只处理其中一部分。"))
 	resolution_id = _issue_ai_scenario_resolution(
 		user=user,
 		content=resolved_content,
@@ -4091,7 +4121,7 @@ def _resolve_order_update_source(
 ) -> tuple[str, str | None, dict | None, list[str]]:
 	requested_operation = str(candidate.get("operation") or "auto").strip().lower()
 	if requested_operation not in {"auto", "create", "update"}:
-		requested_operation = "auto"
+		raise frappe.ValidationError(_("不支持的订单操作；不能自动转换为创建或修改。"))
 	order_number = str(candidate.get("order_number") or "").strip()[:140] or None
 	source_document_type = str(candidate.get("source_document_type") or "unstructured").strip()
 	operation = requested_operation
@@ -5960,7 +5990,7 @@ def _build_product_setup_draft(
 		candidate.get("operation") or previous_state.get("operation") or "auto"
 	).strip().lower()
 	if requested_operation not in {"auto", "create", "update"}:
-		requested_operation = "auto"
+		raise frappe.ValidationError(_("不支持的商品操作；不能自动转换为创建或修改。"))
 	existing_detail, existing_matches = _resolve_existing_product_for_setup(candidate)
 	operation = requested_operation
 	operation_decision_required = bool(requested_operation == "auto" and existing_matches)

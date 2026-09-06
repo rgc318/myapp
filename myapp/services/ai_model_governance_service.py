@@ -893,14 +893,15 @@ def _resolve_health_status(
 	return "unavailable" if previous_failures + 1 >= 2 else "degraded"
 
 
-def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str) -> dict:
+def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str, mode="full") -> dict:
 	_ensure_tables()
 	resolved_aliases = _resolve_healthcheck_model_aliases(model_aliases)
 	placeholders = ", ".join(["%s"] * len(resolved_aliases))
 	previous_rows = frappe.db.sql(
 		f"""
 		SELECT model_alias, last_health_status, health_failure_count, supports_tools,
-			supports_json_schema, supports_structured_output, supports_vision
+			supports_json_schema, supports_structured_output, supports_vision,
+			last_tool_error_code, last_structured_error_code, last_vision_error_code
 		FROM `{REGISTRY_TABLE}`
 		WHERE model_alias IN ({placeholders})
 		""",
@@ -910,13 +911,17 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 	previous_by_alias = {str(row.model_alias): row for row in previous_rows}
 	result = _call_orchestrator(
 		"/internal/v1/governance/models/availability",
-		payload={"model_aliases": resolved_aliases},
+		payload={"model_aliases": resolved_aliases, "mode": mode},
 		method="POST",
 		timeout=180,
 	)
 	items = result.get("items")
 	if not isinstance(items, list):
 		frappe.throw(_("Orchestrator 未返回有效的模型可用性结果。"))
+	if len(items) != len(resolved_aliases) or {
+		item.get("model_alias") for item in items if isinstance(item, dict)
+	} != set(resolved_aliases):
+		frappe.throw(_("Orchestrator 返回的检测结果缺失或重复。"))
 
 	now = now_datetime()
 	health_expires_at = _model_health_expiry(now)
@@ -954,13 +959,22 @@ def _check_ai_model_availability(*, model_aliases=None, actor: str, trigger: str
 			0 if available else
 			max(1, cint(getattr(previous, "health_failure_count", 0)) + 1)
 		)
-		if health_status == "degraded" and previous:
+		if mode == "basic" and previous:
+			tool_error_code = getattr(previous, "last_tool_error_code", None)
+			structured_error_code = getattr(previous, "last_structured_error_code", None)
+			vision_error_code = getattr(previous, "last_vision_error_code", None)
+		if (mode == "basic" or health_status == "degraded") and previous:
 			supports_tools = bool(previous.supports_tools)
 			supports_json_schema = bool(getattr(previous, "supports_json_schema", 0))
 			supports_structured_output = bool(getattr(previous, "supports_structured_output", 0))
 			supports_vision = bool(previous.supports_vision)
 		elif previous and _is_transient_health_error(structured_error_code):
 			supports_structured_output = bool(getattr(previous, "supports_structured_output", 0))
+			supports_json_schema = bool(getattr(previous, "supports_json_schema", 0))
+		if previous and _is_transient_health_error(tool_error_code):
+			supports_tools = bool(getattr(previous, "supports_tools", 0))
+		if previous and _is_transient_health_error(vision_error_code):
+			supports_vision = bool(getattr(previous, "supports_vision", 0))
 		frappe.db.sql(
 			f"""
 			UPDATE `{REGISTRY_TABLE}`
@@ -1055,11 +1069,13 @@ def run_scheduled_ai_model_availability_check() -> dict:
 	schedule = get_ai_model_healthcheck_schedule()
 	if not schedule["enabled"]:
 		return {"status": "skipped", "message": _("AI 模型定时健康检查已停用。"), "data": schedule}
-	return _check_ai_model_availability(
-		model_aliases=schedule["model_aliases"] or None,
-		actor="Administrator",
-		trigger="scheduled",
-	)
+	from myapp.services.ai_model_check_service import start_ai_model_check_v1
+	previous_user = frappe.session.user
+	try:
+		frappe.set_user("Administrator")
+		return start_ai_model_check_v1(model_aliases=schedule["model_aliases"] or None, mode="basic")
+	finally:
+		frappe.set_user(previous_user)
 
 
 def list_ai_models_v1(

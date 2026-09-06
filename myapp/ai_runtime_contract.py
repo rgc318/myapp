@@ -34,7 +34,7 @@ AI_RUNTIME_SCENARIO_SCHEMA_FAMILIES = {
 # compatibility requirement under ai-runtime-contract-v1.
 AI_RUNTIME_EXPECTED_PROMPT_VERSIONS = {
 	"general": "erp-readonly-v11",
-	"intent_parse": "erp-intent-v6",
+	"intent_parse": "erp-intent-v7",
 	"product_search": "erp-readonly-v11",
 	"order_query": "erp-readonly-v11",
 	"report_summary": "erp-readonly-v11",

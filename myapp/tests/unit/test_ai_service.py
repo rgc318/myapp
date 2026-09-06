@@ -840,7 +840,7 @@ class TestAiService(TestCase):
 			},
 			"prompt_versions": {
 				"general": "erp-readonly-v11",
-				"intent_parse": "erp-intent-v6",
+				"intent_parse": "erp-intent-v7",
 				"product_search": "erp-readonly-v11",
 				"order_query": "erp-readonly-v11",
 				"report_summary": "erp-readonly-v11",
@@ -893,7 +893,7 @@ class TestAiService(TestCase):
 			},
 			"prompt_versions": {
 				"general": "erp-readonly-v11",
-				"intent_parse": "erp-intent-v6",
+				"intent_parse": "erp-intent-v7",
 				"product_search": "erp-readonly-v11",
 				"order_query": "erp-readonly-v11",
 				"report_summary": "erp-readonly-v11",
@@ -3552,7 +3552,7 @@ class TestAiService(TestCase):
 				"date_from": None, "date_to": None, "status": "all", "sort": "latest",
 				"min_amount": None, "limit": 10,
 			},
-			**_runtime_metadata("intent_parse", "erp-intent-v6"),
+			**_runtime_metadata("intent_parse", "erp-intent-v7"),
 		}).encode("utf-8")
 		mock_urlopen.return_value.__enter__.return_value = response
 
@@ -5062,6 +5062,8 @@ class TestAiService(TestCase):
 	@patch("myapp.services.ai_service._issue_ai_scenario_resolution", return_value="AI-RESOLUTION-2")
 	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
 		"intent": "inventory_adjustment_draft", "confidence": 0.96,
+		"action_contract": {"schema_version": "ai-action-contract-v1", "request_mode": "execute_request",
+			"operations": ["inventory_adjust"], "target_count": 1},
 	})
 	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
 	@patch("myapp.services.ai_service._resolve_company_scope", return_value="Demo Company")

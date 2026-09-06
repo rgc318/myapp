@@ -1,5 +1,7 @@
 # 测试说明
 
+AI 后台检测回归：容器 bench Python 执行 `apps.myapp.myapp.tests.unit.test_ai_model_check_service`，覆盖权限、重复投递、逐项保存、错误隔离、取消和不跳过 adapter 的 Gateway 参数契约。HTTP 回归为 `apps.myapp.myapp.tests.http.test_ai_model_check_http`；默认只查询进度，指定 `MYAPP_HTTP_MODEL_CHECK_ALIAS` 后才执行一个真实 basic 请求，验证提交、请求幂等、worker 执行、查询与终态取消。该测试不创建 ERP 业务夹具。
+
 更新时间：2026-08-29
 
 ## 1. 测试原则

@@ -3,6 +3,10 @@ import os
 
 import frappe
 
+from .ai_api import start_ai_model_check_v1 as start_ai_model_check_v1_service
+from .ai_api import get_ai_model_check_v1 as get_ai_model_check_v1_service
+from .ai_api import cancel_ai_model_check_v1 as cancel_ai_model_check_v1_service
+
 from .ai_api import archive_ai_conversation_v1 as archive_ai_conversation_v1_service
 from .ai_api import chat_ai_v1 as chat_ai_v1_service
 from .ai_api import cancel_ai_run_v1 as cancel_ai_run_v1_service
@@ -919,6 +923,29 @@ def check_ai_model_availability_v1(model_aliases=None, request_id: str | None = 
 			request_id=request_id,
 		),
 		success_code="AI_MODEL_AVAILABILITY_CHECKED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def start_ai_model_check_v1(model_aliases=None, mode="full", request_id=None):
+	return _handle_gateway_call(
+		lambda: start_ai_model_check_v1_service(model_aliases=model_aliases, mode=mode, request_id=request_id),
+		success_code="AI_MODEL_CHECK_ACCEPTED",
+	)
+
+
+@frappe.whitelist()
+def get_ai_model_check_v1(job_id=None):
+	return _handle_gateway_call(
+		lambda: get_ai_model_check_v1_service(job_id=job_id), success_code="AI_MODEL_CHECK_FETCHED",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def cancel_ai_model_check_v1(job_id, request_id=None):
+	return _handle_gateway_call(
+		lambda: cancel_ai_model_check_v1_service(job_id=job_id, request_id=request_id),
+		success_code="AI_MODEL_CHECK_CANCEL_REQUESTED",
 	)
 
 

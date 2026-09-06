@@ -1,3 +1,10 @@
+from myapp.services.ai_model_check_service import (
+	start_ai_model_check_v1 as start_ai_model_check_v1_service,
+	get_ai_model_check_v1 as get_ai_model_check_v1_service,
+	cancel_ai_model_check_v1 as cancel_ai_model_check_v1_service,
+)
+
+
 from myapp.services.ai_service import (
 	archive_ai_conversation_v1 as archive_ai_conversation_v1_service,
 	chat_ai_v1 as chat_ai_v1_service,
@@ -529,6 +536,18 @@ def check_ai_model_availability_v1(model_aliases=None, request_id: str | None = 
 		model_aliases=model_aliases,
 		request_id=request_id,
 	)
+
+
+def start_ai_model_check_v1(model_aliases=None, mode="full", request_id=None):
+	return start_ai_model_check_v1_service(model_aliases=model_aliases, mode=mode, request_id=request_id)
+
+
+def get_ai_model_check_v1(job_id=None):
+	return get_ai_model_check_v1_service(job_id=job_id)
+
+
+def cancel_ai_model_check_v1(job_id, request_id=None):
+	return cancel_ai_model_check_v1_service(job_id=job_id)
 
 
 def list_ai_models_v1(

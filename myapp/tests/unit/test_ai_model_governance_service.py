@@ -32,6 +32,50 @@ def _run_immediately(_namespace, _request_id, callback, **_kwargs):
 
 
 class TestAiModelGovernanceService(TestCase):
+	@patch.object(ai_model_governance_service, "_ensure_tables")
+	@patch.object(ai_model_governance_service, "_resolve_healthcheck_model_aliases", return_value=["a"])
+	@patch.object(ai_model_governance_service, "_record_audit")
+	@patch.object(ai_model_governance_service, "_invalidate_runtime_policy_cache", return_value=True)
+	@patch.object(ai_model_governance_service, "_model_health_expiry", return_value="2026-09-08")
+	@patch.object(ai_model_governance_service, "_model_health_ttl_seconds", return_value=3600)
+	@patch.object(ai_model_governance_service, "_call_orchestrator")
+	def test_full_probe_preserves_transient_capabilities_but_not_deterministic_failures(self, orchestrator, *mocks):
+		for error, expected in (("PROVIDER_TIMEOUT", True), ("PROVIDER_HTTP_429", True),
+			("PROVIDER_HTTP_503", True), ("PROVIDER_HTTP_400", False)):
+			with self.subTest(error=error), patch.object(ai_model_governance_service, "frappe") as framework, patch.object(
+				ai_model_governance_service, "now_datetime", return_value=datetime(2026, 9, 6),
+			):
+				orchestrator.return_value = {"items": [{"model_alias": "a", "available": True,
+					"tool_error_code": error, "vision_error_code": error, "structured_error_code": error}]}
+				framework.db.sql.return_value = [frappe._dict(model_alias="a", supports_tools=1,
+					supports_json_schema=1, supports_structured_output=1, supports_vision=1)]
+				result = ai_model_governance_service._check_ai_model_availability(actor="Administrator", trigger="test", mode="full")
+				item = result["data"]["items"][0]
+				for key in ("supports_tools", "supports_json_schema", "supports_structured_output", "supports_vision"):
+					self.assertEqual(item[key], expected)
+				self.assertEqual(item["tool_error_code"], error)
+
+	@patch.object(ai_model_governance_service, "_ensure_tables")
+	@patch.object(ai_model_governance_service, "_resolve_healthcheck_model_aliases", return_value=["a"])
+	@patch.object(ai_model_governance_service, "_record_audit")
+	@patch.object(ai_model_governance_service, "_invalidate_runtime_policy_cache", return_value=True)
+	@patch.object(ai_model_governance_service, "_model_health_expiry", return_value="2026-09-08")
+	@patch.object(ai_model_governance_service, "_model_health_ttl_seconds", return_value=3600)
+	@patch.object(ai_model_governance_service, "_call_orchestrator")
+	def test_basic_check_preserves_capabilities_and_their_errors(self, orchestrator, *mocks):
+		orchestrator.return_value = {"items": [{"model_alias": "a", "available": True}]}
+		with patch.object(ai_model_governance_service, "frappe") as framework, patch.object(
+			ai_model_governance_service, "now_datetime", return_value=datetime(2026, 9, 6),
+		):
+			framework.db.sql.return_value = [frappe._dict(model_alias="a", supports_tools=1,
+				supports_json_schema=1, supports_structured_output=1, supports_vision=1,
+				last_tool_error_code="previous", last_structured_error_code=None, last_vision_error_code=None)]
+			result = ai_model_governance_service._check_ai_model_availability(actor="Administrator", trigger="test", mode="basic")
+		item = result["data"]["items"][0]
+		for key in ("supports_tools", "supports_json_schema", "supports_structured_output", "supports_vision"):
+			self.assertTrue(item[key])
+		self.assertEqual(item["tool_error_code"], "previous")
+
 	def test_effective_health_distinguishes_unknown_stale_and_half_open(self):
 		self.assertEqual(_effective_model_health(
 			last_health_status=None, current_time="2026-09-05 00:00:00",
@@ -246,7 +290,7 @@ class TestAiModelGovernanceService(TestCase):
 		self.assertEqual(mock_orchestrator.call_count, 2)
 		mock_orchestrator.assert_any_call(
 			"/internal/v1/governance/models/availability",
-			payload={"model_aliases": ["erp-embedding", "erp-fast-chat"]},
+			payload={"model_aliases": ["erp-embedding", "erp-fast-chat"], "mode": "full"},
 			method="POST",
 			timeout=180,
 		)
@@ -310,7 +354,7 @@ class TestAiModelGovernanceService(TestCase):
 		self.assertEqual(result["data"]["trigger"], "manual_selected")
 		mock_orchestrator.assert_any_call(
 			"/internal/v1/governance/models/availability",
-			payload={"model_aliases": ["gpt-5.5"]},
+			payload={"model_aliases": ["gpt-5.5"], "mode": "full"},
 			method="POST",
 			timeout=180,
 		)

@@ -1,5 +1,25 @@
 ## API 网关文档
 
+自动识别入口 `resolve_ai_scenario_v1` 现校验 ai-action-contract-v1：不支持动作、否定/咨询、多目标待确认或写路由缺少契约时返回 VALIDATION_ERROR 和明确说明，不签发可进入写草稿的 resolution_id。已有 Web 使用统一错误展示，不新增页面私有判断。此阶段尚未将同一契约绑定至四类草稿直调和执行入口，不能宣称所有入口完整覆盖。
+
+查询合并支持 `query_context_operations.reset` 和 `clear_fields`：reset 丢弃旧查询条件但保留当前候选明确新值，clear_fields 覆盖旧状态恢复；清除日期同时清除 date_from/date_to，清除商品词同时清除检索线索。未携带控制字段的旧响应保留兼容合并行为；后续需完整迁移 keep/set/clear。
+
+AI 动作安全第一阶段：低置信度或无有效语义结果时，不再由关键词规则路由到四类写入草稿，改为 general，解析 mode 为 `write_intent_requires_clarification`。这不是完整澄清交互协议。商品/订单草稿服务拒绝未知 operation，不再自动降为 auto；合法值仍为 auto/create/update，尚不支持删除/取消/合并。完整设计见父仓 `docs/05-development/12-ai-action-contract-hardening.zh-CN.md`。完整能力探测遇到工具、视觉或结构化瞬时错误时保留相应旧能力并记录本次错误；不把本次超时解释为不支持。
+
+### AI 模型异步检测（2026-09-06）
+
+新页面及定时检测使用以下接口，均要求治理管理权限，沿用 Gateway envelope：
+
+| 接口 | 参数 | 成功码 |
+| --- | --- | --- |
+| POST start_ai_model_check_v1 | model_aliases 可省略、mode=basic/full（默认 full）、request_id 可选 | AI_MODEL_CHECK_ACCEPTED |
+| get_ai_model_check_v1 | job_id 可选，省略返回本站最新任务或 null | AI_MODEL_CHECK_FETCHED |
+| POST cancel_ai_model_check_v1 | job_id、request_id 可选 | AI_MODEL_CHECK_CANCEL_REQUESTED |
+
+任务 data 包含 `job_id/status/mode/model_aliases/total/completed/items/cancel_requested/creation/modified`。状态为 queued/running/completed/partial/cancelled/interrupted。每项包含 `model_alias/check_status` 及原健康结果；执行错误为 `check_status=error / error_code=MODEL_CHECK_EXECUTION_FAILED`，不写入虚假的模型不可用结论。completed 仅表示完成检测，不代表模型全部通过。
+
+每站点一个活动任务、最多 100 项、逐项保存；start 使用统一幂等机制。cancel 本身幂等：排队任务立即取消，运行任务当前模型结束后停止。basic 保留能力及能力错误，full 重测能力；定时任务现在使用 basic。旧 check_ai_model_availability_v1 保留同步兼容契约，不受新任务活动槽控制，新 Web 和定时任务不再调用。设计与运维边界见父仓 docs/05-development/11-ai-model-check-jobs.zh-CN.md。
+
 推荐使用以下自定义接口入口：
 
 - 销售与商品：
