@@ -279,6 +279,8 @@ Scheduler 每 10 分钟回收长时间没有持久更新的 `running` Run，并�
 
 商品草稿类型为 `product_setup`，`operation` 为 `create` 或 `update`。创建模式承载 Item 主数据、商品图片、条码、规格、四类价格和可选初始库存，复用幂等 `create_product_v2`；完善模式读取现有商品、图片和价格作为 baseline，只把 `_state.patch` 交给 `update_product_v2`。AI 来源图片通过私有短期 Attachment 发送给经过视觉探测的模型；只有明确创建且草稿未指定图片时，第一张来源图片才派生暂存封面。完善现有商品绝不自动覆盖图片。完善模式不接受初始库存，当前库存仅在 `_state.context` 中只读展示；库存变化必须使用库存调整。旧草稿的 `valuation_rate` 仅作为兼容输入读取。用户可在 AI 工作台确认当前版本后原地执行，也可选择进入 `/master-data/products` 处理复杂字段。
 
+商品完善命令中的 `target.item_code / target.barcode / target.query / target.context_ref` 只描述修改前的目标，`patch` 新值不得参与目标搜索。`target.query` 统一进入共享商品实体解析器；只有解析器返回权限范围内的确定性 `selected`（稳定编码、条码、唯一精确名称或标准昵称）时才自动绑定 Item。仅有一个模糊/语义候选但没有 `selected` 时仍要求人工确认，多候选和零候选同样失败关闭。验证契约分别返回 `PRODUCT_TARGET_CONFIRMATION_REQUIRED`、`PRODUCT_TARGET_AMBIGUOUS`、`PRODUCT_TARGET_NOT_FOUND`，字段固定为 `target.item_code`；不得把“已找到候选待确认”误报为“未找到”。正式写入仍必须经过草稿复核、版本校验和用户确认。
+
 商品查询后的指代表达使用服务端受控业务上下文，不依赖模型从助手文字猜测商品。`generate_ai_product_setup_draft_v1` 在本轮未提供 `item_code`，且用户明确表达修改/完善意图并使用“这个商品、刚才查询到的商品、它”等指代时，只允许继承当前有效会话中 `resolution_status=resolved` 的唯一商品，或最近商品结果集中唯一的 `entity_id`；即使结构化模型把操作降级为 `auto`，Backend 也只在该明确更新条件下纠正为 `update`。显式商品编码优先；多个候选、过期或已清除上下文、非商品结果集均不自动绑定。绑定后 Backend 仍按当前用户、公司和 Item 权限重新读取正式商品，并把不可变目标写入 `_state.entity`；Run 工具审计记录目标编码和来源。
 
 商品查询卡片的确定性动作不调用模型。`prepare_ai_product_update_draft_v1(item_code, company, conversation_id)` 直接按当前权限读取商品 baseline、价格和只读库存上下文并准备 `product_setup/update` 草稿；`prepare_ai_inventory_adjustment_draft_v1(...)` 准备已绑定商品的库存调整草稿，等待用户填写仓库、数量和原因。库存草稿以当前仓库 `Bin.valuation_rate / stock_value` 作为实际估值基线，并返回当前/执行后库存数量、库存价值、价值差额和 `revalues_existing_stock`；当执行估值与当前估值不同且已有库存时，必须明确提示 Stock Reconciliation 会同时重新估值已有库存。

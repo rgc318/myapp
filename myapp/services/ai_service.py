@@ -5402,7 +5402,6 @@ def _resolve_existing_product_for_setup(candidate: dict) -> tuple[dict | None, l
 			candidate.get("barcode") if not candidate.get("_semantic_contract") else None
 		) or ""
 	).strip()
-	matches: dict[str, dict] = {}
 	if item_code:
 		rows = frappe.get_list(
 			"Item", filters={"name": item_code}, fields=["name", "item_name", "modified"], limit_page_length=2,
@@ -5415,33 +5414,18 @@ def _resolve_existing_product_for_setup(candidate: dict) -> tuple[dict | None, l
 		# An explicit or state-bound item code is authoritative. Never fall back
 		# to a same-name item when that code is missing or invalid.
 		return None, []
-	if target_query:
-		for row in frappe.get_list(
-			"Item", filters={"item_name": target_query}, fields=["name", "item_name", "modified"], limit_page_length=5,
-		):
-			matches[str(row.get("name"))] = dict(row)
-	if barcode:
-		barcode_parent = frappe.db.get_value("Item Barcode", {"barcode": barcode}, "parent")
-		if barcode_parent:
-			for row in frappe.get_list(
-				"Item", filters={"name": barcode_parent},
-				fields=["name", "item_name", "modified"], limit_page_length=1,
-			):
-				matches[str(row.get("name"))] = dict(row)
-	rows = list(matches.values())
-	if len(rows) == 1:
-		detail = (get_product_detail_v2(
-			item_code=rows[0]["name"], company=candidate.get("company"),
-		) or {}).get("data") or {}
-		return detail, rows
-	if rows:
-		return None, rows
-	if not target_query:
+	resolution_query = barcode or target_query
+	if not resolution_query:
 		return None, []
 	resolution = _resolve_item_candidates(
-		target_query, company=candidate.get("company"), context="inventory", limit=5,
+		resolution_query,
+		company=candidate.get("company"),
+		context="inventory",
+		limit=5,
+		search_fields=["barcode"] if barcode else None,
+		match_mode="exact" if barcode else "auto",
 	)
-	return None, [
+	resolved_candidates = [
 		{
 			"name": row.get("item_code"),
 			"item_name": row.get("item_name"),
@@ -5451,6 +5435,15 @@ def _resolve_existing_product_for_setup(candidate: dict) -> tuple[dict | None, l
 		}
 		for row in resolution.get("candidates") or []
 	]
+	selected = resolution.get("selected") if isinstance(resolution.get("selected"), dict) else {}
+	selected_item_code = str(selected.get("item_code") or "").strip()
+	if selected_item_code:
+		detail = (get_product_detail_v2(
+			item_code=selected_item_code, company=candidate.get("company"),
+		) or {}).get("data") or {}
+		if detail:
+			return detail, resolved_candidates
+	return None, resolved_candidates
 
 
 def _normalize_product_setup_semantic_candidate(candidate: dict) -> dict:
@@ -5870,18 +5863,50 @@ def _build_product_setup_draft(
 		image = str(default_image_url or "").strip() or None
 	errors = []
 	warnings = []
+	issues = []
+
+	def add_error(code: str, field: str | None, message: str, meta: dict | None = None):
+		errors.append(message)
+		issues.append({
+			"code": code, "field": field, "message": str(message), "meta": meta or {},
+		})
+
 	if operation_decision_required:
-		errors.append(_("发现疑似相同商品，请明确选择新增商品或完善某个现有商品。"))
+		add_error(
+			"PRODUCT_OPERATION_CONFIRMATION_REQUIRED", "target.item_code",
+			_("发现疑似相同商品，请明确选择新增商品或完善某个现有商品。"),
+			{"candidate_count": len(existing_matches)},
+		)
 	if operation == "update" and not existing_detail:
-		errors.append(_("未找到唯一的现有商品，请补充准确商品名称或编码。"))
+		if len(existing_matches) == 1:
+			candidate_label = (
+				existing_matches[0].get("item_name")
+				or existing_matches[0].get("name")
+				or existing_matches[0].get("item_code")
+			)
+			add_error(
+				"PRODUCT_TARGET_CONFIRMATION_REQUIRED", "target.item_code",
+				_("已找到一个可能的商品“{0}”，请确认是否为要修改的商品。").format(candidate_label),
+				{"candidate_count": 1},
+			)
+		elif len(existing_matches) > 1:
+			add_error(
+				"PRODUCT_TARGET_AMBIGUOUS", "target.item_code",
+				_("商品信息匹配到多条记录，请使用商品编码或从候选中明确选择。"),
+				{"candidate_count": len(existing_matches)},
+			)
+		else:
+			add_error(
+				"PRODUCT_TARGET_NOT_FOUND", "target.item_code",
+				_("未找到匹配的现有商品，请补充准确商品名称、编码或条码。"),
+				{"candidate_count": 0},
+			)
 	elif operation == "create" and existing_detail:
 		warnings.append(_("商品 {0} 已存在；已按用户明确的新增选择保留创建草稿，请确认新商品编码。").format(
 			existing_detail.get("item_name") or existing_detail.get("item_code")
 		))
 	elif operation == "create" and existing_matches:
 		warnings.append(_("存在疑似相同商品；已按用户明确的新增选择保留创建草稿。"))
-	elif operation == "update" and len(existing_matches) > 1:
-		errors.append(_("商品信息匹配到多条记录，请使用商品编码明确选择。"))
 	if not item_name and operation == "create":
 		errors.append(_("请填写商品名称。"))
 	if operation == "create" and item_code and frappe.db.exists("Item", item_code):
@@ -6066,7 +6091,7 @@ def _build_product_setup_draft(
 	}
 	if operation == "update" and existing_detail and not patch:
 		errors.append(_("尚未修改现有商品字段；请填写需要完善的资料。"))
-	return payload, _build_draft_validation(errors, warnings)
+	return payload, _build_draft_validation(errors, warnings, issues)
 
 
 def generate_ai_product_setup_draft_v1(

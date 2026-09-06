@@ -282,7 +282,7 @@ Web 只调用 `myapp` 网关，不调用 LiteLLM。建议 API：
 
 库存调整草稿使用独立 `inventory_adjustment_draft` Schema 和 `/internal/v1/drafts/inventory-adjustment`，只允许单个库存商品的 `set_target`、`increase`、`decrease` 三种候选语义。Frappe 按当前用户和公司权限解析真实 Item / Warehouse，使用 `item_context=inventory` 和共享 UOM 换算重新计算实时库存、目标库存、差异数量与估值参考；调整原因必填，减少后目标库存不得为负。交接只把库存单位下的安全目标数量预填到现有 `/inventory/adjustments` 页面，AI 不调用 `reconcile_inventory_stock_v1`，也不创建或提交 `Stock Entry` / `Stock Reconciliation`。
 
-商品创建/完善草稿使用独立 `product_setup_draft` Schema 和 `/internal/v1/drafts/product-setup`。`product-setup-draft-v4` 只提取 `operation=auto|create|update` 和用户明确表达的字段补丁；Frappe 在当前权限范围内精确解析现有 Item，并把商品主数据、Standard Selling、Wholesale、Retail、Standard Buying 和公司库存形成权威基线。现有库存只进入只读上下文，绝不能回填为初始库存。创建模式复用 `create_product_v2`；完善模式只把 `_state.patch` 中真实修改的字段交给 `update_product_v2`，商品编码在该流程中不可变，库存变化必须进入库存调整草稿。
+商品创建/完善草稿使用独立 `product_setup_draft` Schema 和 `/internal/v1/drafts/product-setup`。`product-setup-draft-v7` 使用 `operation + target + patch`：模型负责区分修改前目标与修改后字段，Frappe 只用 `target` 进入共享实体解析器，禁止用新规格、新名称或新品牌反推旧商品。权限范围内的稳定编码、条码、唯一精确名称或标准昵称可形成确定性 `selected` 并自动绑定；单一模糊候选、多候选和零候选分别进入确认、歧义和未找到状态，不允许直接写入。Frappe 将商品主数据、Standard Selling、Wholesale、Retail、Standard Buying 和公司库存形成权威基线。现有库存只进入只读上下文，绝不能回填为初始库存。创建模式复用 `create_product_v2`；完善模式只把 `_state.patch` 中真实修改的字段交给 `update_product_v2`，商品编码在该流程中不可变，库存变化必须进入库存调整草稿。
 
 四类草稿统一在 payload 或行项目中携带 `_state.schema_version=ai-draft-state-v1`，记录 entity、observed_at、source_hash、baseline、patch、effective 和字段来源。值状态必须区分 `missing`、`explicit_zero`、`known` 与 `not_applicable`，不得再用 `value or 0` 把未配置价格伪装为零价。销售/采购行分别保存系统参考价与用户覆盖价；库存行保存实时库存、估值和 UOM 换算快照。`execute_ai_draft_v1` 在正式领域服务前重新解析这些事实：系统价、主数据、换算或实时库存漂移时，服务端先保存刷新后的新草稿版本，再返回 `AI_DRAFT_VERSION_CONFLICT`，要求用户重新复核；人工明确覆盖的价格保持用户意图，不被系统参考价静默替换。
 

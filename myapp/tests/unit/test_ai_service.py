@@ -3916,6 +3916,97 @@ class TestAiService(TestCase):
 		mock_frappe.get_list.assert_called_once()
 		mock_detail.assert_not_called()
 
+	@patch("myapp.services.ai_service.get_product_detail_v2")
+	@patch("myapp.services.ai_service._resolve_item_candidates")
+	def test_product_setup_binds_deterministic_shared_resolver_selection(
+		self, mock_resolve, mock_detail,
+	):
+		mock_resolve.return_value = {
+			"selected": {
+				"item_code": "ITEM-COLA-ACTIVE", "item_name": "可口可乐 5000ml",
+			},
+			"candidates": [{
+				"item_code": "ITEM-COLA-ACTIVE", "item_name": "可口可乐 5000ml",
+				"brand": "Coca-Cola", "specification": "5000ml",
+			}],
+			"match_method": "exact",
+		}
+		mock_detail.return_value = {
+			"data": {"item_code": "ITEM-COLA-ACTIVE", "item_name": "可口可乐 5000ml"},
+		}
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.get_list.return_value = []
+			detail, matches = _resolve_existing_product_for_setup({
+				"company": "Demo Company",
+				"_semantic_contract": "product-setup-command-v2",
+				"_target_query": "可口可乐",
+				"specification": "500ml",
+			})
+
+		self.assertEqual(detail["item_code"], "ITEM-COLA-ACTIVE")
+		self.assertEqual(matches, [{
+			"name": "ITEM-COLA-ACTIVE", "item_name": "可口可乐 5000ml",
+			"brand": "Coca-Cola", "specification": "5000ml", "match_method": "exact",
+		}])
+		mock_resolve.assert_called_once_with(
+			"可口可乐", company="Demo Company", context="inventory", limit=5,
+			search_fields=None, match_mode="auto",
+		)
+		mock_detail.assert_called_once_with(
+			item_code="ITEM-COLA-ACTIVE", company="Demo Company",
+		)
+
+	@patch("myapp.services.ai_service.get_product_detail_v2")
+	@patch("myapp.services.ai_service._resolve_item_candidates")
+	def test_product_setup_keeps_single_fuzzy_candidate_unresolved(
+		self, mock_resolve, mock_detail,
+	):
+		mock_resolve.return_value = {
+			"selected": None,
+			"candidates": [{
+				"item_code": "ITEM-COLA-POSSIBLE", "item_name": "相似可乐商品",
+			}],
+			"match_method": "semantic",
+		}
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.get_list.return_value = []
+			detail, matches = _resolve_existing_product_for_setup({
+				"company": "Demo Company",
+				"_semantic_contract": "product-setup-command-v2",
+				"_target_query": "可口可乐",
+			})
+
+		self.assertIsNone(detail)
+		self.assertEqual(matches[0]["name"], "ITEM-COLA-POSSIBLE")
+		self.assertEqual(matches[0]["match_method"], "semantic")
+		mock_detail.assert_not_called()
+
+	@patch("myapp.services.ai_service.get_product_detail_v2")
+	@patch("myapp.services.ai_service._resolve_item_candidates")
+	def test_product_setup_barcode_uses_exact_shared_resolution_without_name_fallback(
+		self, mock_resolve, mock_detail,
+	):
+		mock_resolve.return_value = {
+			"selected": {"item_code": "ITEM-BARCODE"},
+			"candidates": [{"item_code": "ITEM-BARCODE", "item_name": "条码商品"}],
+			"match_method": "exact",
+		}
+		mock_detail.return_value = {
+			"data": {"item_code": "ITEM-BARCODE", "item_name": "条码商品"},
+		}
+		detail, _matches = _resolve_existing_product_for_setup({
+			"company": "Demo Company",
+			"_semantic_contract": "product-setup-command-v2",
+			"_target_barcode": "6900000000012",
+			"_target_query": "不得用于回退的名称",
+		})
+
+		self.assertEqual(detail["item_code"], "ITEM-BARCODE")
+		mock_resolve.assert_called_once_with(
+			"6900000000012", company="Demo Company", context="inventory", limit=5,
+			search_fields=["barcode"], match_mode="exact",
+		)
+
 	@patch("myapp.services.ai_service._persist_draft_conversation_state", return_value={"tool": "update_conversation_state"})
 	@patch("myapp.services.ai_service._public_ai_result_details", return_value={})
 	@patch("myapp.services.ai_service._save_draft_generation_assistant_message")
@@ -4496,9 +4587,8 @@ class TestAiService(TestCase):
 	@patch("myapp.services.ai_service._resolve_item_candidates", return_value={
 		"selected": None, "candidates": [], "match_method": "hybrid",
 	})
-	@patch("myapp.services.ai_service.frappe.get_list", return_value=[])
 	def test_product_setup_resolver_never_searches_with_patch_values(
-		self, _get_list, mock_resolve,
+		self, mock_resolve,
 	):
 		candidate = _normalize_product_setup_semantic_candidate({
 			"operation": "update",
@@ -4519,6 +4609,7 @@ class TestAiService(TestCase):
 		self.assertEqual(matches, [])
 		mock_resolve.assert_called_once_with(
 			"可口可乐", company=None, context="inventory", limit=5,
+			search_fields=None, match_mode="auto",
 		)
 
 	def test_product_setup_context_ref_uses_resolved_server_state_without_text_rules(self):
@@ -4606,6 +4697,43 @@ class TestAiService(TestCase):
 
 		self.assertEqual(payload["operation"], "create")
 		self.assertEqual(payload["item_code"], "ITEM-NEW")
+
+	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value=None)
+	@patch("myapp.services.ai_service._resolve_optional_master_name", return_value=None)
+	@patch("myapp.services.ai_service._resolve_product_setup_uom", return_value=("Unit", [{"name": "Unit"}]))
+	@patch("myapp.services.ai_service._resolve_existing_product_for_setup")
+	def test_product_setup_returns_stable_target_resolution_issues(
+		self, mock_existing, _uom, _master, _warehouse,
+	):
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.db.get_value.return_value = "CNY"
+			mock_frappe.has_permission.return_value = True
+			for matches, expected_code in (
+				([{
+					"name": "ITEM-COLA-ACTIVE", "item_name": "可口可乐 5000ml",
+					"match_method": "lexical",
+				}], "PRODUCT_TARGET_CONFIRMATION_REQUIRED"),
+				([{"name": "ITEM-COLA-A"}, {"name": "ITEM-COLA-B"}], "PRODUCT_TARGET_AMBIGUOUS"),
+				([], "PRODUCT_TARGET_NOT_FOUND"),
+			):
+				with self.subTest(expected_code=expected_code):
+					mock_existing.return_value = (None, matches)
+					payload, validation = _build_product_setup_draft({
+						"operation": "update",
+						"target": {
+							"item_code": None, "barcode": None,
+							"query": "可口可乐", "context_ref": None,
+						},
+						"patch": {"specification": "500ml", "clear_fields": []},
+					}, company="Test Company")
+
+					self.assertIsNone(payload["item_code"])
+					self.assertFalse(validation["ready_for_handoff"])
+					self.assertEqual(validation["issues"][0]["code"], expected_code)
+					self.assertEqual(validation["issues"][0]["field"], "target.item_code")
+					if expected_code == "PRODUCT_TARGET_CONFIRMATION_REQUIRED":
+						self.assertIn("可口可乐 5000ml", validation["issues"][0]["message"])
+						self.assertNotIn("未找到", validation["issues"][0]["message"])
 
 	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value="Stores - TC")
 	@patch("myapp.services.ai_service._resolve_optional_master_name", return_value=None)
