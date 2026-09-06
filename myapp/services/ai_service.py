@@ -3067,8 +3067,12 @@ def _resolve_purchase_draft_item(
 	allow_user_price: bool = False,
 ) -> dict:
 	query = str(candidate.get("item_query") or "").strip()
-	target_source = str(candidate.get("_target_source") or "").strip() or "explicit_or_model_query"
-	target_context_ref = str(candidate.get("_target_context_ref") or "").strip() or None
+	target_source, target_context_ref = _record_target_provenance(
+		candidate,
+		source_keys=("_target_source", "target_source"),
+		context_ref_keys=("_target_context_ref", "target_context_ref"),
+	)
+	target_source = target_source or "explicit_or_model_query"
 	qty = float(candidate.get("qty") or 0)
 	resolution = _resolve_item_candidates(query, company=company, context="purchase", limit=5)
 	rows = resolution["candidates"]
@@ -3423,8 +3427,12 @@ def _resolve_inventory_draft_item(
 	warehouse: str | None,
 ) -> dict:
 	query = str(candidate.get("item_query") or "").strip()
-	target_source = str(candidate.get("_target_source") or "").strip() or "explicit_or_model_query"
-	target_context_ref = str(candidate.get("_target_context_ref") or "").strip() or None
+	target_source, target_context_ref = _record_target_provenance(
+		candidate,
+		source_keys=("_target_source", "target_source"),
+		context_ref_keys=("_target_context_ref", "target_context_ref"),
+	)
+	target_source = target_source or "explicit_or_model_query"
 	adjustment_type = str(candidate.get("adjustment_type") or "").strip() or None
 	quantity_value = candidate.get("quantity")
 	input_qty = None if quantity_value in (None, "") else flt(quantity_value)
@@ -3822,9 +3830,13 @@ def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple
 		{
 			"item_query": candidate.get("item_code") or candidate.get("item_query")
 				or source_item.get("item_code") or source_item.get("item_query"),
-			"_target_source": candidate.get("_target_source") or source_item.get("_target_source"),
+			"_target_source": (
+				candidate.get("_target_source") or candidate.get("target_source")
+				or source_item.get("_target_source") or source_item.get("target_source")
+			),
 			"_target_context_ref": (
-				candidate.get("_target_context_ref") or source_item.get("_target_context_ref")
+				candidate.get("_target_context_ref") or candidate.get("target_context_ref")
+				or source_item.get("_target_context_ref") or source_item.get("target_context_ref")
 			),
 			"adjustment_type": adjustment_type,
 			"quantity": quantity,
@@ -3987,8 +3999,12 @@ def _resolve_sales_draft_item(
 	default_sales_mode: str = "wholesale", allow_user_price: bool = False,
 ) -> dict:
 	query = str(candidate.get("item_query") or "").strip()
-	target_source = str(candidate.get("_target_source") or "").strip() or "explicit_or_model_query"
-	target_context_ref = str(candidate.get("_target_context_ref") or "").strip() or None
+	target_source, target_context_ref = _record_target_provenance(
+		candidate,
+		source_keys=("_target_source", "target_source"),
+		context_ref_keys=("_target_context_ref", "target_context_ref"),
+	)
+	target_source = target_source or "explicit_or_model_query"
 	qty = float(candidate.get("qty") or 0)
 	resolution = _resolve_item_candidates(query, company=company, context="sales", limit=5)
 	rows = resolution["candidates"]
@@ -4129,6 +4145,8 @@ def _existing_order_draft_items(detail: dict) -> list[dict]:
 def _normalize_order_semantic_candidate(candidate: dict, *, draft_type: str) -> dict:
 	"""Flatten the V2 order command while preserving explicit line operations."""
 	result = dict(candidate or {})
+	if result.get("_semantic_contract") == "order-command-v2":
+		return result
 	target = result.get("target") if isinstance(result.get("target"), dict) else None
 	header_patch = (
 		result.get("header_patch") if isinstance(result.get("header_patch"), dict) else None
@@ -4580,6 +4598,72 @@ def _draft_entity_state(
 	}
 
 
+CONVERSATION_CONTEXT_TARGET_SOURCES = {
+	"conversation_active_entity", "conversation_product", "conversation_result_set",
+}
+
+
+def _record_target_provenance(
+	record: dict | None,
+	*,
+	source_keys: tuple[str, ...],
+	context_ref_keys: tuple[str, ...],
+) -> tuple[str | None, str | None]:
+	value = record if isinstance(record, dict) else {}
+	source = next(
+		(str(value.get(key) or "").strip() for key in source_keys if value.get(key)),
+		"",
+	) or None
+	context_ref = next(
+		(str(value.get(key) or "").strip() for key in context_ref_keys if value.get(key)),
+		"",
+	) or None
+	return source, context_ref
+
+
+def _context_target_attempted(
+	records: list[dict],
+	*,
+	source_keys: tuple[str, ...],
+	context_ref_keys: tuple[str, ...],
+) -> bool:
+	for record in records:
+		source, context_ref = _record_target_provenance(
+			record, source_keys=source_keys, context_ref_keys=context_ref_keys,
+		)
+		if source in CONVERSATION_CONTEXT_TARGET_SOURCES and context_ref:
+			return True
+	return False
+
+
+def _has_resolved_active_entity(
+	state: dict, *, slot: str, allowed_entity_types: set[str],
+) -> bool:
+	active_entities = state.get("active_entities") if isinstance(state.get("active_entities"), dict) else {}
+	entity = active_entities.get(slot) if isinstance(active_entities.get(slot), dict) else {}
+	return bool(
+		entity.get("resolution_status") == "resolved"
+		and str(entity.get("entity_type") or "").strip() in allowed_entity_types
+		and str(entity.get("entity_id") or "").strip()
+	)
+
+
+def _preserve_resolved_context_entity(
+	previous_state: dict,
+	*,
+	slot: str,
+	allowed_entity_types: set[str],
+	records: list[dict],
+	source_keys: tuple[str, ...],
+	context_ref_keys: tuple[str, ...],
+) -> bool:
+	return _has_resolved_active_entity(
+		previous_state, slot=slot, allowed_entity_types=allowed_entity_types,
+	) and _context_target_attempted(
+		records, source_keys=source_keys, context_ref_keys=context_ref_keys,
+	)
+
+
 def _build_draft_conversation_state(
 	*, previous_state: dict | None, draft_type: str, payload: dict,
 	formal_target: dict | None = None,
@@ -4605,7 +4689,9 @@ def _build_draft_conversation_state(
 	formal_name = str((formal_target or {}).get("target_name") or "").strip() or None
 
 	product_rows = []
+	product_target_records = []
 	if draft_type == "product_setup":
+		product_target_records = [payload]
 		item_code = str(payload.get("item_code") or "").strip() or None
 		is_existing_item = payload.get("operation") == "update"
 		if formal_doctype == "Item" and formal_name:
@@ -4614,8 +4700,11 @@ def _build_draft_conversation_state(
 		if item_code and is_existing_item:
 			product_rows.append({"item_code": item_code, "item_name": payload.get("item_name")})
 	else:
+		product_target_records = [
+			row for row in (payload.get("items") or []) if isinstance(row, dict)
+		]
 		product_rows.extend(
-			row for row in (payload.get("items") or [])
+			row for row in product_target_records
 			if isinstance(row, dict) and str(row.get("item_code") or "").strip()
 		)
 	unique_products = {}
@@ -4633,6 +4722,22 @@ def _build_draft_conversation_state(
 			"query": item_code, "item_code": item_code, "item_name": item_name,
 			"resolution_status": "resolved",
 		}
+	elif (
+		draft_type in {"product_setup", "inventory_adjustment", "sales_order", "purchase_order"}
+		and not formal_target
+		and _preserve_resolved_context_entity(
+			previous,
+			slot="product",
+			allowed_entity_types={"product"},
+			records=product_target_records,
+			source_keys=("target_source", "_target_source"),
+			context_ref_keys=("target_context_ref", "_target_context_ref"),
+		)
+	):
+		# A failed draft that refers to the already-active product is an
+		# unsuccessful operation attempt, not evidence that the verified product
+		# disappeared. Keep the trusted reference available for a safe retry.
+		pass
 	elif draft_type in {"product_setup", "inventory_adjustment", "sales_order", "purchase_order"}:
 		status = "ambiguous" if len(unique_products) > 1 else "not_found"
 		active_entities["product"] = _draft_entity_state(
@@ -4652,23 +4757,55 @@ def _build_draft_conversation_state(
 			order_number = formal_name
 		elif payload.get("operation") == "update" and payload.get("source_order_modified"):
 			order_number = str(payload.get("order_number") or "").strip() or None
-		active_entities["business_document"] = _draft_entity_state(
-			entity_type=entity_type,
-			entity_id=order_number,
-			display_name=order_number,
-			resolution_status="resolved" if order_number else "not_found",
-			source=source,
-		)
+		if order_number:
+			active_entities["business_document"] = _draft_entity_state(
+				entity_type=entity_type,
+				entity_id=order_number,
+				display_name=order_number,
+				resolution_status="resolved",
+				source=source,
+			)
+		elif not _preserve_resolved_context_entity(
+			previous,
+			slot="business_document",
+			allowed_entity_types={entity_type},
+			records=[payload],
+			source_keys=("target_order_source", "_target_order_source"),
+			context_ref_keys=("target_order_context_ref", "_target_order_context_ref"),
+		):
+			active_entities["business_document"] = _draft_entity_state(
+				entity_type=entity_type,
+				entity_id=None,
+				display_name=None,
+				resolution_status="not_found",
+				source=source,
+			)
 		party_field = "customer" if draft_type == "sales_order" else "supplier"
 		party_display_field = f"{party_field}_display_name"
 		party_name = str(payload.get(party_field) or "").strip() or None
-		active_entities["business_partner"] = _draft_entity_state(
-			entity_type=party_field,
-			entity_id=party_name,
-			display_name=payload.get(party_display_field),
-			resolution_status="resolved" if party_name else "not_found",
-			source=source,
-		)
+		if party_name:
+			active_entities["business_partner"] = _draft_entity_state(
+				entity_type=party_field,
+				entity_id=party_name,
+				display_name=payload.get(party_display_field),
+				resolution_status="resolved",
+				source=source,
+			)
+		elif not _preserve_resolved_context_entity(
+			previous,
+			slot="business_partner",
+			allowed_entity_types={party_field},
+			records=[payload],
+			source_keys=("target_party_source", "_target_party_source"),
+			context_ref_keys=("target_party_context_ref", "_target_party_context_ref"),
+		):
+			active_entities["business_partner"] = _draft_entity_state(
+				entity_type=party_field,
+				entity_id=None,
+				display_name=None,
+				resolution_status="not_found",
+				source=source,
+			)
 
 	next_state["active_entities"] = active_entities
 	return next_state
@@ -4866,6 +5003,13 @@ def generate_ai_sales_order_draft_v1(
 			"customer": customer.get("name") if customer else None,
 			"customer_display_name": customer.get("display_name") if customer else None,
 			"customer_candidates": customer_candidates,
+			"target_party_source": (
+				party_context_target.get("source")
+				if party_context_target else "explicit_or_model_query"
+			),
+			"target_party_context_ref": (
+				party_context_target.get("context_ref") if party_context_target else None
+			),
 			"transaction_date": transaction_date,
 			"delivery_date": delivery_date,
 			"default_sales_mode": default_sales_mode,
@@ -5094,6 +5238,13 @@ def generate_ai_purchase_order_draft_v1(
 			"supplier": supplier_name,
 			"supplier_display_name": supplier.get("display_name") if supplier else None,
 			"supplier_candidates": supplier_candidates, "transaction_date": transaction_date,
+			"target_party_source": (
+				party_context_target.get("source")
+				if party_context_target else "explicit_or_model_query"
+			),
+			"target_party_context_ref": (
+				party_context_target.get("context_ref") if party_context_target else None
+			),
 			"schedule_date": schedule_date,
 			"default_purchase_mode": candidate.get("default_purchase_mode") or "wholesale",
 			"warehouse_query": candidate.get("warehouse_query"),
@@ -5388,9 +5539,9 @@ def _resolve_existing_product_for_setup(candidate: dict) -> tuple[dict | None, l
 	state = candidate.get("_state") if isinstance(candidate.get("_state"), dict) else {}
 	state_entity = state.get("entity") if isinstance(state.get("entity"), dict) else {}
 	item_code = str(
-		state_entity.get("name") or candidate.get("_target_item_code") or (
+		candidate.get("_target_item_code") or (
 			candidate.get("item_code") if not candidate.get("_semantic_contract") else None
-		) or ""
+		) or state_entity.get("name") or ""
 	).strip()
 	target_query = str(
 		candidate.get("_target_query") or (
@@ -5449,6 +5600,12 @@ def _resolve_existing_product_for_setup(candidate: dict) -> tuple[dict | None, l
 def _normalize_product_setup_semantic_candidate(candidate: dict) -> dict:
 	"""Flatten V2 model output without mixing target identity and patch values."""
 	result = dict(candidate or {})
+	# This normalizer is used both at the Orchestrator boundary and again by the
+	# draft builder. Once normalized, internal fields may have been bound from
+	# trusted server conversation state. Re-reading the original model target
+	# (usually null for active_product) would erase that authoritative binding.
+	if result.get("_semantic_contract") == "product-setup-command-v2":
+		return result
 	target = result.get("target") if isinstance(result.get("target"), dict) else None
 	patch = result.get("patch") if isinstance(result.get("patch"), dict) else None
 	if target is None or patch is None:
@@ -6051,6 +6208,15 @@ def _build_product_setup_draft(
 	state["context"] = inventory_context
 	payload = {
 		"source_attachments": source_attachments or [],
+		"target_source": (
+			str(candidate.get("_target_source") or candidate.get("target_source") or "").strip()
+			or "explicit_or_model_query"
+		),
+		"target_context_ref": (
+			str(
+				candidate.get("_target_context_ref") or candidate.get("target_context_ref") or ""
+			).strip() or None
+		),
 		"operation_decision_required": operation_decision_required,
 		"duplicate_candidates": [
 			{
@@ -6164,6 +6330,8 @@ def generate_ai_product_setup_draft_v1(
 		prompt_version = str(result.get("prompt_version") or _resolve_prompt_version(scenario))
 		if context_target:
 			candidate["_target_item_code"] = context_target["item_code"]
+			candidate["_target_source"] = context_target["source"]
+			candidate["_target_context_ref"] = context_target["context_ref"]
 			candidate["operation"] = "update"
 		existing_detail, existing_matches = _resolve_existing_product_for_setup(candidate)
 		requested_operation = str(candidate.get("operation") or "auto").strip().lower()
@@ -6580,6 +6748,105 @@ def _order_draft_items_signature(items) -> tuple:
 	return tuple(result)
 
 
+def _draft_target_identity(record: dict | None, fields: tuple[str, ...]) -> str | None:
+	value = record if isinstance(record, dict) else {}
+	for field in fields:
+		identity = str(value.get(field) or "").strip()
+		if identity:
+			return identity
+	return None
+
+
+def _unchanged_context_target_provenance(
+	current: dict | None,
+	previous: dict | None,
+	*,
+	identity_fields: tuple[str, ...],
+	source_keys: tuple[str, ...],
+	context_ref_keys: tuple[str, ...],
+) -> tuple[str | None, str | None]:
+	"""Carry server-owned context provenance only while the target identity is unchanged."""
+	if _draft_target_identity(current, identity_fields) != _draft_target_identity(
+		previous, identity_fields,
+	):
+		return None, None
+	source, context_ref = _record_target_provenance(
+		previous, source_keys=source_keys, context_ref_keys=context_ref_keys,
+	)
+	if source not in CONVERSATION_CONTEXT_TARGET_SOURCES or not context_ref:
+		return None, None
+	return source, context_ref
+
+
+def _draft_item_target_identity(record: dict | None) -> str | None:
+	identity = _draft_target_identity(record, ("item_code", "item_query"))
+	if identity:
+		return identity
+	value = record if isinstance(record, dict) else {}
+	state = value.get("_state") if isinstance(value.get("_state"), dict) else {}
+	entity = state.get("entity") if isinstance(state.get("entity"), dict) else {}
+	if str(entity.get("doctype") or "").strip() != "Item":
+		return None
+	return str(entity.get("name") or "").strip() or None
+
+
+def _draft_item_with_preserved_context_provenance(
+	current: dict, previous: dict | None,
+) -> dict:
+	result = dict(current)
+	# Provenance is server-owned.  A draft editor may echo these fields, but it
+	# cannot assert that a newly selected target still came from conversation
+	# context.  Strip the submitted copy before conditionally restoring the
+	# trusted value from the persisted draft.
+	for key in ("target_source", "_target_source", "target_context_ref", "_target_context_ref"):
+		result.pop(key, None)
+	if _draft_item_target_identity(current) != _draft_item_target_identity(previous):
+		return result
+	source, context_ref = _record_target_provenance(
+		previous,
+		source_keys=("target_source", "_target_source"),
+		context_ref_keys=("target_context_ref", "_target_context_ref"),
+	)
+	if source in CONVERSATION_CONTEXT_TARGET_SOURCES and context_ref:
+		result["target_source"] = source
+		result["target_context_ref"] = context_ref
+	return result
+
+
+def _match_previous_draft_item(current: dict, previous_items: list[dict]) -> dict | None:
+	"""Match an edited order row without relying on its mutable array position."""
+	if not isinstance(current, dict):
+		return None
+	rows = [row for row in previous_items if isinstance(row, dict)]
+	row_id = str(current.get("row_id") or "").strip()
+	if row_id:
+		matches = [row for row in rows if str(row.get("row_id") or "").strip() == row_id]
+		return matches[0] if len(matches) == 1 else None
+
+	current_state = current.get("_state") if isinstance(current.get("_state"), dict) else {}
+	source_hash = str(current_state.get("source_hash") or "").strip()
+	if source_hash:
+		matches = []
+		for row in rows:
+			state = row.get("_state") if isinstance(row.get("_state"), dict) else {}
+			if str(state.get("source_hash") or "").strip() == source_hash:
+				matches.append(row)
+		if len(matches) == 1:
+			return matches[0]
+
+	identity = _draft_item_target_identity(current)
+	if not identity:
+		return None
+	matches = [
+		row for row in rows
+		if _draft_item_target_identity(row) == identity
+	]
+	# Duplicate products without a stable row id/source hash are deliberately
+	# not matched.  Dropping provenance is safer than assigning one row's
+	# context binding to another after a reorder.
+	return matches[0] if len(matches) == 1 else None
+
+
 def _update_ai_draft_once(
 	draft_id: str, payload, *, expected_version: int, change_source: str = "user_edit",
 ):
@@ -6616,7 +6883,26 @@ def _update_ai_draft_once(
 		return {"status": "success", "message": message, "data": updated}
 
 	if draft["draft_type"] == "inventory_adjustment":
-		next_payload, validation = _build_inventory_adjustment_draft(payload, company=draft["company"])
+		original_items = original_payload.get("items") if isinstance(original_payload.get("items"), list) else []
+		original_item = original_items[0] if original_items and isinstance(original_items[0], dict) else {}
+		current_items = payload.get("items") if isinstance(payload.get("items"), list) else []
+		current_item = current_items[0] if current_items and isinstance(current_items[0], dict) else payload
+		target_source, target_context_ref = _unchanged_context_target_provenance(
+			current_item,
+			original_item,
+			identity_fields=("item_code", "item_query"),
+			source_keys=("target_source", "_target_source"),
+			context_ref_keys=("target_context_ref", "_target_context_ref"),
+		)
+		build_payload = dict(payload)
+		for key in ("target_source", "_target_source", "target_context_ref", "_target_context_ref"):
+			build_payload.pop(key, None)
+		if target_source and target_context_ref:
+			build_payload["_target_source"] = target_source
+			build_payload["_target_context_ref"] = target_context_ref
+		next_payload, validation = _build_inventory_adjustment_draft(
+			build_payload, company=draft["company"],
+		)
 		updated = ai_repository.update_draft(
 			draft_id=draft_id,
 			user=user,
@@ -6641,8 +6927,21 @@ def _update_ai_draft_once(
 				default_image_url = stage_attachment_as_item_image(
 					attachment_id=attachment_id, user=user,
 				)
-		next_payload, validation = _build_product_setup_draft(
+		target_source, target_context_ref = _unchanged_context_target_provenance(
 			payload,
+			original_payload,
+			identity_fields=("item_code",),
+			source_keys=("target_source", "_target_source"),
+			context_ref_keys=("target_context_ref", "_target_context_ref"),
+		)
+		build_payload = dict(payload)
+		for key in ("target_source", "_target_source", "target_context_ref", "_target_context_ref"):
+			build_payload.pop(key, None)
+		if target_source and target_context_ref:
+			build_payload["target_source"] = target_source
+			build_payload["target_context_ref"] = target_context_ref
+		next_payload, validation = _build_product_setup_draft(
+			build_payload,
 			company=draft["company"],
 			default_image_url=default_image_url,
 			source_attachments=source_attachments,
@@ -6658,6 +6957,7 @@ def _update_ai_draft_once(
 		return finish(updated, message=_("AI 商品建档草稿已更新并重新校验。"))
 	if draft["draft_type"] == "purchase_order":
 		company = draft["company"]
+		original_items = original_payload.get("items") if isinstance(original_payload.get("items"), list) else []
 		items_changed = _order_draft_items_signature(original_payload.get("items")) != (
 			_order_draft_items_signature(payload.get("items"))
 		)
@@ -6665,17 +6965,30 @@ def _update_ai_draft_once(
 		supplier, supplier_candidates = _resolve_purchase_draft_supplier(supplier_query)
 		warehouse_query = payload.get("warehouse") or payload.get("warehouse_query")
 		default_warehouse = _resolve_sales_draft_warehouse(warehouse_query, company)
-		items = [
-			_resolve_purchase_draft_item(
-				{"item_query": row.get("item_code") or row.get("item_query"), "qty": row.get("qty"),
-				 "uom": row.get("uom"), "price": row.get("price"),
-				 "warehouse_query": row.get("warehouse") or row.get("warehouse_query") or default_warehouse,
-				 "_state": row.get("_state")},
-				company=company, default_warehouse=default_warehouse,
-				allow_user_price=True,
+		items = []
+		for row in payload.get("items") or []:
+			if not isinstance(row, dict):
+				continue
+			previous_row = _match_previous_draft_item(row, original_items)
+			bound_row = _draft_item_with_preserved_context_provenance(row, previous_row)
+			resolved_row = _resolve_purchase_draft_item(
+				{
+					"item_query": bound_row.get("item_code") or bound_row.get("item_query"),
+					"qty": bound_row.get("qty"), "uom": bound_row.get("uom"),
+					"price": bound_row.get("price"),
+					"warehouse_query": (
+						bound_row.get("warehouse") or bound_row.get("warehouse_query")
+						or default_warehouse
+					),
+					"target_source": bound_row.get("target_source"),
+					"target_context_ref": bound_row.get("target_context_ref"),
+					"_state": bound_row.get("_state"),
+				},
+				company=company, default_warehouse=default_warehouse, allow_user_price=True,
 			)
-			for row in (payload.get("items") or []) if isinstance(row, dict)
-		]
+			if bound_row.get("row_id"):
+				resolved_row["row_id"] = bound_row["row_id"]
+			items.append(resolved_row)
 		errors = []
 		if not supplier:
 			errors.append(_("供应商无法唯一匹配，请人工选择。"))
@@ -6693,11 +7006,38 @@ def _update_ai_draft_once(
 		header_clear_fields = _normalize_order_header_clear_fields(
 			payload, original_payload=original_payload, draft_type="purchase_order",
 		)
+		operation = payload.get("operation") or original_payload.get("operation") or "create"
+		order_number = (
+			payload.get("order_number") or original_payload.get("order_number")
+			if operation == "update" else None
+		)
+		current_order_target = {**payload, "order_number": order_number}
+		target_order_source, target_order_context_ref = _unchanged_context_target_provenance(
+			current_order_target,
+			original_payload,
+			identity_fields=("order_number",),
+			source_keys=("target_order_source", "_target_order_source"),
+			context_ref_keys=("target_order_context_ref", "_target_order_context_ref"),
+		)
+		order_target_unchanged = _draft_target_identity(
+			current_order_target, ("order_number",),
+		) == _draft_target_identity(original_payload, ("order_number",))
+		target_party_source, target_party_context_ref = _unchanged_context_target_provenance(
+			payload,
+			original_payload,
+			identity_fields=("supplier", "supplier_query"),
+			source_keys=("target_party_source", "_target_party_source"),
+			context_ref_keys=("target_party_context_ref", "_target_party_context_ref"),
+		)
 		next_payload = {
 			"source_attachments": payload.get("source_attachments") or original_payload.get("source_attachments") or [],
-			"operation": payload.get("operation") or original_payload.get("operation") or "create",
-			"order_number": payload.get("order_number") or original_payload.get("order_number"),
-			"source_order_modified": original_payload.get("source_order_modified"),
+			"operation": operation,
+			"order_number": order_number,
+			"target_order_source": target_order_source or "explicit_or_model_query",
+			"target_order_context_ref": target_order_context_ref,
+			"source_order_modified": (
+				original_payload.get("source_order_modified") if order_target_unchanged else None
+			),
 			"source_document_type": payload.get("source_document_type") or original_payload.get("source_document_type") or "unstructured",
 			"update_items_explicit": bool(
 				(payload.get("operation") or original_payload.get("operation")) == "update"
@@ -6706,6 +7046,8 @@ def _update_ai_draft_once(
 			"company": company, "supplier_query": supplier_query, "supplier": supplier_name,
 			"supplier_display_name": supplier.get("display_name") if supplier else None,
 			"supplier_candidates": supplier_candidates,
+			"target_party_source": target_party_source or "explicit_or_model_query",
+			"target_party_context_ref": target_party_context_ref,
 			"transaction_date": str(getdate(payload.get("transaction_date") or nowdate())),
 			"schedule_date": str(getdate(payload.get("schedule_date") or payload.get("transaction_date") or nowdate())),
 			"default_purchase_mode": "retail" if payload.get("default_purchase_mode") == "retail" else "wholesale",
@@ -6733,6 +7075,7 @@ def _update_ai_draft_once(
 	if draft["draft_type"] != "sales_order":
 		frappe.throw(_("不支持的 AI 草稿类型。"))
 	company = draft["company"]
+	original_items = original_payload.get("items") if isinstance(original_payload.get("items"), list) else []
 	items_changed = _order_draft_items_signature(original_payload.get("items")) != (
 		_order_draft_items_signature(payload.get("items"))
 	)
@@ -6741,20 +7084,31 @@ def _update_ai_draft_once(
 	warehouse_query = payload.get("warehouse") or payload.get("warehouse_query")
 	default_warehouse = _resolve_sales_draft_warehouse(warehouse_query, company)
 	default_sales_mode = "retail" if payload.get("default_sales_mode") == "retail" else "wholesale"
-	items = [
-		_resolve_sales_draft_item(
+	items = []
+	for row in payload.get("items") or []:
+		if not isinstance(row, dict):
+			continue
+		previous_row = _match_previous_draft_item(row, original_items)
+		bound_row = _draft_item_with_preserved_context_provenance(row, previous_row)
+		resolved_row = _resolve_sales_draft_item(
 			{
-				"item_query": row.get("item_code") or row.get("item_query"),
-				"qty": row.get("qty"), "uom": row.get("uom"), "price": row.get("price"),
-				"warehouse_query": row.get("warehouse") or row.get("warehouse_query") or default_warehouse,
-				"_state": row.get("_state"),
+				"item_query": bound_row.get("item_code") or bound_row.get("item_query"),
+				"qty": bound_row.get("qty"), "uom": bound_row.get("uom"),
+				"price": bound_row.get("price"),
+				"warehouse_query": (
+					bound_row.get("warehouse") or bound_row.get("warehouse_query")
+					or default_warehouse
+				),
+				"target_source": bound_row.get("target_source"),
+				"target_context_ref": bound_row.get("target_context_ref"),
+				"_state": bound_row.get("_state"),
 			},
 			company=company, default_warehouse=default_warehouse,
-			default_sales_mode=default_sales_mode,
-			allow_user_price=True,
+			default_sales_mode=default_sales_mode, allow_user_price=True,
 		)
-		for row in (payload.get("items") or []) if isinstance(row, dict)
-	]
+		if bound_row.get("row_id"):
+			resolved_row["row_id"] = bound_row["row_id"]
+		items.append(resolved_row)
 	errors = []
 	if not customer:
 		errors.append(_("客户无法唯一匹配，请人工选择。"))
@@ -6768,11 +7122,38 @@ def _update_ai_draft_once(
 	header_clear_fields = _normalize_order_header_clear_fields(
 		payload, original_payload=original_payload, draft_type="sales_order",
 	)
+	operation = payload.get("operation") or original_payload.get("operation") or "create"
+	order_number = (
+		payload.get("order_number") or original_payload.get("order_number")
+		if operation == "update" else None
+	)
+	current_order_target = {**payload, "order_number": order_number}
+	target_order_source, target_order_context_ref = _unchanged_context_target_provenance(
+		current_order_target,
+		original_payload,
+		identity_fields=("order_number",),
+		source_keys=("target_order_source", "_target_order_source"),
+		context_ref_keys=("target_order_context_ref", "_target_order_context_ref"),
+	)
+	order_target_unchanged = _draft_target_identity(
+		current_order_target, ("order_number",),
+	) == _draft_target_identity(original_payload, ("order_number",))
+	target_party_source, target_party_context_ref = _unchanged_context_target_provenance(
+		payload,
+		original_payload,
+		identity_fields=("customer", "customer_query"),
+		source_keys=("target_party_source", "_target_party_source"),
+		context_ref_keys=("target_party_context_ref", "_target_party_context_ref"),
+	)
 	next_payload = {
 		"source_attachments": payload.get("source_attachments") or original_payload.get("source_attachments") or [],
-		"operation": payload.get("operation") or original_payload.get("operation") or "create",
-		"order_number": payload.get("order_number") or original_payload.get("order_number"),
-		"source_order_modified": original_payload.get("source_order_modified"),
+		"operation": operation,
+		"order_number": order_number,
+		"target_order_source": target_order_source or "explicit_or_model_query",
+		"target_order_context_ref": target_order_context_ref,
+		"source_order_modified": (
+			original_payload.get("source_order_modified") if order_target_unchanged else None
+		),
 		"source_document_type": payload.get("source_document_type") or original_payload.get("source_document_type") or "unstructured",
 		"update_items_explicit": bool(
 			(payload.get("operation") or original_payload.get("operation")) == "update"
@@ -6782,6 +7163,8 @@ def _update_ai_draft_once(
 		"customer": customer.get("name") if customer else None,
 		"customer_display_name": customer.get("display_name") if customer else None,
 		"customer_candidates": customer_candidates, "transaction_date": transaction_date,
+		"target_party_source": target_party_source or "explicit_or_model_query",
+		"target_party_context_ref": target_party_context_ref,
 		"delivery_date": delivery_date,
 		"default_sales_mode": default_sales_mode,
 		"warehouse_query": warehouse_query, "warehouse": default_warehouse,
@@ -7303,6 +7686,8 @@ def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
 			_resolve_purchase_draft_item(
 				{
 					"item_query": row.get("item_code") or row.get("item_query"),
+					"target_source": row.get("target_source"),
+					"target_context_ref": row.get("target_context_ref"),
 					"qty": row.get("qty"),
 					"uom": row.get("uom"),
 					"price": row.get("price"),
@@ -7336,6 +7721,8 @@ def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
 			_resolve_sales_draft_item(
 				{
 					"item_query": row.get("item_code") or row.get("item_query"),
+					"target_source": row.get("target_source"),
+					"target_context_ref": row.get("target_context_ref"),
 					"qty": row.get("qty"),
 					"uom": row.get("uom"),
 					"price": row.get("price"),

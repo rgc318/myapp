@@ -48,6 +48,8 @@ from myapp.services.ai_service import (
 	_normalize_product_entity_text,
 	_normalize_product_setup_semantic_candidate,
 	_normalize_order_semantic_candidate,
+	_match_previous_draft_item,
+	_draft_item_with_preserved_context_provenance,
 	_order_header_value,
 	_merge_intent_with_conversation_state,
 	_resolve_item_candidates,
@@ -1402,6 +1404,58 @@ class TestAiService(TestCase):
 		self.assertTrue(any("其他用户修改" in error for error in validation["errors"]))
 		self.assertEqual(next_payload["source_order_modified"], "2026-08-14 10:00:00")
 
+	def test_order_execution_refresh_carries_server_target_provenance(self):
+		for draft_type in ("sales_order", "purchase_order"):
+			with self.subTest(draft_type=draft_type):
+				party_key = "customer" if draft_type == "sales_order" else "supplier"
+				party_resolver = (
+					"_resolve_sales_draft_customer"
+					if draft_type == "sales_order" else "_resolve_purchase_draft_supplier"
+				)
+				item_resolver = (
+					"_resolve_sales_draft_item"
+					if draft_type == "sales_order" else "_resolve_purchase_draft_item"
+				)
+				payload = {
+					"operation": "create", party_key: "PARTY-1",
+					"target_party_source": "conversation_active_entity",
+					"target_party_context_ref": "active_entities.business_partner",
+					"warehouse": "Stores - DC",
+					"items": [{
+						"item_code": "ITEM-A", "qty": 1,
+						"target_source": "conversation_active_entity",
+						"target_context_ref": "active_entities.product",
+					}],
+				}
+
+				def resolve_item(candidate, **_kwargs):
+					return {
+						**candidate, "item_code": candidate["item_query"],
+						"warehouse": "Stores - DC", "warnings": [],
+					}
+
+				with patch(
+					f"myapp.services.ai_service.{party_resolver}",
+					return_value=({"name": "PARTY-1", "display_name": "往来单位"}, []),
+				), patch(
+					"myapp.services.ai_service._resolve_sales_draft_warehouse",
+					return_value="Stores - DC",
+				), patch(
+					f"myapp.services.ai_service.{item_resolver}", side_effect=resolve_item,
+				) as mock_item:
+					next_payload, validation = _rebuild_order_draft_before_execution({
+						"draft_type": draft_type, "company": "Demo Company",
+						"payload": payload,
+					})
+
+				candidate = mock_item.call_args.args[0]
+				self.assertEqual(candidate["target_source"], "conversation_active_entity")
+				self.assertEqual(candidate["target_context_ref"], "active_entities.product")
+				self.assertEqual(
+					next_payload["target_party_source"], "conversation_active_entity",
+				)
+				self.assertTrue(validation["ready_for_handoff"])
+
 	@patch("myapp.services.ai_service.get_sales_order_detail")
 	def test_missing_system_order_stays_an_invalid_update(self, mock_get_detail):
 		mock_get_detail.side_effect = frappe.DoesNotExistError
@@ -1702,6 +1756,269 @@ class TestAiService(TestCase):
 					draft_id="AI-DRAFT-1", payload={}, expected_version=2,
 				)
 				self.assertEqual(mock_update.call_args.kwargs["expected_version"], 2)
+
+	def test_draft_item_provenance_is_server_owned_and_matched_by_stable_identity(self):
+		previous_items = [
+			{
+				"row_id": "ROW-A", "item_code": "ITEM-A",
+				"target_source": "conversation_active_entity",
+				"target_context_ref": "active_entities.product",
+			},
+			{"row_id": "ROW-B", "item_code": "ITEM-B"},
+		]
+		current = {
+			"row_id": "ROW-A", "item_code": "ITEM-A",
+			"target_source": "conversation_result_set",
+			"target_context_ref": "last_result_set:SPOOFED",
+		}
+		previous = _match_previous_draft_item(current, list(reversed(previous_items)))
+		bound = _draft_item_with_preserved_context_provenance(current, previous)
+		changed = _draft_item_with_preserved_context_provenance(
+			{"row_id": "ROW-A", "item_code": "ITEM-NEW", **{
+				"target_source": "conversation_active_entity",
+				"target_context_ref": "active_entities.product",
+			}},
+			previous,
+		)
+		legacy_previous = {
+			"_state": {"entity": {"doctype": "Item", "name": "ITEM-LEGACY"}},
+			"target_source": "conversation_product", "target_context_ref": "product",
+		}
+		legacy_current = {
+			"_state": {"entity": {"doctype": "Item", "name": "ITEM-LEGACY"}},
+		}
+		legacy_match = _match_previous_draft_item(legacy_current, [legacy_previous])
+		legacy_bound = _draft_item_with_preserved_context_provenance(
+			legacy_current, legacy_match,
+		)
+
+		self.assertEqual(previous["item_code"], "ITEM-A")
+		self.assertEqual(bound["target_source"], "conversation_active_entity")
+		self.assertEqual(bound["target_context_ref"], "active_entities.product")
+		self.assertNotIn("target_source", changed)
+		self.assertNotIn("target_context_ref", changed)
+		self.assertEqual(legacy_bound["target_source"], "conversation_product")
+
+	def test_duplicate_order_items_without_stable_identity_do_not_cross_assign_provenance(self):
+		previous_items = [
+			{
+				"item_code": "ITEM-A", "qty": 1,
+				"target_source": "conversation_active_entity",
+				"target_context_ref": "active_entities.product",
+			},
+			{"item_code": "ITEM-A", "qty": 2},
+		]
+
+		self.assertIsNone(
+			_match_previous_draft_item({"item_code": "ITEM-A", "qty": 3}, previous_items),
+		)
+
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_update_inventory_and_product_only_restore_trusted_unchanged_provenance(self, _user):
+		cases = (
+			(
+				"inventory_adjustment", "_build_inventory_adjustment_draft",
+				{"items": [{
+					"item_code": "ITEM-A", "item_query": "ITEM-A",
+					"target_source": "conversation_active_entity",
+					"target_context_ref": "active_entities.product",
+				}]},
+				{"items": [{
+					"item_code": "ITEM-A", "item_query": "ITEM-A",
+					"target_source": "conversation_result_set",
+					"target_context_ref": "last_result_set:SPOOFED",
+				}]},
+				"_target_source",
+			),
+			(
+				"product_setup", "_build_product_setup_draft",
+				{
+					"operation": "update", "item_code": "ITEM-A",
+					"target_source": "conversation_active_entity",
+					"target_context_ref": "active_entities.product",
+				},
+				{
+					"operation": "update", "item_code": "ITEM-A",
+					"target_source": "conversation_result_set",
+					"target_context_ref": "last_result_set:SPOOFED",
+				},
+				"target_source",
+			),
+		)
+		for draft_type, builder_name, original_payload, submitted, source_key in cases:
+			with self.subTest(draft_type=draft_type), patch(
+				"myapp.services.ai_service.ai_repository.get_draft",
+				return_value={
+					"draft_type": draft_type, "company": "Demo Company",
+					"payload": original_payload,
+				},
+			), patch(
+				f"myapp.services.ai_service.{builder_name}",
+				return_value=({"company": "Demo Company"}, {"ready_for_handoff": True}),
+			) as mock_builder, patch(
+				"myapp.services.ai_service.ai_repository.update_draft",
+				return_value={"name": "AI-DRAFT-1", "version": 3},
+			), patch("myapp.services.ai_service.frappe"):
+				_update_ai_draft_once(
+					draft_id="AI-DRAFT-1", payload=submitted, expected_version=2,
+				)
+				build_payload = mock_builder.call_args.args[0]
+				self.assertEqual(build_payload[source_key], "conversation_active_entity")
+
+			changed = json.loads(json.dumps(submitted))
+			if draft_type == "inventory_adjustment":
+				changed["items"][0]["item_code"] = "ITEM-NEW"
+				changed["items"][0]["item_query"] = "ITEM-NEW"
+			else:
+				changed["item_code"] = "ITEM-NEW"
+			with self.subTest(draft_type=f"{draft_type}-changed"), patch(
+				"myapp.services.ai_service.ai_repository.get_draft",
+				return_value={
+					"draft_type": draft_type, "company": "Demo Company",
+					"payload": original_payload,
+				},
+			), patch(
+				f"myapp.services.ai_service.{builder_name}",
+				return_value=({"company": "Demo Company"}, {"ready_for_handoff": True}),
+			) as mock_builder, patch(
+				"myapp.services.ai_service.ai_repository.update_draft",
+				return_value={"name": "AI-DRAFT-1", "version": 3},
+			), patch("myapp.services.ai_service.frappe"):
+				_update_ai_draft_once(
+					draft_id="AI-DRAFT-1", payload=changed, expected_version=2,
+				)
+				build_payload = mock_builder.call_args.args[0]
+				self.assertNotIn(source_key, build_payload)
+
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_update_order_drafts_preserve_provenance_by_identity_after_reorder(self, _user):
+		for draft_type in ("sales_order", "purchase_order"):
+			with self.subTest(draft_type=draft_type):
+				party_key = "customer" if draft_type == "sales_order" else "supplier"
+				party_resolver = (
+					"_resolve_sales_draft_customer"
+					if draft_type == "sales_order" else "_resolve_purchase_draft_supplier"
+				)
+				item_resolver = (
+					"_resolve_sales_draft_item"
+					if draft_type == "sales_order" else "_resolve_purchase_draft_item"
+				)
+				original_payload = {
+					"operation": "update", "order_number": "ORDER-1",
+					"source_order_modified": "2026-09-06 10:00:00",
+					"transaction_date": "2026-09-06",
+					("delivery_date" if draft_type == "sales_order" else "schedule_date"):
+						"2026-09-07",
+					"target_order_source": "conversation_active_entity",
+					"target_order_context_ref": "active_entities.business_document",
+					party_key: "PARTY-1",
+					"target_party_source": "conversation_active_entity",
+					"target_party_context_ref": "active_entities.business_partner",
+					"items": [
+						{
+							"row_id": "ROW-A", "item_code": "ITEM-A", "qty": 1,
+							"target_source": "conversation_active_entity",
+							"target_context_ref": "active_entities.product",
+						},
+						{"row_id": "ROW-B", "item_code": "ITEM-B", "qty": 2},
+					],
+				}
+				submitted = {
+					**original_payload,
+					"items": [
+						{"row_id": "ROW-B", "item_code": "ITEM-B", "qty": 2},
+						{
+							"row_id": "ROW-A", "item_code": "ITEM-A", "qty": 3,
+							"target_source": "conversation_result_set",
+							"target_context_ref": "last_result_set:SPOOFED",
+						},
+					],
+				}
+
+				def resolve_item(candidate, **_kwargs):
+					return {
+						**candidate, "item_code": candidate["item_query"],
+						"target_source": candidate.get("target_source") or "explicit_or_model_query",
+						"warehouse": "Stores - DC", "warnings": [],
+					}
+
+				with patch(
+					"myapp.services.ai_service.ai_repository.get_draft",
+					return_value={
+						"draft_type": draft_type, "company": "Demo Company",
+						"payload": original_payload,
+					},
+				), patch(
+					f"myapp.services.ai_service.{party_resolver}",
+					return_value=({"name": "PARTY-1", "display_name": "往来单位"}, []),
+				), patch(
+					"myapp.services.ai_service._resolve_sales_draft_warehouse",
+					return_value="Stores - DC",
+				), patch(
+					f"myapp.services.ai_service.{item_resolver}", side_effect=resolve_item,
+				), patch(
+					"myapp.services.ai_service.ai_repository.update_draft",
+					return_value={"name": "AI-DRAFT-1", "version": 3},
+				) as mock_update, patch("myapp.services.ai_service.frappe"):
+					_update_ai_draft_once(
+						draft_id="AI-DRAFT-1", payload=submitted, expected_version=2,
+					)
+
+				saved = mock_update.call_args.kwargs["payload"]
+				self.assertEqual([row["row_id"] for row in saved["items"]], ["ROW-B", "ROW-A"])
+				self.assertEqual(saved["items"][0]["target_source"], "explicit_or_model_query")
+				self.assertEqual(
+					saved["items"][1]["target_source"], "conversation_active_entity",
+				)
+				self.assertEqual(saved["target_order_source"], "conversation_active_entity")
+				self.assertEqual(saved["target_party_source"], "conversation_active_entity")
+				self.assertEqual(saved["source_order_modified"], "2026-09-06 10:00:00")
+
+	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	def test_update_order_target_change_drops_old_provenance_and_modified_snapshot(self, _user):
+		original_payload = {
+			"operation": "update", "order_number": "SO-OLD",
+			"source_order_modified": "2026-09-06 10:00:00",
+			"transaction_date": "2026-09-06", "delivery_date": "2026-09-07",
+			"target_order_source": "conversation_active_entity",
+			"target_order_context_ref": "active_entities.business_document",
+			"customer": "CUST-OLD",
+			"target_party_source": "conversation_active_entity",
+			"target_party_context_ref": "active_entities.business_partner",
+			"items": [],
+		}
+		submitted = {
+			**original_payload,
+			"order_number": "SO-NEW", "customer": "CUST-NEW",
+			"target_order_source": "conversation_active_entity",
+			"target_party_source": "conversation_active_entity",
+		}
+		with patch(
+			"myapp.services.ai_service.ai_repository.get_draft",
+			return_value={
+				"draft_type": "sales_order", "company": "Demo Company",
+				"payload": original_payload,
+			},
+		), patch(
+			"myapp.services.ai_service._resolve_sales_draft_customer",
+			return_value=({"name": "CUST-NEW", "display_name": "新客户"}, []),
+		), patch(
+			"myapp.services.ai_service._resolve_sales_draft_warehouse", return_value=None,
+		), patch(
+			"myapp.services.ai_service.ai_repository.update_draft",
+			return_value={"name": "AI-DRAFT-1", "version": 3},
+		) as mock_update, patch("myapp.services.ai_service.frappe"):
+			_update_ai_draft_once(
+				draft_id="AI-DRAFT-1", payload=submitted, expected_version=2,
+			)
+
+		saved = mock_update.call_args.kwargs["payload"]
+		self.assertEqual(saved["order_number"], "SO-NEW")
+		self.assertEqual(saved["target_order_source"], "explicit_or_model_query")
+		self.assertIsNone(saved["target_order_context_ref"])
+		self.assertEqual(saved["target_party_source"], "explicit_or_model_query")
+		self.assertIsNone(saved["target_party_context_ref"])
+		self.assertIsNone(saved["source_order_modified"])
 
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	def test_user_edited_draft_reprojects_conversation_entities(self, _user):
@@ -3594,6 +3911,163 @@ class TestAiService(TestCase):
 		)
 		self.assertEqual(executed_state["active_entities"]["product"]["entity_id"], "NEW-ITEM")
 
+	def test_failed_context_bound_product_draft_preserves_resolved_active_product(self):
+		previous_state = {
+			"active_entities": {"product": {
+				"entity_type": "product", "entity_id": "ITEM-COLA",
+				"display_name": "可口可乐", "resolution_status": "resolved",
+				"source": "draft_execution", "source_result_set_id": None,
+			}},
+			"product": {
+				"query": "ITEM-COLA", "item_code": "ITEM-COLA",
+				"item_name": "可口可乐", "resolution_status": "resolved",
+			},
+		}
+
+		next_state = _build_draft_conversation_state(
+			previous_state=previous_state,
+			draft_type="product_setup",
+			payload={
+				"operation": "update", "item_code": None,
+				"target_source": "conversation_active_entity",
+				"target_context_ref": "active_entities.product",
+			},
+		)
+
+		self.assertEqual(
+			next_state["active_entities"]["product"]["entity_id"], "ITEM-COLA",
+		)
+		self.assertEqual(
+			next_state["active_entities"]["product"]["resolution_status"], "resolved",
+		)
+		self.assertEqual(next_state["product"]["item_code"], "ITEM-COLA")
+
+	def test_failed_explicit_product_target_clears_previous_active_product(self):
+		next_state = _build_draft_conversation_state(
+			previous_state={
+				"active_entities": {"product": {
+					"entity_type": "product", "entity_id": "ITEM-COLA",
+					"display_name": "可口可乐", "resolution_status": "resolved",
+				}},
+			},
+			draft_type="product_setup",
+			payload={
+				"operation": "update", "item_code": None,
+				"target_source": "explicit_or_model_query",
+				"target_context_ref": None,
+			},
+		)
+
+		self.assertIsNone(next_state["active_entities"]["product"]["entity_id"])
+		self.assertEqual(
+			next_state["active_entities"]["product"]["resolution_status"], "not_found",
+		)
+
+	def test_failed_context_bound_transaction_drafts_preserve_typed_entities(self):
+		cases = (
+			(
+				"inventory_adjustment",
+				{"items": [{
+					"item_query": "ITEM-COLA", "item_code": None,
+					"target_source": "conversation_active_entity",
+					"target_context_ref": "active_entities.product",
+				}]},
+				{"product": ("product", "ITEM-COLA")},
+			),
+			(
+				"sales_order",
+				{
+					"operation": "update", "order_number": None,
+					"target_order_source": "conversation_active_entity",
+					"target_order_context_ref": "active_entities.business_document",
+					"customer": None,
+					"target_party_source": "conversation_active_entity",
+					"target_party_context_ref": "active_entities.business_partner",
+					"items": [{
+						"item_query": "ITEM-COLA", "item_code": None,
+						"target_source": "conversation_active_entity",
+						"target_context_ref": "active_entities.product",
+					}],
+				},
+				{
+					"product": ("product", "ITEM-COLA"),
+					"business_document": ("sales_order", "SO-001"),
+					"business_partner": ("customer", "CUST-001"),
+				},
+			),
+			(
+				"purchase_order",
+				{
+					"operation": "update", "order_number": None,
+					"target_order_source": "conversation_result_set",
+					"target_order_context_ref": "last_result_set:RESULT-PO",
+					"supplier": None,
+					"target_party_source": "conversation_active_entity",
+					"target_party_context_ref": "active_entities.business_partner",
+					"items": [{
+						"item_query": "ITEM-COLA", "item_code": None,
+						"target_source": "conversation_product",
+						"target_context_ref": "product",
+					}],
+				},
+				{
+					"product": ("product", "ITEM-COLA"),
+					"business_document": ("purchase_order", "PO-001"),
+					"business_partner": ("supplier", "SUP-001"),
+				},
+			),
+		)
+		for draft_type, payload, expected in cases:
+			with self.subTest(draft_type=draft_type):
+				previous_state = {"active_entities": {
+					slot: {
+						"entity_type": entity_type, "entity_id": entity_id,
+						"display_name": entity_id, "resolution_status": "resolved",
+					}
+					for slot, (entity_type, entity_id) in expected.items()
+				}}
+				next_state = _build_draft_conversation_state(
+					previous_state=previous_state, draft_type=draft_type, payload=payload,
+				)
+				for slot, (entity_type, entity_id) in expected.items():
+					entity = next_state["active_entities"][slot]
+					self.assertEqual(entity["entity_type"], entity_type)
+					self.assertEqual(entity["entity_id"], entity_id)
+					self.assertEqual(entity["resolution_status"], "resolved")
+
+	def test_explicit_failed_order_and_partner_targets_clear_previous_typed_entities(self):
+		previous_state = {"active_entities": {
+			"business_document": {
+				"entity_type": "sales_order", "entity_id": "SO-OLD",
+				"resolution_status": "resolved",
+			},
+			"business_partner": {
+				"entity_type": "customer", "entity_id": "CUST-OLD",
+				"resolution_status": "resolved",
+			},
+		}}
+
+		next_state = _build_draft_conversation_state(
+			previous_state=previous_state,
+			draft_type="sales_order",
+			payload={
+				"operation": "update", "order_number": None,
+				"target_order_source": "explicit_or_model_query",
+				"customer": None,
+				"target_party_source": "explicit_or_model_query",
+				"items": [],
+			},
+		)
+
+		self.assertEqual(
+			next_state["active_entities"]["business_document"]["resolution_status"],
+			"not_found",
+		)
+		self.assertEqual(
+			next_state["active_entities"]["business_partner"]["resolution_status"],
+			"not_found",
+		)
+
 	@patch("myapp.services.ai_service.get_sales_order_detail")
 	def test_cross_company_order_is_not_used_as_draft_baseline(self, mock_detail):
 		mock_detail.return_value = {"data": {
@@ -3641,6 +4115,38 @@ class TestAiService(TestCase):
 		self.assertEqual(candidate["line_update_mode"], "patch")
 		self.assertEqual(candidate["items"][0]["_line_target_item_query"], "可口可乐")
 		self.assertEqual(candidate["items"][0]["qty"], 5)
+
+	def test_order_semantic_normalization_preserves_server_bound_targets(self):
+		candidate = _normalize_order_semantic_candidate({
+			"operation": "update",
+			"target": {"order_number": None, "context_ref": "active_order"},
+			"header_patch": {"clear_fields": []},
+			"line_update_mode": "patch",
+			"line_changes": [{
+				"operation": "add",
+				"target": {
+					"row_id": None, "item_query": None, "context_ref": "active_product",
+				},
+				"patch": {"qty": 2},
+			}],
+		}, draft_type="sales_order")
+		candidate["order_number"] = "SO-CONTEXT"
+		candidate["_target_order_source"] = "conversation_active_entity"
+		candidate["items"][0]["item_query"] = "ITEM-COLA"
+		candidate["items"][0]["_target_source"] = "conversation_active_entity"
+
+		normalized_again = _normalize_order_semantic_candidate(
+			candidate, draft_type="sales_order",
+		)
+
+		self.assertEqual(normalized_again["order_number"], "SO-CONTEXT")
+		self.assertEqual(
+			normalized_again["_target_order_source"], "conversation_active_entity",
+		)
+		self.assertEqual(normalized_again["items"][0]["item_query"], "ITEM-COLA")
+		self.assertEqual(
+			normalized_again["items"][0]["_target_source"], "conversation_active_entity",
+		)
 
 	def test_order_v2_product_context_is_only_bound_from_schema_reference(self):
 		candidate = _normalize_order_semantic_candidate({
@@ -3899,6 +4405,27 @@ class TestAiService(TestCase):
 			filters={"name": "ITEM-001"},
 			fields=["name", "item_name", "modified"],
 			limit_page_length=2,
+		)
+
+	@patch("myapp.services.ai_service.get_product_detail_v2")
+	def test_product_setup_new_server_target_precedes_stale_draft_entity(self, mock_detail):
+		mock_detail.return_value = {
+			"data": {"item_code": "ITEM-NEW", "item_name": "新目标商品"},
+		}
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.get_list.return_value = [
+				{"name": "ITEM-NEW", "item_name": "新目标商品", "modified": "2026-09-06"},
+			]
+			detail, _matches = _resolve_existing_product_for_setup({
+				"company": "Demo Company",
+				"_semantic_contract": "product-setup-command-v2",
+				"_target_item_code": "ITEM-NEW",
+				"_state": {"entity": {"doctype": "Item", "name": "ITEM-OLD"}},
+			})
+
+		self.assertEqual(detail["item_code"], "ITEM-NEW")
+		self.assertEqual(
+			mock_frappe.get_list.call_args.kwargs["filters"], {"name": "ITEM-NEW"},
 		)
 
 	@patch("myapp.services.ai_service.get_product_detail_v2")
@@ -4583,6 +5110,70 @@ class TestAiService(TestCase):
 		self.assertEqual(candidate["specification"], "500ml")
 		self.assertNotIn("item_code", candidate)
 		self.assertEqual(candidate["_explicit_patch_fields"], ["specification"])
+
+	def test_product_setup_semantic_normalization_preserves_server_bound_context_target(self):
+		candidate = _normalize_product_setup_semantic_candidate({
+			"operation": "update",
+			"target": {
+				"item_code": None, "barcode": None,
+				"query": None, "context_ref": "active_product",
+			},
+			"patch": {
+				"image": None, "new_item_code": None, "clear_fields": [],
+			},
+		})
+		candidate["_target_item_code"] = "ITEM-COLA"
+
+		normalized_again = _normalize_product_setup_semantic_candidate(candidate)
+
+		self.assertEqual(normalized_again["_target_item_code"], "ITEM-COLA")
+		self.assertEqual(normalized_again["_target_context_ref"], "active_product")
+
+	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value=None)
+	@patch("myapp.services.ai_service._resolve_optional_master_name", return_value=None)
+	@patch("myapp.services.ai_service._resolve_product_setup_uom", return_value=("Nos", [{"name": "Nos"}]))
+	@patch("myapp.services.ai_service._resolve_existing_product_for_setup")
+	def test_product_setup_builder_keeps_server_bound_target_after_second_normalization(
+		self, mock_existing, _uom, _master, _warehouse,
+	):
+		candidate = _normalize_product_setup_semantic_candidate({
+			"operation": "update",
+			"target": {
+				"item_code": None, "barcode": None,
+				"query": None, "context_ref": "active_product",
+			},
+			"patch": {
+				"image": "/files/new-cover.webp", "new_item_code": None,
+				"clear_fields": [],
+			},
+		})
+		candidate["_target_item_code"] = "ITEM-COLA"
+
+		def resolve_existing(bound_candidate):
+			self.assertEqual(bound_candidate["_target_item_code"], "ITEM-COLA")
+			return ({
+				"item_code": "ITEM-COLA", "item_name": "可口可乐",
+				"item_group": "Products", "brand": None, "stock_uom": "Nos",
+				"stock_uom_display": "件", "barcode": None,
+				"specification": "500ml", "description": None,
+				"image": "/files/old-cover.webp", "modified": "2026-09-06 14:34:01",
+				"standard_rate": 3, "total_qty": 8,
+				"warehouse_stock_details": [],
+				"price_summary": {"selling_prices": [], "buying_prices": []},
+			}, [{"name": "ITEM-COLA", "item_name": "可口可乐"}])
+
+		mock_existing.side_effect = resolve_existing
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.db.get_value.return_value = "CNY"
+			mock_frappe.has_permission.return_value = True
+			payload, validation = _build_product_setup_draft(
+				candidate, company="Test Company",
+			)
+
+		self.assertEqual(payload["operation"], "update")
+		self.assertEqual(payload["item_code"], "ITEM-COLA")
+		self.assertEqual(payload["image"], "/files/new-cover.webp")
+		self.assertTrue(validation["ready_for_handoff"])
 
 	@patch("myapp.services.ai_service._resolve_item_candidates", return_value={
 		"selected": None, "candidates": [], "match_method": "hybrid",
