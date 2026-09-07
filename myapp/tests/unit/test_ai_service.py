@@ -126,6 +126,15 @@ def _runtime_metadata(schema_family: str, prompt_version: str) -> dict:
 
 class TestAiService(TestCase):
 	def setUp(self):
+		# Existing business/provider tests isolate the action boundary; dedicated
+		# test_ai_action_safety exercises the real checks without these patches.
+		for target, options in (
+			("_prepare_draft_action_contract", {"return_value": {}}),
+			("_seal_draft_action", {"side_effect": lambda payload, *args, **kwargs: payload}),
+		):
+			patcher = patch(f"myapp.services.ai_service.{target}", **options)
+			patcher.start()
+			self.addCleanup(patcher.stop)
 		# Existing tests exercise the compatibility chat path. Agent Runtime has
 		# dedicated contract tests and is enabled explicitly there.
 		self._agent_runtime_env = patch.dict(

@@ -1233,7 +1233,67 @@ def _draft_provider_error(error: urllib.error.HTTPError, *, payload: dict) -> Ai
 	)
 
 
+def _prepare_draft_action_contract(payload: dict) -> dict:
+	from myapp.services.ai_action_contract import assess_action_contract
+	messages = payload.get("messages") or []
+	latest = next((row for row in reversed(messages) if row.get("role") == "user"), {})
+	content = str(payload.get("_action_content") or latest.get("content") or "").strip()
+	if not content:
+		raise frappe.ValidationError(_("缺少当前用户请求，不能生成写入草稿。"))
+	attachments = payload.get("_action_attachments", latest.get("attachments") or payload.get("attachments") or [])
+	resolution_id = payload.get("_scenario_resolution_id")
+	if resolution_id:
+		resolution = _take_ai_scenario_resolution(
+			resolution_id, user=payload["user"], content=payload.get("_resolution_content", content),
+			attachment_ids=_scenario_resolution_attachment_ids(attachments), company=payload.get("company"),
+			conversation_id=payload.get("_resolution_conversation_id"),
+			conversation_state_version=cint(payload.get("_resolution_state_version")),
+			model_alias=payload.get("model_alias"),
+		)
+		if not resolution or resolution.get("scenario") != payload.get("scenario"):
+			raise frappe.ValidationError(_("动作解析凭据已失效或与当前请求不一致，请重新发送请求。"))
+		intent = resolution["intent"]
+	else:
+		intent = _call_ai_intent_orchestrator(
+			content=content, user=payload["user"], company=payload.get("company"),
+			model_alias=payload.get("model_alias"),
+			conversation_state=(payload.get("context") or {}).get("conversation_state"), attachments=attachments,
+		)
+	if not _structured_intent_is_confident(intent) or intent.get("intent") != payload.get("scenario"):
+		raise frappe.ValidationError(_("当前请求与所选草稿类型不一致或尚未明确，未生成草稿。"))
+	if assess_action_contract(intent) != "supported":
+		raise frappe.ValidationError(_("当前 AI 不支持执行该动作，或动作/目标尚未明确；不能将删除、取消或多目标请求替换成编辑草稿。"))
+	return {
+		"scenario": payload["scenario"], "user": payload["user"], "company": payload.get("company"),
+		"action": intent["action_contract"],
+		"content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+	}
+
+
+def _seal_draft_action(payload: dict, result: dict, *, scenario: str, user: str, company: str) -> dict:
+	from myapp.services.ai_action_contract import bind_draft_scope, validate_draft_action
+	contract = result.get("_action_contract")
+	operation = "inventory_adjust" if scenario == "inventory_adjustment_draft" else payload.get("operation", "create")
+	try:
+		validate_draft_action(contract, scenario=scenario, operation=operation, user=user, company=company)
+		contract = bind_draft_scope(contract, payload)
+	except ValueError as error:
+		raise frappe.ValidationError(str(error)) from error
+	return {**payload, "_action_contract": contract}
+
+
+def _check_stored_draft_action(draft: dict, *, user: str) -> None:
+	# Deterministic product-card actions do not originate from a language-model request.
+	if draft.get("origin_kind") == "ui_product_action" or not draft.get("source_run"):
+		return
+	_seal_draft_action(draft.get("payload") or {},
+		{"_action_contract": (draft.get("payload") or {}).get("_action_contract")},
+		scenario=f"{draft['draft_type']}_draft", user=user, company=draft.get("company"))
+
+
 def _call_ai_orchestrator_draft(payload: dict, *, endpoint: str, log_title: str) -> dict:
+	action_contract = _prepare_draft_action_contract(payload)
+	payload = {key: value for key, value in payload.items() if not key.startswith("_")}
 	base_url, service_token = _get_ai_orchestrator_settings()
 	request = urllib.request.Request(
 		f"{base_url}{endpoint}",
@@ -1263,6 +1323,7 @@ def _call_ai_orchestrator_draft(payload: dict, *, endpoint: str, log_title: str)
 		"/internal/v1/drafts/product-setup": "product_setup_draft",
 	}[endpoint]
 	_validate_runtime_result(result, schema_family=schema_family)
+	result["_action_contract"] = action_contract
 	return result
 
 
@@ -3828,6 +3889,8 @@ def _resolve_inventory_draft_item(
 
 def _build_inventory_adjustment_draft(candidate: dict, *, company: str) -> tuple[dict, dict]:
 	items = candidate.get("items") if isinstance(candidate.get("items"), list) else []
+	if len(items) > 1:
+		raise frappe.ValidationError(_("库存调整草稿仅支持一个商品，不能只处理多行请求中的第一项。"))
 	source_item = items[0] if items and isinstance(items[0], dict) else candidate
 	errors = []
 	issues = []
@@ -4874,6 +4937,7 @@ def generate_ai_sales_order_draft_v1(
 	model_alias: str | None = None,
 	attachment_ids=None,
 	retry_run_id: str | None = None,
+	scenario_resolution_id: str | None = None,
 ):
 	scenario = "sales_order_draft"
 	prompt_version = None
@@ -4882,6 +4946,7 @@ def generate_ai_sales_order_draft_v1(
 		scenario=scenario, user=user, content=content, company=company,
 		conversation_id=conversation_id, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
 	)
+	resolution_content = _normalize_content(content or _("请识别附件图片对应的业务场景；无法确定时返回 general。"))
 	attachment_refs, attachment_payloads = resolve_ai_attachments(attachment_ids, user=user)
 	model_alias = resolve_ai_selected_model_alias(model_alias)
 	if not str(content or "").strip() and attachment_payloads:
@@ -4924,6 +4989,12 @@ def generate_ai_sales_order_draft_v1(
 				"conversation_id": conversation_id, "run_id": run_id,
 				"model_alias": model_alias,
 				**ai_runtime_request_contract("sales_order_draft"),
+				"_scenario_resolution_id": scenario_resolution_id,
+				"_resolution_content": resolution_content,
+				"_action_attachments": attachment_payloads,
+				"_resolution_conversation_id": conversation_id if has_existing_conversation else None,
+				"_resolution_state_version": cint(conversation_state_record.get("version")) if has_existing_conversation else 0,
+				"_action_content": content,
 				"context": {"conversation_state": _conversation_state_for_intent(
 					conversation_state_record.get("state") or {},
 				)},
@@ -5058,7 +5129,7 @@ def generate_ai_sales_order_draft_v1(
 		draft = ai_repository.create_draft(
 			user=user, conversation_id=conversation_id, source_run=run_id,
 			draft_type="sales_order", company=company, title=content,
-			payload=payload, validation=validation,
+			payload=_seal_draft_action(payload, result, scenario=scenario, user=user, company=company), validation=validation,
 		)
 		assistant_content = _("已生成销售订单草稿；{0}" ).format(
 			_("可以进入销售订单编辑器继续复核。") if validation["ready_for_handoff"] else _("仍有字段需要人工确认。")
@@ -5122,6 +5193,7 @@ def generate_ai_purchase_order_draft_v1(
 	model_alias: str | None = None,
 	attachment_ids=None,
 	retry_run_id: str | None = None,
+	scenario_resolution_id: str | None = None,
 ):
 	scenario = "purchase_order_draft"
 	prompt_version = None
@@ -5130,6 +5202,7 @@ def generate_ai_purchase_order_draft_v1(
 		scenario=scenario, user=user, content=content, company=company,
 		conversation_id=conversation_id, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
 	)
+	resolution_content = _normalize_content(content or _("请识别附件图片对应的业务场景；无法确定时返回 general。"))
 	attachment_refs, attachment_payloads = resolve_ai_attachments(attachment_ids, user=user)
 	model_alias = resolve_ai_selected_model_alias(model_alias)
 	if not str(content or "").strip() and attachment_payloads:
@@ -5170,8 +5243,14 @@ def generate_ai_purchase_order_draft_v1(
 			"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
 			"conversation_id": conversation_id, "run_id": run_id,
 			"model_alias": model_alias,
-			**ai_runtime_request_contract("purchase_order_draft"),
-			"context": {"conversation_state": _conversation_state_for_intent(
+				**ai_runtime_request_contract("purchase_order_draft"),
+				"_scenario_resolution_id": scenario_resolution_id,
+				"_resolution_content": resolution_content,
+				"_action_attachments": attachment_payloads,
+				"_resolution_conversation_id": conversation_id if has_existing_conversation else None,
+				"_resolution_state_version": cint(conversation_state_record.get("version")) if has_existing_conversation else 0,
+				"_action_content": content,
+				"context": {"conversation_state": _conversation_state_for_intent(
 				conversation_state_record.get("state") or {},
 			)},
 		})
@@ -5293,7 +5372,7 @@ def generate_ai_purchase_order_draft_v1(
 		draft = ai_repository.create_draft(
 			user=user, conversation_id=conversation_id, source_run=run_id,
 			draft_type="purchase_order", company=company, title=content,
-			payload=payload, validation=validation,
+			payload=_seal_draft_action(payload, result, scenario=scenario, user=user, company=company), validation=validation,
 		)
 		assistant_content = _("已生成采购订单草稿；{0}" ).format(
 			_("可以进入采购订单编辑器继续复核。") if validation["ready_for_handoff"] else _("仍有字段需要人工确认。")
@@ -5357,6 +5436,7 @@ def generate_ai_inventory_adjustment_draft_v1(
 	model_alias: str | None = None,
 	attachment_ids=None,
 	retry_run_id: str | None = None,
+	scenario_resolution_id: str | None = None,
 ):
 	scenario = "inventory_adjustment_draft"
 	prompt_version = None
@@ -5365,6 +5445,7 @@ def generate_ai_inventory_adjustment_draft_v1(
 		scenario=scenario, user=user, content=content, company=company,
 		conversation_id=conversation_id, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
 	)
+	resolution_content = _normalize_content(content or _("请识别附件图片对应的业务场景；无法确定时返回 general。"))
 	attachment_refs, attachment_payloads = resolve_ai_attachments(attachment_ids, user=user)
 	model_alias = resolve_ai_selected_model_alias(model_alias)
 	if not str(content or "").strip() and attachment_payloads:
@@ -5408,6 +5489,12 @@ def generate_ai_inventory_adjustment_draft_v1(
 				"run_id": run_id,
 				"model_alias": model_alias,
 				**ai_runtime_request_contract("inventory_adjustment_draft"),
+				"_scenario_resolution_id": scenario_resolution_id,
+				"_resolution_content": resolution_content,
+				"_action_attachments": attachment_payloads,
+				"_resolution_conversation_id": conversation_id if has_existing_conversation else None,
+				"_resolution_state_version": cint(conversation_state_record.get("version")) if has_existing_conversation else 0,
+				"_action_content": content,
 				"context": {"conversation_state": _conversation_state_for_intent(
 					conversation_state_record.get("state") or {},
 				)},
@@ -5431,7 +5518,7 @@ def generate_ai_inventory_adjustment_draft_v1(
 			draft_type="inventory_adjustment",
 			company=company,
 			title=content,
-			payload=payload,
+			payload=_seal_draft_action(payload, result, scenario=scenario, user=user, company=company),
 			validation=validation,
 		)
 		assistant_content = _("已生成库存调整草稿；{0}").format(
@@ -6297,6 +6384,7 @@ def generate_ai_product_setup_draft_v1(
 	model_alias: str | None = None,
 	attachment_ids=None,
 	retry_run_id: str | None = None,
+	scenario_resolution_id: str | None = None,
 ):
 	scenario = "product_setup_draft"
 	prompt_version = None
@@ -6305,6 +6393,7 @@ def generate_ai_product_setup_draft_v1(
 		scenario=scenario, user=user, content=content, company=company,
 		conversation_id=conversation_id, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
 	)
+	resolution_content = _normalize_content(content or _("请识别附件图片对应的业务场景；无法确定时返回 general。"))
 	attachment_refs, attachment_payloads = resolve_ai_attachments(attachment_ids, user=user)
 	model_alias = resolve_ai_selected_model_alias(model_alias)
 	if not str(content or "").strip() and attachment_payloads:
@@ -6345,8 +6434,14 @@ def generate_ai_product_setup_draft_v1(
 			"company": company, "locale": getattr(frappe.local, "lang", None) or "zh-CN",
 			"conversation_id": conversation_id, "run_id": run_id,
 			"model_alias": model_alias,
-			**ai_runtime_request_contract("product_setup_draft"),
-			"context": {"conversation_state": _conversation_state_for_intent(
+				**ai_runtime_request_contract("product_setup_draft"),
+				"_scenario_resolution_id": scenario_resolution_id,
+				"_resolution_content": resolution_content,
+				"_action_attachments": attachment_payloads,
+				"_resolution_conversation_id": conversation_id if has_existing_conversation else None,
+				"_resolution_state_version": cint(conversation_state_record.get("version")) if has_existing_conversation else 0,
+				"_action_content": content,
+				"context": {"conversation_state": _conversation_state_for_intent(
 				conversation_state_record.get("state") or {},
 			)},
 		})
@@ -6413,7 +6508,7 @@ def generate_ai_product_setup_draft_v1(
 		draft = ai_repository.create_draft(
 			user=user, conversation_id=conversation_id, source_run=run_id,
 			draft_type="product_setup", company=company, title=content,
-			payload=payload, validation=validation,
+			payload=_seal_draft_action(payload, result, scenario=scenario, user=user, company=company), validation=validation,
 		)
 		assistant_content = _("已生成商品建档草稿；{0}").format(
 			_("可以进入商品页面继续复核。") if validation["ready_for_handoff"]
@@ -7365,6 +7460,7 @@ def restore_ai_draft_version_v1(
 def prepare_ai_draft_handoff_v1(draft_id: str):
 	user = _current_user()
 	draft = ai_repository.get_draft(draft_id=draft_id, user=user)
+	_check_stored_draft_action(draft, user=user)
 	if draft["draft_type"] not in {"sales_order", "purchase_order", "inventory_adjustment", "product_setup"}:
 		frappe.throw(_("当前草稿类型不支持交接。"))
 	if draft["status"] != "draft":
@@ -7788,6 +7884,7 @@ def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
 
 
 def _refresh_ai_draft_before_execution(*, draft: dict, user: str) -> dict:
+	_check_stored_draft_action(draft, user=user)
 	previous_payload = draft.get("payload") or {}
 	if draft.get("draft_type") == "product_setup":
 		next_payload, validation = _build_product_setup_draft(
@@ -7804,6 +7901,9 @@ def _refresh_ai_draft_before_execution(*, draft: dict, user: str) -> dict:
 	else:
 		return draft
 	previous_hashes = _draft_source_hashes(previous_payload)
+	if previous_payload.get("_action_contract"):
+		next_payload["_action_contract"] = previous_payload["_action_contract"]
+	_check_stored_draft_action({**draft, "payload": next_payload}, user=user)
 	next_hashes = _draft_source_hashes(next_payload)
 	if not previous_hashes or previous_hashes != next_hashes:
 		ai_repository.update_draft(

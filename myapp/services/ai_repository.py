@@ -2597,7 +2597,7 @@ def update_draft(
 	_ensure_tables()
 	locked_rows = frappe.db.sql(
 		f"""
-		SELECT status, version_no
+		SELECT status, version_no, payload_json, draft_type, company
 		FROM `{DRAFT_TABLE}`
 		WHERE name = %s AND owner = %s
 		LIMIT 1
@@ -2609,6 +2609,21 @@ def update_draft(
 	if not locked_rows:
 		raise frappe.PermissionError(_("AI 草稿不存在或无权访问。"))
 	locked = locked_rows[0]
+	# Only the locked stored version owns provenance; edits/restores cannot forge or drop it.
+	previous_payload = json.loads(getattr(locked, "payload_json", None) or "{}")
+	payload = dict(payload)
+	payload.pop("_action_contract", None)
+	if previous_payload.get("_action_contract"):
+		payload["_action_contract"] = previous_payload["_action_contract"]
+		from myapp.services.ai_action_contract import bind_draft_scope, validate_draft_action
+		scenario = f"{locked.draft_type}_draft"
+		operation = "inventory_adjust" if locked.draft_type == "inventory_adjustment" else payload.get("operation", "create")
+		try:
+			validate_draft_action(payload["_action_contract"], scenario=scenario, operation=operation,
+				user=user, company=locked.company)
+			payload["_action_contract"] = bind_draft_scope(payload["_action_contract"], payload)
+		except ValueError as error:
+			raise frappe.ValidationError(str(error)) from error
 	if locked.status != "draft":
 		frappe.throw(_("只有 draft 状态的 AI 草稿可以修改。"))
 	expected_version = cint(expected_version)

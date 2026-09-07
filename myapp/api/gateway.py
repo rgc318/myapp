@@ -505,11 +505,13 @@ def generate_ai_sales_order_draft_v1(
 	model_alias: str | None = None,
 	attachment_ids=None,
 	retry_run_id: str | None = None,
+	scenario_resolution_id: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: generate_ai_sales_order_draft_v1_service(
 			content=content, company=company, conversation_id=conversation_id,
 			model_alias=model_alias, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
+			scenario_resolution_id=scenario_resolution_id,
 		),
 		success_code="AI_SALES_ORDER_DRAFT_CREATED",
 	)
@@ -523,11 +525,13 @@ def generate_ai_purchase_order_draft_v1(
 	model_alias: str | None = None,
 	attachment_ids=None,
 	retry_run_id: str | None = None,
+	scenario_resolution_id: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: generate_ai_purchase_order_draft_v1_service(
 			content=content, company=company, conversation_id=conversation_id,
 			model_alias=model_alias, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
+			scenario_resolution_id=scenario_resolution_id,
 		),
 		success_code="AI_PURCHASE_ORDER_DRAFT_CREATED",
 	)
@@ -541,11 +545,13 @@ def generate_ai_inventory_adjustment_draft_v1(
 	model_alias: str | None = None,
 	attachment_ids=None,
 	retry_run_id: str | None = None,
+	scenario_resolution_id: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: generate_ai_inventory_adjustment_draft_v1_service(
 			content=content, company=company, conversation_id=conversation_id,
 			model_alias=model_alias, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
+			scenario_resolution_id=scenario_resolution_id,
 		),
 		success_code="AI_INVENTORY_ADJUSTMENT_DRAFT_CREATED",
 	)
@@ -559,11 +565,13 @@ def generate_ai_product_setup_draft_v1(
 	model_alias: str | None = None,
 	attachment_ids=None,
 	retry_run_id: str | None = None,
+	scenario_resolution_id: str | None = None,
 ):
 	return _handle_gateway_call(
 		lambda: generate_ai_product_setup_draft_v1_service(
 			content=content, company=company, conversation_id=conversation_id,
 			model_alias=model_alias, attachment_ids=attachment_ids, retry_run_id=retry_run_id,
+			scenario_resolution_id=scenario_resolution_id,
 		),
 		success_code="AI_PRODUCT_SETUP_DRAFT_CREATED",
 	)

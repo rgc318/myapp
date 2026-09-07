@@ -1,5 +1,9 @@
 # 测试说明
 
+目标锁定回归：可额外设置 `MYAPP_HTTP_ACTION_OTHER_ITEM` 为另一个现有商品编码，验证已生成草稿不能改绑其他商品。HTTP 测试同时断言 `resolved_scope.target` 落库。单测覆盖商品/订单目标冻结、未解析目标首次绑定、库存商品/仓库/方向冻结、数量可编辑及多行输入拒绝。2026-09-07：动作安全、AI service、repository、Gateway 共 433 tests PASS；真实 HTTP 2 tests PASS（含更换目标拒绝，约 22 秒）。HTTP 使用真实模型，会产生调用费用；测试只创建并放弃 AI 草稿、归档会话，不执行 ERP 写操作。
+
+动作契约直接调用/凭据复用的真实 HTTP 回归位于 `test_ai_draft_action_http`。显式设置 `MYAPP_HTTP_ACTION_TEST_MODEL` 与 `MYAPP_HTTP_ACTION_TEST_ITEM` 后运行；可选 `MYAPP_HTTP_ACTION_TEST_COMPANY`（默认 rgc (Demo)）。验证直接删除被拒绝、先解析再生成的凭据透传、契约持久化、客户端改变 operation 被拒绝。仅生成后放弃 AI 草稿、归档测试会话，绝不调用正式 execute。`test_ai_action_safety` 覆盖四类底层入口、凭据失效、作用域、动作不一致和旧草稿执行边界；旧业务/provider 单测显式隔离动作模型调用，不能作为动作契约验证的替代。
+
 AI 后台检测回归：容器 bench Python 执行 `apps.myapp.myapp.tests.unit.test_ai_model_check_service`，覆盖权限、重复投递、逐项保存、错误隔离、取消和不跳过 adapter 的 Gateway 参数契约。HTTP 回归为 `apps.myapp.myapp.tests.http.test_ai_model_check_http`；默认只查询进度，指定 `MYAPP_HTTP_MODEL_CHECK_ALIAS` 后才执行一个真实 basic 请求，验证提交、请求幂等、worker 执行、查询与终态取消。该测试不创建 ERP 业务夹具。
 
 更新时间：2026-08-29

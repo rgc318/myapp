@@ -1,4 +1,5 @@
 import hashlib
+import json
 from datetime import datetime, timedelta
 from unittest import TestCase
 from unittest.mock import patch
@@ -943,6 +944,23 @@ class TestAiRepository(TestCase):
 		self.assertIn("FOR UPDATE", mock_frappe.db.sql.call_args_list[0].args[0])
 		update_parameters = mock_frappe.db.sql.call_args_list[1].args[1]
 		self.assertEqual(update_parameters[2], 3)
+
+	def test_update_draft_preserves_server_action_contract_over_client_forgery(self):
+		contract = {"scenario": "product_setup_draft", "user": "u", "company": "c", "action": {
+			"schema_version": "ai-action-contract-v1", "request_mode": "execute_request", "operations": ["update"]}}
+		with patch.object(ai_repository, "frappe") as framework, patch.object(ai_repository, "_ensure_tables"), patch.object(
+			ai_repository, "now_datetime", return_value="2026-09-06 12:00:00",
+		), patch.object(ai_repository, "_retention_days", return_value=30), patch.object(
+			ai_repository, "_insert_draft_version",
+		), patch.object(ai_repository, "get_draft", return_value={}):
+			framework.db.sql.return_value = [frappe._dict(status="draft", version_no=1, draft_type="product_setup", company="c",
+				payload_json=json.dumps({"_action_contract": contract}))]
+			framework.as_json.side_effect = json.dumps
+			update_draft(draft_id="d", user="u", payload={"operation": "update", "_action_contract": {"forged": True}},
+				validation={}, expected_version=1)
+			written = json.loads(framework.db.sql.call_args_list[1].args[1][3])
+			self.assertEqual(written["_action_contract"]["action"], contract["action"])
+			self.assertNotIn("forged", written["_action_contract"])
 
 	def test_update_draft_rejects_a_stale_expected_version(self):
 		with patch.object(ai_repository, "frappe") as mock_frappe:

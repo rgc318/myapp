@@ -623,6 +623,7 @@ class TestGatewayWrappers(TestCase):
 			model_alias=None,
 			attachment_ids=None,
 			retry_run_id=None,
+			scenario_resolution_id=None,
 		)
 
 	@patch("myapp.api.gateway.resolve_ai_scenario_v1_service")
@@ -769,6 +770,7 @@ class TestGatewayWrappers(TestCase):
 			model_alias=None,
 			attachment_ids=None,
 			retry_run_id=None,
+			scenario_resolution_id=None,
 		)
 
 	@patch("myapp.api.gateway.get_ai_product_vector_status_v1_service")
