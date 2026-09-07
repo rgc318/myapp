@@ -3,6 +3,7 @@ import os
 
 import frappe
 
+from . import product_lifecycle_api
 from .ai_api import start_ai_model_check_v1 as start_ai_model_check_v1_service
 from .ai_api import get_ai_model_check_v1 as get_ai_model_check_v1_service
 from .ai_api import cancel_ai_model_check_v1 as cancel_ai_model_check_v1_service
@@ -244,6 +245,45 @@ from myapp.utils.api_response import (
 	normalize_service_response,
 	success_response,
 )
+
+
+@frappe.whitelist(methods=["POST"])
+def create_product_lifecycle_plan_v1(operation, item_codes, reason):
+	return _handle_gateway_call(lambda: product_lifecycle_api.create_product_lifecycle_plan_v1(operation, item_codes, reason), success_code="PRODUCT_LIFECYCLE_PLAN_CREATED")
+
+
+@frappe.whitelist(methods=["POST"])
+def get_product_lifecycle_plan_v1(plan_id):
+	return _handle_gateway_call(lambda: product_lifecycle_api.get_product_lifecycle_plan_v1(plan_id), success_code="PRODUCT_LIFECYCLE_PLAN_LOADED")
+
+
+@frappe.whitelist(methods=["POST"])
+def list_product_lifecycle_plans_v1(limit=20):
+	return _handle_gateway_call(lambda: product_lifecycle_api.list_product_lifecycle_plans_v1(limit), success_code="PRODUCT_LIFECYCLE_PLANS_LOADED")
+
+
+@frappe.whitelist(methods=["POST"])
+def discard_product_lifecycle_plan_v1(plan_id):
+	return _handle_gateway_call(lambda: product_lifecycle_api.discard_product_lifecycle_plan_v1(plan_id), success_code="PRODUCT_LIFECYCLE_PLAN_DISCARDED")
+
+
+@frappe.whitelist(methods=["POST"])
+def resolve_product_lifecycle_plan_v1(plan_id, expected_version, selections):
+	return _handle_gateway_call(lambda: product_lifecycle_api.resolve_product_lifecycle_plan_v1(plan_id, expected_version, selections), success_code="PRODUCT_LIFECYCLE_TARGETS_RESOLVED")
+
+
+@frappe.whitelist(methods=["POST"])
+def execute_product_lifecycle_plan_v1(plan_id, expected_version, confirmed=False,
+	shared_scope_confirmed=False, deletion_confirmed=False, request_id=None):
+	return _handle_gateway_call(lambda: product_lifecycle_api.execute_product_lifecycle_plan_v1(
+		plan_id, expected_version, confirmed, shared_scope_confirmed, deletion_confirmed, request_id), success_code="PRODUCT_LIFECYCLE_EXECUTED")
+
+
+@frappe.whitelist(methods=["POST"])
+def generate_ai_product_lifecycle_plan_v1(content, company=None, conversation_id=None,
+	model_alias=None, scenario_resolution_id=None):
+	return _handle_gateway_call(lambda: product_lifecycle_api.generate_ai_product_lifecycle_plan_v1(
+		content, company, conversation_id, model_alias, scenario_resolution_id), success_code="AI_PRODUCT_LIFECYCLE_PLAN_CREATED")
 
 
 def _handle_gateway_call(callback, *, success_code: str):

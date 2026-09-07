@@ -1,5 +1,22 @@
 # 测试说明
 
+2026-09-08 提交前跨模块回归：Backend 全量 1019 tests PASS，真实生命周期事务 8 tests PASS（新增跨用户计划读取/执行拒绝），生命周期及旧编辑 HTTP 4 tests PASS。原有自动路由/SSE 两用例最终通过；其中一次连接中断后独立一次复测成功。`test_ai_gateway_http` 可用 `MYAPP_HTTP_AI_MODEL_ALIAS` 向解析、Chat、库存草稿和 SSE 传同一模型，默认行为不变。价格终止接口新增错误商品/过期版本回归，避免 `_` 局部变量遮蔽翻译函数而抛内部错误。完整分层报告见父仓 `docs/05-development/14-ai-product-lifecycle-verification.zh-CN.md`。
+
+生命周期计划测试：`test_product_lifecycle_plan_service` 覆盖显式确认、版本、过期、owner 查询隔离、幂等重放/冲突、缺少删除确认拒绝和 full rollback；`test_ai_product_lifecycle_service` 覆盖动作/完整目标/保留证据及精确/模糊候选；`test_product_lifecycle_api` 不跳过 adapter，覆盖参数转发。真实隔离事务测试必须从 sites 工作目录执行，避免 Frappe 日志路径错位：
+
+```bash
+docker exec -e MYAPP_LIFECYCLE_TEST_SITE=localhost \
+  -w /home/frappe/frappe-bench/sites frappe_docker-backend-1 \
+  /home/frappe/frappe-bench/env/bin/python -m unittest \
+  myapp.tests.integration.test_product_lifecycle_plans -v
+```
+
+先 migrate 创建生命周期计划表。该用例仅创建 `LIFECYCLE-TEST-*` 临时商品，在事务内启停、原生删除、读取 Deleted Document、重放、注入第二项保存/删除失败并最终 rollback；不提交夹具、不删除用户商品、不调用真实模型。覆盖提交后队列回滚与执行前新增价格引用整批阻断。外部索引队列随事务回滚，不将其视为真实外部清理验收。
+
+HTTP：设置 `MYAPP_HTTP_BASE_URL=http://localhost:8000 MYAPP_HTTP_LIFECYCLE_ITEM=<现有可读商品编码>` 运行 `python3 -m unittest apps.myapp.myapp.tests.http.test_product_lifecycle_http.LifecycleHttpTest`，默认只预检并验证非法确认拒绝，不写 Item；额外设置 `MYAPP_HTTP_ACTION_TEST_MODEL` 才调用一次真实模型验证自动路由→持久计划，测试最后放弃计划并归档测试会话。凭据沿用忽略的 `.env.http-test`。本地已验证 `百事可乐-2` 和 `gpt-5.6-luna`，未对该商品执行任何启停或删除。
+
+商品生命周期第一批内部预检回归：容器 bench Python 执行 `apps.myapp.myapp.tests.unit.test_product_lifecycle_service`。覆盖未知动作、空/重复/超量目标、原因校验、全目标权限优先、库存历史/零库存记录/价格/变体阻断、静态动态引用信息脱敏、异常失败关闭和无写操作。`preview_product_lifecycle` 不是公开 API，不签发执行授权；`preflight_passed=true` 不代表可跳过正式执行重校验。
+
 目标锁定回归：可额外设置 `MYAPP_HTTP_ACTION_OTHER_ITEM` 为另一个现有商品编码，验证已生成草稿不能改绑其他商品。HTTP 测试同时断言 `resolved_scope.target` 落库。单测覆盖商品/订单目标冻结、未解析目标首次绑定、库存商品/仓库/方向冻结、数量可编辑及多行输入拒绝。2026-09-07：动作安全、AI service、repository、Gateway 共 433 tests PASS；真实 HTTP 2 tests PASS（含更换目标拒绝，约 22 秒）。HTTP 使用真实模型，会产生调用费用；测试只创建并放弃 AI 草稿、归档会话，不执行 ERP 写操作。
 
 动作契约直接调用/凭据复用的真实 HTTP 回归位于 `test_ai_draft_action_http`。显式设置 `MYAPP_HTTP_ACTION_TEST_MODEL` 与 `MYAPP_HTTP_ACTION_TEST_ITEM` 后运行；可选 `MYAPP_HTTP_ACTION_TEST_COMPANY`（默认 rgc (Demo)）。验证直接删除被拒绝、先解析再生成的凭据透传、契约持久化、客户端改变 operation 被拒绝。仅生成后放弃 AI 草稿、归档测试会话，绝不调用正式 execute。`test_ai_action_safety` 覆盖四类底层入口、凭据失效、作用域、动作不一致和旧草稿执行边界；旧业务/provider 单测显式隔离动作模型调用，不能作为动作契约验证的替代。

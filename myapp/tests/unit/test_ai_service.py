@@ -849,7 +849,7 @@ class TestAiService(TestCase):
 			},
 			"prompt_versions": {
 				"general": "erp-readonly-v11",
-				"intent_parse": "erp-intent-v7",
+				"intent_parse": "erp-intent-v8",
 				"product_search": "erp-readonly-v11",
 				"order_query": "erp-readonly-v11",
 				"report_summary": "erp-readonly-v11",
@@ -902,7 +902,7 @@ class TestAiService(TestCase):
 			},
 			"prompt_versions": {
 				"general": "erp-readonly-v11",
-				"intent_parse": "erp-intent-v7",
+				"intent_parse": "erp-intent-v8",
 				"product_search": "erp-readonly-v11",
 				"order_query": "erp-readonly-v11",
 				"report_summary": "erp-readonly-v11",
@@ -3561,7 +3561,7 @@ class TestAiService(TestCase):
 				"date_from": None, "date_to": None, "status": "all", "sort": "latest",
 				"min_amount": None, "limit": 10,
 			},
-			**_runtime_metadata("intent_parse", "erp-intent-v7"),
+			**_runtime_metadata("intent_parse", "erp-intent-v8"),
 		}).encode("utf-8")
 		mock_urlopen.return_value.__enter__.return_value = response
 

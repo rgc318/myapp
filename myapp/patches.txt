@@ -49,3 +49,4 @@ myapp.patches.extend_ai_run_runtime_contract_fields
 myapp.patches.extend_ai_model_health_state_fields
 myapp.patches.add_ai_model_structured_output_fields
 myapp.patches.create_ai_model_check_job
+myapp.patches.create_product_lifecycle_plan

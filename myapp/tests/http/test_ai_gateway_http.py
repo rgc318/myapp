@@ -50,6 +50,10 @@ class AiGatewayHttpTestCase(unittest.TestCase):
 			raise AssertionError(f"Login failed against {cls.base_url}")
 
 	def _post_gateway(self, method: str, payload: dict):
+		if (os.getenv("MYAPP_HTTP_AI_MODEL_ALIAS") and method in {
+			"chat_ai_v1", "resolve_ai_scenario_v1", "generate_ai_inventory_adjustment_draft_v1",
+		}):
+			payload = {"model_alias": os.environ["MYAPP_HTTP_AI_MODEL_ALIAS"], **payload}
 		request = urllib.request.Request(
 			f"{self.base_url}/api/method/myapp.api.gateway.{method}",
 			data=json.dumps(payload).encode(),
@@ -67,6 +71,8 @@ class AiGatewayHttpTestCase(unittest.TestCase):
 		self.assertTrue(message["ok"])
 
 	def _stream_gateway(self, payload: dict):
+		if os.getenv("MYAPP_HTTP_AI_MODEL_ALIAS"):
+			payload = {"model_alias": os.environ["MYAPP_HTTP_AI_MODEL_ALIAS"], **payload}
 		request = urllib.request.Request(
 			f"{self.base_url}/api/method/myapp.api.gateway.stream_ai_message_v1",
 			data=json.dumps(payload).encode(),

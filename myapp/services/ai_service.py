@@ -478,7 +478,7 @@ def _take_ai_scenario_resolution(
 	if record.get("fingerprint") != expected_fingerprint:
 		return None
 	scenario = str(record.get("scenario") or "").strip()
-	if scenario not in AI_ACTION_SCENARIOS:
+	if scenario not in AI_ACTION_SCENARIOS | {"product_lifecycle_plan"}:
 		return None
 	intent = record.get("intent")
 	if not isinstance(intent, dict):
@@ -2893,9 +2893,16 @@ def resolve_ai_scenario_v1(
 		conversation_state,
 		has_current_attachments=bool(attachment_payloads),
 	)
-	resolved_scenario, resolution_mode, resolution_confidence = _resolve_ai_action_scenario(
-		resolved_content, conversation_state, intent,
-	)
+	from myapp.services.ai_product_lifecycle_service import is_lifecycle_intent, validate_lifecycle_intent
+	if is_lifecycle_intent(intent):
+		if attachment_refs:
+			raise frappe.ValidationError(_("商品启停或删除请使用文字和明确商品目标，不从图片推断删除范围。"))
+		validate_lifecycle_intent(intent, resolved_content)
+		resolved_scenario, resolution_mode, resolution_confidence = "product_lifecycle_plan", "structured_intent", intent.get("confidence")
+	else:
+		resolved_scenario, resolution_mode, resolution_confidence = _resolve_ai_action_scenario(
+			resolved_content, conversation_state, intent,
+		)
 	from myapp.services.ai_action_contract import WRITE_CAPABILITIES, assess_action_contract
 	if resolved_scenario in WRITE_CAPABILITIES and assess_action_contract(intent) != "supported":
 		raise frappe.ValidationError(_("AI 尚未返回完整动作契约，不能安全生成写入草稿；请更新 AI 服务或重新明确操作目标。"))

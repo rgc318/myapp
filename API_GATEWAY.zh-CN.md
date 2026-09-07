@@ -1,5 +1,11 @@
 ## API 网关文档
 
+商品生命周期公开接口（POST，登录及 Item 权限）：`create_product_lifecycle_plan_v1(operation,item_codes,reason)`、`get_product_lifecycle_plan_v1(plan_id)`、`list_product_lifecycle_plans_v1(limit=20)`、`discard_product_lifecycle_plan_v1(plan_id)`、`resolve_product_lifecycle_plan_v1(plan_id,expected_version,selections)`、`execute_product_lifecycle_plan_v1(plan_id,expected_version,confirmed,shared_scope_confirmed,deletion_confirmed,request_id)`。支持 enable/disable/delete，不接受客户端修改已生成计划的动作或目标。`expected_version` 必须 JSON 整数；确认必须 JSON 布尔 true（不是字符串或数字），delete 额外要求 `deletion_confirmed=true`。幂等键也支持现有请求头，按 owner 唯一；成功重放只返回原回执。
+
+AI 入口 `resolve_ai_scenario_v1` 对完整商品生命周期意图返回 `scenario=product_lifecycle_plan` 和一次性 `resolution_id`；后续 `generate_ai_product_lifecycle_plan_v1(content,company,conversation_id,model_alias,scenario_resolution_id)` 沿用原解析凭据，返回 conversation_id、plan、message。只生成计划和会话消息，不执行商品操作。计划 15 分钟有效、owner 隔离；返回 `expires_in_seconds`、共享范围、阻断原因、保留目标、未决候选组和持久回执。候选选择必须覆盖所有组且属于服务器候选，生成新计划后原计划 superseded。阻断计划仍可查看，但不可执行。内部只读预检本身仍不是授权。
+
+部署须 migrate 执行 `create_product_lifecycle_plan` patch，Backend 与 AI `erp-intent-v8` 同步更新。执行失败全请求 rollback（含 after_commit 队列），不要与无关待提交业务写入组合；生成/候选解析异常也在 Gateway 错误包络前回滚。删除走原生 Frappe、保留 Deleted Document，不绕过权限和引用检查；存在库存流水、Bin、价格、变体、附件、封面或其他引用时拒绝，不能承诺附件恢复或任意第三方 SQL 并发的全局引用完整性。完整方案见父仓 `docs/05-development/13-ai-product-lifecycle.zh-CN.md`。
+
 四类 `generate_ai_*_draft_v1` 新增可选 `scenario_resolution_id`，Gateway/adapter/service 参数一致。Web 自动识别后透传凭据；服务端核对用户、公司、原文、附件、会话及状态版本，匹配后复用原动作意图，不再重复调用意图模型。提供但过期/不匹配的凭据直接拒绝，不静默重解析。未提供凭据的直接调用仍先解析并校验动作，不能绕过自动入口。
 
 生成草稿的最终 operation 必须与原动作一致；契约写入服务端 `_action_contract`，包含动作、场景、用户、公司及原文 hash。草稿编辑/历史恢复只继承数据库锁定版本中的契约，客户端不能新增、覆盖或删除它；将 update 改成 create 会拒绝。交接和执行前重新核对契约，执行前业务刷新也必须保留契约。旧的模型生成草稿（有 source_run、没有契约）不能直接执行或交接，需重新生成；明确标识 ui_product_action 的确定性商品卡片动作继续走原权限/版本/业务校验，不要求模型契约。

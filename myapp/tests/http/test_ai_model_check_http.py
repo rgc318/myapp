@@ -39,7 +39,7 @@ class ModelCheckHttpTest(unittest.TestCase):
 			self.assertIn("job_id", result)
 			self.assertIn("model_aliases", result)
 
-	def test_delete_intent_is_rejected_before_draft_generation(self):
+	def test_delete_intent_routes_to_human_confirmed_lifecycle_plan(self):
 		alias = os.getenv("MYAPP_HTTP_ACTION_TEST_MODEL")
 		if not alias:
 			self.skipTest("Set MYAPP_HTTP_ACTION_TEST_MODEL to permit a read-only billable intent test")
@@ -52,9 +52,9 @@ class ModelCheckHttpTest(unittest.TestCase):
 			response = error
 		with response:
 			result = json.load(response)["message"]
-		self.assertFalse(result["ok"])
-		self.assertEqual(result["code"], "VALIDATION_ERROR")
-		self.assertIn("当前 AI 不支持执行该动作", json.dumps(result, ensure_ascii=False))
+		self.assertTrue(result["ok"], result.get("code"))
+		self.assertEqual(result["data"]["scenario"], "product_lifecycle_plan")
+		self.assertTrue(result["data"]["resolution_id"])
 
 	def test_single_model_background_job(self):
 		alias = os.getenv("MYAPP_HTTP_MODEL_CHECK_ALIAS")
