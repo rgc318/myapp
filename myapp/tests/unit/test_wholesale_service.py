@@ -31,6 +31,23 @@ from myapp.services.wholesale_service import (
 
 
 class TestWholesaleService(TestCase):
+	def test_terminate_price_rejects_wrong_item_and_stale_version_without_internal_error(self):
+		for code, modified, expected_message in [
+			("OTHER", "current", "价格记录不属于当前商品。"),
+			("ITEM-1", "changed", "价格记录已被其他人修改，请刷新后重试。"),
+		]:
+			with self.subTest(code=code, modified=modified):
+				price = MagicMock(item_code=code, modified=modified)
+				with patch("myapp.services.wholesale_service.run_idempotent", side_effect=lambda action, key, callback: callback()), \
+					patch("myapp.services.wholesale_service.get_current_request_id", return_value="TEST"), \
+					patch("myapp.services.wholesale_service.require_document_permission", return_value=price), \
+					patch("myapp.services.wholesale_service._", side_effect=lambda text: text), \
+					patch("myapp.services.wholesale_service.frappe.throw", side_effect=frappe.ValidationError("rejected")) as throw:
+					with self.assertRaises(frappe.ValidationError):
+						terminate_product_price_v1("ITEM-1", "PRICE-1", price_modified="current")
+					throw.assert_called_once_with(expected_message)
+				price.save.assert_not_called()
+
 	@patch("myapp.services.wholesale_service.frappe.get_all")
 	def test_get_item_barcode_map_preserves_units_and_primary_order(self, mock_get_all):
 		mock_get_all.return_value = [

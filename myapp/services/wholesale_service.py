@@ -1914,7 +1914,7 @@ def terminate_product_price_v1(item_code: str, price_name: str, **kwargs):
 		expected_price_modified = _normalize_text(kwargs.get("price_modified"))
 		if expected_price_modified and expected_price_modified != str(price.modified):
 			frappe.throw(_("价格记录已被其他人修改，请刷新后重试。"))
-		_, valid_upto = _validate_product_price_dates(
+		_valid_from, valid_upto = _validate_product_price_dates(
 			getattr(price, "valid_from", None),
 			kwargs.get("valid_upto") or nowdate(),
 		)
