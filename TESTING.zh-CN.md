@@ -23,7 +23,11 @@ HTTP：设置 `MYAPP_HTTP_BASE_URL=http://localhost:8000 MYAPP_HTTP_LIFECYCLE_IT
 
 AI 后台检测回归：容器 bench Python 执行 `apps.myapp.myapp.tests.unit.test_ai_model_check_service`，覆盖权限、重复投递、逐项保存、错误隔离、取消和不跳过 adapter 的 Gateway 参数契约。HTTP 回归为 `apps.myapp.myapp.tests.http.test_ai_model_check_http`；默认只查询进度，指定 `MYAPP_HTTP_MODEL_CHECK_ALIAS` 后才执行一个真实 basic 请求，验证提交、请求幂等、worker 执行、查询与终态取消。该测试不创建 ERP 业务夹具。
 
-更新时间：2026-08-29
+AI 路由/回答安全回归：容器 bench Python 运行 `apps.myapp.myapp.tests.unit.test_ai_response_safety`，覆盖自动/固定场景与 Agent 开关、带图解析超时、写契约伪装成 general、非法置信度、同步虚假成功、流式任意切片/恢复/最终正文不一致/长度限制，以及合法查询与否定表达。测试 Mock Provider 和持久化边界，不代表真实模型或浏览器验收。`test_ai_service` 原有降级继续聊天断言已改为失败关闭，Agent/会话测试显式提供只读解析夹具，不依赖真实网络。
+
+更新时间：2026-09-08
+
+价格/单位安全回归：`apps.myapp.myapp.tests.unit.test_ai_price_safety` 在 Backend 容器 bench Python 下运行。覆盖截图原句三条单价证据、未保留金额、移动到零售价仍缺单位、公斤/克、多单位参考价行重排、同单位重复价格不任取、旧模型草稿执行阻断、数据库锁定证据防篡改、订单单位变更清除旧价/伪造状态，以及销售/采购编辑和执行前校验矩阵。该套件测试真实构建与选择/校验函数，隔离 Provider、数据库和主数据查询，不冒充真实业务写入或 HTTP/Web 验收。
 
 ## 1. 测试原则
 
@@ -2289,3 +2293,9 @@ docker exec frappe_docker-backend-1 bash -lc '
 - 真实公司隔离：Company=`rgc (Demo)` 后，抽样采购订单、库存汇总和库存流水全部只属于该公司；显式请求 `_Test Company 7` 返回空结果。
 - 真实仓库隔离：Warehouse=`主仓库 - R` 后，库存汇总 `5` 条、库存流水 `95` 条，均只属于该仓库；显式请求其他仓库返回 `PermissionError`。
 - 所有探针均在数据库事务内回滚；测试前后 `User=14`、`User Permission=0`，没有遗留临时账号或授权。
+# 逐单位 AI 商品价格回归（2026-09-09）
+
+- 单元：容器 bench Python 运行 `myapp.tests.unit.test_ai_product_pricing`，覆盖截图四价格、缺换算、多级/重量换算、默认价更新/明确价保护、价格表币种、重复/非法输入、实际构建器重建及正式调用参数。
+- 隔离数据库事务：`docker exec -e MYAPP_PRICING_TEST_SITE=localhost -w /home/frappe/frappe-bench/sites frappe_docker-backend-1 /home/frappe/frappe-bench/env/bin/python -m unittest myapp.tests.integration.test_ai_product_pricing -q`。只创建随机 AI-PRICING-TEST 商品；真实创建/修改 Item Price、核对单位和换算，最后 rollback 并断言商品不存在。不得加 commit 或替换为用户商品。
+- 真实模型公共 HTTP：`MYAPP_HTTP_PRICING_TEST_MODEL=gpt-5.6-luna python3 -m unittest apps.myapp.myapp.tests.http.test_ai_product_pricing_http.ProductPricingHttpTest -q`（父仓运行，使用已有 `.env.http-test`，不输出密钥）。会产生 Provider 调用成本；完整自动解析→生成→编辑换算→读取，最终放弃草稿、归档会话，不执行 ERP 写入。
+- 模型输出偶然性、图片/OCR、真实浏览器交互不是单元/HTTP PASS 可替代的验收范围。旧草稿不自动迁移。

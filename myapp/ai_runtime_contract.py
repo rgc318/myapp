@@ -41,7 +41,7 @@ AI_RUNTIME_EXPECTED_PROMPT_VERSIONS = {
 	"sales_order_draft": "sales-order-draft-v5",
 	"purchase_order_draft": "purchase-order-draft-v5",
 	"inventory_adjustment_draft": "inventory-adjustment-draft-v3",
-	"product_setup_draft": "product-setup-draft-v7",
+	"product_setup_draft": "product-setup-draft-v8",
 }
 
 

@@ -28,6 +28,12 @@ from myapp.ai_runtime_contract import (
 	validate_ai_runtime_response,
 )
 from myapp.services import ai_repository
+from myapp.services.ai_response_safety import (
+	MAX_CHAT_RESPONSE_CHARS,
+	check_readonly_chat_output,
+	require_readonly_chat_intent,
+	require_reliable_intent,
+)
 from myapp.services.product_correction_service import resolve_active_product_reference
 from myapp.services.ai_attachment_service import (
 	hydrate_ai_message_attachments,
@@ -124,6 +130,7 @@ PRODUCT_SETUP_EDITABLE_FIELDS = (
 	"standard_buying_rate",
 	"currency",
 	"description",
+	"prices", "uom_relations", "wholesale_default_uom", "retail_default_uom",
 )
 ORDER_HEADER_CLEAR_FIELDS = {
 	"sales_order": frozenset({"remarks"}),
@@ -1105,11 +1112,15 @@ def _call_ai_intent_orchestrator(
 		with urllib.request.urlopen(request, timeout=45) as response:
 			result = json.loads(response.read().decode("utf-8") or "{}")
 		_validate_runtime_result(result, schema_family="intent_parse")
-	except Exception:
-		frappe.log_error(frappe.get_traceback(), _("AI 意图解析调用失败，将进入显式降级路由"))
-		return {}
+	except Exception as error:
+		frappe.log_error(frappe.get_traceback(), _("AI 意图解析调用失败，已停止路由"))
+		raise AiServiceError(
+			_("AI 意图解析暂时失败，已停止本轮处理，未执行业务操作。请稍后重试或更换模型。"),
+			code="AI_INTENT_PARSE_FAILED", public_data={"retryable": True},
+		) from error
 	intent = result.get("intent") if isinstance(result, dict) else None
-	return intent if isinstance(intent, dict) else {}
+	require_reliable_intent(intent)
+	return intent
 
 
 def _sync_ai_feedback_to_orchestrator(payload: dict) -> bool:
@@ -1235,6 +1246,7 @@ def _draft_provider_error(error: urllib.error.HTTPError, *, payload: dict) -> Ai
 
 def _prepare_draft_action_contract(payload: dict) -> dict:
 	from myapp.services.ai_action_contract import assess_action_contract
+	from myapp.services.ai_price_safety import extract_product_price_requirements
 	messages = payload.get("messages") or []
 	latest = next((row for row in reversed(messages) if row.get("role") == "user"), {})
 	content = str(payload.get("_action_content") or latest.get("content") or "").strip()
@@ -1267,6 +1279,8 @@ def _prepare_draft_action_contract(payload: dict) -> dict:
 		"scenario": payload["scenario"], "user": payload["user"], "company": payload.get("company"),
 		"action": intent["action_contract"],
 		"content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+		**({"price_requirements": extract_product_price_requirements(content), "pricing_contract_version": "product-pricing-v1"}
+			if payload["scenario"] == "product_setup_draft" else {}),
 	}
 
 
@@ -1286,6 +1300,17 @@ def _check_stored_draft_action(draft: dict, *, user: str) -> None:
 	# Deterministic product-card actions do not originate from a language-model request.
 	if draft.get("origin_kind") == "ui_product_action" or not draft.get("source_run"):
 		return
+	if draft.get("draft_type") == "product_setup":
+		from myapp.services.ai_price_safety import PRICE_FIELDS
+		payload = draft.get("payload") or {}
+		contract = payload.get("_action_contract") or {}
+		if contract.get("pricing_contract_version") == "product-pricing-v1" and payload.get("pricing_contract_version") != "product-pricing-v1":
+			raise frappe.ValidationError(_("商品价格明细契约缺失，请重新生成草稿。"))
+		if "price_requirements" not in contract and any(payload.get(field) is not None for field in PRICE_FIELDS):
+			raise frappe.ValidationError(_("旧 AI 商品草稿缺少价格单位证据，请重新生成并核对每条价格的单位后再执行。"))
+		validation = _apply_product_price_requirements(payload, {"errors": [], "warnings": [], "issues": []})
+		if not validation["ready_for_handoff"]:
+			raise frappe.ValidationError("；".join(validation["errors"]))
 	_seal_draft_action(draft.get("payload") or {},
 		{"_action_contract": (draft.get("payload") or {}).get("_action_contract")},
 		scenario=f"{draft['draft_type']}_draft", user=user, company=draft.get("company"))
@@ -2894,6 +2919,7 @@ def resolve_ai_scenario_v1(
 		has_current_attachments=bool(attachment_payloads),
 	)
 	from myapp.services.ai_product_lifecycle_service import is_lifecycle_intent, validate_lifecycle_intent
+	require_reliable_intent(intent)
 	if is_lifecycle_intent(intent):
 		if attachment_refs:
 			raise frappe.ValidationError(_("商品启停或删除请使用文字和明确商品目标，不从图片推断删除范围。"))
@@ -2908,7 +2934,7 @@ def resolve_ai_scenario_v1(
 		raise frappe.ValidationError(_("AI 尚未返回完整动作契约，不能安全生成写入草稿；请更新 AI 服务或重新明确操作目标。"))
 	if resolution_mode == "action_unsupported":
 		raise frappe.ValidationError(_("当前 AI 不支持执行该动作，未创建或修改任何业务对象。删除、取消、合并和启停不能自动替换为编辑，请进入对应业务模块处理。"))
-	if resolution_mode == "action_clarification_required":
+	if resolution_mode in {"action_clarification_required", "write_intent_requires_clarification"}:
 		raise frappe.ValidationError(_("当前请求是咨询、否定或包含尚未确认的多个动作/对象，未生成写入草稿。请明确一个需要执行的动作和目标；系统不会自动只处理其中一部分。"))
 	resolution_id = _issue_ai_scenario_resolution(
 		user=user,
@@ -3029,14 +3055,26 @@ def _resolve_purchase_draft_supplier(query: str | None) -> tuple[dict | None, li
 	return exact or (candidates[0] if len(candidates) == 1 else None), candidates
 
 
-def _authoritative_reference_price(selected: dict, *, buying: bool) -> tuple[float | None, str]:
+def _order_line_measurement_errors(row: dict, index: int) -> list[str]:
+	return [_("第 {0} 行：{1}").format(index, row[key])
+		for key in ("uom_resolution_error", "price_resolution_error") if row.get(key)]
+
+
+def _authoritative_reference_price(selected: dict, *, buying: bool, requested_uom: str | None = None) -> tuple[float | None, str]:
 	price_summary = selected.get("price_summary") if isinstance(selected.get("price_summary"), dict) else {}
 	price_list = "Standard Buying" if buying else str(selected.get("price_list") or "Standard Selling")
 	rows = price_summary.get("buying_prices" if buying else "selling_prices") or []
-	row = next((value for value in rows if str(value.get("price_list") or "") == price_list), None)
-	if row:
-		return flt(row.get("rate")), f"Item Price/{price_list}"
-	if not buying and selected.get("standard_rate") not in (None, "", 0, 0.0):
+	matching_list = [value for value in rows if str(value.get("price_list") or "") == price_list]
+	matching_units = [value for value in matching_list if not requested_uom or
+		(value.get("uom") or selected.get("uom")) == requested_uom]
+	if len(matching_units) == 1:
+		return flt(matching_units[0].get("rate")), f"Item Price/{price_list}"
+	# Do not reinterpret a bottle rate as a box rate, or pick the first of
+	# multiple currencies/tiers. Missing exact-unit pricing requires review.
+	if matching_list:
+		return None, f"Item Price/{price_list}"
+	if (not buying and (not requested_uom or requested_uom == selected.get("uom"))
+		and selected.get("standard_rate") not in (None, "", 0, 0.0)):
 		return flt(selected.get("standard_rate")), "Item/standard_rate"
 	return None, f"Item Price/{price_list}"
 
@@ -3202,7 +3240,7 @@ def _resolve_purchase_draft_item(
 		fallback_uom=selected.get("wholesale_default_uom") or selected.get("uom"),
 	)
 	resolved_uom = uom_resolution.get("uom")
-	reference_price, reference_source = _authoritative_reference_price(selected, buying=True)
+	reference_price, reference_source = _authoritative_reference_price(selected, buying=True, requested_uom=resolved_uom)
 	user_price = None if candidate.get("price") in (None, "") else flt(candidate.get("price"))
 	if allow_user_price and user_price is not None and user_price < 0:
 		warnings.append(_("人工价格不能小于 0，已改用当前后端采购参考价。"))
@@ -3226,6 +3264,7 @@ def _resolve_purchase_draft_item(
 		"conversion_factor": conversion_factor,
 		"available_uoms": all_uoms,
 		"uom_resolution_error": uom_resolution.get("error"),
+		"price_resolution_error": _("当前计价单位没有唯一参考价，请明确该单位的单价。") if resolved_price is None else None,
 		"candidates": [{"item_code": row.get("item_code"), "item_name": row.get("item_name")} for row in rows],
 		"warnings": warnings,
 		"_state": _build_transaction_line_state(
@@ -4142,7 +4181,7 @@ def _resolve_sales_draft_item(
 		fallback_uom=mode_default_uom or selected.get("uom"),
 	)
 	resolved_uom = uom_resolution.get("uom")
-	reference_price, reference_source = _authoritative_reference_price(selected, buying=False)
+	reference_price, reference_source = _authoritative_reference_price(selected, buying=False, requested_uom=resolved_uom)
 	user_price = None if candidate.get("price") in (None, "") else flt(candidate.get("price"))
 	if allow_user_price and user_price is not None and user_price < 0:
 		warnings.append(_("人工价格不能小于 0，已改用当前后端参考价。"))
@@ -4172,6 +4211,7 @@ def _resolve_sales_draft_item(
 		"conversion_factor": conversion_factor,
 		"available_uoms": all_uoms,
 		"uom_resolution_error": uom_resolution.get("error"),
+		"price_resolution_error": _("当前计价单位没有唯一参考价，请明确该单位的单价。") if resolved_price is None else None,
 		"candidates": [{"item_code": row.get("item_code"), "item_name": row.get("item_name")} for row in rows],
 		"warnings": warnings,
 		"_state": _build_transaction_line_state(
@@ -5073,8 +5113,7 @@ def generate_ai_sales_order_draft_v1(
 		for index, row in enumerate(items, 1):
 			if not row.get("item_code") or row.get("qty", 0) <= 0 or not row.get("warehouse"):
 				errors.append(_("第 {0} 行需要人工补充商品、数量或仓库。" ).format(index))
-			if row.get("uom_resolution_error"):
-				errors.append(_("第 {0} 行：{1}").format(index, row.get("uom_resolution_error")))
+			errors.extend(_order_line_measurement_errors(row, index))
 		transaction_date = str(
 			candidate.get("transaction_date")
 			or existing_meta.get("transaction_date")
@@ -5313,8 +5352,7 @@ def generate_ai_purchase_order_draft_v1(
 		for index, row in enumerate(items, 1):
 			if not row.get("item_code") or row.get("qty", 0) <= 0 or not row.get("warehouse"):
 				errors.append(_("第 {0} 行需要人工补充商品、数量或收货仓库。" ).format(index))
-			if row.get("uom_resolution_error"):
-				errors.append(_("第 {0} 行：{1}").format(index, row.get("uom_resolution_error")))
+			errors.extend(_order_line_measurement_errors(row, index))
 		existing_meta = (
 			existing_order.get("meta")
 			if existing_order and isinstance(existing_order.get("meta"), dict)
@@ -5756,6 +5794,7 @@ def _normalize_product_setup_semantic_candidate(candidate: dict) -> dict:
 		"opening_qty": patch.get("opening_qty"),
 		"opening_uom": patch.get("opening_uom"),
 		"valuation_rate": patch.get("valuation_rate"),
+		"pricing_unresolved": patch.get("pricing_unresolved") or [],
 		"_semantic_contract": "product-setup-command-v2",
 		"_target_item_code": target.get("item_code"),
 		"_target_barcode": target.get("barcode"),
@@ -5810,17 +5849,14 @@ def _resolve_product_setup_context_target(
 
 
 def _product_price_fact(detail: dict, price_list: str, *, buying: bool = False) -> tuple[float | None, str]:
-	price_summary = detail.get("price_summary") if isinstance(detail.get("price_summary"), dict) else {}
-	rows = price_summary.get("buying_prices" if buying else "selling_prices") or []
-	row = next(
-		(value for value in rows if str(value.get("price_list") or "") == price_list),
-		None,
+	default_uom = detail.get("stock_uom")
+	if price_list in {"Wholesale", "Retail"}:
+		default_uom = detail.get(f"{price_list.lower()}_default_uom") or default_uom
+	return _authoritative_reference_price(
+		{**detail, "uom": detail.get("stock_uom"), "price_list": price_list,
+		 "standard_rate": detail.get("standard_rate") if price_list == "Standard Selling" else None},
+		buying=buying, requested_uom=default_uom,
 	)
-	if row:
-		return flt(row.get("rate")), f"Item Price/{price_list}"
-	if price_list == "Standard Selling" and detail.get("standard_rate") not in (None, "", 0, 0.0):
-		return flt(detail.get("standard_rate")), "Item/standard_rate"
-	return None, f"Item Price/{price_list}"
 
 
 def _build_existing_product_baseline(detail: dict, *, company: str) -> tuple[dict, dict, dict]:
@@ -5846,6 +5882,17 @@ def _build_existing_product_baseline(detail: dict, *, company: str) -> tuple[dic
 		"standard_buying_rate": standard_buying_rate,
 		"currency": currency,
 		"description": detail.get("description") or None,
+		"prices": [
+			{**row, "row_id": str(row.get("name") or f"existing-{index}"), "interpretation": "existing", "evidence": "现有正式价格"}
+			for index, row in enumerate(
+				(detail.get("price_summary") or {}).get("selling_prices", []) + (detail.get("price_summary") or {}).get("buying_prices", []), 1)
+			if row.get("price_list") in {"Standard Selling", "Wholesale", "Retail", "Standard Buying"}
+		],
+		"uom_relations": [{"from_qty": 1, "from_uom": row.get("uom"), "to_qty": row.get("conversion_factor"),
+			"to_uom": detail.get("stock_uom"), "evidence": "现有商品单位换算"}
+			for row in detail.get("uom_conversions") or detail.get("all_uoms") or [] if row.get("uom") != detail.get("stock_uom")],
+		"wholesale_default_uom": detail.get("wholesale_default_uom"),
+		"retail_default_uom": detail.get("retail_default_uom"),
 	}
 	sources = {
 		"item_name": "Item/item_name",
@@ -6073,6 +6120,26 @@ def _prepare_product_setup_image_binding(
 	)
 
 
+def _apply_product_price_requirements(payload: dict, validation: dict, *, check_amounts: bool = False) -> dict:
+	from myapp.services.ai_price_safety import product_price_errors
+	contract = payload.get("_action_contract") or {}
+	unresolved = contract.get("pricing_unresolved") or []
+	if payload.get("pricing_contract_version") == "product-pricing-v1":
+		from myapp.services.ai_product_pricing import build_product_pricing
+		_pricing, pricing_errors, _warnings = build_product_pricing(payload, resolve_uom=lambda value: _resolve_product_setup_uom(value)[0],
+			resolve_price_currency=lambda value: frappe.db.get_value("Price List", value, "currency"))
+		unresolved = list(unresolved) + pricing_errors
+	errors = product_price_errors(
+		payload, contract.get("price_requirements"),
+		resolve_uom=lambda value: _resolve_product_setup_uom(value)[0],
+		check_amounts=check_amounts,
+	)
+	return _build_draft_validation(
+		list(dict.fromkeys(list(validation.get("errors") or []) + errors + list(unresolved))),
+		validation.get("warnings") or [], validation.get("issues") or [],
+	)
+
+
 def _build_product_setup_draft(
 	candidate: dict, *, company: str, default_image_url: str | None = None,
 	source_attachments: list[dict] | None = None,
@@ -6210,7 +6277,7 @@ def _build_product_setup_draft(
 		errors.append(_("初始库存数量不能为负数。"))
 	if operation == "create" and opening_qty and not warehouse:
 		errors.append(_("填写初始库存时必须选择当前公司的叶子仓库。"))
-	if operation == "create" and opening_qty and standard_buying_rate is None:
+	if operation == "create" and opening_qty and standard_buying_rate is None and candidate.get("pricing_contract_version") != "product-pricing-v1":
 		errors.append(_(
 			"填写初始库存时必须补充标准采购参考价并核对首次入库估值；"
 			"销售价格不会用于库存计价。"
@@ -6237,6 +6304,9 @@ def _build_product_setup_draft(
 		"item_code": item_code,
 		"item_group": item_group,
 		"brand": brand,
+		"prices": candidate.get("prices"), "uom_relations": candidate.get("uom_relations"),
+		"wholesale_default_uom": candidate.get("wholesale_default_uom"),
+		"retail_default_uom": candidate.get("retail_default_uom"),
 		"stock_uom": stock_uom,
 		"standard_selling_rate": standard_selling_rate,
 		"wholesale_rate": wholesale_rate,
@@ -6284,6 +6354,7 @@ def _build_product_setup_draft(
 		patch = _initial_product_patch(candidate, normalized, operation=operation)
 	price_patch_fields = {
 		"standard_selling_rate", "wholesale_rate", "retail_rate", "standard_buying_rate",
+		"prices",
 	}
 	if price_patch_fields.intersection(patch) and not (
 		frappe.has_permission("Item Price", ptype="create")
@@ -6306,9 +6377,43 @@ def _build_product_setup_draft(
 			errors.append(_("{0} 不能清空。").format(label))
 	effective = merge_baseline_patch(baseline, patch)
 	if operation == "update" and existing_detail:
+		if candidate.get("pricing_contract_version") == "product-pricing-v1" and "prices" in patch:
+			def price_identity(row):
+				unit = row.get("uom")
+				canonical_unit = _resolve_product_setup_uom(unit)[0] if isinstance(unit, str) else None
+				return (str(row.get("price_list")), str(canonical_unit or unit), str(row.get("currency") or currency))
+			incoming_prices = patch.get("prices")
+			if isinstance(incoming_prices, list) and all(isinstance(row, dict) for row in incoming_prices):
+				if candidate.get("_semantic_contract") == "product-setup-command-v2" and not previous_state:
+					merged_prices = {price_identity(row): row for row in baseline.get("prices") or []}
+					merged_prices.update({price_identity(row): row for row in incoming_prices})
+					patch["prices"] = effective["prices"] = list(merged_prices.values())
+				elif {price_identity(row) for row in baseline.get("prices") or []} - {price_identity(row) for row in incoming_prices}:
+					errors.append(_("不能通过移除或改换价格单位删除已有正式价格；请保留原价格行，另行添加新单位价格，删除请在商品模块处理。"))
 		effective["item_code"] = existing_detail.get("item_code")
 		effective["item_name"] = patch.get("item_name", baseline.get("item_name"))
 	stock_uom = effective.get("stock_uom") or stock_uom
+	pricing_data = {}
+	if candidate.get("pricing_contract_version") == "product-pricing-v1":
+		from myapp.services.ai_product_pricing import build_product_pricing
+		if candidate.get("_semantic_contract") == "product-setup-command-v2" and any(
+			candidate.get(field) is not None for field in ("standard_selling_rate", "wholesale_rate", "retail_rate", "standard_buying_rate")
+		):
+			errors.append(_("模型仍返回了旧版无单位价格，请重新生成逐单位价格明细，不能忽略该金额后执行。"))
+		pricing_data, pricing_errors, pricing_warnings = build_product_pricing(
+			{**effective, "stock_uom": stock_uom, "currency": currency,
+			 "prices": effective.get("prices") or [], "uom_relations": effective.get("uom_relations") or []},
+			resolve_uom=lambda value: _resolve_product_setup_uom(value)[0],
+			resolve_price_currency=lambda value: frappe.db.get_value("Price List", value, "currency"),
+		)
+		errors.extend(pricing_errors)
+		warnings.extend(pricing_warnings)
+		effective.update(pricing_data)
+		for field in ("prices", "uom_relations", "wholesale_default_uom", "retail_default_uom"):
+			if operation == "create" or field in patch:
+				patch[field] = effective.get(field)
+		if opening_qty and pricing_data.get("standard_buying_rate") is None:
+			errors.append(_("初始库存需要库存基准单位的采购参考价并确认估值；不能直接使用其他单位的采购单价。"))
 	state = build_draft_state(
 		operation=operation,
 		entity_doctype="Item",
@@ -6378,10 +6483,13 @@ def _build_product_setup_draft(
 		"currency": effective.get("currency") or currency,
 		"description": effective.get("description"),
 		"_state": state,
+		**pricing_data,
 	}
 	if operation == "update" and existing_detail and not patch:
 		errors.append(_("尚未修改现有商品字段；请填写需要完善的资料。"))
-	return payload, _build_draft_validation(errors, warnings, issues)
+	if candidate.get("_action_contract"):
+		payload["_action_contract"] = candidate["_action_contract"]
+	return payload, _apply_product_price_requirements(payload, _build_draft_validation(errors, warnings, issues))
 
 
 def generate_ai_product_setup_draft_v1(
@@ -6488,12 +6596,17 @@ def generate_ai_product_setup_draft_v1(
 			requested_operation=requested_operation,
 			existing_matches=existing_matches,
 		)
+		candidate["_action_contract"] = result.get("_action_contract")
+		if (result.get("_action_contract") or {}).get("pricing_contract_version") == "product-pricing-v1":
+			candidate["pricing_contract_version"] = "product-pricing-v1"
+			candidate["_action_contract"]["pricing_unresolved"] = candidate.get("pricing_unresolved") or []
 		payload, validation = _build_product_setup_draft(
 			candidate,
 			company=company,
 			default_image_url=default_image_url,
 			source_attachments=source_attachments,
 		)
+		validation = _apply_product_price_requirements(payload, validation, check_amounts=True)
 		payload["target_source"] = context_target.get("source") if context_target else "explicit_or_model_query"
 		payload["target_context_ref"] = context_target.get("context_ref") if context_target else None
 		if should_stage_default_image and not default_image_url:
@@ -6926,6 +7039,15 @@ def _draft_item_with_preserved_context_provenance(
 	current: dict, previous: dict | None,
 ) -> dict:
 	result = dict(current)
+	result.pop("_state", None)
+	if previous and _draft_item_target_identity(current) == _draft_item_target_identity(previous):
+		if current.get("uom") == previous.get("uom"):
+			if previous.get("_state"):
+				result["_state"] = deepcopy(previous["_state"])
+		elif current.get("price") == previous.get("price"):
+			# Changing the quantity unit is not consent to re-label the old price.
+			# Re-select an exact-unit reference or require a newly entered price.
+			result["price"] = None
 	# Provenance is server-owned.  A draft editor may echo these fields, but it
 	# cannot assert that a newly selected target still came from conversation
 	# context.  Strip the submitted copy before conditionally restoring the
@@ -7072,6 +7194,18 @@ def _update_ai_draft_once(
 		if target_source and target_context_ref:
 			build_payload["target_source"] = target_source
 			build_payload["target_context_ref"] = target_context_ref
+		build_payload.pop("_action_contract", None)
+		if original_payload.get("_action_contract"):
+			build_payload["_action_contract"] = original_payload["_action_contract"]
+		if original_payload.get("pricing_contract_version") == "product-pricing-v1":
+			build_payload["pricing_contract_version"] = "product-pricing-v1"
+			from myapp.services.ai_product_pricing import preserve_price_provenance
+			provenance_prices = original_payload.get("prices")
+			if str(change_source).startswith("restore_v"):
+				version_snapshot = ai_repository.get_draft_version(draft_id=draft_id, user=user,
+					version_no=cint(str(change_source).removeprefix("restore_v")))
+				provenance_prices = (version_snapshot.get("payload") or {}).get("prices")
+			build_payload["prices"] = preserve_price_provenance(build_payload.get("prices"), provenance_prices)
 		next_payload, validation = _build_product_setup_draft(
 			build_payload,
 			company=draft["company"],
@@ -7118,6 +7252,8 @@ def _update_ai_draft_once(
 				},
 				company=company, default_warehouse=default_warehouse, allow_user_price=True,
 			)
+			if bound_row.get("price") is None and row.get("price") is not None:
+				resolved_row.setdefault("warnings", []).append(_("计量单位已变化，旧单价已清除；请核对新单位的参考价或重新输入单价。"))
 			if bound_row.get("row_id"):
 				resolved_row["row_id"] = bound_row["row_id"]
 			items.append(resolved_row)
@@ -7129,6 +7265,7 @@ def _update_ai_draft_once(
 		for index, row in enumerate(items, 1):
 			if not row.get("item_code") or row.get("qty", 0) <= 0 or not row.get("warehouse"):
 				errors.append(_("第 {0} 行需要人工补充商品、数量或收货仓库。" ).format(index))
+			errors.extend(_order_line_measurement_errors(row, index))
 		supplier_name = supplier.get("name") if supplier else None
 		currency = str(payload.get("currency") or "").strip() or None
 		if supplier_name and not currency:
@@ -7238,6 +7375,8 @@ def _update_ai_draft_once(
 			company=company, default_warehouse=default_warehouse,
 			default_sales_mode=default_sales_mode, allow_user_price=True,
 		)
+		if bound_row.get("price") is None and row.get("price") is not None:
+			resolved_row.setdefault("warnings", []).append(_("计量单位已变化，旧单价已清除；请核对新单位的参考价或重新输入单价。"))
 		if bound_row.get("row_id"):
 			resolved_row["row_id"] = bound_row["row_id"]
 		items.append(resolved_row)
@@ -7249,6 +7388,7 @@ def _update_ai_draft_once(
 	for index, row in enumerate(items, 1):
 		if not row.get("item_code") or row.get("qty", 0) <= 0 or not row.get("warehouse"):
 			errors.append(_("第 {0} 行需要人工补充商品、数量或仓库。" ).format(index))
+		errors.extend(_order_line_measurement_errors(row, index))
 	transaction_date = str(getdate(payload.get("transaction_date") or nowdate()))
 	delivery_date = str(getdate(payload.get("delivery_date") or transaction_date))
 	header_clear_fields = _normalize_order_header_clear_fields(
@@ -7388,6 +7528,10 @@ def _build_draft_version_diff(previous: dict | None, current: dict) -> dict:
 		"opening_uom",
 		"standard_selling_rate",
 		"valuation_rate",
+		"prices",
+		"uom_relations",
+		"wholesale_default_uom",
+		"retail_default_uom",
 		"currency",
 		"description",
 	):
@@ -7475,6 +7619,8 @@ def prepare_ai_draft_handoff_v1(draft_id: str):
 	if not draft["validation"].get("ready_for_handoff"):
 		frappe.throw(_("草稿仍有未解决的校验问题，不能交接。"))
 	payload = draft["payload"]
+	if payload.get("pricing_contract_version") == "product-pricing-v1" and payload.get("prices"):
+		raise frappe.ValidationError(_("此草稿包含逐单位价格，请在 AI 草稿编辑器中复核并确认执行；旧商品交接表单不能完整保留价格明细。"))
 	ai_repository.mark_draft_handed_off(draft_id=draft_id, user=user)
 	frappe.db.commit()
 	if draft["draft_type"] == "product_setup":
@@ -7593,6 +7739,23 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 	payload = draft["payload"]
 	draft_type = draft["draft_type"]
 	if draft_type == "product_setup":
+		typed_pricing = payload.get("pricing_contract_version") == "product-pricing-v1"
+		pricing_args = {}
+		if typed_pricing:
+			from myapp.services.ai_product_pricing import build_product_pricing
+			pricing, pricing_errors, _warnings = build_product_pricing(
+				payload, resolve_uom=lambda value: _resolve_product_setup_uom(value)[0],
+				resolve_price_currency=lambda value: frappe.db.get_value("Price List", value, "currency"),
+			)
+			if pricing_errors:
+				raise frappe.ValidationError("；".join(pricing_errors))
+			pricing_args = {
+				"uom_conversions": pricing["uom_conversions"],
+				"wholesale_default_uom": pricing["wholesale_default_uom"],
+				"retail_default_uom": pricing["retail_default_uom"],
+				"selling_prices": [row for row in pricing["prices"] if row["price_list"] != "Standard Buying"],
+				"buying_prices": [row for row in pricing["prices"] if row["price_list"] == "Standard Buying"],
+			}
 		state = payload.get("_state") if isinstance(payload.get("_state"), dict) else {}
 		operation = str(payload.get("operation") or state.get("operation") or "create")
 		if operation == "update":
@@ -7631,6 +7794,16 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 					"rate": patch.get("standard_buying_rate"),
 					"currency": payload.get("currency"),
 				}]
+			if typed_pricing:
+				for key in ("standard_rate", "selling_prices", "buying_prices"):
+					update_kwargs.pop(key, None)
+				if "prices" in patch:
+					update_kwargs.update(selling_prices=pricing_args["selling_prices"], buying_prices=pricing_args["buying_prices"])
+				for key in ("wholesale_default_uom", "retail_default_uom"):
+					if key in patch or "prices" in patch:
+						update_kwargs[key] = pricing_args[key]
+				if "uom_relations" in patch:
+					update_kwargs["uom_conversions"] = pricing_args["uom_conversions"]
 			result = update_product_v2(
 				item_code=item_code,
 				company=payload.get("company"),
@@ -7665,9 +7838,9 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 			**({"barcode": payload.get("barcode")} if payload.get("barcode") else {}),
 			**({"specification": payload.get("specification")} if payload.get("specification") else {}),
 			item_group=payload.get("item_group"), brand=payload.get("brand"),
-			stock_uom=payload.get("stock_uom"), standard_rate=payload.get("standard_selling_rate"),
+			stock_uom=payload.get("stock_uom"), standard_rate=None if typed_pricing else payload.get("standard_selling_rate"),
 			valuation_rate=standard_buying_rate, currency=payload.get("currency"),
-			selling_prices=selling_prices, buying_prices=buying_prices,
+			**(pricing_args if typed_pricing else {"selling_prices": selling_prices, "buying_prices": buying_prices}),
 			description=payload.get("description"), company=payload.get("company"),
 			warehouse=payload.get("warehouse"), warehouse_stock_qty=payload.get("opening_qty"),
 			warehouse_stock_uom=payload.get("opening_uom"), request_id=request_id,
@@ -7885,6 +8058,7 @@ def _rebuild_order_draft_before_execution(draft: dict) -> tuple[dict, dict]:
 	for index, row in enumerate(items, 1):
 		if not row.get("item_code") or flt(row.get("qty")) <= 0 or not row.get("warehouse"):
 			errors.append(_("第 {0} 行当前无法通过商品、数量或仓库校验。").format(index))
+		errors.extend(_order_line_measurement_errors(row, index))
 	return next_payload, _build_draft_validation(
 		errors, [warning for row in items for warning in row.get("warnings") or []],
 	)
@@ -8325,6 +8499,18 @@ def _prepare_chat_run(
 			)
 	else:
 		requested_action_scenario = requested_scenario
+		preparsed_intent = _call_ai_intent_orchestrator(
+			content=current_content, user=user, company=intent_company,
+			conversation_state=conversation_state, model_alias=model_alias,
+			attachments=attachment_payloads,
+		)
+		preparsed_intent = _merge_intent_with_conversation_state(
+			current_content, preparsed_intent, conversation_state,
+			has_current_attachments=bool(attachment_payloads),
+		)
+	# Shared by auto/cache, fixed scenarios, retries and Agent mode; run before
+	# creating messages, granting capabilities or invoking any answer model.
+	require_readonly_chat_intent(preparsed_intent)
 	# Keep established draft workflows outside the read-only Agent Runtime. The
 	# structured semantic router selects the workflow; local rules are degradation only.
 	agent_runtime_requested = os.environ.get("MYAPP_AI_AGENT_RUNTIME_ENABLED", "1").strip().lower() in {
@@ -8396,21 +8582,6 @@ def _prepare_chat_run(
 			# Local keyword rules are the last fallback when the parser is unavailable,
 			# unconfident, or returns a schema-invalid scenario.
 			intent = preparsed_intent
-			if requested_scenario != "auto":
-				intent = _call_ai_intent_orchestrator(
-					content=current_content,
-					user=user,
-					company=intent_company,
-					conversation_state=conversation_state,
-					model_alias=model_alias,
-					attachments=attachment_payloads,
-				)
-				intent = _merge_intent_with_conversation_state(
-					current_content,
-					intent,
-					conversation_state,
-					has_current_attachments=bool(attachment_payloads),
-				)
 			candidate = str(intent.get("intent") or "").strip()
 			try:
 				confidence = min(1.0, max(0.0, float(intent.get("confidence") or 0)))
@@ -8828,6 +8999,7 @@ def _apply_agent_result(prepared: dict, result: dict) -> None:
 def _complete_chat_run(
 	prepared: dict, result: dict, assistant_content: str, *, first_token_ms: int | None = None,
 ):
+	check_readonly_chat_output(assistant_content)
 	_capture_runtime_metadata(prepared, result)
 	_apply_agent_result(prepared, result)
 	latency_ms = int((time.perf_counter() - prepared["started"]) * 1000)
@@ -8991,6 +9163,7 @@ def chat_ai_v1(
 			}
 		message = result.get("message") or {}
 		assistant_content = str(message.get("content") or "").strip()
+		check_readonly_chat_output(assistant_content)
 		run_summary = _complete_chat_run(prepared, result, assistant_content)
 	except Exception as error:
 		_fail_chat_run(prepared, error)
@@ -9188,16 +9361,25 @@ def stream_ai_message_v1(
 	attachment_ids=None,
 	scenario_resolution_id: str | None = None,
 ):
-	prepared = _prepare_chat_run(
-		scenario=scenario,
-		company=company,
-		conversation_id=conversation_id,
-		content=content,
-		model_alias=model_alias,
-		retry_run_id=retry_run_id,
-		attachment_ids=attachment_ids,
-		scenario_resolution_id=scenario_resolution_id,
-	)
+	try:
+		prepared = _prepare_chat_run(
+			scenario=scenario,
+			company=company,
+			conversation_id=conversation_id,
+			content=content,
+			model_alias=model_alias,
+			retry_run_id=retry_run_id,
+			attachment_ids=attachment_ids,
+			scenario_resolution_id=scenario_resolution_id,
+		)
+	except AiServiceError as error:
+		# A typed preparation failure occurs before run_started. Preserve the
+		# SSE error contract instead of leaking a generic Frappe HTTP 500.
+		return Response(
+			_encode_sse({"type": "error", "code": error.code, "message": str(error), **error.public_data}),
+			content_type="text/event-stream; charset=utf-8",
+			headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+		)
 	return _stream_prepared_ai_run(prepared)
 
 
@@ -9295,14 +9477,15 @@ def _stream_prepared_ai_run(prepared: dict, *, resume: bool = False):
 							{
 								"type": "run_progress",
 								"phase": "streaming",
-								"message": _("首个 Token 已到达，正在实时输出"),
+								"message": _("模型正在生成回答，正文校验后展示"),
 							}
 						)
 					if delta:
 						delta_count += 1
 						streamed_chars += len(delta)
-					content_parts.append(delta)
-					yield _encode_sse(event)
+						content_parts.append(delta)
+						if streamed_chars > MAX_CHAT_RESPONSE_CHARS:
+							raise AiServiceError(_("AI 回答超过安全长度限制。"), code="AI_OUTPUT_TOO_LARGE")
 				elif event_type == "warning":
 					streamed_warnings = _merge_ai_warnings(
 						streamed_warnings, [event.get("message")],
@@ -9359,9 +9542,18 @@ def _stream_prepared_ai_run(prepared: dict, *, resume: bool = False):
 				assistant_content = str((completed_result.get("message") or {}).get("content") or "").strip()
 			if not assistant_content or not completed_result:
 				raise UpstreamServiceUnavailableError(_("AI 流式服务返回了无效响应。"))
+			check_readonly_chat_output(assistant_content)
+			final_content = str((completed_result.get("message") or {}).get("content") or "").strip()
+			if final_content and final_content != assistant_content:
+				raise AiServiceError(_("AI 流式正文与最终回答不一致，已停止展示，请重试。"), code="AI_STREAM_CONTENT_MISMATCH")
+			completed_result["message"] = {"role": "assistant", "content": assistant_content}
 			run_summary = _complete_chat_run(
 				prepared, completed_result, assistant_content, first_token_ms=first_token_ms,
 			)
+			# Nothing from an unverified model answer reaches the browser, including
+			# assertions split across provider chunks. Tool/progress events remain live.
+			for delta in content_parts or [assistant_content]:
+				yield _encode_sse({"type": "message_delta", "delta": delta})
 			stream_summary = {
 				"delta_count": delta_count,
 				"streamed_chars": streamed_chars,

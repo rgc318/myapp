@@ -2613,6 +2613,8 @@ def update_draft(
 	previous_payload = json.loads(getattr(locked, "payload_json", None) or "{}")
 	payload = dict(payload)
 	payload.pop("_action_contract", None)
+	if previous_payload.get("pricing_contract_version") == "product-pricing-v1":
+		payload["pricing_contract_version"] = "product-pricing-v1"
 	if previous_payload.get("_action_contract"):
 		payload["_action_contract"] = previous_payload["_action_contract"]
 		from myapp.services.ai_action_contract import bind_draft_scope, validate_draft_action
@@ -2624,6 +2626,9 @@ def update_draft(
 			payload["_action_contract"] = bind_draft_scope(payload["_action_contract"], payload)
 		except ValueError as error:
 			raise frappe.ValidationError(str(error)) from error
+		if locked.draft_type == "product_setup":
+			from myapp.services.ai_service import _apply_product_price_requirements
+			validation = _apply_product_price_requirements(payload, validation)
 	if locked.status != "draft":
 		frappe.throw(_("只有 draft 状态的 AI 草稿可以修改。"))
 	expected_version = cint(expected_version)

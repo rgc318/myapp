@@ -666,7 +666,7 @@ class TestAiService(TestCase):
 			"source_run_id": "AI-RUN-FAILED",
 		}
 		run_id = _start_draft_generation_run(
-			scenario="product_setup_draft", prompt_version="product-setup-draft-v7",
+			scenario="product_setup_draft", prompt_version="product-setup-draft-v8",
 			user="user@example.com", content="按照照片新增商品", conversation_id="AI-CONV-1",
 			model_alias="vision-model", attachment_ids=["AI-ATT-1"],
 			attachment_refs=[{"attachment_id": "AI-ATT-1"}],
@@ -751,7 +751,7 @@ class TestAiService(TestCase):
 		body = json.dumps({
 			"detail": (
 				"Prompt version mismatch for product_setup_draft: "
-				"received product-setup-draft-v7, expected product-setup-draft-v6"
+				"received product-setup-draft-v8, expected product-setup-draft-v6"
 			),
 		}).encode()
 		mock_urlopen.side_effect = urllib.error.HTTPError(
@@ -770,7 +770,7 @@ class TestAiService(TestCase):
 		self.assertEqual(raised.exception.public_data["layer"], "orchestrator")
 		self.assertEqual(raised.exception.public_data["contract"], {
 			"scenario": "product_setup_draft",
-			"received_version": "product-setup-draft-v7",
+			"received_version": "product-setup-draft-v8",
 			"expected_version": "product-setup-draft-v6",
 		})
 		self.assertIn("运行版本不一致", str(raised.exception))
@@ -790,7 +790,7 @@ class TestAiService(TestCase):
 				"retryable": False,
 				"scenario": "product_setup_draft",
 				"received_version": "product-setup-draft-v6",
-				"expected_version": "product-setup-draft-v7",
+				"expected_version": "product-setup-draft-v8",
 			},
 		}).encode()
 		mock_urlopen.side_effect = urllib.error.HTTPError(
@@ -804,7 +804,7 @@ class TestAiService(TestCase):
 		self.assertFalse(raised.exception.public_data["retryable"])
 		self.assertEqual(
 			raised.exception.public_data["contract"]["expected_version"],
-			"product-setup-draft-v7",
+			"product-setup-draft-v8",
 		)
 
 	@patch("myapp.services.ai_service._can_view_advanced_diagnostics", return_value=True)
@@ -909,7 +909,7 @@ class TestAiService(TestCase):
 				"sales_order_draft": "sales-order-draft-v5",
 				"purchase_order_draft": "purchase-order-draft-v5",
 				"inventory_adjustment_draft": "inventory-adjustment-draft-v3",
-				"product_setup_draft": "product-setup-draft-v7",
+				"product_setup_draft": "product-setup-draft-v8",
 			},
 		}
 
@@ -2215,7 +2215,7 @@ class TestAiService(TestCase):
 	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
 	@patch("myapp.services.ai_service.resolve_ai_selected_model_alias", return_value="erp-fast-chat")
-	def test_auto_chat_preserves_degraded_mode_from_preflight(
+	def test_auto_chat_rejects_degraded_mode_from_preflight(
 		self, _resolve_model, _current_user, _resolve_company, _take, mock_intent,
 	):
 		with patch.dict(os.environ, {"MYAPP_AI_AGENT_RUNTIME_ENABLED": "0"}, clear=False), patch(
@@ -2229,13 +2229,13 @@ class TestAiService(TestCase):
 		), patch("myapp.services.ai_service.frappe") as mock_frappe:
 			mock_frappe.local.lang = "zh-CN"
 			mock_frappe.get_roles.return_value = []
-			prepared = _prepare_chat_run(
-				content="查询迪莫", scenario="auto", company="Demo Company",
-				scenario_resolution_id="AI-RESOLUTION-DEGRADED",
-			)
+			with self.assertRaises(AiServiceError) as caught:
+				_prepare_chat_run(
+					content="查询迪莫", scenario="auto", company="Demo Company",
+					scenario_resolution_id="AI-RESOLUTION-DEGRADED",
+				)
 
-		self.assertEqual(prepared["tool_calls"][0]["mode"], "degraded_local_rules")
-		self.assertTrue(any("保守降级路由" in warning for warning in prepared["warnings"]))
+		self.assertEqual(caught.exception.code, "AI_INTENT_UNCERTAIN")
 		mock_intent.assert_not_called()
 
 	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
@@ -2403,8 +2403,9 @@ class TestAiService(TestCase):
 	@patch("myapp.services.ai_service.resolve_ai_agent_runtime_readiness", return_value={
 		"ready": True, "reason": "ready", "policy_code": "general-staging", "policy_version": 4,
 	})
+	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={"intent": "order_query", "confidence": 0.95})
 	def test_agent_runtime_is_enabled_only_when_policy_is_ready(
-		self, _readiness, _resolve_model, _current_user, _resolve_company,
+		self, _intent, _readiness, _resolve_model, _current_user, _resolve_company,
 	):
 		with patch.dict(os.environ, {"MYAPP_AI_AGENT_RUNTIME_ENABLED": "1"}, clear=False), patch(
 			"myapp.services.ai_service.ai_repository.create_conversation",
@@ -2435,8 +2436,9 @@ class TestAiService(TestCase):
 
 	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={"intent": "general", "confidence": 0.95})
 	def test_existing_conversation_uses_its_persisted_company_when_request_omits_company(
-		self, _current_user, mock_resolve_company,
+		self, _intent, _current_user, mock_resolve_company,
 	):
 		with patch("myapp.services.ai_service.ai_repository.get_conversation") as mock_get, patch(
 			"myapp.services.ai_service.ai_repository.get_conversation_state",
@@ -2537,8 +2539,9 @@ class TestAiService(TestCase):
 
 	@patch("myapp.services.ai_service._resolve_company_scope", side_effect=lambda company, required=False: company)
 	@patch("myapp.services.ai_service._current_user", return_value="user@example.com")
+	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={"intent": "product_setup_draft", "confidence": 0.95})
 	def test_readonly_agent_does_not_capture_existing_product_setup_draft_flow(
-		self, _current_user, _resolve_company,
+		self, _intent, _current_user, _resolve_company,
 	):
 		with patch.dict(
 			os.environ, {"MYAPP_AI_AGENT_RUNTIME_ENABLED": "1"}, clear=False,
@@ -2555,15 +2558,13 @@ class TestAiService(TestCase):
 			"myapp.services.ai_service.ai_repository.issue_agent_capability",
 		) as issue_capability, patch("myapp.services.ai_service.frappe") as mock_frappe:
 			mock_frappe.local.lang = "zh-CN"
-			prepared = _prepare_chat_run(
-				content="新增一个商品叫传承结晶，库存单位是件",
-				scenario="auto",
-				company="Demo Company",
-			)
+			with self.assertRaises(AiServiceError) as caught:
+				_prepare_chat_run(
+					content="新增一个商品叫传承结晶，库存单位是件",
+					scenario="auto", company="Demo Company",
+				)
 
-		self.assertFalse(prepared["agent_mode"])
-		self.assertEqual(prepared["scenario"], "product_setup_draft")
-		self.assertNotIn("capability_token", prepared["payload"])
+		self.assertEqual(caught.exception.code, "AI_CHAT_ACTION_REQUIRES_WORKFLOW")
 		issue_capability.assert_not_called()
 
 	@patch("myapp.services.ai_service._resolve_company_scope", return_value="Demo Company")
@@ -3198,7 +3199,7 @@ class TestAiService(TestCase):
 			"sales_order_draft": "sales-order-draft-v5",
 			"purchase_order_draft": "purchase-order-draft-v5",
 			"inventory_adjustment_draft": "inventory-adjustment-draft-v3",
-			"product_setup_draft": "product-setup-draft-v7",
+			"product_setup_draft": "product-setup-draft-v8",
 		}
 		for scenario, expected in draft_versions.items():
 			with self.subTest(scenario=scenario):
@@ -3536,15 +3537,14 @@ class TestAiService(TestCase):
 		self.assertEqual(_infer_ai_scenario("你可以做什么"), "general")
 
 	@patch("myapp.services.ai_service._get_ai_orchestrator_settings", side_effect=RuntimeError("missing token"))
-	def test_structured_intent_parser_configuration_failure_uses_local_fallback(self, _settings):
+	def test_structured_intent_parser_configuration_failure_stops_routing(self, _settings):
 		with patch("myapp.services.ai_service.frappe") as mock_frappe:
-			result = _call_ai_intent_orchestrator(
-				content="仓里还剩迪莫吗",
-				user="user@example.com",
-				company="Demo Company",
-			)
+			with self.assertRaises(AiServiceError) as caught:
+				_call_ai_intent_orchestrator(
+					content="仓里还剩迪莫吗", user="user@example.com", company="Demo Company",
+				)
 
-		self.assertEqual(result, {})
+		self.assertEqual(caught.exception.code, "AI_INTENT_PARSE_FAILED")
 		mock_frappe.log_error.assert_called_once()
 
 	@patch(
@@ -6151,8 +6151,9 @@ class TestAiService(TestCase):
 		"myapp.services.ai_service.resolve_ai_selected_model_alias",
 		return_value="opencode-glm-5.2",
 	)
+	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={"intent": "general", "confidence": 0.95})
 	def test_chat_ai_v1_persists_conversation_run_and_messages(
-		self,
+		self, _intent,
 		mock_selected_model,
 		mock_company,
 		mock_call,

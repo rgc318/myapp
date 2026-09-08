@@ -1,8 +1,52 @@
+from decimal import Decimal, InvalidOperation
+
 import frappe
 from frappe import _
 from frappe.utils import flt
 
 from myapp.utils.uom_display import build_uom_input_aliases, resolve_uom_display_name
+
+
+def resolve_uom_relation_factors(stock_uom: str, relations: list[dict]) -> dict[str, float]:
+	"""Resolve explicit equal-quantity relations into stock units per UOM.
+
+	No packaging or price inference. Unconnected units are omitted, incomplete
+	relations remain unresolved, contradictory cycles and invalid numbers fail.
+	"""
+	if len(relations) > 20:
+		raise ValueError("单位换算关系最多20条。")
+	edges = []
+	for row in relations:
+		if not row.get("from_uom") or not row.get("to_uom"):
+			continue
+		if row.get("from_qty") in (None, "") or row.get("to_qty") in (None, ""):
+			continue
+		try:
+			left, right = Decimal(str(row["from_qty"])), Decimal(str(row["to_qty"]))
+			if not left.is_finite() or not right.is_finite() or not 0 < left <= 1_000_000_000 or not 0 < right <= 1_000_000_000:
+				raise ValueError("单位换算数量必须是有效正数，且不超过十亿。")
+		except (InvalidOperation, TypeError) as error:
+			raise ValueError("单位换算数量格式无效。") from error
+		edges.append((row["from_uom"], row["to_uom"], right / left))
+	factors = {stock_uom: Decimal(1)}
+	for _pass_index in range(len(edges) + 1):
+		changed = False
+		for source, target, ratio in edges:
+			if source in factors and target in factors:
+				expected = factors[target] * ratio
+				if abs(factors[source] - expected) > max(abs(expected), abs(factors[source])) * Decimal("0.000000001"):
+					raise ValueError("单位换算关系互相矛盾，请核对包装数量。")
+			elif target in factors:
+				factors[source] = factors[target] * ratio
+				changed = True
+			elif source in factors:
+				factors[target] = factors[source] / ratio
+				changed = True
+		if not changed:
+			break
+	if any(not Decimal("0.000000001") <= value <= Decimal("1000000000") for value in factors.values()):
+		raise ValueError("单位换算系数超出可安全保存的范围。")
+	return {unit: float(value) for unit, value in factors.items()}
 
 
 def _normalize_uom(value: str | None) -> str | None:

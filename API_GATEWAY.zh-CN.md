@@ -1,5 +1,23 @@
 ## API 网关文档
 
+### AI 价格与单位防丢失校验（2026-09-08）
+
+商品 AI 动作契约新增服务端 `price_requirements`，记录本轮原文中有限语法可识别的“金额元每单位 / 金额元/单位 / 每单位金额元”证据。此字段不是客户端可编辑字段，也不代表完整自然语言提取。生成时发现原文金额丢失会标记草稿不通过；无法由当前标量草稿表达的非库存基准单位价格在生成、编辑、版本恢复、交接及执行时阻断，不能把瓶价作为箱价保存。保存时以数据库锁定版本的契约重新校验，客户端删除证据或伪造 ready_for_handoff 无效。
+
+旧模型商品价格草稿缺少证据时不能直接交接/执行，需重新生成；确定性商品卡片动作继续沿用正式业务校验。暂未扩展 AI prices/uoms 表格契约，多个价格数字不等于支持多个价格单位；多单位价格目前请在正式商品页面配置。完整方案及限制见父仓 `docs/05-development/16-ai-price-uom-contract.zh-CN.md`。
+
+销售/采购 AI 参考价现在要求价格表与当前行单位唯一匹配；无对应单位价格或存在多条候选时不任取第一条，不把库存基准单位单价直接作为包装单位价格。生成、编辑、执行重建统一汇总 uom_resolution_error 和 price_resolution_error。修改行单位但未修改单价数字时清除旧价，重新选择同单位参考价或要求输入，并提示核对；浏览器 _state 不作为价格授权来源，只继承身份、单位没变的服务端旧行。此轮没有新增跨单位价格换算公式，未保证模型首次解释“数量单位与计价单位不同”的所有自然语言请求正确。
+
+### AI 请求与回答安全边界（2026-09-08）
+
+意图调用失败返回 `AI_INTENT_PARSE_FAILED`；空、未知、非有限或低于 0.6 的置信度返回 `AI_INTENT_UNCERTAIN`，均可重试，不再降级到普通聊天。自动解析不为这些结果签发凭据。Chat/SSE 的自动、缓存、固定场景和重试在创建 Run/签发工具能力前统一检查只读意图；写意图或动作契约返回 `AI_CHAT_ACTION_REQUIRES_WORKFLOW`（422），应进入专用草稿或生命周期计划接口，不允许通过 general 绕过。
+
+公共 Chat 出口拦截典型无执行回执的完成断言，返回 `AI_UNVERIFIED_ACTION_CLAIM`（422），不保存成功回答。此检查为纵深防护，不是任意自然语言的语义证明。SSE 正文完整缓存并校验后发送，工具和进度事件仍实时；正文上限 128,000 字符，超出返回 `AI_OUTPUT_TOO_LARGE`；delta 拼接正文和 completed.message 不一致返回 `AI_STREAM_CONTENT_MISMATCH`。最终返回和会话保存使用同一正文。`first_token_ms` 仍为上游首 Token 到达耗时，不等于用户看到正文的耗时。
+
+上述 HTTP 状态适用于 JSON Gateway 错误包络；SSE 沿用 HTTP 200 + `type=error` 事件，准备阶段已知 AI 错误也使用此格式，且不会出现 run_started 或成功正文。客户端须处理首事件即 error、没有 run_id 的情况，不能只以 HTTP 200 判断成功。
+
+Run completed 只表示回答生成完成，不证明业务修改；业务成功必须以草稿/计划执行接口的持久回执为准。图片上传、图片暂存、封面赋值和生成新图片不可互相替代。完整审查、分阶段方案及未完成项见父仓 `docs/05-development/15-ai-result-evidence-hardening.zh-CN.md`。本轮不变更请求参数、Prompt 版本或数据库结构。
+
 商品生命周期公开接口（POST，登录及 Item 权限）：`create_product_lifecycle_plan_v1(operation,item_codes,reason)`、`get_product_lifecycle_plan_v1(plan_id)`、`list_product_lifecycle_plans_v1(limit=20)`、`discard_product_lifecycle_plan_v1(plan_id)`、`resolve_product_lifecycle_plan_v1(plan_id,expected_version,selections)`、`execute_product_lifecycle_plan_v1(plan_id,expected_version,confirmed,shared_scope_confirmed,deletion_confirmed,request_id)`。支持 enable/disable/delete，不接受客户端修改已生成计划的动作或目标。`expected_version` 必须 JSON 整数；确认必须 JSON 布尔 true（不是字符串或数字），delete 额外要求 `deletion_confirmed=true`。幂等键也支持现有请求头，按 owner 唯一；成功重放只返回原回执。
 
 AI 入口 `resolve_ai_scenario_v1` 对完整商品生命周期意图返回 `scenario=product_lifecycle_plan` 和一次性 `resolution_id`；后续 `generate_ai_product_lifecycle_plan_v1(content,company,conversation_id,model_alias,scenario_resolution_id)` 沿用原解析凭据，返回 conversation_id、plan、message。只生成计划和会话消息，不执行商品操作。计划 15 分钟有效、owner 隔离；返回 `expires_in_seconds`、共享范围、阻断原因、保留目标、未决候选组和持久回执。候选选择必须覆盖所有组且属于服务器候选，生成新计划后原计划 superseded。阻断计划仍可查看，但不可执行。内部只读预检本身仍不是授权。
@@ -16,7 +34,7 @@ AI 入口 `resolve_ai_scenario_v1` 对完整商品生命周期意图返回 `scen
 
 查询合并支持 `query_context_operations.reset` 和 `clear_fields`：reset 丢弃旧查询条件但保留当前候选明确新值，clear_fields 覆盖旧状态恢复；清除日期同时清除 date_from/date_to，清除商品词同时清除检索线索。未携带控制字段的旧响应保留兼容合并行为；后续需完整迁移 keep/set/clear。
 
-AI 动作安全第一阶段：低置信度或无有效语义结果时，不再由关键词规则路由到四类写入草稿，改为 general，解析 mode 为 `write_intent_requires_clarification`。这不是完整澄清交互协议。商品/订单草稿服务拒绝未知 operation，不再自动降为 auto；合法值仍为 auto/create/update，尚不支持删除/取消/合并。完整设计见父仓 `docs/05-development/12-ai-action-contract-hardening.zh-CN.md`。完整能力探测遇到工具、视觉或结构化瞬时错误时保留相应旧能力并记录本次错误；不把本次超时解释为不支持。
+AI 动作安全第一阶段曾将不确定写意图改为 general / write_intent_requires_clarification；现已由本页上方统一失败关闭策略替代，不能继续聊天。商品/订单草稿服务拒绝未知 operation，不再自动降为 auto；合法值仍为 auto/create/update，删除/启停使用独立生命周期计划而不是编辑草稿。完整设计见父仓 `docs/05-development/12-ai-action-contract-hardening.zh-CN.md`。完整能力探测遇到工具、视觉或结构化瞬时错误时保留相应旧能力并记录本次错误；不把本次超时解释为不支持。
 
 ### AI 模型异步检测（2026-09-06）
 
@@ -5205,3 +5223,8 @@ User Permission 的范围语义：
 - 同类型多条权限按允许值并集生效；Company 与 Warehouse 等不同维度同时存在时共同收窄最终结果。
 - 删除某类型最后一条权限会扩大访问范围，恢复为不按该维度限制。管理端必须在删除前明确警告。
 - 默认公司和默认仓库只是录入偏好。默认值不在授权范围时，管理端显示冲突警告，但不得自动扩大权限。
+# AI 商品价格契约增量（2026-09-09）
+
+`generate_ai_product_setup_draft_v1 / update_ai_draft_v1 / get_ai_draft_v1 / execute_ai_draft_v1` 的新商品草稿 payload 使用 `pricing_contract_version=product-pricing-v1`。`prices[]` 包含 row_id、price_list、rate、currency、uom、uom_display、interpretation、evidence；`uom_relations[]` 包含 from_qty/from_uom/to_qty/to_uom。wholesale_default_uom、retail_default_uom 与服务端推导的 uom_conversions 一并返回。客户端不可将 uom_conversions 作为换算权威，执行前重算。价格表币种必须与草稿币种一致。
+
+包装数量未知可保存不通过的草稿，必须补齐才能执行；默认标准销售参考价采用唯一同库存单位的批发价，并标记 default，不覆盖用户明确价格。修改只维护价格，不支持借移除行删除已有价格。新明细不支持降级交接到旧商品表单，`prepare_ai_draft_handoff_v1` 拒绝且不改变状态；应使用草稿编辑及确认执行。旧带价模型草稿需重新生成。完整范围及限制见父仓方案16。
