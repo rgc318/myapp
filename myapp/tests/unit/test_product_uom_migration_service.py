@@ -6,7 +6,9 @@ import frappe
 from myapp.services import wholesale_service
 from myapp.services.wholesale_service import (
 	_build_product_uom_migration_price_plan,
+	_create_product_uom_repack_entries,
 	_execute_in_place_product_uom_correction,
+	_normalize_product_uom_inventory_mappings,
 	_normalize_product_uom_migration_mappings,
 	_normalize_product_uom_migration_new_prices,
 	assess_product_uom_migration_v1,
@@ -35,6 +37,10 @@ class TestProductUomMigrationService(TestCase):
 				"warehouse": "Stores - TC",
 				"actual_qty": 4,
 				"reserved_qty": 2,
+			},
+			{
+				"warehouse": "Returns - TC",
+				"actual_qty": -4,
 			},
 		],
 	)
@@ -74,9 +80,10 @@ class TestProductUomMigrationService(TestCase):
 		blocker_codes = {row["code"] for row in result["data"]["blockers"]}
 		self.assertEqual(
 			blocker_codes,
-			{"NON_ZERO_STOCK", "COMMITTED_STOCK_EXISTS", "OPEN_SALES_ORDERS"},
+			{"NON_ZERO_STOCK", "NEGATIVE_STOCK", "COMMITTED_STOCK_EXISTS", "OPEN_SALES_ORDERS"},
 		)
 		self.assertFalse(result["data"]["can_execute"])
+		self.assertFalse(result["data"]["can_execute_with_inventory_conversion"])
 		self.assertEqual(result["data"]["history"]["stock_ledger_entry_count"], 2)
 		self.assertTrue(result["data"]["suggested_new_item_code"])
 
@@ -126,6 +133,134 @@ class TestProductUomMigrationService(TestCase):
 		self.assertEqual(result["recommended_strategy"], "replacement")
 		self.assertFalse(result["strategies"]["in_place"]["available"])
 		self.assertTrue(result["strategies"]["replacement"]["available"])
+
+	def test_assessment_allows_replacement_with_explicit_inventory_conversion(self):
+		item = frappe._dict(
+			name="ITEM-001",
+			item_name="测试商品",
+			modified="2026-08-31 12:00:00",
+			disabled=0,
+			stock_uom="Wrong UOM",
+			barcodes=[],
+			has_variants=0,
+			variant_of=None,
+			is_fixed_asset=0,
+		)
+		fake_db = MagicMock()
+		fake_db.count.return_value = 2
+		fake_db.exists.return_value = False
+		with (
+			patch("myapp.services.wholesale_service._get_product_uom_migration_bins", return_value=[
+				{
+					"warehouse": "Stores - TC",
+					"company": "Test Company",
+					"actual_qty": 24,
+					"projected_qty": 24,
+				}
+			]),
+			patch(
+				"myapp.services.wholesale_service._get_product_uom_migration_open_transactions",
+				return_value={"sales_order_count": 0, "purchase_order_count": 0},
+			),
+			patch("myapp.services.wholesale_service._get_product_uom_migration_prices", return_value=[]),
+			patch("myapp.services.wholesale_service._get_product_uom_migration_alternatives", return_value=[]),
+			patch("myapp.services.wholesale_service._get_uom_map", return_value={"ITEM-001": []}),
+			patch.object(wholesale_service.frappe, "db", fake_db),
+			patch("myapp.services.wholesale_service.frappe.get_all", return_value=[]),
+		):
+			result = wholesale_service._build_product_uom_migration_assessment(item)
+
+		self.assertFalse(result["can_execute"])
+		self.assertTrue(result["can_execute_with_inventory_conversion"])
+		self.assertTrue(result["strategies"]["replacement"]["available"])
+		self.assertEqual({row["code"] for row in result["blockers"]}, {"NON_ZERO_STOCK"})
+
+	def test_inventory_mapping_requires_every_positive_bin_and_explicit_target_qty(self):
+		assessment = {
+			"inventory": {
+				"bins": [
+					{
+						"warehouse": "Stores - TC",
+						"company": "Test Company",
+						"actual_qty": 24,
+					}
+				]
+			}
+		}
+		with (
+			patch("myapp.services.wholesale_service.ensure_warehouse_access", return_value="Stores - TC"),
+			patch("myapp.services.wholesale_service.validate_transaction_warehouse"),
+		):
+			result = _normalize_product_uom_inventory_mappings(
+				[{"warehouse": "Stores - TC", "source_qty": 24, "target_qty": 576}],
+				assessment=assessment,
+			)
+		self.assertEqual(result[0]["target_qty"], 576)
+
+		with (
+			patch("myapp.services.wholesale_service.frappe.throw", side_effect=frappe.ValidationError),
+			self.assertRaises(frappe.ValidationError),
+		):
+			_normalize_product_uom_inventory_mappings([], assessment=assessment)
+
+		for invalid_target_qty in (None, 0, -1, "NaN", "Infinity"):
+			with (
+				patch("myapp.services.wholesale_service.ensure_warehouse_access", return_value="Stores - TC"),
+				patch("myapp.services.wholesale_service.validate_transaction_warehouse"),
+				patch("myapp.services.wholesale_service.frappe.throw", side_effect=frappe.ValidationError),
+				self.assertRaises(frappe.ValidationError),
+			):
+				_normalize_product_uom_inventory_mappings(
+					[{"warehouse": "Stores - TC", "source_qty": 24, "target_qty": invalid_target_qty}],
+					assessment=assessment,
+				)
+
+	def test_repack_entry_consumes_source_and_receives_target_in_same_warehouse(self):
+		stock_entry = MagicMock()
+		stock_entry.name = "MAT-STE-0001"
+		with patch("myapp.services.wholesale_service.frappe.new_doc", return_value=stock_entry):
+			result = _create_product_uom_repack_entries(
+				source_item=frappe._dict(name="ITEM-OLD"),
+				target_item=frappe._dict(name="ITEM-NEW"),
+				inventory_mappings=[
+					{
+						"company": "Test Company",
+						"warehouse": "Stores - TC",
+						"source_qty": 24,
+						"target_qty": 576,
+					}
+				],
+				reason="纠正错误单位",
+			)
+
+		self.assertEqual(stock_entry.stock_entry_type, "Repack")
+		self.assertEqual(stock_entry.purpose, "Repack")
+		self.assertEqual(
+			stock_entry.append.call_args_list,
+			[
+				call(
+					"items",
+					{
+						"item_code": "ITEM-OLD",
+						"qty": 24,
+						"s_warehouse": "Stores - TC",
+						"allow_zero_valuation_rate": 1,
+					},
+				),
+				call(
+					"items",
+					{
+						"item_code": "ITEM-NEW",
+						"qty": 576,
+						"t_warehouse": "Stores - TC",
+						"is_finished_item": 1,
+					},
+				),
+			],
+		)
+		stock_entry.insert.assert_called_once()
+		stock_entry.submit.assert_called_once()
+		self.assertEqual(result[0]["name"], "MAT-STE-0001")
 
 	def test_mapping_requires_explicit_decision_for_every_source_row(self):
 		with (
@@ -436,7 +571,17 @@ class TestProductUomMigrationService(TestCase):
 		source.barcodes = [barcode_child]
 		mock_require_document.return_value = source
 		mock_build_assessment.return_value = {
-			"blockers": [],
+			"blockers": [{"code": "NON_ZERO_STOCK", "message": "仍有库存"}],
+			"can_execute_with_inventory_conversion": True,
+			"inventory": {
+				"bins": [
+					{
+						"warehouse": "Stores - TC",
+						"company": "Test Company",
+						"actual_qty": 24,
+					}
+				]
+			},
 			"prices": [
 				{
 					"name": "PRICE-1",
@@ -471,6 +616,25 @@ class TestProductUomMigrationService(TestCase):
 		with (
 			patch.object(wholesale_service.frappe, "db", fake_db),
 			patch("myapp.services.wholesale_service.frappe.new_doc", side_effect=new_doc),
+			patch(
+				"myapp.services.wholesale_service._normalize_product_uom_inventory_mappings",
+				return_value=[
+					{
+						"warehouse": "Stores - TC",
+						"company": "Test Company",
+						"source_qty": 24,
+						"target_qty": 576,
+					}
+				],
+			),
+			patch(
+				"myapp.services.wholesale_service._create_product_uom_repack_entries",
+				return_value=[{"name": "MAT-STE-0001"}],
+			) as mock_repack,
+			patch(
+				"myapp.services.wholesale_service._get_product_uom_migration_bins",
+				return_value=[{"warehouse": "Stores - TC", "actual_qty": 0}],
+			),
 		):
 			result = execute_product_uom_migration_v1(
 				"ITEM-OLD",
@@ -497,6 +661,10 @@ class TestProductUomMigrationService(TestCase):
 				],
 				confirm_disable_source=1,
 				confirm_history_preserved=1,
+				confirm_inventory_conversion=1,
+				inventory_mappings=[
+					{"warehouse": "Stores - TC", "source_qty": 24, "target_qty": 576},
+				],
 				request_id="migration-001",
 			)
 
@@ -504,13 +672,15 @@ class TestProductUomMigrationService(TestCase):
 		mock_build_item_code.assert_called_once_with("测试商品（新）", None)
 		self.assertEqual(source.allow_alternative_item, 1)
 		source.remove.assert_called_once_with(barcode_child)
-		source.save.assert_called_once()
+		self.assertEqual(source.save.call_count, 2)
 		mock_apply_uoms.assert_called_once()
 		new_item.append.assert_called_once_with(
 			"barcodes",
 			{"barcode": "690000000001", "uom": "Nos"},
 		)
 		new_item.insert.assert_called_once()
+		mock_repack.assert_called_once()
+		self.assertEqual(result["data"]["repack_entries"], [{"name": "MAT-STE-0001"}])
 		self.assertEqual(
 			mock_upsert_price.call_args_list,
 			[
@@ -539,6 +709,7 @@ class TestProductUomMigrationService(TestCase):
 			[
 				call("Item", "create"),
 				call("Item Alternative", "create"),
+				call("Stock Entry", "create"),
 				call("Item Price", "create"),
 			],
 		)

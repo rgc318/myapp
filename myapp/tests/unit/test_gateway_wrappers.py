@@ -2090,6 +2090,14 @@ class TestGatewayWrappers(TestCase):
 		result = execute_product_uom_migration_v1(
 			"ITEM-001",
 			confirm_disable_source=1,
+			confirm_inventory_conversion=1,
+			inventory_mappings=[
+				{
+					"warehouse": "Stores - RD",
+					"source_qty": 10,
+					"target_qty": 240,
+				}
+			],
 			new_prices=[
 				{
 					"price_list": "Retail",
@@ -2112,6 +2120,14 @@ class TestGatewayWrappers(TestCase):
 		mock_execute.assert_called_once_with(
 			item_code="ITEM-001",
 			confirm_disable_source=1,
+			confirm_inventory_conversion=1,
+			inventory_mappings=[
+				{
+					"warehouse": "Stores - RD",
+					"source_qty": 10,
+					"target_qty": 240,
+				}
+			],
 			new_prices=[
 				{
 					"price_list": "Retail",

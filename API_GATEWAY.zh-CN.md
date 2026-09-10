@@ -2811,7 +2811,8 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - 存在历史库存流水但当前库存、占用和未完订单均已清零时，整体纠正仍可执行，但只推荐 `replacement`，避免改变历史库存数量的单位语义
 - 返回 `suggested_new_item_code`，供 `replacement` 使用；客户端可修改或留空，由后端按现有编码规则重新生成
 - 以下情况返回 blocker，并令 `can_execute = false`：
-  - 任一仓库实际库存不为 0
+  - 任一仓库实际库存不为 0；仅有正库存且没有其他 blocker 时，会额外返回 `can_execute_with_inventory_conversion = true`，允许 `replacement` 走受控 Repack
+  - 任一仓库存在负库存；正负仓库不得相互抵消后被误判为零库存
   - 存在预留、在途、计划或请购数量
   - 存在未完成或草稿销售/采购订单
   - 商品属于模板/变体族
@@ -2855,13 +2856,18 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `confirm_disable_source = 1`，`replacement` 必填
 - `confirm_in_place_correction = 1`，`in_place` 必填
 - `confirm_history_preserved = 1`
+- `confirm_inventory_conversion = 1`，仅评估返回 `can_execute_with_inventory_conversion = true` 时必填
+- `inventory_mappings: list[dict]`，仅受控库存转换时提交，必须覆盖每个正库存仓库
+  - `warehouse`
+  - `source_qty`，必须与执行时锁定并重新读取的实时 Bin 数量完全一致
+  - `target_qty`，用户按盘点事实填写的继任商品库存数量，必须大于 0；系统不会根据错误旧单位自动推算
 
 权限与事务：
 
 - 仅 `Administrator` 或 `System Manager`
 - 两种策略都要求源 Item 写权限
 - `in_place` 更新/失效旧价格时要求 Item Price 写权限；只有真正新增价格时要求 Item Price 创建权限
-- `replacement` 还要求新 Item、Item Alternative 和计划价格的创建权限
+- `replacement` 还要求新 Item、Item Alternative 和计划价格的创建权限；涉及现有库存转换时还要求 Stock Entry 创建/提交权限
 - 所有结果价格会在写入前校验价格表存在，并拒绝重复的 `价格表 + 币种 + 单位` 组合
 - 执行时锁定源 Item 与现有 Bin，重新评估所有 blocker，并校验 `source_modified`
 - 任一步失败整体回滚；不会产生半个新商品、孤立替代关系或部分条码移动
@@ -2870,6 +2876,9 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 
 - `in_place`：仅用于无历史库存流水的低风险建档错误；保留商品编码，受控更新库存单位、完整换算、批发/零售默认单位、条码单位和价格，并写入 `in_place` 纠正审计
 - `replacement`：不直接修改源商品 `stock_uom`，创建正确单位的新 Item、正式继任关系和 `replacement` 纠正审计，然后停用源商品
+- 若唯一 blocker 是正库存，`replacement` 会在同一事务中先创建继任商品，再按每仓人工确认数量提交正式 ERPNext `Stock Entry / Repack`。旧商品逐仓转出、新商品在同仓转入，ERPNext 按转出库存价值计算继任商品估值，确保总库存价值守恒
+- Repack 后会重新读取源商品全部 Bin；只有各仓实际库存全部归零才允许停用源商品。数量、估值、价格、条码、替代关系或审计任一步失败都会整体回滚
+- 负库存、库存承诺、未完销售/采购订单、变体和固定资产仍严格阻断，不能使用本向导绕过
 - 只允许选择 `myapp_business_selectable = 1` 的日常业务单位
 - 每一条源价格和条码都必须人工明确选择动作，不能遗漏、默认复制或自动猜测单位
 - `in_place` 的 `move` 表示把原条码改绑到新单位；`keep` 仅在旧条码单位仍存在于新换算表时允许
@@ -2881,6 +2890,7 @@ get_customer_sales_context(customer="Palmer Productions Ltd.")
 - `replacement` 同时创建 ERPNext 单向 `Item Alternative`：源商品 -> 继任商品；历史单据、Stock Ledger Entry 和旧 Item Price 保持原样
 - 所有成功纠正写入 `tabMyApp Product Correction`，保存前后快照、原因、请求 ID、执行人和执行时间；后续历史引用解析不只依赖普通替代商品
 - 为降低并发业务写入风险，应在短暂受控作业窗口执行，不应与该商品的库存收发、开单或改单并行
+- 成功响应的 `data.repack_entries[]` 返回正式 Repack 单号、公司、仓库、旧数量和新数量，供操作结果追溯
 
 ### 商品图片上传与保存边界
 

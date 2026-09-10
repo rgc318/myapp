@@ -28,6 +28,7 @@ from myapp.utils.pagination import build_offset_pagination
 from myapp.utils.uom_display import build_uom_display_map, sort_uom_rows
 from myapp.utils.uom import resolve_item_quantity_to_stock
 from myapp.utils.standard_uoms import BUSINESS_SELECTABLE_UOM_FIELD
+from myapp.utils.warehouse import validate_transaction_warehouse
 
 ITEM_NICKNAME_FIELD = "custom_nickname"
 ITEM_SPECIFICATION_FIELD = "custom_specification"
@@ -2072,6 +2073,8 @@ def _build_product_uom_migration_assessment(item):
 		limit_page_length=1,
 	)
 	total_actual_qty = sum(flt(row.get("actual_qty") or 0) for row in bins)
+	positive_stock_bins = [row for row in bins if flt(row.get("actual_qty") or 0) > 0.000001]
+	negative_stock_bins = [row for row in bins if flt(row.get("actual_qty") or 0) < -0.000001]
 	total_committed_qty = sum(
 		max(
 			(abs(flt(row.get(fieldname) or 0)) for fieldname in PRODUCT_UOM_MIGRATION_COMMITTED_BIN_FIELDS),
@@ -2081,11 +2084,18 @@ def _build_product_uom_migration_assessment(item):
 	)
 	blockers = []
 	warnings = []
-	if abs(total_actual_qty) > 0.000001:
+	if positive_stock_bins:
 		blockers.append(
 			{
 				"code": "NON_ZERO_STOCK",
-				"message": _("商品仍有实际库存，必须先通过库存转换/Repack 将旧商品库存清零。"),
+				"message": _("商品仍有实际库存；创建继任商品时必须逐仓确认新数量，并在同一事务中通过 Repack 将旧商品库存清零。"),
+			}
+		)
+	if negative_stock_bins:
+		blockers.append(
+			{
+				"code": "NEGATIVE_STOCK",
+				"message": _("商品存在负库存，不能自动 Repack。请先通过库存盘点或业务单据把各仓库存纠正为非负数量。"),
 			}
 		)
 	if total_committed_qty > 0.000001:
@@ -2148,16 +2158,19 @@ def _build_product_uom_migration_assessment(item):
 
 	uom_rows = _get_uom_map([item_code]).get(item_code, [])
 	uom_display_map = build_uom_display_map(_collect_item_uom_names(item=item, all_uoms=uom_rows))
+	unresolved_blockers = [row for row in blockers if row["code"] != "NON_ZERO_STOCK"]
+	can_execute_with_inventory_conversion = bool(positive_stock_bins) and not unresolved_blockers and not cint(item.disabled)
 	can_correct_in_place = (
 		not blockers
 		and not cint(item.disabled)
 		and not alternatives
 		and not stock_ledger_entry_count
 	)
-	can_create_replacement = not blockers and not cint(item.disabled)
+	can_create_replacement = not unresolved_blockers and not cint(item.disabled)
 	return {
 		"suggested_new_item_code": _build_item_code(item.item_name),
 		"recommended_strategy": "in_place" if can_correct_in_place else ("replacement" if can_create_replacement else None),
+		"can_execute_with_inventory_conversion": can_execute_with_inventory_conversion,
 		"strategies": {
 			"in_place": {
 				"available": can_correct_in_place,
@@ -2167,7 +2180,11 @@ def _build_product_uom_migration_assessment(item):
 			},
 			"replacement": {
 				"available": can_create_replacement,
-				"reason": _("商品物理身份或包装基础真正变化时，可创建正式继任商品。")
+				"reason": (
+					_("可在本向导中逐仓确认新数量，并通过正式 Repack 转移现有库存后创建继任商品。")
+					if can_execute_with_inventory_conversion
+					else _("商品物理身份或包装基础真正变化时，可创建正式继任商品。")
+				)
 				if can_create_replacement
 				else _("源商品已停用或存在阻断项，不能创建替代商品。"),
 			},
@@ -2487,6 +2504,105 @@ def _execute_in_place_product_uom_correction(
 	}
 
 
+def _normalize_product_uom_inventory_mappings(value, *, assessment):
+	if isinstance(value, str):
+		try:
+			value = frappe.parse_json(value)
+		except Exception:
+			frappe.throw(_("库存转换明细格式无效。"))
+	positive_bins = {
+		row["warehouse"]: row
+		for row in assessment.get("inventory", {}).get("bins", [])
+		if flt(row.get("actual_qty") or 0) > 0.000001
+	}
+	if not positive_bins:
+		if value not in (None, "", []):
+			frappe.throw(_("源商品当前没有正库存，不应提交库存转换明细。"))
+		return []
+	if not isinstance(value, list):
+		frappe.throw(_("库存转换明细必须是数组。"))
+
+	resolved = []
+	seen = set()
+	for raw in value:
+		if not isinstance(raw, dict):
+			frappe.throw(_("库存转换明细行格式无效。"))
+		warehouse = _normalize_text(raw.get("warehouse"))
+		if not warehouse or warehouse not in positive_bins:
+			frappe.throw(_("库存转换仓库 {0} 不在当前正库存仓库中。").format(warehouse or _("空")))
+		if warehouse in seen:
+			frappe.throw(_("库存转换仓库 {0} 不能重复。").format(warehouse))
+		seen.add(warehouse)
+		bin_row = positive_bins[warehouse]
+		expected_source_qty = flt(bin_row.get("actual_qty") or 0)
+		client_source_qty = flt(raw.get("source_qty") or 0)
+		if abs(client_source_qty - expected_source_qty) > 0.000001:
+			frappe.throw(_("仓库 {0} 的源库存已变化，请重新评估后再执行。").format(warehouse))
+		try:
+			target_decimal = Decimal(str(raw.get("target_qty")))
+		except (InvalidOperation, TypeError, ValueError):
+			frappe.throw(_("仓库 {0} 的继任商品数量无效。").format(warehouse))
+		if not target_decimal.is_finite() or target_decimal <= 0:
+			frappe.throw(_("仓库 {0} 的继任商品数量必须大于 0。").format(warehouse))
+		company = _normalize_text(bin_row.get("company"))
+		if not company:
+			frappe.throw(_("仓库 {0} 未绑定公司，不能执行库存转换。").format(warehouse))
+		ensure_warehouse_access(warehouse, company=company, applicable_for="Stock Entry")
+		validate_transaction_warehouse(warehouse, company=company)
+		resolved.append(
+			{
+				"warehouse": warehouse,
+				"company": company,
+				"source_qty": expected_source_qty,
+				"target_qty": flt(target_decimal),
+			}
+		)
+	missing = sorted(set(positive_bins) - seen)
+	if missing:
+		frappe.throw(_("以下正库存仓库尚未确认继任商品数量：{0}").format("、".join(missing)))
+	return resolved
+
+
+def _create_product_uom_repack_entries(*, source_item, target_item, inventory_mappings, reason):
+	entries = []
+	for mapping in inventory_mappings:
+		stock_entry = frappe.new_doc("Stock Entry")
+		stock_entry.stock_entry_type = "Repack"
+		stock_entry.purpose = "Repack"
+		stock_entry.company = mapping["company"]
+		stock_entry.remarks = _("商品单位纠正：{0}").format(_normalize_text(reason) or source_item.name)
+		stock_entry.append(
+			"items",
+			{
+				"item_code": source_item.name,
+				"qty": mapping["source_qty"],
+				"s_warehouse": mapping["warehouse"],
+				"allow_zero_valuation_rate": 1,
+			},
+		)
+		stock_entry.append(
+			"items",
+			{
+				"item_code": target_item.name,
+				"qty": mapping["target_qty"],
+				"t_warehouse": mapping["warehouse"],
+				"is_finished_item": 1,
+			},
+		)
+		stock_entry.insert()
+		stock_entry.submit()
+		entries.append(
+			{
+				"name": stock_entry.name,
+				"company": mapping["company"],
+				"warehouse": mapping["warehouse"],
+				"source_qty": mapping["source_qty"],
+				"target_qty": mapping["target_qty"],
+			}
+		)
+	return entries
+
+
 def execute_product_uom_migration_v1(item_code: str, **kwargs):
 	_require_product_uom_migration_manager()
 	item_code = _normalize_text(item_code)
@@ -2520,14 +2636,32 @@ def execute_product_uom_migration_v1(item_code: str, **kwargs):
 			frappe.throw(_("源商品在评估后已发生变化，请重新评估后再执行迁移。"))
 
 		assessment = _build_product_uom_migration_assessment(source)
-		if assessment["blockers"]:
+		blocker_codes = {row["code"] for row in assessment["blockers"]}
+		inventory_conversion_allowed = (
+			strategy == "replacement"
+			and assessment.get("can_execute_with_inventory_conversion")
+			and blocker_codes == {"NON_ZERO_STOCK"}
+		)
+		if assessment["blockers"] and not inventory_conversion_allowed:
 			frappe.throw("\n".join(row["message"] for row in assessment["blockers"]))
+		if inventory_conversion_allowed and not cint(kwargs.get("confirm_inventory_conversion")):
+			frappe.throw(_("必须确认按逐仓明细通过 Repack 转移全部现有库存。"))
 		before_snapshot = _build_product_uom_correction_snapshot(source, assessment)
 
 		resolved_stock_uom, conversion_map = _validate_business_uom_conversion_map(
 			kwargs.get("stock_uom"),
 			kwargs.get("uom_conversions"),
 		)
+		inventory_mappings = (
+			_normalize_product_uom_inventory_mappings(
+				kwargs.get("inventory_mappings"),
+				assessment=assessment,
+			)
+			if inventory_conversion_allowed
+			else []
+		)
+		if inventory_mappings:
+			require_doctype_permission("Stock Entry", "create")
 
 		price_mappings = _normalize_product_uom_migration_mappings(
 			kwargs.get("price_mappings"),
@@ -2590,8 +2724,8 @@ def execute_product_uom_migration_v1(item_code: str, **kwargs):
 			if getattr(row, "name", None) in moved_barcode_names:
 				source.remove(row)
 		source.allow_alternative_item = 1
-		source.disabled = 1
-		source.save()
+		if moved_barcode_names:
+			source.save()
 
 		new_item = frappe.new_doc("Item")
 		new_item.item_code = new_item_code
@@ -2646,6 +2780,24 @@ def execute_product_uom_migration_v1(item_code: str, **kwargs):
 			)
 		new_item.insert()
 
+		repack_entries = _create_product_uom_repack_entries(
+			source_item=source,
+			target_item=new_item,
+			inventory_mappings=inventory_mappings,
+			reason=kwargs.get("correction_reason"),
+		)
+		if inventory_mappings:
+			remaining_nonzero_bins = [
+				row
+				for row in _get_product_uom_migration_bins(source.name)
+				if abs(flt(row.get("actual_qty") or 0)) > 0.000001
+			]
+			if remaining_nonzero_bins:
+				frappe.throw(_("库存转换后源商品库存未完全归零，事务已回滚，请重新评估。"))
+
+		source.disabled = 1
+		source.save()
+
 		copied_price_names = []
 		created_price_names = []
 		for price in planned_prices:
@@ -2681,8 +2833,12 @@ def execute_product_uom_migration_v1(item_code: str, **kwargs):
 				"new_item": _build_product_detail_payload(new_item),
 				"alternative": alternative.name,
 				"created_price_names": created_price_names,
+				"repack_entries": repack_entries,
 			},
-			metadata={"history_preserved": True},
+			metadata={
+				"history_preserved": True,
+				"inventory_converted": bool(repack_entries),
+			},
 			request_id=request_id,
 		)
 		return {
@@ -2701,6 +2857,7 @@ def execute_product_uom_migration_v1(item_code: str, **kwargs):
 				},
 				"copied_price_names": copied_price_names,
 				"created_price_names": created_price_names,
+				"repack_entries": repack_entries,
 				"moved_barcodes": [
 					barcode_by_name[name]["barcode"] for name in moved_barcode_names
 				],
