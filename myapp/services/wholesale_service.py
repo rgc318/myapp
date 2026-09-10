@@ -1948,6 +1948,8 @@ def _get_product_uom_migration_bins(item_code: str):
 		"name",
 		"warehouse",
 		"actual_qty",
+		"valuation_rate",
+		"stock_value",
 		"projected_qty",
 		*PRODUCT_UOM_MIGRATION_COMMITTED_BIN_FIELDS,
 	]
@@ -1977,6 +1979,8 @@ def _get_product_uom_migration_bins(item_code: str):
 				"warehouse": row.warehouse,
 				"company": company_by_warehouse.get(row.warehouse),
 				"actual_qty": flt(row.actual_qty or 0),
+				"valuation_rate": flt(row.valuation_rate or 0),
+				"stock_value": flt(row.stock_value or 0),
 				"projected_qty": flt(row.projected_qty or 0),
 				**{
 					fieldname: flt(getattr(row, fieldname, 0) or 0)
@@ -2555,6 +2559,8 @@ def _normalize_product_uom_inventory_mappings(value, *, assessment):
 				"company": company,
 				"source_qty": expected_source_qty,
 				"target_qty": flt(target_decimal),
+				"source_valuation_rate": flt(bin_row.get("valuation_rate") or 0),
+				"source_stock_value": flt(bin_row.get("stock_value") or 0),
 			}
 		)
 	missing = sorted(set(positive_bins) - seen)
@@ -2566,6 +2572,7 @@ def _normalize_product_uom_inventory_mappings(value, *, assessment):
 def _create_product_uom_repack_entries(*, source_item, target_item, inventory_mappings, reason):
 	entries = []
 	for mapping in inventory_mappings:
+		allow_zero_target_valuation = abs(flt(mapping.get("source_stock_value") or 0)) <= 0.000001
 		stock_entry = frappe.new_doc("Stock Entry")
 		stock_entry.stock_entry_type = "Repack"
 		stock_entry.purpose = "Repack"
@@ -2580,15 +2587,15 @@ def _create_product_uom_repack_entries(*, source_item, target_item, inventory_ma
 				"allow_zero_valuation_rate": 1,
 			},
 		)
-		stock_entry.append(
-			"items",
-			{
-				"item_code": target_item.name,
-				"qty": mapping["target_qty"],
-				"t_warehouse": mapping["warehouse"],
-				"is_finished_item": 1,
-			},
-		)
+		target_row = {
+			"item_code": target_item.name,
+			"qty": mapping["target_qty"],
+			"t_warehouse": mapping["warehouse"],
+			"is_finished_item": 1,
+		}
+		if allow_zero_target_valuation:
+			target_row["allow_zero_valuation_rate"] = 1
+		stock_entry.append("items", target_row)
 		stock_entry.insert()
 		stock_entry.submit()
 		entries.append(
@@ -2598,6 +2605,9 @@ def _create_product_uom_repack_entries(*, source_item, target_item, inventory_ma
 				"warehouse": mapping["warehouse"],
 				"source_qty": mapping["source_qty"],
 				"target_qty": mapping["target_qty"],
+				"source_valuation_rate": flt(mapping.get("source_valuation_rate") or 0),
+				"source_stock_value": flt(mapping.get("source_stock_value") or 0),
+				"allowed_zero_target_valuation": allow_zero_target_valuation,
 			}
 		)
 	return entries

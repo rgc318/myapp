@@ -64,6 +64,7 @@ class ProductUomMigrationRepackTransactions(TestCase):
 				"t_warehouse": warehouse,
 				"basic_rate": rate,
 				"valuation_rate": rate,
+				"allow_zero_valuation_rate": int(rate == 0),
 			},
 		)
 		entry.insert()
@@ -103,6 +104,8 @@ class ProductUomMigrationRepackTransactions(TestCase):
 					"warehouse": warehouse,
 					"source_qty": 24,
 					"target_qty": 240,
+					"source_valuation_rate": before.valuation_rate,
+					"source_stock_value": before.stock_value,
 				}
 			],
 			reason="isolated rollback verification",
@@ -122,6 +125,60 @@ class ProductUomMigrationRepackTransactions(TestCase):
 		)
 		self.assertEqual({row.item_code for row in ledger_rows}, {source.name, target.name})
 		self.assertAlmostEqual(sum(flt(row.stock_value_difference) for row in ledger_rows), 0, places=6)
+
+		frappe.db.rollback()
+		self.assertFalse(frappe.db.exists("Item", source.name))
+		self.assertFalse(frappe.db.exists("Item", target.name))
+
+	def test_repack_accepts_zero_value_stock_without_inventing_cost(self):
+		warehouse = os.getenv("MYAPP_UOM_REPACK_TEST_WAREHOUSE", "Stores - RD")
+		company = frappe.db.get_value("Warehouse", warehouse, "company")
+		self.assertTrue(company, f"Warehouse {warehouse} must belong to a company")
+
+		suffix = secrets.token_hex(5).upper()
+		source = self._make_stock_item(f"UOM-REPACK-ZERO-SRC-{suffix}", "Nos")
+		target = self._make_stock_item(f"UOM-REPACK-ZERO-DST-{suffix}", "Bottle")
+		self._receive_stock(
+			item_code=source.name,
+			warehouse=warehouse,
+			company=company,
+			qty=24,
+			rate=0,
+		)
+		before = self._get_bin(source.name, warehouse)
+		self.assertEqual(flt(before.stock_value), 0)
+
+		entries = _create_product_uom_repack_entries(
+			source_item=source,
+			target_item=target,
+			inventory_mappings=[
+				{
+					"company": company,
+					"warehouse": warehouse,
+					"source_qty": 24,
+					"target_qty": 240,
+					"source_valuation_rate": before.valuation_rate,
+					"source_stock_value": before.stock_value,
+				}
+			],
+			reason="isolated zero-value rollback verification",
+		)
+
+		after_source = self._get_bin(source.name, warehouse)
+		after_target = self._get_bin(target.name, warehouse)
+		self.assertEqual(flt(after_source.actual_qty), 0)
+		self.assertEqual(flt(after_target.actual_qty), 240)
+		self.assertEqual(flt(after_target.valuation_rate), 0)
+		self.assertEqual(flt(after_target.stock_value), 0)
+		self.assertTrue(entries[0]["allowed_zero_target_valuation"])
+
+		ledger_rows = frappe.get_all(
+			"Stock Ledger Entry",
+			filters={"voucher_type": "Stock Entry", "voucher_no": entries[0]["name"]},
+			fields=["item_code", "actual_qty", "stock_value_difference"],
+		)
+		self.assertEqual({row.item_code for row in ledger_rows}, {source.name, target.name})
+		self.assertEqual(sum(flt(row.stock_value_difference) for row in ledger_rows), 0)
 
 		frappe.db.rollback()
 		self.assertFalse(frappe.db.exists("Item", source.name))

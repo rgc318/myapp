@@ -183,6 +183,8 @@ class TestProductUomMigrationService(TestCase):
 						"warehouse": "Stores - TC",
 						"company": "Test Company",
 						"actual_qty": 24,
+						"valuation_rate": 2,
+						"stock_value": 48,
 					}
 				]
 			}
@@ -196,6 +198,8 @@ class TestProductUomMigrationService(TestCase):
 				assessment=assessment,
 			)
 		self.assertEqual(result[0]["target_qty"], 576)
+		self.assertEqual(result[0]["source_valuation_rate"], 2)
+		self.assertEqual(result[0]["source_stock_value"], 48)
 
 		with (
 			patch("myapp.services.wholesale_service.frappe.throw", side_effect=frappe.ValidationError),
@@ -228,6 +232,8 @@ class TestProductUomMigrationService(TestCase):
 						"warehouse": "Stores - TC",
 						"source_qty": 24,
 						"target_qty": 576,
+						"source_valuation_rate": 2,
+						"source_stock_value": 48,
 					}
 				],
 				reason="纠正错误单位",
@@ -261,6 +267,42 @@ class TestProductUomMigrationService(TestCase):
 		stock_entry.insert.assert_called_once()
 		stock_entry.submit.assert_called_once()
 		self.assertEqual(result[0]["name"], "MAT-STE-0001")
+		self.assertFalse(result[0]["allowed_zero_target_valuation"])
+
+	def test_repack_entry_allows_zero_valuation_only_when_source_stock_value_is_zero(self):
+		stock_entry = MagicMock()
+		stock_entry.name = "MAT-STE-0002"
+		with patch("myapp.services.wholesale_service.frappe.new_doc", return_value=stock_entry):
+			result = _create_product_uom_repack_entries(
+				source_item=frappe._dict(name="ITEM-OLD"),
+				target_item=frappe._dict(name="ITEM-NEW"),
+				inventory_mappings=[
+					{
+						"company": "Test Company",
+						"warehouse": "Stores - TC",
+						"source_qty": 24,
+						"target_qty": 576,
+						"source_valuation_rate": 0,
+						"source_stock_value": 0,
+					}
+				],
+				reason="纠正零价值库存单位",
+			)
+
+		self.assertEqual(
+			stock_entry.append.call_args_list[1],
+			call(
+				"items",
+				{
+					"item_code": "ITEM-NEW",
+					"qty": 576,
+					"t_warehouse": "Stores - TC",
+					"is_finished_item": 1,
+					"allow_zero_valuation_rate": 1,
+				},
+			),
+		)
+		self.assertTrue(result[0]["allowed_zero_target_valuation"])
 
 	def test_mapping_requires_explicit_decision_for_every_source_row(self):
 		with (
