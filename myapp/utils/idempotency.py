@@ -35,6 +35,11 @@ class IdempotencyConflictError(Exception):
 	pass
 
 
+class IdempotencyUnavailableError(Exception):
+	user_safe = True
+	http_status_code = 503
+
+
 FINAL_FAILURE_EXCEPTIONS = (
 	frappe.ValidationError,
 	frappe.PermissionError,
@@ -150,7 +155,9 @@ def store_idempotent_result(
 def _table_exists() -> bool:
 	try:
 		return bool(frappe.db.table_exists(DOCTYPE_NAME))
-	except Exception:
+	except Exception as exc:
+		if getattr(frappe.local, "site", None):
+			raise IdempotencyUnavailableError("幂等存储暂不可用，请稍后重试；业务操作未执行。") from exc
 		return False
 
 
@@ -553,6 +560,11 @@ def run_idempotent(
 			ttl_seconds,
 			retryable_exceptions,
 		)
+
+	# A configured site must never silently replace durable transaction receipts
+	# with cache/file locks. Keep the legacy path only for unbound unit harnesses.
+	if getattr(frappe.local, "site", None):
+		raise IdempotencyUnavailableError("幂等存储未就绪，请联系管理员完成站点迁移后重试；业务操作未执行。")
 
 	if cached_result := get_idempotent_result(namespace, request_id):
 		return cached_result

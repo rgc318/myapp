@@ -197,6 +197,20 @@ from myapp.api.gateway import (
 
 
 class TestGatewayWrappers(TestCase):
+	def test_idempotency_outage_returns_safe_retryable_503(self):
+		from myapp.utils.idempotency import IdempotencyUnavailableError
+
+		with patch.object(gateway_module, "frappe") as context:
+			context.local.response = {}
+			result = gateway_module._handle_gateway_call(
+				lambda: (_ for _ in ()).throw(IdempotencyUnavailableError("幂等存储未就绪。")),
+				success_code="UNUSED",
+			)
+			self.assertEqual(context.local.response["http_status_code"], 503)
+			context.local.db.rollback.assert_called_once()
+		self.assertEqual(result["code"], "IDEMPOTENCY_STORE_UNAVAILABLE")
+		self.assertEqual(result["message"], "幂等存储未就绪。")
+
 	def test_gateway_rolls_back_before_converting_error(self):
 		with patch.object(gateway_module, "frappe") as context:
 			context.local.response = {}

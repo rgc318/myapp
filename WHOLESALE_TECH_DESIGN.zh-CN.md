@@ -772,6 +772,8 @@
 
 ### 11.1 事务原则
 
+2026-09-13 新增真实回滚式快捷开单回归：贯通 Gateway/adapter/service，真实提交 Sales Order、Delivery Note、Sales Invoice，验证正常流程仅有外层幂等回执；在发票已经生成 GL Entry 后注入异常，确认主单、库存明细及 GL Entry 全部回滚。测试全程拦截 commit 和幂等缓存写入，不提交测试单据。它覆盖真实数据库而非网络 HTTP 并发、进程崩溃或分布式提交耐久性，后者仍需专门验收。
+
 Frappe Web Request 默认运行在单次请求事务中。
 
 因此在 `create_order(immediate=1)` 场景下：

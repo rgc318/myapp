@@ -76,10 +76,12 @@ def map_exception_to_error(exc: Exception):
 		return "UPSTREAM_SERVICE_UNAVAILABLE", 503
 
 	try:
-		from myapp.utils.idempotency import IdempotencyConflictError
+		from myapp.utils.idempotency import IdempotencyConflictError, IdempotencyUnavailableError
 
 		if isinstance(exc, IdempotencyConflictError):
 			return "IDEMPOTENCY_KEY_CONFLICT", 409
+		if isinstance(exc, IdempotencyUnavailableError):
+			return "IDEMPOTENCY_STORE_UNAVAILABLE", 503
 	except Exception:
 		pass
 

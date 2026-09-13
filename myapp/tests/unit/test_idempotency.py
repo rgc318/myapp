@@ -10,6 +10,35 @@ from myapp.utils.idempotency import IdempotencyConflictError, build_request_fing
 
 
 class TestIdempotency(TestCase):
+	def test_bound_site_missing_table_never_uses_cache_or_callback(self):
+		from myapp.utils.idempotency import IdempotencyUnavailableError
+
+		callback = MagicMock()
+		with (
+			patch("myapp.utils.idempotency.frappe") as context,
+			patch("myapp.utils.idempotency._get_current_request_id", return_value="request"),
+			patch("myapp.utils.idempotency.build_request_fingerprint", return_value=(None, None)),
+			patch("myapp.utils.idempotency._table_exists", return_value=False),
+			patch("myapp.utils.idempotency.get_idempotent_result") as cache,
+			patch("myapp.utils.idempotency._run_filelock_idempotent") as fallback,
+		):
+			context.local.site = "synthetic-site"
+			with self.assertRaises(IdempotencyUnavailableError):
+				run_idempotent("order", "request", callback)
+		callback.assert_not_called()
+		cache.assert_not_called()
+		fallback.assert_not_called()
+
+	def test_bound_site_database_error_does_not_silently_downgrade(self):
+		from myapp.utils.idempotency import IdempotencyUnavailableError, _table_exists
+
+		with patch("myapp.utils.idempotency.frappe") as context:
+			context.local.site = "synthetic-site"
+			context.db.table_exists.side_effect = RuntimeError("database unavailable")
+			with self.assertRaises(IdempotencyUnavailableError) as raised:
+				_table_exists()
+		self.assertIsInstance(raised.exception.__cause__, RuntimeError)
+
 	def test_nested_invoice_failure_rolls_back_order_and_delivery(self):
 		pending = []
 		committed = []

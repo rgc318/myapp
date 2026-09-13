@@ -1,5 +1,15 @@
 # 测试说明
 
+2026-09-13 继续加固：Backend 全量 1076 tests PASS，新增已绑定站点幂等表缺失/查询失败时失败关闭及 Gateway 503 映射；真实快捷开单测试 3 tests PASS，HTTP 错误包络/JWT 生命周期合计 4 tests PASS。
+
+真实快捷开单原子性（需现有公司、客户及仓库；使用随机商品和临时库存；全部 commit / 幂等缓存写入被拦截，最后 rollback）：
+
+```bash
+docker exec -e MYAPP_QUICK_ORDER_TEST_SITE=localhost -w /home/frappe/frappe-bench/sites frappe_docker-backend-1 /home/frappe/frappe-bench/env/bin/python -m unittest myapp.tests.integration.test_quick_order_atomicity
+```
+
+默认测试仓库 `Stores - RD`，可通过 `MYAPP_QUICK_ORDER_TEST_WAREHOUSE` 指定。验证正常订单/发货/发票提交且库存 10→9、只有一个外层回执；发票生成账务后注入失败全部回滚；缺幂等表返回 503 且不进入业务回调。不是网络 HTTP 故障注入测试，也不证明真实 commit 的耐久性，禁止移除 commit 拦截后直接在共享站点运行。
+
 2026-09-13 登录防护：`test_token_api` 覆盖规范账号/IP 失败、锁定提前拒绝及 HTTP 429 映射、禁用账号、超长密码、OTP 错误、challenge 不重置和完整成功才重置。全量 Backend 1073 tests PASS，JWT HTTP 生命周期 3 tests PASS。
 
 真实 Redis 限制回归（不改真实账号及 System Settings，使用随机 tracker key 和模拟身份/OTP 边界；测试结束仅清除自己的计数）：
