@@ -39,6 +39,12 @@ class TestTokenApi(TestCase):
 				token_api.login_v1(username="alias", password="password")
 		find.assert_not_called()
 
+	def test_framework_lock_is_mapped_to_http_429(self):
+		self.user_lookup.side_effect = frappe.SecurityException("locked")
+		with self.assertRaises(frappe.SecurityException) as raised:
+			token_api._get_login_tracker("synthetic-account")
+		self.assertEqual(raised.exception.http_status_code, 429)
+
 	def test_locked_canonical_user_cannot_request_otp(self):
 		user = Mock(is_authenticated=True, enabled=True)
 		user.name = "canonical@example.com"

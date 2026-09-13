@@ -30,7 +30,7 @@ def _find_user_by_credentials(username: str, password: str) -> str:
 	if not user:
 		raise frappe.AuthenticationError("用户名或密码错误。")
 	# Use the canonical User name, so email/username aliases share one budget.
-	tracker = get_login_attempt_tracker(user.name)
+	tracker = _get_login_tracker(user.name)
 	if not getattr(user, "is_authenticated", False):
 		tracker.add_failure_attempt()
 		raise frappe.AuthenticationError("用户名或密码错误。")
@@ -40,8 +40,17 @@ def _find_user_by_credentials(username: str, password: str) -> str:
 	return user.name
 
 
+def _get_login_tracker(key: str):
+	try:
+		return get_login_attempt_tracker(key)
+	except frappe.SecurityException as exc:
+		# Frappe's SecurityException has no HTTP status and otherwise becomes 500.
+		exc.http_status_code = 429
+		raise
+
+
 def _get_ip_login_tracker():
-	return get_login_attempt_tracker(frappe.local.request_ip)
+	return _get_login_tracker(frappe.local.request_ip)
 
 
 def _validate_two_factor(user: str, otp: str | None):
@@ -132,7 +141,7 @@ def login_v1(username: str | None = None, password: str | None = None, usr: str 
 		ip_tracker.add_failure_attempt()
 		raise
 
-	user_tracker = get_login_attempt_tracker(user)
+	user_tracker = _get_login_tracker(user)
 	try:
 		two_factor = _validate_two_factor(user, otp)
 	except frappe.AuthenticationError:

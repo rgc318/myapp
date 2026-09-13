@@ -1,6 +1,6 @@
 # 测试说明
 
-2026-09-13 登录防护：`test_token_api` 覆盖规范账号/IP 失败、锁定提前拒绝、禁用账号、超长密码、OTP 错误、challenge 不重置和完整成功才重置。全量 Backend 1072 tests PASS，JWT HTTP 生命周期 3 tests PASS。
+2026-09-13 登录防护：`test_token_api` 覆盖规范账号/IP 失败、锁定提前拒绝及 HTTP 429 映射、禁用账号、超长密码、OTP 错误、challenge 不重置和完整成功才重置。全量 Backend 1073 tests PASS，JWT HTTP 生命周期 3 tests PASS。
 
 真实 Redis 限制回归（不改真实账号及 System Settings，使用随机 tracker key 和模拟身份/OTP 边界；测试结束仅清除自己的计数）：
 
