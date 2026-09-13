@@ -1,5 +1,13 @@
 # 测试说明
 
+2026-09-13 登录防护：`test_token_api` 覆盖规范账号/IP 失败、锁定提前拒绝、禁用账号、超长密码、OTP 错误、challenge 不重置和完整成功才重置。全量 Backend 1072 tests PASS，JWT HTTP 生命周期 3 tests PASS。
+
+真实 Redis 限制回归（不改真实账号及 System Settings，使用随机 tracker key 和模拟身份/OTP 边界；测试结束仅清除自己的计数）：
+
+```bash
+docker exec -e MYAPP_JWT_TRACKING_TEST_SITE=localhost -w /home/frappe/frappe-bench/sites frappe_docker-backend-1 /home/frappe/frappe-bench/env/bin/python -m unittest myapp.tests.integration.test_jwt_login_tracking
+```
+
 2026-09-13 事务/幂等回归：`test_idempotency` 新增嵌套回执、模拟事务提交/回滚、吞掉子异常仍失败、无键父调用、旧记录 owner 和缓存用户隔离；`test_gateway_wrappers` 新增错误映射前 rollback 与 rollback 失败继续抛出。
 
 真实数据库验证（拦截全部 commit，不提交临时商品）：

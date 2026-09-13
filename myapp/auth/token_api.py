@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import frappe
 from frappe import _
+from frappe.auth import MAX_PASSWORD_SIZE, get_login_attempt_tracker
 from frappe.utils import cint
 import pyotp
 from rgc_backend_kit.security import InvalidTokenError
@@ -26,11 +27,21 @@ def _find_user_by_credentials(username: str, password: str) -> str:
 	from frappe.core.doctype.user.user import User
 
 	user = User.find_by_credentials(username, password)
-	if not user or not getattr(user, "is_authenticated", False):
+	if not user:
+		raise frappe.AuthenticationError("用户名或密码错误。")
+	# Use the canonical User name, so email/username aliases share one budget.
+	tracker = get_login_attempt_tracker(user.name)
+	if not getattr(user, "is_authenticated", False):
+		tracker.add_failure_attempt()
 		raise frappe.AuthenticationError("用户名或密码错误。")
 	if not (user.name == "Administrator" or user.enabled):
+		tracker.add_failure_attempt()
 		raise frappe.AuthenticationError("用户已被禁用。")
 	return user.name
+
+
+def _get_ip_login_tracker():
+	return get_login_attempt_tracker(frappe.local.request_ip)
 
 
 def _validate_two_factor(user: str, otp: str | None):
@@ -112,8 +123,22 @@ def login_v1(username: str | None = None, password: str | None = None, usr: str 
 	if not resolved_username or not resolved_password:
 		raise frappe.AuthenticationError("请提供用户名和密码。")
 
-	user = _find_user_by_credentials(resolved_username, resolved_password)
-	two_factor = _validate_two_factor(user, otp)
+	ip_tracker = _get_ip_login_tracker()
+	try:
+		if len(resolved_password) > MAX_PASSWORD_SIZE:
+			raise frappe.AuthenticationError("密码长度超过允许的上限。")
+		user = _find_user_by_credentials(resolved_username, resolved_password)
+	except (frappe.AuthenticationError, frappe.SecurityException):
+		ip_tracker.add_failure_attempt()
+		raise
+
+	user_tracker = get_login_attempt_tracker(user)
+	try:
+		two_factor = _validate_two_factor(user, otp)
+	except frappe.AuthenticationError:
+		user_tracker.add_failure_attempt()
+		ip_tracker.add_failure_attempt()
+		raise
 	if two_factor:
 		return success_response(
 			message=two_factor.get("prompt") or "需要双因素认证。",
@@ -128,6 +153,9 @@ def login_v1(username: str | None = None, password: str | None = None, usr: str 
 		},
 		remember_me=_to_bool(remember_me),
 	)
+	# A correct password or an OTP challenge alone must not reset failures.
+	user_tracker.add_success_attempt()
+	ip_tracker.add_success_attempt()
 	return success_response(
 		message="JWT 令牌已签发。",
 		code="JWT_TOKEN_ISSUED",

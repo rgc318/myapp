@@ -8,6 +8,79 @@ from myapp.auth import token_api
 
 
 class TestTokenApi(TestCase):
+	def setUp(self):
+		self.ip_tracker = Mock()
+		self.user_tracker = Mock()
+		self.ip_lookup = self.enterContext(patch.object(token_api, "_get_ip_login_tracker", return_value=self.ip_tracker))
+		self.user_lookup = self.enterContext(patch.object(token_api, "get_login_attempt_tracker", return_value=self.user_tracker))
+
+	def test_wrong_password_counts_canonical_user_and_ip(self):
+		user = Mock(is_authenticated=False, enabled=True)
+		user.name = "canonical@example.com"
+		with patch("frappe.core.doctype.user.user.User.find_by_credentials", return_value=user):
+			with self.assertRaises(frappe.AuthenticationError):
+				token_api.login_v1(username="alias", password="wrong")
+		self.user_lookup.assert_called_once_with("canonical@example.com")
+		self.user_tracker.add_failure_attempt.assert_called_once()
+		self.ip_tracker.add_failure_attempt.assert_called_once()
+		self.user_tracker.add_success_attempt.assert_not_called()
+
+	def test_unknown_account_counts_ip_failure(self):
+		with patch("frappe.core.doctype.user.user.User.find_by_credentials", return_value=None):
+			with self.assertRaises(frappe.AuthenticationError):
+				token_api.login_v1(username="unknown", password="wrong")
+		self.ip_tracker.add_failure_attempt.assert_called_once()
+		self.user_lookup.assert_not_called()
+
+	def test_locked_ip_stops_before_password_verification(self):
+		self.ip_lookup.side_effect = frappe.SecurityException("locked")
+		with patch.object(token_api, "_find_user_by_credentials") as find:
+			with self.assertRaises(frappe.SecurityException):
+				token_api.login_v1(username="alias", password="password")
+		find.assert_not_called()
+
+	def test_locked_canonical_user_cannot_request_otp(self):
+		user = Mock(is_authenticated=True, enabled=True)
+		user.name = "canonical@example.com"
+		self.user_lookup.side_effect = frappe.SecurityException("locked")
+		with (
+			patch("frappe.core.doctype.user.user.User.find_by_credentials", return_value=user),
+			patch.object(token_api, "_validate_two_factor") as otp,
+		):
+			with self.assertRaises(frappe.SecurityException):
+				token_api.login_v1(username="alias", password="password")
+		otp.assert_not_called()
+		self.ip_tracker.add_failure_attempt.assert_called_once()
+
+	def test_wrong_otp_counts_both_failures_without_reset(self):
+		with (
+			patch.object(token_api, "_find_user_by_credentials", return_value="user@example.com"),
+			patch.object(token_api, "_validate_two_factor", side_effect=frappe.AuthenticationError("bad otp")),
+			patch.object(token_api, "issue_token_pair") as issue,
+		):
+			with self.assertRaises(frappe.AuthenticationError):
+				token_api.login_v1(username="alias", password="password", otp="wrong")
+		issue.assert_not_called()
+		for tracker in (self.ip_tracker, self.user_tracker):
+			tracker.add_failure_attempt.assert_called_once()
+			tracker.add_success_attempt.assert_not_called()
+
+	def test_oversized_password_is_rejected_before_hashing(self):
+		with patch.object(token_api, "_find_user_by_credentials") as find:
+			with self.assertRaises(frappe.AuthenticationError):
+				token_api.login_v1(username="alias", password="x" * (token_api.MAX_PASSWORD_SIZE + 1))
+		find.assert_not_called()
+		self.ip_tracker.add_failure_attempt.assert_called_once()
+
+	def test_disabled_user_counts_failure(self):
+		user = Mock(is_authenticated=True, enabled=False)
+		user.name = "disabled@example.com"
+		with patch("frappe.core.doctype.user.user.User.find_by_credentials", return_value=user):
+			with self.assertRaises(frappe.AuthenticationError):
+				token_api.login_v1(username="disabled", password="password")
+		self.user_tracker.add_failure_attempt.assert_called_once()
+		self.ip_tracker.add_failure_attempt.assert_called_once()
+
 	@patch("myapp.auth.token_api._find_user_by_credentials", return_value="user@example.com")
 	@patch("myapp.auth.token_api.frappe.get_roles", return_value=["System Manager"])
 	@patch("myapp.auth.token_api._current_user_payload", return_value={"user": "user@example.com"})
@@ -29,6 +102,8 @@ class TestTokenApi(TestCase):
 
 		self.assertTrue(result["ok"])
 		self.assertEqual(result["code"], "JWT_TOKEN_ISSUED")
+		self.user_tracker.add_success_attempt.assert_called_once()
+		self.ip_tracker.add_success_attempt.assert_called_once()
 		self.assertEqual(result["data"]["access_token"], "access-token")
 		self.assertEqual(result["data"]["refresh_token"], "refresh-token")
 		self.assertEqual(result["data"]["user"], {"user": "user@example.com"})
@@ -49,6 +124,8 @@ class TestTokenApi(TestCase):
 
 		self.assertEqual(result["code"], "JWT_TWO_FACTOR_REQUIRED")
 		self.assertTrue(result["data"]["requires_two_factor"])
+		self.user_tracker.add_success_attempt.assert_not_called()
+		self.ip_tracker.add_success_attempt.assert_not_called()
 
 	@patch("myapp.auth.token_api.rotate_refresh_token")
 	def test_refresh_v1_rotates_refresh_token(self, mock_rotate_refresh_token):

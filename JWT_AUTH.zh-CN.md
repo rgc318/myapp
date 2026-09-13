@@ -274,6 +274,10 @@ python3 -m unittest apps.myapp.myapp.tests.http.test_jwt_token_http
 
 ### JWT 双因素认证
 
+2026-09-13：JWT 登录使用 Frappe `get_login_attempt_tracker` 和共享 Redis 失败计数，遵守系统设置 `allow_consecutive_login_attempts` / `allow_login_after_fail`。IP 在密码验证前检查；账号使用 Frappe 返回的规范 User.name，使邮箱/用户名别名共享限制。错误密码、禁用账号与错误 OTP 计入对应账号及 IP；未知账号和超长密码计入 IP。密码最大长度与框架一致。账号锁定异常保持框架 `SecurityException`（HTTP 403），认证失败仍为 HTTP 401。
+
+只有完成密码与所需 OTP 验证、成功签发 token pair 后才清除失败计数；发出 2FA challenge 不重置次数。未启用框架失败次数限制时不额外强制启用，需要部署人员审核系统设置；当前 Frappe 在失败次数**超过**配置阈值时拒绝后续尝试，沿用框架行为，不修改其源码。
+
 `login_v1` 现在复用 Frappe 标准 2FA 配置：
 
 - 用户不需要 2FA 时直接签发 token pair。
