@@ -1,5 +1,21 @@
 # 测试说明
 
+2026-09-13 事务/幂等回归：`test_idempotency` 新增嵌套回执、模拟事务提交/回滚、吞掉子异常仍失败、无键父调用、旧记录 owner 和缓存用户隔离；`test_gateway_wrappers` 新增错误映射前 rollback 与 rollback 失败继续抛出。
+
+真实数据库验证（拦截全部 commit，不提交临时商品）：
+
+```bash
+docker exec -e MYAPP_GATEWAY_ROLLBACK_TEST_SITE=localhost -w /home/frappe/frappe-bench/sites frappe_docker-backend-1 /home/frappe/frappe-bench/env/bin/python -m unittest myapp.tests.integration.test_gateway_rollback
+```
+
+公共 HTTP 错误包络 smoke（父仓运行，复用忽略的 `.env.http-test`；不创建交易夹具）：
+
+```bash
+MYAPP_HTTP_PRINT_RESPONSES=0 MYAPP_HTTP_SAVE_RESPONSES=0 python3 -m unittest apps.myapp.myapp.tests.http.test_gateway_error_http.GatewayErrorHttpTestCase.test_invalid_product_returns_validation_envelope
+```
+
+HTTP smoke 只验证鉴权/路由/422 包络，不冒充完整真实快捷开单原子性验收；真实失败商品事务由上述独立数据库用例覆盖。
+
 2026-09-08 提交前跨模块回归：Backend 全量 1019 tests PASS，真实生命周期事务 8 tests PASS（新增跨用户计划读取/执行拒绝），生命周期及旧编辑 HTTP 4 tests PASS。原有自动路由/SSE 两用例最终通过；其中一次连接中断后独立一次复测成功。`test_ai_gateway_http` 可用 `MYAPP_HTTP_AI_MODEL_ALIAS` 向解析、Chat、库存草稿和 SSE 传同一模型，默认行为不变。价格终止接口新增错误商品/过期版本回归，避免 `_` 局部变量遮蔽翻译函数而抛内部错误。完整分层报告见父仓 `docs/05-development/14-ai-product-lifecycle-verification.zh-CN.md`。
 
 生命周期计划测试：`test_product_lifecycle_plan_service` 覆盖显式确认、版本、过期、owner 查询隔离、幂等重放/冲突、缺少删除确认拒绝和 full rollback；`test_ai_product_lifecycle_service` 覆盖动作/完整目标/保留证据及精确/模糊候选；`test_product_lifecycle_api` 不跳过 adapter，覆盖参数转发。真实隔离事务测试必须从 sites 工作目录执行，避免 Frappe 日志路径错位：

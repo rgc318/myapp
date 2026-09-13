@@ -1,3 +1,4 @@
+from datetime import datetime
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import MagicMock
@@ -9,6 +10,107 @@ from myapp.utils.idempotency import IdempotencyConflictError, build_request_fing
 
 
 class TestIdempotency(TestCase):
+	def test_nested_invoice_failure_rolls_back_order_and_delivery(self):
+		pending = []
+		committed = []
+
+		def commit():
+			committed.extend(pending)
+			pending.clear()
+
+		def invoice():
+			raise frappe.ValidationError("invoice rejected")
+
+		def order():
+			pending.append("Sales Order")
+			run_idempotent("delivery", "child-delivery", lambda: pending.append("Delivery Note"))
+			return run_idempotent("invoice", "child-invoice", invoice)
+
+		with (
+			patch("myapp.utils.idempotency.frappe.db", new=MagicMock()) as db,
+			patch("myapp.utils.idempotency.now_datetime", return_value=datetime(2026, 9, 13)),
+			patch("myapp.utils.idempotency._table_exists", return_value=True),
+			patch("myapp.utils.idempotency._current_user", return_value="owner@example.com"),
+			patch("myapp.utils.idempotency._get_request_header", return_value=None),
+			patch("myapp.utils.idempotency.store_idempotent_result") as cache,
+		):
+			db.commit.side_effect = commit
+			db.rollback.side_effect = pending.clear
+			with self.assertRaisesRegex(frappe.ValidationError, "invoice rejected"):
+				run_idempotent("order", "outer", order)
+			self.assertEqual(committed, [])
+			self.assertEqual(pending, [])
+			self.assertEqual(db.commit.call_count, 2)  # Outer claim and failed receipt only.
+			db.rollback.assert_called_once()
+			cache.assert_not_called()
+
+	def test_nested_operations_share_outer_receipt(self):
+		def persistent(namespace, request_id, request_hash, request_json, callback, *args):
+			return callback()
+
+		with (
+			patch("myapp.utils.idempotency._table_exists", return_value=True),
+			patch("myapp.utils.idempotency._run_persistent_idempotent", side_effect=persistent) as run,
+		):
+			result = run_idempotent("order", "outer", lambda: run_idempotent("invoice", "child", lambda: {"ok": True}))
+		self.assertEqual(result, {"ok": True})
+		run.assert_called_once()
+
+	def test_caught_child_failure_still_fails_outer_and_resets_scope(self):
+		from myapp.utils.idempotency import _active_operation
+
+		def fail():
+			raise frappe.ValidationError("invoice failed")
+
+		def parent():
+			try:
+				run_idempotent("invoice", "child", fail)
+			except frappe.ValidationError:
+				return {"ok": True}
+
+		with patch("myapp.utils.idempotency._get_current_request_id", return_value=None):
+			with self.assertRaisesRegex(frappe.ValidationError, "invoice failed"):
+				run_idempotent("order", None, parent)
+			self.assertIsNone(_active_operation.get())
+			self.assertEqual(run_idempotent("order", None, lambda: {"ok": True}), {"ok": True})
+			self.assertIsNone(_active_operation.get())
+
+	def test_unkeyed_parent_does_not_create_keyed_child_receipt(self):
+		with (
+			patch("myapp.utils.idempotency._get_request_header", return_value=None),
+			patch("myapp.utils.idempotency._run_persistent_idempotent") as persistent,
+			patch("myapp.utils.idempotency._run_filelock_idempotent") as fallback,
+		):
+			result = run_idempotent("order", None, lambda: run_idempotent("invoice", "child", lambda: {"ok": True}))
+		self.assertEqual(result, {"ok": True})
+		persistent.assert_not_called()
+		fallback.assert_not_called()
+
+	def test_persisted_receipts_require_original_owner(self):
+		from myapp.utils.idempotency import _get_record
+
+		row = SimpleNamespace(owner="owner@example.com", status="succeeded")
+		with patch("myapp.utils.idempotency.frappe") as context:
+			context.db.sql.return_value = [row]
+			context.session.user = "owner@example.com"
+			self.assertIs(_get_record("order", "legacy-key"), row)
+			context.session.user = "other@example.com"
+			with self.assertRaises(IdempotencyConflictError):
+				_get_record("order", "legacy-key")
+
+	def test_cache_keys_are_user_scoped_and_reject_guest(self):
+		from myapp.utils.idempotency import build_idempotency_key
+
+		with patch("myapp.utils.idempotency.frappe") as context:
+			context.AuthenticationError = frappe.AuthenticationError
+			context.session.user = "owner@example.com"
+			first = build_idempotency_key("order", "same-key")
+			context.session.user = "other@example.com"
+			self.assertNotEqual(first, build_idempotency_key("order", "same-key"))
+			context.session.user = "Guest"
+			with self.assertRaises(frappe.AuthenticationError):
+				build_idempotency_key("order", "same-key")
+
 	def test_processing_lease_covers_slow_business_transactions(self):
 		from myapp.utils.idempotency import LOCK_TIMEOUT_SECONDS, PROCESSING_LEASE_SECONDS
 
@@ -52,7 +154,8 @@ class TestIdempotency(TestCase):
 			callback_called = True
 			return {"status": "success", "order": "SO-0010"}
 
-		result = run_idempotent("create_order", "req-9", callback)
+		with patch("myapp.utils.idempotency._current_user", return_value="owner@example.com"):
+			result = run_idempotent("create_order", "req-9", callback)
 
 		self.assertEqual(result["order"], "SO-0009")
 		self.assertFalse(callback_called)

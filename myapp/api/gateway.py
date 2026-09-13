@@ -290,6 +290,10 @@ def _handle_gateway_call(callback, *, success_code: str):
 	try:
 		return normalize_service_response(callback(), code=success_code)
 	except Exception as exc:
+		# Returning an error envelope still looks like a normal POST return to
+		# Frappe. Roll back before converting the exception into a response.
+		if db := getattr(frappe.local, "db", None):
+			db.rollback()
 		code, http_status = map_exception_to_error(exc)
 		frappe.local.response["http_status_code"] = http_status
 		message = str(exc)

@@ -197,6 +197,23 @@ from myapp.api.gateway import (
 
 
 class TestGatewayWrappers(TestCase):
+	def test_gateway_rolls_back_before_converting_error(self):
+		with patch.object(gateway_module, "frappe") as context:
+			context.local.response = {}
+			context.local.db.rollback.side_effect = lambda: self.assertEqual(context.local.response, {})
+			gateway_module._handle_gateway_call(
+				lambda: (_ for _ in ()).throw(RuntimeError("failure")), success_code="UNUSED"
+			)
+			context.local.db.rollback.assert_called_once_with()
+
+	def test_gateway_rollback_failure_propagates(self):
+		with patch.object(gateway_module, "frappe") as context:
+			context.local.db.rollback.side_effect = RuntimeError("rollback unavailable")
+			with self.assertRaisesRegex(RuntimeError, "rollback unavailable"):
+				gateway_module._handle_gateway_call(
+					lambda: (_ for _ in ()).throw(ValueError("failure")), success_code="UNUSED"
+				)
+
 	def test_gateway_hides_internal_exception_details(self):
 		with patch.object(gateway_module, "frappe") as mock_frappe:
 			mock_frappe.local.response = {}

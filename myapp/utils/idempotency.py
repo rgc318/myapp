@@ -1,6 +1,8 @@
 import hashlib
 import time
 from collections.abc import Mapping
+from contextvars import ContextVar
+from dataclasses import dataclass
 
 import frappe
 from frappe.utils import add_to_date, now_datetime
@@ -19,6 +21,14 @@ TABLE_NAME = "tabMyApp Idempotency Key"
 DOCTYPE_NAME = "MyApp Idempotency Key"
 IDEMPOTENCY_KEY_HEADERS = ("Idempotency-Key", "X-Idempotency-Key")
 IGNORED_FINGERPRINT_KEYS = {"cmd"}
+
+
+@dataclass
+class _OperationScope:
+	failure: Exception | None = None
+
+
+_active_operation: ContextVar[_OperationScope | None] = ContextVar("myapp_idempotent_operation", default=None)
 
 
 class IdempotencyConflictError(Exception):
@@ -58,8 +68,18 @@ def get_current_request_id(request_id=None) -> str | None:
 	return _get_current_request_id(request_id)
 
 
+def _current_user() -> str:
+	user = getattr(frappe.session, "user", None)
+	if not isinstance(user, str) or not user or user == "Guest":
+		raise frappe.AuthenticationError("请先登录后再执行业务请求。")
+	return user
+
+
 def build_idempotency_key(namespace: str, request_id: str) -> str:
-	return f"myapp:idempotency:{namespace}:{request_id}"
+	# Do not consume legacy shared cache entries. Existing persistent records
+	# remain replayable for their owner, so deployment does not repeat writes.
+	user_hash = hashlib.sha256(_current_user().encode()).hexdigest()
+	return f"myapp:idempotency:v2:{user_hash}:{namespace}:{request_id}"
 
 
 def build_idempotency_lock_name(namespace: str, request_id: str) -> str:
@@ -166,6 +186,7 @@ def _insert_processing_record(
 	ttl_seconds: int,
 ) -> bool:
 	now = now_datetime()
+	user = _current_user()
 	try:
 		frappe.db.sql(
 			f"""
@@ -179,8 +200,8 @@ def _insert_processing_record(
 				build_idempotency_record_name(namespace, request_id),
 				now,
 				now,
-				frappe.session.user if getattr(frappe, "session", None) else "Administrator",
-				frappe.session.user if getattr(frappe, "session", None) else "Administrator",
+				user,
+				user,
 				namespace,
 				request_id,
 				request_hash,
@@ -330,7 +351,7 @@ def _claim_expired_processing_record(
 def _get_record(namespace: str, request_id: str):
 	rows = frappe.db.sql(
 		f"""
-		SELECT status, request_hash, response_json, error
+		SELECT owner, status, request_hash, response_json, error
 		FROM `{TABLE_NAME}`
 		WHERE namespace = %s AND request_id = %s
 		LIMIT 1
@@ -340,6 +361,9 @@ def _get_record(namespace: str, request_id: str):
 	)
 	if not rows:
 		return None
+
+	if rows[0].owner != _current_user():
+		raise IdempotencyConflictError("该 request_id 不属于当前用户，请使用新的请求标识。")
 
 	return rows[0]
 
@@ -487,13 +511,36 @@ def run_idempotent(
 	request_payload=None,
 	retryable_exceptions: tuple[type[Exception], ...] = (),
 ):
+	# A compound business operation owns one transaction and one receipt.
+	# Child operations participate in it; they must not claim/commit their own
+	# records or reuse the parent's HTTP header as an independent operation.
+	if scope := _active_operation.get():
+		try:
+			return callback()
+		except Exception as exc:
+			scope.failure = exc
+			raise
+
+	def execute():
+		scope = _OperationScope()
+		token = _active_operation.set(scope)
+		try:
+			result = callback()
+			if scope.failure is not None:
+				# A caller catching a child exception cannot commit a partial
+				# operation as success.
+				raise scope.failure
+			return result
+		finally:
+			_active_operation.reset(token)
+
 	request_id = _get_current_request_id(request_id)
 	request_hash, request_json = build_request_fingerprint(
 		_get_current_request_payload() if request_payload is None else request_payload
 	)
 
 	if not request_id:
-		result = callback()
+		result = execute()
 		return store_idempotent_result(namespace, request_id, result, ttl_seconds=ttl_seconds)
 
 	if _table_exists():
@@ -502,7 +549,7 @@ def run_idempotent(
 			request_id,
 			request_hash,
 			request_json,
-			callback,
+			execute,
 			ttl_seconds,
 			retryable_exceptions,
 		)
@@ -510,4 +557,4 @@ def run_idempotent(
 	if cached_result := get_idempotent_result(namespace, request_id):
 		return cached_result
 
-	return _run_filelock_idempotent(namespace, request_id, callback, ttl_seconds)
+	return _run_filelock_idempotent(namespace, request_id, execute, ttl_seconds)
