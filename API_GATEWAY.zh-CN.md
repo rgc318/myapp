@@ -353,6 +353,8 @@ Scheduler 每 10 分钟回收长时间没有持久更新的 `running` Run，并�
 
 `execute_ai_draft_v1` 是四类草稿的统一原地确认执行接口。请求必须为 POST，携带 `draft_id`、用户当前看到的 `expected_version`、`confirmed=1` 和 `Idempotency-Key`。服务端重新检查 owner、状态、版本和 `ready_for_handoff`，并在调用 `create_product_v2` / `update_product_v2`、`create_order_v2`、`create_purchase_order` 或 `reconcile_inventory_stock_v1` 前重新读取商品、系统参考价、UOM 换算和实时库存。权威事实漂移时先持久化刷新后的新版本，再返回 HTTP `409` 与 `code=AI_DRAFT_VERSION_CONFLICT`；用户明确覆盖的订单价格不随系统参考价漂移。成功后草稿进入 `executed` 并保存正式回执。模型或后台任务不能绕过用户确认调用该能力。
 
+执行入口读取草稿必须按 owner 使用 `SELECT ... FOR UPDATE`，行锁持续到外层事务完成，不能仅依靠回调返回前就释放的文件锁。这样不同 request_id 或不同实例执行同一草稿时，后者等待并读取已提交状态，而不是在首请求回执提交前再次创建业务对象。普通草稿查询默认不加锁；主数据漂移后的版本刷新提交与 rollback 后的失败审计提交仍保留，不机械移除这些业务边界。
+
 ### AI 商品向量质量治理
 
 `MYAPP_AI_VECTOR_EXCLUDED_ITEM_PREFIXES` 配置以逗号分隔的明确测试商品编码前缀。排除项不会进入增量同步、补偿重建、候选 collection 或语义搜索结果；若已有向量，Item 修改和补偿任务会转为幂等删除。该规则只治理 AI 索引，不删除、不停用 ERP Item，也不修改订单、采购、库存和会计历史。

@@ -2464,7 +2464,7 @@ def create_or_reuse_action_draft(
 	return {"created": True, "draft": draft}
 
 
-def get_draft(*, draft_id: str, user: str) -> dict:
+def get_draft(*, draft_id: str, user: str, for_update: bool = False) -> dict:
 	rows = frappe.db.sql(
 		f"""
 		SELECT name, conversation, source_run, draft_type, status, company, title,
@@ -2474,6 +2474,7 @@ def get_draft(*, draft_id: str, user: str) -> dict:
 			executed_by, executed_at, target_doctype, target_name,
 			execution_result_json, creation, modified
 		FROM `{DRAFT_TABLE}` WHERE name = %s AND owner = %s LIMIT 1
+		{"FOR UPDATE" if for_update else ""}
 		""",
 		(draft_id, user),
 		as_dict=True,

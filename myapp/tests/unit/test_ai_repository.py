@@ -47,6 +47,22 @@ from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
 
 
 class TestAiRepository(TestCase):
+	def test_draft_execution_read_locks_owned_row_without_committing(self):
+		with patch.object(ai_repository, "frappe") as context, patch.object(ai_repository, "_serialize_draft", return_value={"status": "draft"}):
+			context.db.sql.return_value = [object()]
+			ai_repository.get_draft(draft_id="DRAFT-1", user="owner@example.com", for_update=True)
+			query, params = context.db.sql.call_args.args
+			self.assertIn("FOR UPDATE", query)
+			self.assertIn("owner = %s", query)
+			self.assertEqual(params, ("DRAFT-1", "owner@example.com"))
+			context.db.commit.assert_not_called()
+
+	def test_normal_draft_read_does_not_lock(self):
+		with patch.object(ai_repository, "frappe") as context, patch.object(ai_repository, "_serialize_draft", return_value={}):
+			context.db.sql.return_value = [object()]
+			ai_repository.get_draft(draft_id="DRAFT-1", user="owner@example.com")
+			self.assertNotIn("FOR UPDATE", context.db.sql.call_args.args[0])
+
 	def test_create_run_audits_requested_model_and_retry_lineage(self):
 		with patch.object(
 			ai_repository, "_get_owned_conversation",

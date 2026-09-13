@@ -8119,7 +8119,9 @@ def execute_ai_draft_v1(
 	def _execute():
 		lock_name = f"myapp_ai_draft_execute_{hashlib.sha256(draft_id.encode()).hexdigest()}"
 		with filelock(lock_name, timeout=60):
-			draft = ai_repository.get_draft(draft_id=draft_id, user=user)
+			# The file lock ends before run_idempotent commits its receipt. Hold
+			# the row lock through that commit, including across different hosts.
+			draft = ai_repository.get_draft(draft_id=draft_id, user=user, for_update=True)
 			if draft["status"] == "executed" and draft.get("execution"):
 				return {
 					"status": "success", "message": _("AI 草稿已执行，返回已有业务回执。"),

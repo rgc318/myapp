@@ -1501,7 +1501,7 @@ class TestAiService(TestCase):
 			"result": {"status": "success", "order": "SO-001"},
 		}
 		executed = {**draft, "status": "executed", "execution": {"target_name": "SO-001"}}
-		with patch("myapp.services.ai_service.ai_repository.get_draft", return_value=draft), patch(
+		with patch("myapp.services.ai_service.ai_repository.get_draft", return_value=draft) as mock_read, patch(
 			"myapp.services.ai_service.ai_repository.mark_draft_executed", return_value=executed,
 		) as mock_mark, patch(
 			"myapp.services.ai_service.ai_repository.get_conversation_state",
@@ -1515,6 +1515,7 @@ class TestAiService(TestCase):
 			)
 
 		self.assertEqual(result["data"]["execution"]["target_name"], "SO-001")
+		mock_read.assert_called_once_with(draft_id="AI-DRAFT-1", user="user@example.com", for_update=True)
 		mock_mark.assert_called_once_with(
 			draft_id="AI-DRAFT-1", user="user@example.com", request_id="REQ-1",
 			target_doctype="Sales Order", target_name="SO-001",

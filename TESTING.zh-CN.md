@@ -1,5 +1,13 @@
 # 测试说明
 
+2026-09-13 AI 草稿执行行锁：全量 1078 unit tests PASS；新增 Repository owner/FOR UPDATE/普通无锁读取断言，执行服务测试确认使用锁读。只读双连接验证如下，会对本地一条既有草稿短暂持有行锁（第二连接等待上限 1 秒），不创建/更新业务记录，不适用于繁忙生产站点：
+
+```bash
+docker exec -e MYAPP_AI_DRAFT_LOCK_TEST_SITE=localhost -w /home/frappe/frappe-bench/sites frappe_docker-backend-1 /home/frappe/frappe-bench/env/bin/python -m unittest myapp.tests.integration.test_ai_draft_lock
+```
+
+本地 1 test PASS：仓储函数已返回后第二连接仍被阻塞，首事务 rollback 后可获取同一行。验证数据库锁的实际生命周期，不等同于两个真实业务 HTTP 请求的完整并发验收。
+
 2026-09-13 继续加固：Backend 全量 1076 tests PASS，新增已绑定站点幂等表缺失/查询失败时失败关闭及 Gateway 503 映射；真实快捷开单测试 3 tests PASS，HTTP 错误包络/JWT 生命周期合计 4 tests PASS。
 
 真实快捷开单原子性（需现有公司、客户及仓库；使用随机商品和临时库存；全部 commit / 幂等缓存写入被拦截，最后 rollback）：
