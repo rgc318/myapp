@@ -118,3 +118,59 @@ class TestAiProductPricing(TestCase):
 				[("Retail", 3.5, "Bottle"), ("Wholesale", 30, "Box"), ("Standard Selling", 30, "Box")])
 			self.assertEqual(kwargs["buying_prices"][0]["uom"], "Box")
 			self.assertEqual(kwargs["retail_default_uom"], "Bottle")
+
+	def test_update_repair_discards_null_legacy_price_patch_when_unit_prices_exist(self):
+		prices = [
+			{"row_id": "retail", "price_list": "Retail", "rate": 3, "uom": "Bottle", "currency": "CNY"},
+			{"row_id": "wholesale", "price_list": "Wholesale", "rate": 52, "uom": "Box", "currency": "CNY"},
+			{"row_id": "selling", "price_list": "Standard Selling", "rate": 3, "uom": "Bottle", "currency": "CNY"},
+			{"row_id": "buying", "price_list": "Standard Buying", "rate": 50, "uom": "Box", "currency": "CNY"},
+		]
+		relations = [
+			{"from_qty": 1, "from_uom": "Box", "to_qty": 24, "to_uom": "Bottle",
+			 "evidence": "现有商品单位换算"},
+		]
+		baseline = {
+			"item_name": "可口可乐 5000ml", "item_code": "ITEM-PRICED", "item_group": "Products",
+			"brand": "Demo", "stock_uom": "Bottle", "currency": "CNY",
+			"standard_selling_rate": 3, "wholesale_rate": 52, "retail_rate": 3,
+			"standard_buying_rate": 50, "prices": prices, "uom_relations": relations,
+			"wholesale_default_uom": "Box", "retail_default_uom": "Bottle",
+		}
+		bad_patch = {
+			"item_name": "可口可乐-500ml", "standard_selling_rate": None,
+			"wholesale_rate": None, "retail_rate": None, "prices": prices,
+		}
+		candidate = {
+			**baseline, "item_name": "可口可乐-500ml", "operation": "update",
+			"pricing_contract_version": "product-pricing-v1",
+			"_state": {
+				"schema_version": service.AI_DRAFT_STATE_SCHEMA_VERSION,
+				"operation": "update", "entity": {"name": "ITEM-PRICED"},
+				"baseline": baseline, "patch": bad_patch,
+			},
+		}
+		with ExitStack() as stack:
+			stack.enter_context(patch.object(service, "_resolve_sales_draft_warehouse", return_value=None))
+			stack.enter_context(patch.object(service, "_resolve_optional_master_name", side_effect=lambda _doctype, value: value))
+			stack.enter_context(patch.object(service, "_resolve_product_setup_uom", side_effect=lambda value: (value, [])))
+			stack.enter_context(patch.object(service, "_resolve_existing_product_for_setup", return_value=(
+				{"item_code": "ITEM-PRICED", "item_name": "可口可乐 5000ml", "modified": "2026-09-14"}, [],
+			)))
+			stack.enter_context(patch.object(service, "_build_existing_product_baseline", return_value=(baseline, {}, {})))
+			framework = stack.enter_context(patch.object(service, "frappe"))
+			framework.db.get_value.return_value = "CNY"
+			framework.db.exists.return_value = True
+			framework.has_permission.return_value = True
+
+			payload, validation = service._build_product_setup_draft(candidate, company="c")
+
+		self.assertFalse(any("删除价格" in error for error in validation["errors"]))
+		self.assertEqual(payload["_state"]["patch"]["item_name"], "可口可乐-500ml")
+		self.assertEqual(
+			[(row["price_list"], row["rate"], row["uom"]) for row in payload["_state"]["patch"]["prices"]],
+			[("Retail", 3, "Bottle"), ("Wholesale", 52, "Box"),
+			 ("Standard Selling", 3, "Bottle"), ("Standard Buying", 50, "Box")],
+		)
+		for field in service.PRODUCT_SETUP_LEGACY_PRICE_FIELDS:
+			self.assertNotIn(field, payload["_state"]["patch"])

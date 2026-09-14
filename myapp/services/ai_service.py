@@ -132,6 +132,9 @@ PRODUCT_SETUP_EDITABLE_FIELDS = (
 	"description",
 	"prices", "uom_relations", "wholesale_default_uom", "retail_default_uom",
 )
+PRODUCT_SETUP_LEGACY_PRICE_FIELDS = frozenset({
+	"standard_selling_rate", "wholesale_rate", "retail_rate", "standard_buying_rate",
+})
 ORDER_HEADER_CLEAR_FIELDS = {
 	"sales_order": frozenset({"remarks"}),
 	"purchase_order": frozenset({"remarks", "supplier_ref"}),
@@ -6334,12 +6337,18 @@ def _build_product_setup_draft(
 			== str(existing_detail.get("item_code") or "")
 		)
 		if state_matches_target:
+			submission_fields = PRODUCT_SETUP_EDITABLE_FIELDS
+			if candidate.get("pricing_contract_version") == "product-pricing-v1":
+				submission_fields = tuple(
+					field for field in submission_fields
+					if field not in PRODUCT_SETUP_LEGACY_PRICE_FIELDS
+				)
 			patch = derive_patch_from_submission(
 				baseline=previous_state.get("baseline"),
 				previous_patch=previous_state.get("patch"),
 				previous_effective=previous_state.get("effective"),
 				submitted=normalized,
-				fields=PRODUCT_SETUP_EDITABLE_FIELDS,
+				fields=submission_fields,
 			)
 		else:
 			patch = _initial_product_patch(candidate, normalized, operation=operation)
@@ -6352,6 +6361,13 @@ def _build_product_setup_draft(
 				patch.pop("image", None)
 	else:
 		patch = _initial_product_patch(candidate, normalized, operation=operation)
+	if candidate.get("pricing_contract_version") == "product-pricing-v1":
+		# The scalar price fields are compatibility projections derived from prices[].
+		# They are not editable inputs once the per-UOM pricing contract is active.
+		# Older Web builds submitted hidden scalar controls as null, which must not
+		# survive as an instruction to delete an existing formal price.
+		for field in PRODUCT_SETUP_LEGACY_PRICE_FIELDS:
+			patch.pop(field, None)
 	price_patch_fields = {
 		"standard_selling_rate", "wholesale_rate", "retail_rate", "standard_buying_rate",
 		"prices",
