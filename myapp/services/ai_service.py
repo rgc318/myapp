@@ -118,6 +118,7 @@ PROMPT_VERSION_BY_SCENARIO = {
 
 PRODUCT_SETUP_EDITABLE_FIELDS = (
 	"item_name",
+	"nickname",
 	"image",
 	"barcode",
 	"specification",
@@ -1638,6 +1639,10 @@ def _resolve_item_candidates(
 	resolved_search_fields = [
 		str(field) for field in (search_fields or []) if str(field) in allowed_search_fields
 	] or ["barcode", "item_code", "item_name", "nickname", "specification", "brand", "item_group"]
+	# A user-facing alias is often indistinguishable from a formal product name.
+	# Keep nickname recall enabled even when the model narrows search_fields.
+	if "nickname" not in resolved_search_fields:
+		resolved_search_fields.append("nickname")
 	resolved_match_mode = str(match_mode or "auto").strip()
 	if resolved_match_mode not in {"auto", "exact", "contains", "semantic"}:
 		resolved_match_mode = "auto"
@@ -5745,6 +5750,7 @@ def _resolve_existing_product_for_setup(candidate: dict) -> tuple[dict | None, l
 		{
 			"name": row.get("item_code"),
 			"item_name": row.get("item_name"),
+			**({"nickname": row.get("nickname")} if row.get("nickname") else {}),
 			"brand": row.get("brand"),
 			"specification": row.get("specification"),
 			"match_method": resolution.get("match_method"),
@@ -5872,6 +5878,7 @@ def _build_existing_product_baseline(detail: dict, *, company: str) -> tuple[dic
 	currency = detail.get("currency") or frappe.db.get_value("Company", company, "default_currency") or None
 	baseline = {
 		"item_name": detail.get("item_name"),
+		"nickname": detail.get("nickname") or None,
 		"image": detail.get("image") or None,
 		"barcode": detail.get("barcode") or None,
 		"specification": detail.get("specification") or None,
@@ -5899,6 +5906,7 @@ def _build_existing_product_baseline(detail: dict, *, company: str) -> tuple[dic
 	}
 	sources = {
 		"item_name": "Item/item_name",
+		"nickname": "Item/custom_nickname",
 		"image": "Item/image",
 		"barcode": "Item Barcode/barcode",
 		"specification": "Item/specification",
@@ -6161,6 +6169,7 @@ def _build_product_setup_draft(
 	if operation == "auto":
 		operation = "update" if existing_detail else "create"
 	item_name = str(candidate.get("item_name") or "").strip()[:140] or None
+	nickname = str(candidate.get("nickname") or "").strip()[:140] or None
 	item_code = str(candidate.get("_new_item_code") or candidate.get("item_code") or "").strip()[:140] or None
 	item_group_query = str(candidate.get("item_group") or candidate.get("item_group_query") or "").strip() or None
 	brand_query = str(candidate.get("brand") or candidate.get("brand_query") or "").strip() or None
@@ -6301,6 +6310,7 @@ def _build_product_setup_draft(
 		errors.append(_("标准采购参考价不能为负数。"))
 	normalized = {
 		"item_name": item_name,
+		"nickname": nickname,
 		"image": image,
 		"barcode": barcode,
 		"specification": specification,
@@ -6467,6 +6477,7 @@ def _build_product_setup_draft(
 			{
 				"item_code": row.get("name") or row.get("item_code"),
 				"item_name": row.get("item_name"),
+				**({"nickname": row.get("nickname")} if row.get("nickname") else {}),
 				"brand": row.get("brand"),
 				"specification": row.get("specification"),
 				"match_method": row.get("match_method") or "exact",
@@ -6476,6 +6487,7 @@ def _build_product_setup_draft(
 		"company": company,
 		"operation": operation,
 		"item_name": effective.get("item_name"),
+		"nickname": effective.get("nickname"),
 		"image": effective.get("image"),
 		"barcode": effective.get("barcode"),
 		"specification": effective.get("specification"),
@@ -7780,13 +7792,13 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 			patch = state.get("patch") if isinstance(state.get("patch"), dict) else {}
 			update_kwargs = {}
 			for field in (
-				"item_name", "image", "barcode", "specification", "item_group",
+				"item_name", "nickname", "image", "barcode", "specification", "item_group",
 				"brand", "stock_uom", "description",
 			):
 				if field in patch:
 					update_kwargs[field] = (
 						"" if field in {
-							"brand", "description", "image", "barcode", "specification",
+							"nickname", "brand", "description", "image", "barcode", "specification",
 						} and patch.get(field) is None
 						else patch.get(field)
 					)
@@ -7850,6 +7862,7 @@ def _execute_ai_draft_payload(draft: dict, *, request_id: str | None) -> dict:
 				})
 		result = create_product_v2(
 			item_name=payload.get("item_name"), item_code=payload.get("item_code"),
+			**({"nickname": payload.get("nickname")} if payload.get("nickname") else {}),
 			**({"image": payload.get("image")} if payload.get("image") else {}),
 			**({"barcode": payload.get("barcode")} if payload.get("barcode") else {}),
 			**({"specification": payload.get("specification")} if payload.get("specification") else {}),

@@ -666,7 +666,7 @@ class TestAiService(TestCase):
 			"source_run_id": "AI-RUN-FAILED",
 		}
 		run_id = _start_draft_generation_run(
-			scenario="product_setup_draft", prompt_version="product-setup-draft-v8",
+			scenario="product_setup_draft", prompt_version="product-setup-draft-v9",
 			user="user@example.com", content="按照照片新增商品", conversation_id="AI-CONV-1",
 			model_alias="vision-model", attachment_ids=["AI-ATT-1"],
 			attachment_refs=[{"attachment_id": "AI-ATT-1"}],
@@ -790,7 +790,7 @@ class TestAiService(TestCase):
 				"retryable": False,
 				"scenario": "product_setup_draft",
 				"received_version": "product-setup-draft-v6",
-				"expected_version": "product-setup-draft-v8",
+				"expected_version": "product-setup-draft-v9",
 			},
 		}).encode()
 		mock_urlopen.side_effect = urllib.error.HTTPError(
@@ -804,7 +804,7 @@ class TestAiService(TestCase):
 		self.assertFalse(raised.exception.public_data["retryable"])
 		self.assertEqual(
 			raised.exception.public_data["contract"]["expected_version"],
-			"product-setup-draft-v8",
+			"product-setup-draft-v9",
 		)
 
 	@patch("myapp.services.ai_service._can_view_advanced_diagnostics", return_value=True)
@@ -909,7 +909,7 @@ class TestAiService(TestCase):
 				"sales_order_draft": "sales-order-draft-v5",
 				"purchase_order_draft": "purchase-order-draft-v5",
 				"inventory_adjustment_draft": "inventory-adjustment-draft-v3",
-				"product_setup_draft": "product-setup-draft-v8",
+				"product_setup_draft": "product-setup-draft-v9",
 			},
 		}
 
@@ -1191,14 +1191,15 @@ class TestAiService(TestCase):
 				"retail_rate": 10800, "standard_buying_rate": 5000,
 				"currency": "CNY", "warehouse": "Stores - DC", "opening_qty": 5,
 				"opening_uom": "Unit", "description": "测试商品",
-				"image": "/files/huangxing.png",
+				"image": "/files/huangxing.png", "nickname": "黄盒",
 			},
 		}, request_id="REQ-1")
 
 		self.assertEqual(result["target_doctype"], "Item")
 		self.assertEqual(result["target_name"], "ITEM-001")
 		mock_create.assert_called_once_with(
-			item_name="煌星", item_code="ITEM-001", image="/files/huangxing.png",
+			item_name="煌星", item_code="ITEM-001", nickname="黄盒",
+			image="/files/huangxing.png",
 			item_group="Products", brand="Brand A",
 			stock_uom="Unit", standard_rate=10000, valuation_rate=5000, currency="CNY",
 			selling_prices=[
@@ -1228,6 +1229,7 @@ class TestAiService(TestCase):
 						"standard_selling_rate": 5,
 						"description": "新说明",
 						"image": "/files/item-new.png",
+						"nickname": None,
 					},
 				},
 			},
@@ -1240,6 +1242,7 @@ class TestAiService(TestCase):
 			request_id="REQ-UPDATE",
 			description="新说明",
 			image="/files/item-new.png",
+			nickname="",
 			standard_rate=5,
 		)
 
@@ -3200,7 +3203,7 @@ class TestAiService(TestCase):
 			"sales_order_draft": "sales-order-draft-v5",
 			"purchase_order_draft": "purchase-order-draft-v5",
 			"inventory_adjustment_draft": "inventory-adjustment-draft-v3",
-			"product_setup_draft": "product-setup-draft-v8",
+			"product_setup_draft": "product-setup-draft-v9",
 		}
 		for scenario, expected in draft_versions.items():
 			with self.subTest(scenario=scenario):
@@ -5246,6 +5249,7 @@ class TestAiService(TestCase):
 	):
 		mock_existing.return_value = ({
 			"item_code": "ITEM-COLA", "item_name": "可口可乐", "item_group": "Products",
+			"nickname": "红罐",
 			"brand": "旧品牌", "stock_uom": "Unit", "stock_uom_display": "件",
 			"barcode": "OLD-BARCODE", "specification": "330ml",
 			"description": "旧描述", "image": None, "modified": "2026-09-03 10:00:00",
@@ -5263,17 +5267,20 @@ class TestAiService(TestCase):
 				},
 				"patch": {
 					"item_name": "无糖可乐", "new_item_code": None,
-					"specification": "500ml", "clear_fields": ["barcode", "description"],
+					"nickname": None, "specification": "500ml",
+					"clear_fields": ["nickname", "barcode", "description"],
 				},
 			}, company="Test Company")
 
 		self.assertTrue(validation["ready_for_handoff"])
 		self.assertEqual(payload["item_code"], "ITEM-COLA")
 		self.assertEqual(payload["item_name"], "无糖可乐")
+		self.assertIsNone(payload["nickname"])
 		self.assertEqual(payload["specification"], "500ml")
 		self.assertIsNone(payload["barcode"])
 		self.assertIsNone(payload["description"])
 		self.assertEqual(payload["_state"]["patch"]["item_name"], "无糖可乐")
+		self.assertEqual(payload["_state"]["patch"]["nickname"], None)
 		self.assertEqual(payload["_state"]["patch"]["barcode"], None)
 
 	@patch("myapp.services.ai_service._resolve_sales_draft_warehouse", return_value=None)
@@ -5752,6 +5759,24 @@ class TestAiService(TestCase):
 
 	def test_product_entity_normalization_handles_full_width_and_whitespace(self):
 		self.assertEqual(_normalize_product_entity_text(" 商品：Ｃａｍｅｒａ  "), "商品:camera")
+
+	@patch(
+		"myapp.services.ai_service.search_products_semantic",
+		return_value={"available": False, "rows": []},
+	)
+	@patch("myapp.services.ai_service.search_product_v2", return_value={"data": []})
+	def test_ai_product_search_always_keeps_nickname_recall(
+		self, mock_search, _mock_semantic,
+	):
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			mock_frappe.get_list.return_value = []
+			_resolve_item_candidates(
+				"红盖", company="Demo Company", search_fields=["item_name"],
+			)
+
+		self.assertEqual(
+			mock_search.call_args.kwargs["search_fields"], ["item_name", "nickname"],
+		)
 
 	@patch("myapp.services.ai_service.search_products_semantic")
 	@patch("myapp.services.ai_service.search_product_v2")
