@@ -63,6 +63,7 @@ Frappe 只保存 LiteLLM 别名和治理元数据。LiteLLM 管理 Key 不得进
 - `capability`：`fast_chat / reasoning / structured / vision / embedding / rerank`。
 - `status`：`discovered / validated / active / degraded / disabled / retired`。
 - `provider_family`、`provider_model_display`：只用于治理展示，不作为业务调用参数。
+- `display_name`：管理员可选的人工友好名称；空值表示使用 Backend 根据 `model_alias / provider_model_display` 自动生成的名称。策略、Run、审计和实际调用始终保存稳定的 `model_alias`，不会把显示名称当作调用参数。
 - `supports_streaming`、`supports_tools`、`supports_json_schema`、`supports_vision`。
 - `supports_vision` 必须由红色、蓝色两张合成图片的双挑战真实探测，不能根据模型名称或 `/v1/models` 列表推断。Prompt 不泄漏预期颜色，只要求精确返回实际看到的单个小写英文颜色词；两次都匹配才通过。Provider 异常或答案不匹配必须将本次能力重置为 false，并单独记录 `last_vision_error_code`，但不把仍可处理纯文本的模型整体标为不可用。
 - 图片请求的策略选择只保留 `supports_vision=true` 的主模型和 fallback；固定模型未通过视觉探测时返回 `AI_SELECTED_MODEL_NO_VISION`，策略没有视觉候选时返回 `AI_VISION_MODEL_REQUIRED`。
@@ -70,7 +71,7 @@ Frappe 只保存 LiteLLM 别名和治理元数据。LiteLLM 管理 Key 不得进
 - `data_region`、`retention_policy`、`sensitive_data_allowed`。
 - `input_cost`、`output_cost`、`currency`：来自受控同步或人工复核。
 
-LiteLLM 同步只负责供应商发现、能力和健康信息。已经人工复核的状态、成本、数据区域、留存策略和敏感数据许可不得被后续同步静默覆盖。人工维护通过 `update_ai_model_registry_v1` 完成，必须填写原因、递增 `registry_version`、记录关键审计，并返回受影响的已发布策略。
+LiteLLM 同步只负责供应商发现、能力和健康信息。已经人工复核的显示名称、状态、成本、数据区域、留存策略和敏感数据许可不得被后续同步静默覆盖。人工维护通过 `update_ai_model_registry_v1` 完成，必须填写原因、递增 `registry_version`、记录关键审计，并返回受影响的已发布策略。人工显示名称提交空值时清除覆盖并恢复自动命名；通配符自动发现产生的长 alias 默认取路径末段并规范常见模型族大小写，例如 `siliconflow/deepseek-ai/DeepSeek-R1` 展示为 `DeepSeek R1`，同时以 Provider 标签区分同名模型。
 - `last_health_at`、`last_health_status`、`last_error_code`。
 - `registry_version`、`source_hash`。
 

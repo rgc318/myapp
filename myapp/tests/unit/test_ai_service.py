@@ -53,6 +53,7 @@ from myapp.services.ai_service import (
 	_order_header_value,
 	_merge_intent_with_conversation_state,
 	_resolve_item_candidates,
+	_resolve_ai_model_display,
 	_infer_ai_scenario,
 	_infer_ai_action_scenario,
 	_inventory_standard_buying_reference,
@@ -125,6 +126,22 @@ def _runtime_metadata(schema_family: str, prompt_version: str) -> dict:
 
 
 class TestAiService(TestCase):
+	def test_model_display_prefers_manual_name_and_shortens_provider_alias(self):
+		with patch("myapp.services.ai_service.frappe") as mock_frappe:
+			model = MagicMock()
+			model.display_name = "财务推理模型"
+			model.provider_model_display = "siliconflow/deepseek-ai/DeepSeek-R1"
+			mock_frappe.db.get_value.return_value = model
+			self.assertEqual(
+				_resolve_ai_model_display("siliconflow/deepseek-ai/DeepSeek-R1"),
+				"财务推理模型",
+			)
+			model.display_name = None
+			self.assertEqual(
+				_resolve_ai_model_display("siliconflow/deepseek-ai/DeepSeek-R1"),
+				"DeepSeek R1",
+			)
+
 	def setUp(self):
 		# Existing business/provider tests isolate the action boundary; dedicated
 		# test_ai_action_safety exercises the real checks without these patches.

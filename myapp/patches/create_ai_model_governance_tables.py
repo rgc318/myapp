@@ -50,6 +50,7 @@ def execute():
 			`status` varchar(20) NOT NULL DEFAULT 'discovered',
 			`provider_family` varchar(80) DEFAULT NULL,
 			`provider_model_display` varchar(255) DEFAULT NULL,
+			`display_name` varchar(255) DEFAULT NULL,
 			`supports_streaming` int(1) NOT NULL DEFAULT 0,
 			`supports_json_schema` int(1) NOT NULL DEFAULT 0,
 			`supports_structured_output` int(1) NOT NULL DEFAULT 0,

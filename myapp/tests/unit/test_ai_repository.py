@@ -1,6 +1,7 @@
 import hashlib
 import json
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -8,6 +9,7 @@ import frappe
 
 from myapp.services import ai_repository
 from myapp.services.ai_repository import (
+	_serialize_message_run,
 	_nearest_rank_percentile,
 	_normalize_agent_checkpoint,
 	_normalize_conversation_state,
@@ -47,6 +49,25 @@ from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
 
 
 class TestAiRepository(TestCase):
+	def test_message_run_uses_friendly_display_but_preserves_alias_for_diagnostics(self):
+		result = _serialize_message_run(SimpleNamespace(
+			run_id="AI-RUN-1", run_status="completed", latency_ms=120,
+			error_code=None, error=None,
+			model_alias="siliconflow/deepseek-ai/DeepSeek-R1",
+			model_display="siliconflow/deepseek-ai/DeepSeek-R1",
+			requested_model_alias="siliconflow/deepseek-ai/DeepSeek-R1",
+			requested_model_display="财务-推理模型",
+			requested_model_manual_display="财务-推理模型",
+			model="provider-model", trace_id="trace-1",
+			protocol_version=None, schema_version=None, prompt_version=None,
+			runtime_revision=None, release_id=None, prompt_tokens=10,
+			completion_tokens=5, total_tokens=15, reasoning_tokens=2, first_token_ms=40,
+		), include_advanced_diagnostics=True)
+
+		self.assertEqual(result["model_display"], "DeepSeek R1")
+		self.assertEqual(result["requested_model_display"], "财务-推理模型")
+		self.assertEqual(result["model_alias"], "siliconflow/deepseek-ai/DeepSeek-R1")
+
 	def test_draft_execution_read_locks_owned_row_without_committing(self):
 		with patch.object(ai_repository, "frappe") as context, patch.object(ai_repository, "_serialize_draft", return_value={"status": "draft"}):
 			context.db.sql.return_value = [object()]

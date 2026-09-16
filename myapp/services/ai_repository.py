@@ -13,6 +13,7 @@ from frappe import _
 from frappe.utils import add_days, cint, get_datetime, now_datetime
 
 from myapp.utils.ai_errors import AiDraftVersionConflictError
+from myapp.utils.ai_model_display import derive_model_display_name
 
 
 CONVERSATION_TABLE = "tabMyApp AI Conversation"
@@ -332,14 +333,30 @@ def _serialize_conversation(row) -> dict:
 def _serialize_message_run(row, *, include_advanced_diagnostics: bool) -> dict | None:
 	if not row.run_id:
 		return None
+	manual_model_display = str(getattr(row, "model_manual_display", None) or "").strip()
+	model_display = manual_model_display or derive_model_display_name(
+		getattr(row, "model_alias", None),
+		getattr(row, "model_provider_display", None) or getattr(row, "model_display", None),
+	)
+	requested_model_alias = getattr(row, "requested_model_alias", None)
+	manual_requested_model_display = str(
+		getattr(row, "requested_model_manual_display", None) or ""
+	).strip()
+	requested_model_display = None
+	if requested_model_alias:
+		requested_model_display = manual_requested_model_display or derive_model_display_name(
+			requested_model_alias,
+			getattr(row, "requested_model_provider_display", None)
+			or getattr(row, "requested_model_display", None),
+		)
 	run = {
 		"status": row.run_status,
 		"latency_ms": cint(row.latency_ms),
 		"error_code": row.error_code,
 		"error": row.error,
-		"model_display": getattr(row, "model_display", None) or None,
-		"model_selection": "fixed" if getattr(row, "requested_model_alias", None) else "auto",
-		"requested_model_display": getattr(row, "requested_model_display", None) or None,
+		"model_display": model_display or None,
+		"model_selection": "fixed" if requested_model_alias else "auto",
+		"requested_model_display": requested_model_display,
 	}
 	if include_advanced_diagnostics:
 		run.update({
@@ -374,9 +391,13 @@ def _get_latest_conversation_run(
 			(SELECT m.name FROM `{MESSAGE_TABLE}` m
 				WHERE m.run_id = r.name AND m.role = 'assistant'
 				ORDER BY m.sequence_no DESC LIMIT 1) AS message_id,
-			COALESCE(mr.provider_model_display, r.model_alias) AS model_display,
-			COALESCE(requested_mr.provider_model_display, r.requested_model_alias)
+			COALESCE(mr.display_name, mr.provider_model_display, r.model_alias) AS model_display,
+			mr.display_name AS model_manual_display,
+			mr.provider_model_display AS model_provider_display,
+			COALESCE(requested_mr.display_name, requested_mr.provider_model_display, r.requested_model_alias)
 				AS requested_model_display,
+			requested_mr.display_name AS requested_model_manual_display,
+			requested_mr.provider_model_display AS requested_model_provider_display,
 			r.prompt_tokens, r.completion_tokens, r.total_tokens, r.reasoning_tokens,
 			r.latency_ms, r.first_token_ms, r.error_code, r.error,
 			r.creation, r.modified
@@ -672,8 +693,12 @@ def get_conversation(
 		SELECT m.name, m.sequence_no, m.role, m.message_kind, m.content, m.scenario, m.run_id,
 			m.citations_json, m.attachments_json, m.prompt_version, m.creation,
 			r.status AS run_status, r.requested_model_alias, r.model_alias, r.model, r.trace_id,
-			COALESCE(mr.provider_model_display, r.model_alias) AS model_display,
-			COALESCE(requested_mr.provider_model_display, r.requested_model_alias) AS requested_model_display,
+			COALESCE(mr.display_name, mr.provider_model_display, r.model_alias) AS model_display,
+			mr.display_name AS model_manual_display,
+			mr.provider_model_display AS model_provider_display,
+			COALESCE(requested_mr.display_name, requested_mr.provider_model_display, r.requested_model_alias) AS requested_model_display,
+			requested_mr.display_name AS requested_model_manual_display,
+			requested_mr.provider_model_display AS requested_model_provider_display,
 			r.prompt_tokens, r.completion_tokens, r.total_tokens, r.reasoning_tokens,
 			r.latency_ms, r.first_token_ms, r.error_code, r.error,
 			f.rating AS feedback_rating, f.category AS feedback_category,

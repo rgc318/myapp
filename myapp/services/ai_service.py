@@ -87,6 +87,7 @@ from myapp.services.ai_draft_state import (
 	merge_baseline_patch,
 )
 from myapp.utils.ai_errors import AiDraftVersionConflictError, AiServiceError
+from myapp.utils.ai_model_display import derive_model_display_name
 from myapp.utils.api_response import UpstreamServiceUnavailableError
 from myapp.utils.idempotency import get_current_request_id, run_idempotent
 from myapp.utils.uom import resolve_item_quantity_to_stock, resolve_item_uom
@@ -234,11 +235,17 @@ def _resolve_ai_model_display(model_alias: str | None) -> str | None:
 		display = frappe.db.get_value(
 			"MyApp AI Model Registry",
 			{"model_alias": resolved_alias},
-			"provider_model_display",
+			["display_name", "provider_model_display"],
+			as_dict=True,
 		)
 	except Exception:
 		display = None
-	return str(display).strip() if isinstance(display, str) and display.strip() else resolved_alias
+	if display:
+		for field in ("display_name", "provider_model_display"):
+			value = str(getattr(display, field, None) or "").strip()
+			if value:
+				return value if field == "display_name" else derive_model_display_name(resolved_alias, value)
+	return derive_model_display_name(resolved_alias)
 
 
 def _public_ai_model_display(

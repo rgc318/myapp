@@ -6,6 +6,8 @@ from unittest.mock import patch
 import frappe
 
 from myapp.services.ai_model_governance_service import (
+	_derive_model_display_name,
+	_derive_model_provider_label,
 	_normalize_model_metadata_payload,
 	_normalize_policy_payload,
 	_effective_model_health,
@@ -21,10 +23,12 @@ from myapp.services.ai_model_governance_service import (
 	publish_ai_model_policy_v1,
 	resolve_ai_agent_runtime_readiness,
 	resolve_ai_selected_model_alias,
+	sync_ai_model_registry_v1,
 	validate_ai_model_policy_v1,
 	update_ai_model_registry_v1,
 )
 from myapp.services import ai_model_governance_service
+from myapp.utils.ai_model_display import expand_model_search_terms
 
 
 def _run_immediately(_namespace, _request_id, callback, **_kwargs):
@@ -32,6 +36,53 @@ def _run_immediately(_namespace, _request_id, callback, **_kwargs):
 
 
 class TestAiModelGovernanceService(TestCase):
+	def test_auto_model_display_name_and_provider_label_are_readable(self):
+		self.assertEqual(
+			_derive_model_display_name("siliconflow/deepseek-ai/DeepSeek-R1"),
+			"DeepSeek R1",
+		)
+		self.assertEqual(
+			_derive_model_display_name("siliconflow/deepseek-ai/DeepSeek-V3.2-Exp"),
+			"DeepSeek V3.2 Exp",
+		)
+		self.assertEqual(
+			_derive_model_provider_label("siliconflow/deepseek-ai/DeepSeek-R1", "litellm"),
+			"硅基流动",
+		)
+		self.assertEqual(
+			expand_model_search_terms("DeepSeek R1"),
+			["DeepSeek R1", "DeepSeek-R1", "DeepSeek_R1"],
+		)
+		self.assertEqual(expand_model_search_terms("硅基流动"), ["硅基流动", "siliconflow"])
+
+	@patch("myapp.services.ai_model_governance_service._record_audit")
+	@patch("myapp.services.ai_model_governance_service._call_orchestrator")
+	@patch("myapp.services.ai_model_governance_service._ensure_tables")
+	@patch("myapp.services.ai_model_governance_service._require_manager", return_value="manager@example.com")
+	@patch("myapp.services.ai_model_governance_service.run_idempotent", side_effect=_run_immediately)
+	def test_model_sync_does_not_write_manual_display_name(
+		self, _idempotent, _actor, _tables, orchestrator, _audit,
+	):
+		orchestrator.return_value = {
+			"source": "litellm", "visible_count": 1,
+			"models": [{
+				"model_alias": "siliconflow/deepseek-ai/DeepSeek-R1",
+				"capability": "reasoning", "status": "discovered",
+				"provider_family": "litellm",
+				"provider_model_display": "siliconflow/deepseek-ai/DeepSeek-R1",
+			}],
+		}
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe, patch.object(
+			ai_model_governance_service, "now_datetime", return_value="2026-09-16 11:00:00",
+		):
+			mock_frappe.as_json.side_effect = frappe.as_json
+			mock_frappe.db.sql.side_effect = [None, [[0]], None]
+			result = sync_ai_model_registry_v1(request_id="sync-display-name-1")
+
+		insert_sql = mock_frappe.db.sql.call_args_list[0].args[0]
+		self.assertNotIn("display_name", insert_sql)
+		self.assertEqual(result["data"]["synced_count"], 1)
+
 	@patch.object(ai_model_governance_service, "_ensure_tables")
 	@patch.object(ai_model_governance_service, "_resolve_healthcheck_model_aliases", return_value=["a"])
 	@patch.object(ai_model_governance_service, "_record_audit")
@@ -366,7 +417,9 @@ class TestAiModelGovernanceService(TestCase):
 	def test_selectable_models_only_include_active_chat_capabilities(self, _user, _tables):
 		rows = [
 			frappe._dict(
-				model_alias="gpt-5.5", capability="fast_chat", provider_model_display="GPT 5.5",
+				model_alias="siliconflow/openai/gpt-5.5", capability="fast_chat",
+				display_name="财务问答模型", provider_family="litellm",
+				provider_model_display="siliconflow/openai/gpt-5.5",
 				supports_streaming=1, supports_json_schema=0,
 				supports_structured_output=1, status="active",
 				last_health_at="2026-08-03 09:00:00", last_health_status="available",
@@ -388,7 +441,7 @@ class TestAiModelGovernanceService(TestCase):
 
 		self.assertEqual(
 			[item["model_alias"] for item in result["data"]["items"]],
-			["gpt-5.5", "opencode-glm-5.2"],
+			["siliconflow/openai/gpt-5.5", "opencode-glm-5.2"],
 		)
 		self.assertTrue(result["data"]["capabilities"]["can_select_fixed_model"])
 		self.assertTrue(result["data"]["capabilities"]["can_view_advanced_diagnostics"])
@@ -396,6 +449,10 @@ class TestAiModelGovernanceService(TestCase):
 		self.assertEqual(result["data"]["items"][0]["effective_health_status"], "stale")
 		self.assertEqual(result["data"]["items"][0]["health_expires_at"], "2026-08-04 15:00:00")
 		self.assertTrue(result["data"]["items"][0]["supports_structured_output"])
+		self.assertEqual(result["data"]["items"][0]["display_name"], "财务问答模型")
+		self.assertEqual(result["data"]["items"][0]["display_name_source"], "manual")
+		self.assertEqual(result["data"]["items"][0]["automatic_display_name"], "GPT 5.5")
+		self.assertEqual(result["data"]["items"][0]["provider_label"], "硅基流动")
 		self.assertIn("status IN ('active', 'validated')", mock_frappe.db.sql.call_args.args[0])
 		self.assertIn("capability IN ('fast_chat', 'reasoning', 'structured')", mock_frappe.db.sql.call_args.args[0])
 
@@ -594,6 +651,16 @@ class TestAiModelGovernanceService(TestCase):
 		with self.assertRaises(frappe.ValidationError):
 			_normalize_model_metadata_payload({"provider_family": "openai"})
 
+	def test_model_metadata_accepts_and_clears_manual_display_name(self):
+		self.assertEqual(
+			_normalize_model_metadata_payload({"display_name": " 财务问答模型 "}),
+			{"display_name": "财务问答模型"},
+		)
+		self.assertEqual(
+			_normalize_model_metadata_payload({"display_name": " "}),
+			{"display_name": None},
+		)
+
 	@patch("myapp.services.ai_model_governance_service._record_audit")
 	@patch("myapp.services.ai_model_governance_service._ensure_tables")
 	@patch("myapp.services.ai_model_governance_service._require_manager", return_value="manager@example.com")
@@ -603,6 +670,7 @@ class TestAiModelGovernanceService(TestCase):
 	):
 		model = frappe._dict({
 			"model_alias": "erp-fast-chat", "capability": "fast_chat", "status": "discovered",
+			"display_name": "人工名称",
 			"provider_family": "openai", "provider_model_display": "Fast Chat",
 			"supports_streaming": 1, "supports_json_schema": 0, "supports_vision": 0,
 			"embedding_dimensions": None, "embedding_space_version": None,
@@ -627,8 +695,47 @@ class TestAiModelGovernanceService(TestCase):
 
 		self.assertEqual(result["data"]["model"]["registry_version"], 2)
 		self.assertEqual(result["data"]["model"]["currency"], "CNY")
+		self.assertEqual(result["data"]["model"]["display_name"], "人工名称")
+		self.assertEqual(result["data"]["model"]["display_name_source"], "manual")
 		self.assertEqual(result["data"]["affected_active_policies"], ["general-prod"])
+		self.assertEqual(mock_frappe.db.sql.call_args_list[2].args[1][0], "人工名称")
 		mock_audit.assert_called_once()
+
+	@patch("myapp.services.ai_model_governance_service._record_audit")
+	@patch("myapp.services.ai_model_governance_service._ensure_tables")
+	@patch("myapp.services.ai_model_governance_service._require_manager", return_value="manager@example.com")
+	@patch("myapp.services.ai_model_governance_service.run_idempotent", side_effect=_run_immediately)
+	def test_model_metadata_update_can_clear_manual_display_name(
+		self, _mock_idempotent, _mock_actor, _mock_tables, _mock_audit,
+	):
+		model = frappe._dict({
+			"model_alias": "siliconflow/deepseek-ai/DeepSeek-R1", "capability": "reasoning",
+			"status": "disabled", "display_name": "旧名称", "provider_family": "litellm",
+			"provider_model_display": "siliconflow/deepseek-ai/DeepSeek-R1",
+			"supports_streaming": 1, "supports_tools": 1, "supports_json_schema": 0,
+			"supports_structured_output": 1, "supports_vision": 0,
+			"embedding_dimensions": None, "embedding_space_version": None,
+			"data_region": "cn-east", "retention_policy": "no-training-30d",
+			"sensitive_data_allowed": 0, "input_cost": "0", "output_cost": "0",
+			"currency": None, "last_health_at": None, "health_expires_at": None,
+			"last_health_status": None, "health_failure_count": 0,
+			"last_health_trigger": None, "last_error_code": None,
+			"last_tool_error_code": None, "last_structured_error_code": None,
+			"last_vision_error_code": None, "registry_version": 2,
+			"modified": "2026-09-16 09:00:00",
+		})
+		with patch.object(ai_model_governance_service, "frappe") as mock_frappe, patch.object(
+			ai_model_governance_service, "now_datetime", return_value="2026-09-16 10:00:00",
+		):
+			mock_frappe.db.sql.side_effect = [[model], [], None]
+			result = update_ai_model_registry_v1(
+				model_alias=model.model_alias, payload={"display_name": ""},
+				reason="恢复自动命名", request_id="model-display-clear-1",
+			)
+
+		self.assertIsNone(mock_frappe.db.sql.call_args_list[2].args[1][0])
+		self.assertEqual(result["data"]["model"]["display_name"], "DeepSeek R1")
+		self.assertEqual(result["data"]["model"]["display_name_source"], "auto")
 
 	def test_conflicting_active_company_role_policy_is_rejected(self):
 		with patch.object(ai_model_governance_service, "frappe") as mock_frappe:

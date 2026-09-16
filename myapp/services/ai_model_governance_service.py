@@ -13,6 +13,11 @@ import frappe
 from frappe import _
 from frappe.utils import cint, get_datetime, now_datetime
 
+from myapp.utils.ai_model_display import (
+	derive_model_display_name as _derive_model_display_name,
+	derive_model_provider_label as _derive_model_provider_label,
+	expand_model_search_terms,
+)
 from myapp.utils.idempotency import run_idempotent
 
 
@@ -314,12 +319,18 @@ def _serialize_registry(row) -> dict:
 		health_expires_at=getattr(row, "health_expires_at", None),
 		last_error_code=row.last_error_code,
 	)
+	manual_display_name = _normalize_text(getattr(row, "display_name", None), max_length=255) or None
+	automatic_display_name = _derive_model_display_name(row.model_alias, row.provider_model_display)
 	return {
 		"model_alias": row.model_alias,
+		"automatic_display_name": automatic_display_name,
+		"display_name": manual_display_name or automatic_display_name,
+		"display_name_source": "manual" if manual_display_name else "auto",
 		"capability": row.capability,
 		"status": row.status,
 		"provider_family": row.provider_family,
 		"provider_model_display": row.provider_model_display,
+		"provider_label": _derive_model_provider_label(row.model_alias, row.provider_family),
 		"supports_streaming": bool(cint(row.supports_streaming)),
 		"supports_tools": bool(cint(row.supports_tools)),
 		"supports_json_schema": bool(cint(row.supports_json_schema)),
@@ -355,7 +366,7 @@ def _normalize_model_metadata_payload(payload) -> dict:
 	if not isinstance(payload, dict):
 		frappe.throw(_("模型管理信息必须是对象。"))
 	allowed_fields = {
-		"status", "data_region", "retention_policy", "sensitive_data_allowed",
+		"display_name", "status", "data_region", "retention_policy", "sensitive_data_allowed",
 		"input_cost", "output_cost", "currency",
 	}
 	unknown_fields = sorted(set(payload) - allowed_fields)
@@ -364,6 +375,8 @@ def _normalize_model_metadata_payload(payload) -> dict:
 	if not payload:
 		frappe.throw(_("至少需要提交一个模型管理字段。"))
 	result = {}
+	if "display_name" in payload:
+		result["display_name"] = _normalize_text(payload.get("display_name"), max_length=255) or None
 	if "status" in payload:
 		status = _normalize_text(payload.get("status"), max_length=20)
 		if status not in MANAGED_MODEL_STATUSES:
@@ -1090,9 +1103,15 @@ def list_ai_models_v1(
 	params = []
 	resolved_search = _normalize_text(search, max_length=140)
 	if resolved_search:
-		conditions.append("(model_alias LIKE %s OR provider_model_display LIKE %s OR provider_family LIKE %s)")
-		like = f"%{resolved_search}%"
-		params.extend([like, like, like])
+		search_clauses = []
+		for term in expand_model_search_terms(resolved_search):
+			search_clauses.append(
+				"(model_alias LIKE %s OR display_name LIKE %s OR provider_model_display LIKE %s "
+				"OR provider_family LIKE %s)"
+			)
+			like = f"%{term}%"
+			params.extend([like, like, like, like])
+		conditions.append(f"({' OR '.join(search_clauses)})")
 	resolved_capability = _normalize_text(capability, max_length=30)
 	if resolved_capability:
 		if resolved_capability not in CAPABILITIES:
@@ -1128,7 +1147,8 @@ def list_ai_selectable_models_v1() -> dict:
 	if capabilities["can_select_fixed_model"]:
 		rows = frappe.db.sql(
 			f"""
-			SELECT model_alias, capability, provider_model_display, supports_streaming, supports_tools,
+			SELECT model_alias, capability, display_name, provider_family, provider_model_display,
+				supports_streaming, supports_tools,
 				supports_json_schema, supports_structured_output, supports_vision,
 				status, last_health_at, health_expires_at,
 				last_health_status, health_failure_count, last_health_trigger,
@@ -1142,6 +1162,8 @@ def list_ai_selectable_models_v1() -> dict:
 		)
 	items = []
 	for row in rows:
+		manual_display_name = _normalize_text(getattr(row, "display_name", None), max_length=255) or None
+		automatic_display_name = _derive_model_display_name(row.model_alias, row.provider_model_display)
 		health = _effective_model_health(
 			last_health_status=row.last_health_status,
 			last_health_at=row.last_health_at,
@@ -1151,7 +1173,10 @@ def list_ai_selectable_models_v1() -> dict:
 		items.append({
 			"model_alias": row.model_alias,
 			"capability": row.capability,
-			"display_name": row.provider_model_display or row.model_alias,
+			"automatic_display_name": automatic_display_name,
+			"display_name": manual_display_name or automatic_display_name,
+			"display_name_source": "manual" if manual_display_name else "auto",
+			"provider_label": _derive_model_provider_label(row.model_alias, row.provider_family),
 			"supports_streaming": bool(cint(row.supports_streaming)),
 			"supports_tools": bool(cint(row.supports_tools)),
 			"supports_json_schema": bool(cint(row.supports_json_schema)),
@@ -1232,6 +1257,9 @@ def update_ai_model_registry_v1(
 			frappe.throw(_("AI 模型尚未注册。"))
 		row = rows[0]
 		before = _serialize_registry(row)
+		manual_display_name = _normalize_text(getattr(row, "display_name", None), max_length=255) or None
+		if "display_name" in normalized:
+			manual_display_name = normalized["display_name"]
 		after = dict(before)
 		after.update(normalized)
 		input_cost = Decimal(str(after.get("input_cost") or 0))
@@ -1255,19 +1283,25 @@ def update_ai_model_registry_v1(
 		frappe.db.sql(
 			f"""
 			UPDATE `{REGISTRY_TABLE}`
-			SET status = %s, data_region = %s, retention_policy = %s,
+			SET display_name = %s, status = %s, data_region = %s, retention_policy = %s,
 				sensitive_data_allowed = %s, input_cost = %s, output_cost = %s,
 				currency = %s, registry_version = registry_version + 1,
 				modified = %s, modified_by = %s
 			WHERE model_alias = %s
 			""",
 			(
-				after["status"], after.get("data_region"), after.get("retention_policy"),
+				manual_display_name, after["status"], after.get("data_region"), after.get("retention_policy"),
 				cint(after.get("sensitive_data_allowed")), input_cost, output_cost,
 				after.get("currency"), now, actor, resolved_alias,
 			),
 		)
-		after["registry_version"] = cint(before.get("registry_version")) + 1
+		updated_row = row
+		for key, value in normalized.items():
+			setattr(updated_row, key, value)
+		updated_row.display_name = manual_display_name
+		updated_row.registry_version = cint(before.get("registry_version")) + 1
+		updated_row.modified = now
+		after = _serialize_registry(updated_row)
 		response = {
 			"model": after,
 			"affected_active_policies": [policy.policy_code for policy in active_policies],
