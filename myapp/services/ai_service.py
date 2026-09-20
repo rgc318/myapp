@@ -1090,7 +1090,7 @@ def _call_ai_orchestrator(
 
 def _call_ai_intent_orchestrator(
 	*, content: str, user: str, company: str | None, conversation_state: dict | None = None,
-	model_alias: str | None = None, attachments: list[dict] | None = None,
+	attachments: list[dict] | None = None,
 ) -> dict:
 	try:
 		base_url, service_token = _get_ai_orchestrator_settings()
@@ -1105,8 +1105,6 @@ def _call_ai_intent_orchestrator(
 		}
 		if attachments:
 			payload["attachments"] = attachments
-		if model_alias:
-			payload["model_alias"] = model_alias
 		request = urllib.request.Request(
 			f"{base_url}/internal/v1/intent/parse",
 			data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -1279,7 +1277,6 @@ def _prepare_draft_action_contract(payload: dict) -> dict:
 	else:
 		intent = _call_ai_intent_orchestrator(
 			content=content, user=payload["user"], company=payload.get("company"),
-			model_alias=payload.get("model_alias"),
 			conversation_state=(payload.get("context") or {}).get("conversation_state"), attachments=attachments,
 		)
 	if not _structured_intent_is_confident(intent) or intent.get("intent") != payload.get("scenario"):
@@ -2924,7 +2921,6 @@ def resolve_ai_scenario_v1(
 		user=user,
 		company=resolved_company,
 		conversation_state=conversation_state,
-		model_alias=resolved_model_alias,
 		attachments=attachment_payloads,
 	)
 	intent = _merge_intent_with_conversation_state(
@@ -8523,7 +8519,6 @@ def _prepare_chat_run(
 				user=user,
 				company=resolved_intent_company,
 				conversation_state=conversation_state,
-				model_alias=model_alias,
 				attachments=attachment_payloads,
 			)
 			preparsed_intent = _merge_intent_with_conversation_state(
@@ -8539,7 +8534,7 @@ def _prepare_chat_run(
 		requested_action_scenario = requested_scenario
 		preparsed_intent = _call_ai_intent_orchestrator(
 			content=current_content, user=user, company=intent_company,
-			conversation_state=conversation_state, model_alias=model_alias,
+			conversation_state=conversation_state,
 			attachments=attachment_payloads,
 		)
 		preparsed_intent = _merge_intent_with_conversation_state(

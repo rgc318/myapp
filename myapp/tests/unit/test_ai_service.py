@@ -2293,7 +2293,7 @@ class TestAiService(TestCase):
 		self.assertEqual(
 			build_context.call_args.kwargs["structured_intent"]["product_query"], "迪莫",
 		)
-		self.assertEqual(mock_intent.call_args.kwargs["model_alias"], "erp-fast-chat")
+		self.assertNotIn("model_alias", mock_intent.call_args.kwargs)
 
 	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
 		"intent": "product_search", "confidence": 0.98, "product_query": "可口可乐",
@@ -3573,7 +3573,7 @@ class TestAiService(TestCase):
 		return_value=("http://ai", "service-token"),
 	)
 	@patch("myapp.services.ai_service.urllib.request.urlopen")
-	def test_structured_intent_parser_forwards_selected_model_alias(self, mock_urlopen, _settings):
+	def test_structured_intent_parser_uses_governed_router_model(self, mock_urlopen, _settings):
 		response = MagicMock()
 		response.read.return_value = json.dumps({
 			"intent": {
@@ -3592,14 +3592,13 @@ class TestAiService(TestCase):
 				content="你好",
 				user="user@example.com",
 				company="Demo Company",
-				model_alias="gpt-5.5",
 				attachments=[{"attachment_id": "AI-ATT-1", "data_base64": "aW1hZ2U="}],
 			)
 
 		request = mock_urlopen.call_args.args[0]
 		payload = json.loads(request.data.decode("utf-8"))
 		self.assertEqual(result["intent"], "general")
-		self.assertEqual(payload["model_alias"], "gpt-5.5")
+		self.assertNotIn("model_alias", payload)
 		self.assertNotIn("prompt_version", payload)
 		self.assertEqual(payload["protocol_version"], "ai-runtime-contract-v1")
 		self.assertEqual(payload["supported_schema_versions"], ["intent-parse-v1"])
@@ -5080,14 +5079,18 @@ class TestAiService(TestCase):
 	def test_resolve_scenario_uses_intent_model_for_simple_general_message(
 		self, _user, _attachments, _company, _model, mock_intent, mock_issue,
 	):
-		result = resolve_ai_scenario_v1(content="你好！", company="Demo Company")
+		result = resolve_ai_scenario_v1(
+			content="你好！",
+			company="Demo Company",
+			model_alias="siliconflow/deepseek-ai/DeepSeek-V4.1-Flash",
+		)
 
 		self.assertEqual(result["data"]["scenario"], "general")
 		self.assertEqual(result["data"]["resolution_id"], "AI-RESOLUTION-1")
 		self.assertEqual(result["data"]["resolution_mode"], "structured_intent")
 		self.assertEqual(result["data"]["confidence"], 0.98)
-		mock_issue.assert_called_once()
-		mock_intent.assert_called_once()
+		self.assertEqual(mock_issue.call_args.kwargs["model_alias"], "erp-fast-chat")
+		self.assertNotIn("model_alias", mock_intent.call_args.kwargs)
 
 	@patch("myapp.services.ai_service._issue_ai_scenario_resolution", return_value="AI-RESOLUTION-2")
 	@patch("myapp.services.ai_service._call_ai_intent_orchestrator", return_value={
